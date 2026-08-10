@@ -7,6 +7,7 @@ import sdd.core.config.ModelEndpoint;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
@@ -117,6 +118,25 @@ class HttpChatModelTest {
 
         assertThat(model().complete(request()).message().content()).isEqualTo("hello");
         wm.verify(2, postRequestedFor(urlEqualTo("/v1/chat/completions")));
+    }
+
+    @Test
+    void capsRetryAfterSleepAtMaxBackoff() {
+        wm.stubFor(post("/v1/chat/completions").inScenario("huge-retry-after")
+                .whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
+                .willReturn(status(429).withHeader("Retry-After", "86400")).willSetStateTo("second"));
+        wm.stubFor(post("/v1/chat/completions").inScenario("huge-retry-after")
+                .whenScenarioStateIs("second").willReturn(okJson(OK_BODY)));
+
+        List<Long> recordedSleeps = new ArrayList<>();
+        ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "test-model", "sk-key",
+                256, 0.0, Duration.ofSeconds(5));
+        HttpChatModel model = new HttpChatModel(ep, HttpClient.newHttpClient(), recordedSleeps::add);
+
+        assertThat(model.complete(request()).message().content()).isEqualTo("hello");
+
+        assertThat(recordedSleeps).hasSize(1);
+        assertThat(recordedSleeps.get(0)).isLessThanOrEqualTo(60_000L);
     }
 
     @Test

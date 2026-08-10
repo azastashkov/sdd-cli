@@ -117,4 +117,33 @@ class ConfigLoaderTest {
                 .isInstanceOf(ConfigException.class)
                 .hasMessageContaining("retrieval");
     }
+
+    @Test
+    void nonNumericMaxTokensFailsWithConfigExceptionNamingKeyAndValue() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write("""
+                models:
+                  planner:
+                    base_url: https://api.deepseek.com/v1
+                    model: deepseek-v4-flash
+                    api_key: ${DEEPSEEK_API_KEY}
+                    max_tokens: 16384
+                  coder:
+                    base_url: http://127.0.0.1:8080/v1
+                    model: mlx-community/Qwen3.6-35B-A3B-8bit
+                    max_tokens: many
+                """), ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("models.coder.max_tokens")
+                .hasMessageContaining("many");
+    }
+
+    @Test
+    void nonNumericJdkHomesKeyFailsWithConfigException() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                jdk_homes:
+                  x: /opt/jdkx
+                """), ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("jdk_homes");
+    }
 }

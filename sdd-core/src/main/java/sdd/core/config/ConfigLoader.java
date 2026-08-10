@@ -59,7 +59,7 @@ public final class ConfigLoader {
         Map<Integer, Path> jdkHomes = new LinkedHashMap<>();
         if (root.get("jdk_homes") instanceof Map<?, ?> jm) {
             for (Map.Entry<?, ?> e : jm.entrySet()) {
-                jdkHomes.put(Integer.parseInt(String.valueOf(e.getKey())),
+                jdkHomes.put(parseInt("jdk_homes key", String.valueOf(e.getKey())),
                         Path.of(str(e.getValue(), env, "jdk_homes")));
             }
         }
@@ -94,11 +94,14 @@ public final class ConfigLoader {
         Object rawKey = m.get("api_key");
         String apiKey = rawKey == null ? null : str(rawKey, env, "models." + name + ".api_key");
         int maxTokens = m.get("max_tokens") == null
-                ? DEFAULT_MAX_TOKENS : Integer.parseInt(String.valueOf(m.get("max_tokens")));
+                ? DEFAULT_MAX_TOKENS
+                : parseInt("models." + name + ".max_tokens", String.valueOf(m.get("max_tokens")));
         double temperature = m.get("temperature") == null
-                ? DEFAULT_TEMPERATURE : Double.parseDouble(String.valueOf(m.get("temperature")));
+                ? DEFAULT_TEMPERATURE
+                : parseDouble("models." + name + ".temperature", String.valueOf(m.get("temperature")));
         Duration timeout = m.get("timeout_seconds") == null
-                ? DEFAULT_TIMEOUT : Duration.ofSeconds(Long.parseLong(String.valueOf(m.get("timeout_seconds"))));
+                ? DEFAULT_TIMEOUT
+                : Duration.ofSeconds(parseLong("models." + name + ".timeout_seconds", String.valueOf(m.get("timeout_seconds"))));
         return new ModelEndpoint(baseUrl, model, apiKey, maxTokens, temperature, timeout);
     }
 
@@ -108,6 +111,30 @@ public final class ConfigLoader {
             throw new ConfigException("models." + endpointName + "." + key + " is required");
         }
         return str(v, env, "models." + endpointName + "." + key);
+    }
+
+    private static int parseInt(String where, String value) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            throw new ConfigException(where + " must be an integer, got '" + value + "'");
+        }
+    }
+
+    private static long parseLong(String where, String value) {
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException e) {
+            throw new ConfigException(where + " must be an integer, got '" + value + "'");
+        }
+    }
+
+    private static double parseDouble(String where, String value) {
+        try {
+            return Double.parseDouble(value);
+        } catch (NumberFormatException e) {
+            throw new ConfigException(where + " must be a number, got '" + value + "'");
+        }
     }
 
     private static String str(Object value, Function<String, String> env, String where) {

@@ -5,6 +5,9 @@
 .gradle/
 build/
 
+# scripts/serve-qwen.sh creates a multi-GB Python venv here
+.venv-mlx/
+
 # IDE
 .idea/
 *.iml

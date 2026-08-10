@@ -87,7 +87,7 @@ public final class HttpChatModel implements ChatModel {
             return;
         }
         long delay = retryAfterMillis != null
-                ? retryAfterMillis
+                ? Math.min(retryAfterMillis, MAX_BACKOFF_MILLIS)
                 : Math.min(MAX_BACKOFF_MILLIS,
                         BASE_BACKOFF_MILLIS * (1L << (attempt - 1))
                                 + ThreadLocalRandom.current().nextLong(BASE_BACKOFF_MILLIS));
