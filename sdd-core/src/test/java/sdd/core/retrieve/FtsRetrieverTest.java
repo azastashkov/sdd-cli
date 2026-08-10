@@ -18,12 +18,12 @@ class FtsRetrieverTest {
     void seed() {
         db = Database.open(ws);
         db.jdbi().useHandle(h -> {
-            h.execute("INSERT INTO fts_symbol(identifier, fqcn, module_id) VALUES "
-                    + "('PriceCalculator', 'com.acme.pricing.PriceCalculator', 1)");
-            h.execute("INSERT INTO fts_symbol(identifier, fqcn, module_id) VALUES "
-                    + "('LoyaltyTier', 'com.acme.pricing.LoyaltyTier', 1)");
-            h.execute("INSERT INTO fts_symbol(identifier, fqcn, module_id) VALUES "
-                    + "('OrderController', 'com.acme.orders.OrderController', 2)");
+            h.execute("INSERT INTO fts_symbol(identifier, fqcn, words, module_id) VALUES (?, ?, ?, ?)",
+                    "PriceCalculator", "com.acme.pricing.PriceCalculator", IdentifierWords.split("PriceCalculator"), 1);
+            h.execute("INSERT INTO fts_symbol(identifier, fqcn, words, module_id) VALUES (?, ?, ?, ?)",
+                    "LoyaltyTier", "com.acme.pricing.LoyaltyTier", IdentifierWords.split("LoyaltyTier"), 1);
+            h.execute("INSERT INTO fts_symbol(identifier, fqcn, words, module_id) VALUES (?, ?, ?, ?)",
+                    "OrderController", "com.acme.orders.OrderController", IdentifierWords.split("OrderController"), 2);
         });
     }
 

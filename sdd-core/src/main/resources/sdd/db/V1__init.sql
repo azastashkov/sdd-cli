@@ -147,6 +147,7 @@ CREATE TABLE repo_card(
 CREATE VIRTUAL TABLE fts_symbol USING fts5(
   identifier,
   fqcn,
+  words,
   module_id UNINDEXED,
   tokenize = "unicode61 tokenchars '_$'");
 ;
