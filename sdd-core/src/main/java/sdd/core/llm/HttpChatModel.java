@@ -101,7 +101,14 @@ public final class HttpChatModel implements ChatModel {
 
     private static Long retryAfterMillis(HttpResponse<String> resp) {
         return resp.headers().firstValue("Retry-After")
-                .map(v -> Long.parseLong(v.trim()) * 1000L).orElse(null);
+                .map(v -> {
+                    try {
+                        return Long.parseLong(v.trim()) * 1000L;
+                    } catch (NumberFormatException e) {
+                        // HTTP-date format not supported; fall back to exponential backoff
+                        return null;
+                    }
+                }).orElse(null);
     }
 
     private String toJson(ChatRequest req) {
@@ -165,9 +172,9 @@ public final class HttpChatModel implements ChatModel {
                         call.path("function").path("name").asText(),
                         call.path("function").path("arguments").asText()));
             }
-            ChatMessage msg = new ChatMessage("assistant",
-                    message.path("content").isNull() ? null : message.path("content").asText(),
-                    List.copyOf(toolCalls), null);
+            JsonNode contentNode = message.path("content");
+            String content = (contentNode.isMissingNode() || contentNode.isNull()) ? null : contentNode.asText();
+            ChatMessage msg = new ChatMessage("assistant", content, List.copyOf(toolCalls), null);
             Usage usage = new Usage(
                     root.path("usage").path("prompt_tokens").asInt(),
                     root.path("usage").path("completion_tokens").asInt());

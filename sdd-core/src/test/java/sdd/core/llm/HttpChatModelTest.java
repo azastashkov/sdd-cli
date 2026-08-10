@@ -94,4 +94,46 @@ class HttpChatModelTest {
         wm.verify(postRequestedFor(urlEqualTo("/v1/chat/completions"))
                 .withoutHeader("Authorization"));
     }
+
+    @Test
+    void retries429WithDeltaSecondsRetryAfter() {
+        wm.stubFor(post("/v1/chat/completions").inScenario("rate-limit")
+                .whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
+                .willReturn(status(429).withHeader("Retry-After", "1")).willSetStateTo("second"));
+        wm.stubFor(post("/v1/chat/completions").inScenario("rate-limit")
+                .whenScenarioStateIs("second").willReturn(okJson(OK_BODY)));
+
+        assertThat(model().complete(request()).message().content()).isEqualTo("hello");
+        wm.verify(2, postRequestedFor(urlEqualTo("/v1/chat/completions")));
+    }
+
+    @Test
+    void retries429WithHttpDateRetryAfterFallsBackToExponential() {
+        wm.stubFor(post("/v1/chat/completions").inScenario("date-limit")
+                .whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
+                .willReturn(status(429).withHeader("Retry-After", "Wed, 21 Oct 2026 07:28:00 GMT")).willSetStateTo("second"));
+        wm.stubFor(post("/v1/chat/completions").inScenario("date-limit")
+                .whenScenarioStateIs("second").willReturn(okJson(OK_BODY)));
+
+        assertThat(model().complete(request()).message().content()).isEqualTo("hello");
+        wm.verify(2, postRequestedFor(urlEqualTo("/v1/chat/completions")));
+    }
+
+    @Test
+    void parsesNullContentFromMissingFieldWithToolCalls() {
+        String toolCallsOnlyBody = """
+                {"choices":[{"message":{"role":"assistant",
+                  "tool_calls":[{"id":"c1","type":"function",
+                    "function":{"name":"read_file","arguments":"{\\"path\\":\\"A.java\\"}"}}]},
+                  "finish_reason":"tool_calls"}],
+                 "usage":{"prompt_tokens":42,"completion_tokens":7}}
+                """;
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(toolCallsOnlyBody)));
+
+        ChatResponse resp = model().complete(request());
+
+        assertThat(resp.message().content()).isNull();
+        assertThat(resp.message().toolCalls()).hasSize(1);
+        assertThat(resp.message().toolCalls().get(0).name()).isEqualTo("read_file");
+    }
 }
