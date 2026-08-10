@@ -1,0 +1,21 @@
+# Copy to <workspace>/sdd.yml — the directory containing all estate checkouts.
+retrieval: fts            # fts | embeddings (embeddings needs a models.embeddings endpoint)
+
+models:
+  planner:                # whole-estate synthesis: impact seeding, plan drafting, escalation
+    base_url: https://api.deepseek.com/v1
+    model: deepseek-v4-flash
+    api_key: ${DEEPSEEK_API_KEY}
+    max_tokens: 16384
+  coder:                  # local precise work: repo cards, coding agent
+    base_url: http://127.0.0.1:8080/v1
+    model: mlx-community/Qwen3.6-35B-A3B-8bit
+    max_tokens: 4096
+
+# Gradle daemon JDKs for old wrappers (filled per machine):
+# jdk_homes:
+#   11: /Library/Java/JavaVirtualMachines/temurin-11.jdk/Contents/Home
+#   17: /Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home
+#   21: /Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home
+
+excludes: []              # workspace directories to skip
