@@ -1,0 +1,17 @@
+# Secrets — never commit
+.env
+
+# Gradle
+.gradle/
+build/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# sdd workspace state (when the tool is run against a workspace checked out here)
+.sdd/
+
+# macOS
+.DS_Store
