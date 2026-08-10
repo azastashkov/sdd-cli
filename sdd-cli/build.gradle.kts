@@ -9,4 +9,7 @@ dependencies {
     testImplementation(libs.wiremock)
     testImplementation(testFixtures(project(":sdd-core")))
 }
-application { mainClass.set("sdd.cli.SddCli") }
+application {
+    mainClass.set("sdd.cli.SddCli")
+    applicationName = "sdd"
+}
