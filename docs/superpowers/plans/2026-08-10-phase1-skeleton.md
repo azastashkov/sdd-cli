@@ -2122,3 +2122,22 @@ git commit -m "chore: model runtime setup, config examples, README"
 1. **Spec coverage (Phase 1 scope):** Gradle multi-module skeleton → Task 1; `sdd.yml` single config with env interpolation → Task 2; `.sdd/index.db` + full V1 schema incl. `file_ref`, FTS, `v_repo_dep_edge` → Task 3; `ChatModel` seam + test double → Task 4; hand-rolled OpenAI-compatible client with retry/backoff → Task 5; `Retriever` fts/embeddings seam (fts implemented, embeddings later per spec's deferred list) → Task 6; `sdd doctor` endpoint checks → Tasks 7–8; fixture-estate harness → Task 9; `scripts/serve-qwen.sh`, `DEEPSEEK_API_KEY` wiring, README → Task 10. Not in Phase 1 by design: indexer, planner, agent loop, review (Phases 2–5); `sqlite-vec` table (arrives with the embeddings Retriever); jtokkit (arrives with the token budgeter in Phase 3).
 2. **Placeholder scan:** every code step contains complete, compilable code; no TBD/TODO. The one intentional external unknown (exact HF org for the MLX quant) is handled by a documented env override, not a placeholder.
 3. **Type consistency:** `ModelEndpoint(baseUrl, model, apiKey, maxTokens, temperature, timeout)` is used identically in Tasks 2, 5, 7, 8; `ChatMessage`/`ChatRequest`/`ChatResponse` shapes match between Tasks 4, 5; `Database.open(Path)` + `jdbi()` used identically in Tasks 3, 6, 8; `FixtureRepo.in(...).file(...).commit(...)` consistent in Task 9.
+
+---
+
+## Execution outcome (2026-08-10)
+
+Executed via subagent-driven development on branch `feature/phase1-skeleton`; all 10 tasks complete; final whole-branch review returned "With fixes", fix wave landed and re-review verified clean. 40 tests green.
+
+**Approved deviations from this plan:**
+- `fts_symbol` gained an indexed `words` column + `IdentifierWords` splitter (FTS5 unicode61 cannot split camelCase — plan defect found in Task 6).
+- `applicationName = "sdd"` on sdd-cli so the documented `bin/sdd` path is real.
+- ConfigLoader wraps numeric-parse errors in ConfigException; Retry-After sleeps capped at 60 s; score contract documented on Retriever/Hit (final-review fixes).
+
+**Phase-2 entry criteria (carry into the Phase-2 plan):**
+1. Make `Database.migrate()` transactional BEFORE authoring any V2 migration.
+2. Add an `FtsSymbolWriter` insert helper that enforces the `words = IdentifierWords.split(identifier)` invariant (never null input) instead of relying on convention.
+3. Fix ConfigLoader silent degradation of non-list `excludes` before the indexer honors excludes.
+4. Set an explicit SQLite `busy_timeout` when concurrent per-repo write transactions arrive.
+5. Revisit `IdentifierWords` letter–digit splitting (`OrderV2Handler` → `order v 2 handler` hurts version-token recall) before baking millions of rows.
+6. Known deferred minors (accepted for v1): unknown `models.*` keys accepted; `schemaVersion()` returns code constant; `base_url` trailing slash unnormalized; doctor test gaps; FixtureRepo doesn't stage deletions; serve-qwen.sh uses deprecated `huggingface-cli` entry point with unpinned `huggingface_hub`.
