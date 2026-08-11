@@ -24,6 +24,7 @@ public final class SourceExtraction {
         // into "../../../private/var/..." junk: the scanner reports the repo path as listed
         // (symlinks intact) while Gradle reports projectDir already canonicalized.
         Path repoRoot = Paths2.canonical(repoPath);
+        JarSolverCache jarCache = new JarSolverCache();
         for (GradleModel.Project p : extract.projects()) {
             Optional<Long> moduleId = jdbi.withHandle(h -> h.createQuery(
                             "SELECT id FROM module WHERE repo_id=:r AND gradle_path=:p")
@@ -35,7 +36,7 @@ public final class SourceExtraction {
                     .map(c -> c.resolved().stream().flatMap(r -> r.files().stream()).toList())
                     .orElse(List.of());
             SourceParser.Session session = SourceParser.parseModule(
-                    repoRoot, Paths2.canonical(p.projectDir()), jars);
+                    repoRoot, Paths2.canonical(p.projectDir()), jars, jarCache);
             totalIssues += session.issues().size();
             boolean library = jdbi.withHandle(h -> h.createQuery(
                             "SELECT kind FROM module WHERE id=:m").bind("m", moduleId.get())

@@ -5,7 +5,6 @@ import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
-import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver;
 
@@ -24,6 +23,11 @@ public final class SourceParser {
     private SourceParser() {}
 
     public static Session parseModule(Path repoRoot, Path moduleDir, List<Path> classpathJars) {
+        return parseModule(repoRoot, moduleDir, classpathJars, new JarSolverCache());
+    }
+
+    public static Session parseModule(Path repoRoot, Path moduleDir, List<Path> classpathJars,
+                                      JarSolverCache jarCache) {
         List<Path> roots = new ArrayList<>();
         Path main = moduleDir.resolve("src/main/java");
         if (Files.isDirectory(main)) {
@@ -37,16 +41,12 @@ public final class SourceParser {
             return new Session(List.of(), List.of());
         }
 
-        CombinedTypeSolver solver = new CombinedTypeSolver(new ReflectionTypeSolver(false));
+        CombinedTypeSolver solver = new CombinedTypeSolver(new ReflectionTypeSolver(true));
         for (Path root : roots) {
             solver.add(new JavaParserTypeSolver(root));
         }
         for (Path jar : classpathJars) {
-            try {
-                solver.add(new JarTypeSolver(jar));
-            } catch (Exception ignored) {
-                // unreadable/missing jar — best-effort resolution without it
-            }
+            jarCache.get(jar).ifPresent(solver::add);
         }
         ParserConfiguration config = new ParserConfiguration()
                 .setSymbolResolver(new JavaSymbolSolver(solver))
