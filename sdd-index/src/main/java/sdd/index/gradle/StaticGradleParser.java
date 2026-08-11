@@ -58,21 +58,22 @@ public final class StaticGradleParser {
         List<String> plugins = new ArrayList<>();
         List<GradleModel.DeclaredDep> declared = new ArrayList<>();
         for (String line : lines) {
-            Matcher plugin = PLUGIN_ID.matcher(line);
+            String code = stripComments(line);
+            Matcher plugin = PLUGIN_ID.matcher(code);
             while (plugin.find()) {
                 plugins.add(plugin.group(1));
             }
-            Matcher gav = GAV.matcher(line);
+            Matcher gav = GAV.matcher(code);
             if (gav.find()) {
                 declared.add(new GradleModel.DeclaredDep(gav.group(2), gav.group(3), gav.group(4)));
                 continue;
             }
-            Matcher map = MAP_SYNTAX.matcher(line);
+            Matcher map = MAP_SYNTAX.matcher(code);
             if (map.find()) {
                 declared.add(new GradleModel.DeclaredDep(map.group(2), map.group(3), map.group(4)));
                 continue;
             }
-            Matcher cat = CATALOG_REF.matcher(line);
+            Matcher cat = CATALOG_REF.matcher(code);
             if (cat.find()) {
                 String alias = cat.group(2).substring(1).replace('.', '-').toLowerCase(Locale.ROOT);
                 CatalogEntry entry = catalog.get(alias);
@@ -89,6 +90,15 @@ public final class StaticGradleParser {
     }
 
     private record CatalogEntry(String group, String name, String version) {}
+
+    private static String stripComments(String line) {
+        String stripped = line.replaceFirst("//.*$", "");
+        String trimmed = stripped.trim();
+        if (trimmed.startsWith("*") || trimmed.startsWith("/*")) {
+            return "";
+        }
+        return stripped;
+    }
 
     private static Map<String, CatalogEntry> readCatalog(Path repoDir) {
         Path file = repoDir.resolve("gradle/libs.versions.toml");

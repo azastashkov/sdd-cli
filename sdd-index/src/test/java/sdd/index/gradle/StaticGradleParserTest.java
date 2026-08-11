@@ -66,4 +66,21 @@ class StaticGradleParserTest {
                 .satisfies(p -> assertThat(p.configurations().get("compileClasspath").declared())
                         .extracting(GradleModel.DeclaredDep::name).contains("lib-core"));
     }
+
+    @Test
+    void commentedOutDependenciesAreIgnored() throws Exception {
+        Files.writeString(repo.resolve("settings.gradle"), "rootProject.name = 'svc-c'\n");
+        Files.writeString(repo.resolve("build.gradle"), """
+                plugins { id 'java' }
+                dependencies {
+                    // implementation 'org.apache.commons:commons-lang3:3.14.0'
+                    /* api group: 'com.acme', name: 'lib-old', version: '1.0.0' */
+                    implementation 'com.acme:lib-live:1.0.0'
+                }
+                """);
+        GradleModel.DepConfig cc = StaticGradleParser.parse(repo)
+                .projects().get(0).configurations().get("compileClasspath");
+        assertThat(cc.declared()).extracting(GradleModel.DeclaredDep::name)
+                .containsExactly("lib-live");
+    }
 }
