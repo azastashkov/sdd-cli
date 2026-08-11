@@ -265,4 +265,21 @@ class IndexPersistenceTest {
             assertThat(error.split("network down", -1).length - 1).isEqualTo(1);
         }
     }
+
+    @Test
+    void markStaleAppendIsNotSwallowedByARawSubstringOfAnExistingLargerCount() {
+        // Same dedup hazard as SourcePersistence.updateParseStatus: "3 source files failed to
+        // parse" is a raw substring of "13 source files failed to parse", so a naive instr()
+        // check must not treat the shorter note as a duplicate and drop it.
+        try (Database db = Database.open(ws)) {
+            RepoScan scan = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");
+            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "OK", null);
+            db.jdbi().useHandle(h -> h.execute(
+                    "UPDATE repo SET error='13 source files failed to parse; ' WHERE name='svc-orders'"));
+            IndexPersistence.markStale(db.jdbi(), "svc-orders", "3 source files failed to parse");
+            String error = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT error FROM repo WHERE name='svc-orders'").mapTo(String.class).one());
+            assertThat(error).isEqualTo("13 source files failed to parse; 3 source files failed to parse; ");
+        }
+    }
 }
