@@ -1543,3 +1543,20 @@ git commit -m "test: end-to-end spring extraction coverage"
 1. **Spec coverage (2B-2b scope):** REST endpoints with class/method join + context-path prepend at persistence → Tasks 4, 7; REST clients (Feign name/url/path, RestTemplate, WebClient/RestClient) with the ladder and DYNAMIC downgrade → Task 5; Kafka listeners/producers with ladder + topicPattern-as-DYNAMIC + spring-cloud-stream `UNPARSED_STREAM` → Tasks 3, 6, 7; carry-forwards: repo-level shared solver → Task 1; ValueResolver visited set, config precedence, normalize(null), error dedup → Task 2. Deferred (documented in header): `@Bean NewTopic` rows, per-method `@ResponseBody`, `.properties` activation keys, Lombok static accessors, perf measurement.
 2. **Placeholder scan:** all code steps complete; contingencies (`TestJars` signature, `parseInitializers` shape, `AnnotationValues` bound) name exact fallback procedures.
 3. **Type consistency:** `SpringModel.EndpointInfo(classFqcn, methodName, httpMethod, pathTemplate, requestType, responseType)` consistent across Tasks 4, 7, 8; `ClientInfo(kind, classFqcn, methodOrSite, httpMethod, uriTemplate, targetHint, resolution, rawExpr)` across 5, 7; `KafkaUse(topic, role, classFqcn, groupId, payloadType, resolution, rawExpr)` across 6, 7; `SpringExtract(endpoints, clients, kafka, streamDetected)` across 4, 7, 8; `KafkaExtractor.extract(Session, Map, List<Path>, Collection<String>)` matches Task 8's call; `SpringPersistence.persistModuleSpring(Handle, long, String, SpringExtract)` matches Task 8; `RepoSolver.configFor(List<Path>, List<Path>)` + `SourceParser.parseModule(Path, Path, ParserConfiguration)` consistent between Tasks 1 and later use.
+
+---
+
+## Execution outcome (2026-08-11)
+
+All 9 tasks complete; final whole-branch review: ready to merge (first phase to pass without a Critical), with 2 Important fast-follows landed pre-merge (delimited error-dedup — substring counts swallowed appends; Feign @RequestMapping-style extraction — dominant pre-2020 style would have produced ZERO client rows on old estates). Reviews forced fix rounds on: ValueResolver diamond false-cycles (path-scoped visited set), multi-verb @RequestMapping corruption ("POST }"), class-level @KafkaListener silent miss. 204 tests green incl. real-Gradle ITs. THE KNOWLEDGE-LAYER EXTRACTION IS NOW COMPLETE — 2C (matching/cards/curation) is the last index plan.
+
+**Binding notes the 2C plan MUST carry (from the final review):**
+1. Absolute-URL matching uses `uri_template`, NEVER `norm_path` (scheme gets mangled to "/http:/..."); consider norm_path=NULL for `^[a-z]+://` URIs.
+2. `EndpointInfo`/rest_endpoint has NO resolution field — DYNAMIC-degraded endpoint paths are indistinguishable from empty bases; curation must treat endpoint paths as lower-confidence than client rows.
+3. kafka_topic orphan cleanup (rows survive repersist when topics disappear).
+4. WebClient `.method(HttpMethod.X)` chains emit NOTHING — add DYNAMIC-row support ("unresolved ≠ nonexistent").
+5. Receiver heuristics: tighten to allowlist-on-successful-resolution (RestTemplate/RestOperations, KafkaTemplate/KafkaOperations), name-heuristic only on resolution failure (false positives: restTemplateCache.put → bogus PUT row).
+6. Repeated/@KafkaListeners-container annotations dropped by findFirst; unresolved topic names keep literal quote chars (strip at curation display).
+7. Jar version skew in the repo-solver union: first-added jar wins resolution (affects payloadType strings) — one-sentence caveat.
+8. application.properties-vs-yml precedence within a group is alphabetical (yml wins) — differs from Spring; revisit with the first defaultProfileProps consumer that cares.
+9. BEFORE the 40-repo estate run: 2–3 repo smoke run on the largest real repos, watch heap/wall time (CombinedTypeSolver linear scan on failed lookups; -Xmx guidance ready).
