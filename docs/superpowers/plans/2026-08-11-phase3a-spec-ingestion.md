@@ -2410,3 +2410,23 @@ git commit -m "feat: sdd plan ingest stage with human-gated Confluence normaliza
 2. **Placeholder scan:** no TBD/TODO; every code step carries complete code; Task 2 Step 3 references existing constructor field assignments by name rather than reproducing them — deliberate, the implementer edits that file with the existing body in view.
 3. **Type consistency:** `NormalizedSpec` 13 components in the same order everywhere (Tasks 3, 4, 5, 7, 8); `SpecItem(String id, String text)`; `Touchpoint.Kind.fromKey` null-on-unknown used by parser (hard error) and normalizer (demote to open question) — intentionally different policies, both stated; `ConfluenceExtract.Extracted(String text, List<String> attachments)` across 6, 7; `normalize(Extracted, ChatModel, String, int, String)` across 7, 8; `plannerForTest` package-private field name across 8's code and tests; `HttpChatModel(ModelEndpoint, int)` across Task 2 and Task 8 (default 6 attempts for the planner call — only the card path caps at 2).
 4. **Adversarial critique pass (3 independent critics vs the real codebase, findings folded in):** every proposed signature, helper name, and line-number assertion verified against the repo; YAML-1.1 trap scalars now force quoting via a parse-back check (`bareSafe`) with a pinning test; Confluence CDATA code bodies recovered from jsoup's bogus-comment representation, `<pre>` handled, and bare text nodes inside wrappers preserved (walk over child NODES), each with tests; normalizer output sanitized (one-line bullets/scalars, heading markers stripped from prose) plus a `PlanCommand` render→parse self-check so a gate file can never be written unreadable; `--out` and CRLF pinned by tests; carry-forward #4's non-trigger by Task 1 justified in Global Constraints.
+
+---
+
+## Execution Outcome (2026-08-11)
+
+Executed via superpowers:subagent-driven-development on branch `feature/phase3a-spec-ingestion` (base a85ac8f, HEAD 4eb7439, 10 commits). All 8 tasks completed with clean per-task reviews (fix rounds: Task 6 ×1 — images inside li/td were silently dropped, fixed via paragraph() reuse; Task 7 ×1 — unsanitized touchpoint kind broke the round-trip law, oneLine()-wrapped). Final whole-branch review (most capable model): **APPROVE, no fix wave**; fresh `./gradlew clean build` green across all modules. The round-trip chain (normalizer sanitization → renderer quoting → parser grammar → CLI self-check) was verified coherent end-to-end; gate semantics confirmed: same SpecValidator vocabulary, `gate:`/exit-0 at normalization, `problem:`/exit-1 at canonical validation.
+
+### Phase-3B hardening bundle (one small task, none merge-blocking)
+
+1. `RestMatcher` manual-pass decrement buckets by confidence only — duplicate/overlapping manual pins for the same pair decrement `high` for a MANUAL row (display can print `high: -1`); select `matched_by` too and decrement `manual` accordingly.
+2. Attachment names bypass sanitization (`ri:filename`/`img src` basenames can carry decoded newlines) — same family as `oneLine()` missing U+2028/U+2029/U+0085 (`UNICODE_CHARACTER_CLASS` or explicit char class); both currently fail LOUDLY via the self-check but with a non-actionable "rerun normalization" hint.
+3. `--out` accepts an `.html` target, making the printed follow-up hint re-normalize instead of validate; also the hint omits `--workspace`, so run verbatim from another cwd it fails config load.
+4. `HttpChatModel` connection-refused surfaces "error: transport error: null" (message quality; also affects `sdd index`).
+5. Deferred grammar/normalizer minors (all triaged OK-TO-DEFER): `#`-prefixed hand-authored prose rejected with a clear error (sanctioned strictness); bullet text kept verbatim incl. trailing whitespace; front-matter embedded newline folds on re-parse (unreachable from normalizer; candidate SpecValidator rule); non-code macro params leak as spurious prose; malformed model shapes degrade to visible-but-lossy `[unmapped touchpoint] : ` / empty-list gate findings.
+
+### Phase-3B entry pointers
+
+- `sdd plan <canonical.md>` now parses + validates and stops at "impact analysis is not implemented yet (Phase 3B)" — 3B picks up exactly there: touchpoint KB resolution, Retriever seeding, DeepSeek model seeding over repo cards, deterministic closure (full transitive Gradle, REST/Kafka 1-hop pending-contract, BOM declaration-site pull-in, SCC detection), provenance recording.
+- The planner call path (`ModelEndpoint` planner, default 6 attempts, maxTokens from config) is established in `PlanCommand`/`ConfluenceNormalizer` — reuse the same pattern for the seeding call.
+- Still pending operationally: the 2–3 repo perf smoke run on the real estate (needs the estate workspace path) before the full 40-repo index.
