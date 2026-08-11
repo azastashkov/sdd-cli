@@ -75,6 +75,7 @@ class IndexServiceIT {
                     .satisfies(r -> {
                         assertThat(r.status()).isEqualTo("OK");
                         assertThat(r.internalDeps()).isEqualTo(1);
+                        assertThat(r.parseStatus()).isEqualTo("OK");
                     });
 
             // internal edge svc-orders -> lib-core is marked and PINNED

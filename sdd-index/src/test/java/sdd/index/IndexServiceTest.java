@@ -25,8 +25,12 @@ class IndexServiceTest {
     }
 
     private static GradleModel.Extract oneModule(String name) {
+        return oneModuleAt(name, Path.of("/w/" + name));
+    }
+
+    private static GradleModel.Extract oneModuleAt(String name, Path projectDir) {
         return new GradleModel.Extract(List.of(new GradleModel.Project(
-                ":", name, "com.acme", "1.0.0", Path.of("/w/" + name),
+                ":", name, "com.acme", "1.0.0", projectDir,
                 List.of("java"), false, List.of(),
                 Map.of("compileClasspath", new GradleModel.DepConfig(
                         List.of(new GradleModel.DeclaredDep("com.acme", "lib-core", "2.3.0")),
@@ -48,6 +52,13 @@ class IndexServiceTest {
     private int moduleCount(Database db, String repo) {
         return db.jdbi().withHandle(h -> h.createQuery("""
                         SELECT count(*) FROM module m JOIN repo r ON r.id=m.repo_id WHERE r.name=:n""")
+                .bind("n", repo).mapTo(Integer.class).one());
+    }
+
+    private int typeCount(Database db, String repo) {
+        return db.jdbi().withHandle(h -> h.createQuery("""
+                        SELECT count(*) FROM java_type jt JOIN module m ON m.id=jt.module_id
+                        JOIN repo r ON r.id=m.repo_id WHERE r.name=:n""")
                 .bind("n", repo).mapTo(Integer.class).one());
     }
 
@@ -95,6 +106,22 @@ class IndexServiceTest {
             assertThat(r.status()).isEqualTo("FAILED");
             assertThat(r.error()).contains("tooling api exploded");
             assertThat(repoStatus(db, "boom")).isEqualTo("FAILED");
+        }
+    }
+
+    @Test
+    void successfulIndexRunExtractsSourceAndPersistsApiSurface() throws Exception {
+        Path dir = Files.createDirectories(ws.resolve("has-source"));
+        Files.createDirectories(dir.resolve("src/main/java"));
+        Files.writeString(dir.resolve("src/main/java/P.java"), "public class P {}\n");
+        try (Database db = Database.open(ws)) {
+            IndexService.RepoResult r = new IndexService().indexRepo(db.jdbi(),
+                    p -> oneModuleAt("has-source", dir),
+                    new RepoScan("has-source", dir, "a".repeat(40), "main", ""));
+
+            assertThat(r.status()).isEqualTo("OK");
+            assertThat(r.parseStatus()).isEqualTo("OK");
+            assertThat(typeCount(db, "has-source")).isEqualTo(1);
         }
     }
 
