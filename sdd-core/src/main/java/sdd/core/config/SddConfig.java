@@ -10,4 +10,5 @@ public record SddConfig(
         Map<String, ModelEndpoint> models,
         Map<Integer, Path> jdkHomes,
         List<String> excludes,
-        Map<String, String> artifactOverrides) {}
+        Map<String, String> artifactOverrides,
+        List<ManualEdge> manualEdges) {}

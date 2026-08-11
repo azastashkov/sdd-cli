@@ -18,7 +18,7 @@ class IndexServiceIT {
     @TempDir Path ws;
 
     private SddConfig config() {
-        return new SddConfig(ws, "fts", Map.of(), Map.of(), List.of(), Map.of());
+        return new SddConfig(ws, "fts", Map.of(), Map.of(), List.of(), Map.of(), List.of());
     }
 
     // Real Gradle builds leave untracked build/.gradle output in the fixture working tree;

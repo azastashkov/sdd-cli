@@ -82,8 +82,22 @@ public final class ConfigLoader {
             }
         }
 
+        java.util.List<ManualEdge> manualEdges = new java.util.ArrayList<>();
+        if (root.get("manual_edges") instanceof List<?> edges) {
+            for (int i = 0; i < edges.size(); i++) {
+                if (!(edges.get(i) instanceof Map<?, ?> e)) {
+                    throw new ConfigException("manual_edges[" + i + "] must be a mapping");
+                }
+                manualEdges.add(new ManualEdge(
+                        requiredEdgeKey(e, "client_repo", i, env),
+                        requiredEdgeKey(e, "http_method", i, env),
+                        requiredEdgeKey(e, "path", i, env),
+                        requiredEdgeKey(e, "provider_repo", i, env)));
+            }
+        }
+
         return new SddConfig(workspace, retrieval, Map.copyOf(models), Map.copyOf(jdkHomes),
-                excludes, Map.copyOf(artifactOverrides));
+                excludes, Map.copyOf(artifactOverrides), List.copyOf(manualEdges));
     }
 
     @SuppressWarnings("unchecked")
@@ -126,6 +140,14 @@ public final class ConfigLoader {
             throw new ConfigException("models." + endpointName + "." + key + " is required");
         }
         return str(v, env, "models." + endpointName + "." + key);
+    }
+
+    private static String requiredEdgeKey(Map<?, ?> m, String key, int index, Function<String, String> env) {
+        Object v = m.get(key);
+        if (v == null) {
+            throw new ConfigException("manual_edges[" + index + "]: " + key + " is required");
+        }
+        return str(v, env, "manual_edges[" + index + "]." + key);
     }
 
     private static int parseInt(String where, String value) {

@@ -167,4 +167,34 @@ class ConfigLoaderTest {
     void artifactOverridesDefaultEmpty() throws Exception {
         assertThat(ConfigLoader.load(write(MINIMAL), ENV).artifactOverrides()).isEmpty();
     }
+
+    @Test
+    void parsesManualEdges() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL + """
+                manual_edges:
+                  - client_repo: svc-orders
+                    http_method: POST
+                    path: /pay/charge
+                    provider_repo: billing-service
+                """), ENV);
+        assertThat(c.manualEdges()).containsExactly(
+                new ManualEdge("svc-orders", "POST", "/pay/charge", "billing-service"));
+    }
+
+    @Test
+    void manualEdgeMissingKeyFails() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                manual_edges:
+                  - client_repo: svc-orders
+                    path: /x
+                    provider_repo: y
+                """), ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("manual_edges").hasMessageContaining("http_method");
+    }
+
+    @Test
+    void manualEdgesDefaultEmpty() throws Exception {
+        assertThat(ConfigLoader.load(write(MINIMAL), ENV).manualEdges()).isEmpty();
+    }
 }
