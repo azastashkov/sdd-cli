@@ -84,4 +84,19 @@ class ArtifactLinkerTest {
         assertThat(remapped).isEqualTo(1);
         assertThat(report.conflicts()).anySatisfy(c -> assertThat(c).contains("no-such-repo"));
     }
+
+    @Test
+    void compositeModeRevertsWhenIncludedBuildRemoved() {
+        ArtifactLinker.link(db.jdbi(), Map.of());
+        // precondition: composite
+        String before = db.jdbi().withHandle(h -> h.createQuery(
+                "SELECT mode FROM dep_edge WHERE to_name='lib-included'").mapTo(String.class).one());
+        assertThat(before).isEqualTo("COMPOSITE");
+        // simulate the consumer dropping its includeBuild
+        db.jdbi().useHandle(h -> h.execute("UPDATE repo SET included_builds='[]' WHERE name='svc-orders'"));
+        ArtifactLinker.link(db.jdbi(), Map.of());
+        String after = db.jdbi().withHandle(h -> h.createQuery(
+                "SELECT mode FROM dep_edge WHERE to_name='lib-included'").mapTo(String.class).one());
+        assertThat(after).isEqualTo("PINNED");
+    }
 }

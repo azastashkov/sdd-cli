@@ -1,6 +1,7 @@
 package sdd.index.store;
 
 import org.jdbi.v3.core.Jdbi;
+import sdd.index.gradle.ModeClassifier;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -38,6 +39,19 @@ public final class ArtifactLinker {
                                     WHERE a.grp=dep_edge.to_grp AND a.name=dep_edge.to_name)
                     WHERE EXISTS(SELECT 1 FROM artifact a
                                  WHERE a.grp=dep_edge.to_grp AND a.name=dep_edge.to_name)""");
+
+            // Re-derive modes from declared_version for all edges (idempotent)
+            record EdgeRow(long id, String declaredVersion) {}
+            List<EdgeRow> edges = h.createQuery("SELECT id, declared_version FROM dep_edge")
+                    .map((rs, ctx) -> new EdgeRow(rs.getLong("id"), rs.getString("declared_version")))
+                    .list();
+            for (EdgeRow e : edges) {
+                h.createUpdate("UPDATE dep_edge SET mode=:m WHERE id=:id")
+                        .bind("m", ModeClassifier.classify(e.declaredVersion(), false).name())
+                        .bind("id", e.id())
+                        .execute();
+            }
+
             h.execute("""
                     UPDATE dep_edge SET mode='COMPOSITE'
                     WHERE is_internal=1 AND EXISTS(
