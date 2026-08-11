@@ -79,6 +79,7 @@ public final class IndexCommand implements Callable<Integer> {
                 out.printf(Locale.ROOT, "cards: %d generated, %d cached, %d failed%n",
                         cardResult.generated(), cardResult.cached(), cardResult.failed());
             }
+            out.println("report: " + service.lastReportPath());
             boolean allFailed = !results.isEmpty()
                     && results.stream().allMatch(r -> r.status().equals("FAILED"));
             return allFailed ? 1 : 0;

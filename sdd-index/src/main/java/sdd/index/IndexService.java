@@ -9,6 +9,7 @@ import sdd.index.gradle.ExtractionException;
 import sdd.index.gradle.GradleExtractor;
 import sdd.index.gradle.GradleModel;
 import sdd.index.gradle.StaticGradleParser;
+import sdd.index.report.CurationReport;
 import sdd.index.scan.RepoScan;
 import sdd.index.scan.WorkspaceScanner;
 import sdd.index.source.SourceExtraction;
@@ -19,6 +20,7 @@ import sdd.index.store.SourcePersistence;
 import sdd.index.store.TopicJanitor;
 import sdd.index.store.UsageLinker;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -42,6 +44,7 @@ public final class IndexService {
     private RestMatcher.Report lastRestReport;
     private int lastTopicsCleaned;
     private RepoCardGenerator.CardResult lastCardResult;
+    private Path lastReportPath;
 
     public IndexService() {
         this(null);
@@ -82,6 +85,9 @@ public final class IndexService {
         lastRestReport = RestMatcher.match(db.jdbi(), config.manualEdges());
         lastTopicsCleaned = TopicJanitor.clean(db.jdbi());
         lastCardResult = generateCards(db.jdbi(), config.workspace());
+        // Always runs, regardless of --no-cards/model availability: it only reads already-persisted
+        // tables, so it has no model dependency and nothing above it can legitimately skip it.
+        lastReportPath = CurationReport.write(db.jdbi(), config.workspace());
         return results.stream().map(r -> withCounts(db.jdbi(), r)).toList();
     }
 
@@ -91,7 +97,7 @@ public final class IndexService {
      * rather than sink an otherwise-successful index. Returns null when cards were skipped
      * (no card model configured) or when generation itself blew up.
      */
-    private RepoCardGenerator.CardResult generateCards(Jdbi jdbi, java.nio.file.Path workspace) {
+    private RepoCardGenerator.CardResult generateCards(Jdbi jdbi, Path workspace) {
         if (cardModel == null) {
             return null;
         }
@@ -103,7 +109,7 @@ public final class IndexService {
     }
 
     /** A repo we could not even scan: keep whatever we already know, else record the failure. */
-    private RepoResult scanFailureResult(Jdbi jdbi, java.nio.file.Path workspace, String failure) {
+    private RepoResult scanFailureResult(Jdbi jdbi, Path workspace, String failure) {
         int sep = failure.indexOf(": ");
         String name = sep < 0 ? failure : failure.substring(0, sep);
         String error = sep < 0 ? failure : failure.substring(sep + 2);
@@ -129,6 +135,10 @@ public final class IndexService {
     /** Null when cards were skipped ({@code --no-cards}, no card model) or generation failed. */
     public RepoCardGenerator.CardResult lastCardResult() {
         return lastCardResult;
+    }
+
+    public Path lastReportPath() {
+        return lastReportPath;
     }
 
     RepoResult indexRepo(Jdbi jdbi, Extractor extractor, RepoScan scan) {
