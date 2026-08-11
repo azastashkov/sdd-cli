@@ -4,6 +4,7 @@ plugins {
 dependencies {
     implementation(project(":sdd-core"))
     implementation(project(":sdd-index"))
+    implementation(project(":sdd-plan"))
     implementation(libs.picocli)
     testImplementation(libs.bundles.test)
     testRuntimeOnly(libs.junit.launcher)
