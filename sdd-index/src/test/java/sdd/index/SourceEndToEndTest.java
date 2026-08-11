@@ -43,7 +43,6 @@ class SourceEndToEndTest {
         FixtureRepo.in(ws, "svc-orders")
                 .file("src/main/java/com/acme/orders/OrderService.java", """
                         package com.acme.orders;
-                        import com.acme.orders.OrderHelper;
                         import com.acme.pricing.PriceCalculator;
                         public class OrderService {
                             public OrderHelper helper() { return new OrderHelper(); }
@@ -72,19 +71,28 @@ class SourceEndToEndTest {
                     "SELECT count(*) FROM api_member WHERE signature='getCurrency()' "
                             + "AND synthesized_by='lombok:@Getter'").mapTo(Integer.class).one());
             assertThat(getterCount).isEqualTo(1);
-            // cross-repo usage linked to lib-pricing's module
+            // cross-repo usage linked to lib-pricing's module. PriceCalculator is only ever
+            // *imported* by OrderService (never used as a field/return/param type in the fixture
+            // body), so the widened ReferenceExtractor's ClassOrInterfaceType pass never touches
+            // it: exactly one api_usage row (refKind IMPORT), unchanged by Task 2's widening.
             var usage = db.jdbi().withHandle(h -> h.createQuery("""
                             SELECT u.target_fqcn, m.repo_id FROM api_usage u
                             JOIN module m ON m.id = u.target_module_id""").mapToMap().list());
             assertThat(usage).hasSize(1);
             assertThat(usage.get(0)).containsEntry("target_fqcn", "com.acme.pricing.PriceCalculator");
-            // intra-repo file ref OrderService -> OrderHelper
+            // intra-repo file ref OrderService -> OrderHelper. Now produced entirely by the
+            // widened extractor (ObjectCreationExpr -> CALL, return-type ClassOrInterfaceType ->
+            // TYPE): the artificial "import OrderHelper" that 2B-1 added to force this file_ref to
+            // exist is gone from the fixture (removed above), and the count stays 1 because
+            // fileRefCounts collapses all target hits for a given (src,dst) pair into one row.
             Integer fileRefCount = db.jdbi().withHandle(h -> h.createQuery(
                     "SELECT count(*) FROM file_ref WHERE src_file LIKE '%OrderService.java' "
                             + "AND dst_file LIKE '%OrderHelper.java'").mapTo(Integer.class).one());
             assertThat(fileRefCount).isEqualTo(1);
             // FTS finds the calculator by split word
             assertThat(new FtsRetriever(db.jdbi()).search("calculator", 10)).isNotEmpty();
+            // internalRefs counts api_usage rows with a resolved target_module_id; still exactly
+            // the one PriceCalculator/IMPORT row from above.
             assertThat(service.lastUsageReport().internalRefs()).isEqualTo(1);
         }
     }

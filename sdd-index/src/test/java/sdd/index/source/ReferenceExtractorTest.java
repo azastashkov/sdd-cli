@@ -63,4 +63,77 @@ class ReferenceExtractorTest {
         assertThat(refs.fileRefs()).noneSatisfy(fr ->
                 assertThat(fr.srcRel()).isEqualTo(fr.dstRel()));
     }
+
+    @Test
+    void samePackageNewWithoutImportProducesFileRef() throws Exception {
+        var session = write(Map.of(
+                "src/main/java/com/acme/svc/OrderService.java", """
+                        package com.acme.svc;
+                        public class OrderService {
+                            public OrderHelper helper() { return new OrderHelper(); }
+                        }
+                        """,
+                "src/main/java/com/acme/svc/OrderHelper.java",
+                        "package com.acme.svc;\npublic class OrderHelper {}\n"));
+        Map<String, String> index = session.units().stream().collect(Collectors.toMap(
+                u -> "com.acme.svc." + u.file().getFileName().toString().replace(".java", ""),
+                SourceParser.ParsedUnit::relPath));
+
+        ReferenceExtractor.Refs refs = ReferenceExtractor.extract(session, index);
+
+        assertThat(refs.fileRefs()).anySatisfy(fr -> {
+            assertThat(fr.srcRel()).endsWith("OrderService.java");
+            assertThat(fr.dstRel()).endsWith("OrderHelper.java");
+        });
+    }
+
+    @Test
+    void fieldTypeOnlyReferenceProducesFileRefAndExternalTypeProducesUsage() throws Exception {
+        var session = write(Map.of(
+                "src/main/java/com/acme/svc/Holder.java", """
+                        package com.acme.svc;
+                        public class Holder {
+                            private Held held;
+                            public com.acme.pricing.PriceCalculator calc() { return null; }
+                        }
+                        """,
+                "src/main/java/com/acme/svc/Held.java",
+                        "package com.acme.svc;\npublic class Held {}\n"));
+        Map<String, String> index = session.units().stream().collect(Collectors.toMap(
+                u -> "com.acme.svc." + u.file().getFileName().toString().replace(".java", ""),
+                SourceParser.ParsedUnit::relPath));
+
+        ReferenceExtractor.Refs refs = ReferenceExtractor.extract(session, index);
+
+        assertThat(refs.fileRefs()).anySatisfy(fr -> assertThat(fr.dstRel()).endsWith("Held.java"));
+        assertThat(refs.usages()).anySatisfy(u -> {
+            assertThat(u.targetFqcn()).isEqualTo("com.acme.pricing.PriceCalculator");
+            assertThat(u.refKind()).isEqualTo("TYPE");
+        });
+    }
+
+    @Test
+    void nestedClassReferenceResolvesWithCanonicalFqcn() throws Exception {
+        var session = write(Map.of(
+                "src/main/java/com/acme/svc/Outer.java", """
+                        package com.acme.svc;
+                        public class Outer { public static class Inner {} }
+                        """,
+                "src/main/java/com/acme/svc/User.java", """
+                        package com.acme.svc;
+                        public class User { private Outer.Inner inner; }
+                        """));
+        // index keyed the way ApiSurfaceExtractor keys it: JavaParser getFullyQualifiedName (dots)
+        Map<String, String> index = Map.of(
+                "com.acme.svc.Outer", "src/main/java/com/acme/svc/Outer.java",
+                "com.acme.svc.Outer.Inner", "src/main/java/com/acme/svc/Outer.java",
+                "com.acme.svc.User", "src/main/java/com/acme/svc/User.java");
+
+        ReferenceExtractor.Refs refs = ReferenceExtractor.extract(session, index);
+
+        assertThat(refs.fileRefs()).anySatisfy(fr -> {
+            assertThat(fr.srcRel()).endsWith("User.java");
+            assertThat(fr.dstRel()).endsWith("Outer.java");
+        });
+    }
 }
