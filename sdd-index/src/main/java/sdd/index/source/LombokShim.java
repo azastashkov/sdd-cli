@@ -6,8 +6,10 @@ import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -21,6 +23,9 @@ public final class LombokShim {
             "Slf4j", "Log4j2", "CustomLog", "UtilityClass", "FieldDefaults",
             "EqualsAndHashCode", "ToString", "NonNull", "SneakyThrows",
             "Synchronized", "Cleanup", "With");
+    private static final Set<String> KNOWN_LOMBOK_EXTRAS = Set.of(
+            "SuperBuilder", "Accessors", "Wither", "Delegate", "Tolerate",
+            "Jacksonized", "StandardException", "ExtensionMethod");
 
     private LombokShim() {}
 
@@ -76,7 +81,12 @@ public final class LombokShim {
                             .map(VariableDeclarator::getTypeAsString).toList(),
                     data ? "Data" : "RequiredArgsConstructor"));
         }
-        return new Result(List.copyOf(synthesized), unknownLombok);
+        // Dedup by signature: first occurrence wins
+        Map<String, SourceModel.MemberInfo> deduped = new LinkedHashMap<>();
+        for (SourceModel.MemberInfo member : synthesized) {
+            deduped.putIfAbsent(member.signature(), member);
+        }
+        return new Result(List.copyOf(deduped.values()), unknownLombok);
     }
 
     private static SourceModel.MemberInfo ctor(String typeName, List<String> paramTypes, String by) {
@@ -94,8 +104,16 @@ public final class LombokShim {
                 .flatMap(List::stream)
                 .anyMatch(imp -> {
                     String name = imp.getNameAsString();
-                    return name.startsWith("lombok")
-                            && (imp.isAsterisk() || name.endsWith("." + simpleName));
+                    if (!name.startsWith("lombok.")) {
+                        return false;
+                    }
+                    if (!imp.isAsterisk()) {
+                        // Single-type import: exact match
+                        return name.endsWith("." + simpleName);
+                    }
+                    // Wildcard import: only count if in known Lombok annotations
+                    return GENERATING.contains(simpleName) || IGNORED.contains(simpleName)
+                            || KNOWN_LOMBOK_EXTRAS.contains(simpleName);
                 });
     }
 

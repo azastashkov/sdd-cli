@@ -103,4 +103,40 @@ class LombokShimTest {
         assertThat(t.members()).filteredOn(m -> m.signature().equals("getId()")).first()
                 .satisfies(m -> assertThat(m.synthesizedBy()).isNull());
     }
+
+    @Test
+    void dataWithExplicitConstructorAnnotationsDoesNotDuplicateInit() throws Exception {
+        SourceModel.TypeInfo t = extractFirst("""
+                package com.acme;
+                import lombok.Data;
+                import lombok.NoArgsConstructor;
+                import lombok.AllArgsConstructor;
+                @Data @NoArgsConstructor @AllArgsConstructor
+                public class T { private String a; private int b; }
+                """);
+        long initCount = t.members().stream().filter(m -> m.signature().equals("<init>()")).count();
+        assertThat(initCount).isEqualTo(1);
+    }
+
+    @Test
+    void wildcardLombokImportDoesNotFlagUnrelatedAnnotations() throws Exception {
+        SourceModel.TypeInfo t = extractFirst("""
+                package com.acme;
+                import lombok.*;
+                @Data @Deprecated
+                public class T { private String a; }
+                """);
+        assertThat(t.apiConfidence()).isEqualTo("OK");
+    }
+
+    @Test
+    void wildcardLombokImportStillFlagsKnownExperimentalAnnotations() throws Exception {
+        SourceModel.TypeInfo t = extractFirst("""
+                package com.acme;
+                import lombok.experimental.*;
+                @SuperBuilder
+                public class T {}
+                """);
+        assertThat(t.apiConfidence()).isEqualTo("PARTIAL");
+    }
 }
