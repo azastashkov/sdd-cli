@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.stream.Collectors;
+import java.util.Set;
 
 public final class ApiSurfaceExtractor {
     private ApiSurfaceExtractor() {}
@@ -39,10 +40,18 @@ public final class ApiSurfaceExtractor {
                 ? t.getNameAsString() : pkg + "." + t.getNameAsString());
         List<String> annotations = t.getAnnotations().stream()
                 .map(a -> a.getName().getIdentifier()).toList();
-        List<SourceModel.MemberInfo> members = extractMembers(t);
+        List<SourceModel.MemberInfo> real = extractMembers(t);
+        LombokShim.Result lombok = LombokShim.apply(t);
+        Set<String> realSignatures = real.stream()
+                .map(SourceModel.MemberInfo::signature).collect(Collectors.toSet());
+        List<SourceModel.MemberInfo> members = new ArrayList<>(real);
+        lombok.synthesized().stream()
+                .filter(m -> !realSignatures.contains(m.signature()))
+                .forEach(members::add);
         boolean isApi = libraryModule && !fqcn.contains(".internal.");
         return new SourceModel.TypeInfo(fqcn, kindOf(t), isApi, relPath,
-                annotations, "OK", hash(fqcn, members), members);
+                annotations, lombok.unknownLombok() ? "PARTIAL" : "OK",
+                hash(fqcn, members), List.copyOf(members));
     }
 
     static List<SourceModel.MemberInfo> extractMembers(TypeDeclaration<?> t) {
