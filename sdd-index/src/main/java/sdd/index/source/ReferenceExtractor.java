@@ -109,15 +109,29 @@ public final class ReferenceExtractor {
         } catch (Exception | StackOverflowError e) {
             // see the call-site catch above: an unresolvable (or stack-blowing) supertype is
             // skipped rather than sinking the module. Exception: a type written with an explicit
-            // package qualifier ("com.acme.pricing.PriceCalculator") that the symbol solver can't
-            // back with a source file or classpath jar (e.g. a cross-repo type parsed without its
-            // producer's jar on the classpath) still names its target unambiguously in the source
-            // text; trust that literal spelling instead of dropping the reference, the same way
-            // IMPORT targets are read verbatim below. A bare/simple name that fails to resolve
-            // carries no such guarantee and stays dropped.
-            return type.getScope().isPresent()
-                    ? java.util.Optional.of(type.getNameWithScope())
-                    : java.util.Optional.empty();
+            // *package* qualifier ("com.acme.pricing.PriceCalculator") that the symbol solver
+            // can't back with a source file or classpath jar (e.g. a cross-repo type parsed
+            // without its producer's jar on the classpath) still names its target unambiguously in
+            // the source text; trust that literal spelling instead of dropping the reference, the
+            // same way IMPORT targets are read verbatim below.
+            //
+            // getScope().isPresent() alone is NOT enough of a guard: a partially-qualified
+            // use-site reference like "Outer.Inner" or "Foo.FooBuilder" also has a scope, but its
+            // literal text is not a valid fqcn (the true package prefix is missing) — leaking that
+            // as a "usage" would sit forever as a NULL-target api_usage row (UsageLinker never
+            // matches it to a java_type, and unresolved rows are deliberately never deleted, see
+            // UsageLinker's javadoc). Unlike imports, which are always fully-qualified by Java
+            // grammar, use-site qualified names are not. Package names are conventionally
+            // lowercase and type names are conventionally capitalized, so require the written
+            // text's first character to be lowercase before trusting it as a real fqcn; a bare
+            // name or a capitalized (nested-type-shaped) qualified name stays dropped, exactly as
+            // it was pre-widening.
+            String written = type.getNameWithScope();
+            if (type.getScope().isPresent() && !written.isEmpty()
+                    && Character.isLowerCase(written.charAt(0))) {
+                return java.util.Optional.of(written);
+            }
+            return java.util.Optional.empty();
         }
     }
 }

@@ -136,4 +136,28 @@ class ReferenceExtractorTest {
             assertThat(fr.dstRel()).endsWith("Outer.java");
         });
     }
+
+    @Test
+    void unresolvablePartiallyQualifiedNestedTypeIsDroppedNotLeaked() throws Exception {
+        var session = write(Map.of("src/main/java/com/acme/svc/User.java", """
+                package com.acme.svc;
+                public class User { private Ghost.Inner inner; }
+                """));
+        ReferenceExtractor.Refs refs = ReferenceExtractor.extract(session, Map.of());
+        assertThat(refs.usages()).noneSatisfy(u ->
+                assertThat(u.targetFqcn()).isEqualTo("Ghost.Inner"));
+    }
+
+    @Test
+    void unresolvableFullyQualifiedTypeStillFallsBackToLiteralText() throws Exception {
+        var session = write(Map.of("src/main/java/com/acme/svc/User.java", """
+                package com.acme.svc;
+                public class User { private com.ghost.api.Client client; }
+                """));
+        ReferenceExtractor.Refs refs = ReferenceExtractor.extract(session, Map.of());
+        assertThat(refs.usages()).anySatisfy(u -> {
+            assertThat(u.targetFqcn()).isEqualTo("com.ghost.api.Client");
+            assertThat(u.refKind()).isEqualTo("TYPE");
+        });
+    }
 }
