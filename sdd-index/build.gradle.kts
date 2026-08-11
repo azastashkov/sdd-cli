@@ -8,6 +8,7 @@ dependencies {
     implementation(libs.tomlj)
     implementation(libs.jgit)
     implementation(libs.jackson)
+    implementation(libs.javaparser.symbol.solver)
     runtimeOnly(libs.slf4j.nop)
     testFixturesApi(testFixtures(project(":sdd-core")))
     testImplementation(libs.bundles.test)
