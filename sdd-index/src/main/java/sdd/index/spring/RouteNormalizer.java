@@ -17,6 +17,9 @@ public final class RouteNormalizer {
     }
 
     public static String normalize(String template) {
+        if (template == null) {
+            return "/";
+        }
         String collapsed = ("/" + template).replaceAll("\\{[^}]*}", "{}")
                 .replaceAll("/{2,}", "/");
         if (collapsed.length() > 1 && collapsed.endsWith("/")) {

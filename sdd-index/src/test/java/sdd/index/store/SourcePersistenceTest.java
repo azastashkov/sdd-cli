@@ -111,6 +111,15 @@ class SourcePersistenceTest {
     }
 
     @Test
+    void parseStatusAppendDoesNotDuplicateIdenticalMessages() {
+        SourcePersistence.updateParseStatus(db.jdbi(), "lib-core", "DEGRADED", "3 files failed");
+        SourcePersistence.updateParseStatus(db.jdbi(), "lib-core", "DEGRADED", "3 files failed");
+        String error = db.jdbi().withHandle(h ->
+                h.createQuery("SELECT error FROM repo").mapTo(String.class).one());
+        assertThat(error.split("3 files failed", -1).length - 1).isEqualTo(1);
+    }
+
+    @Test
     void repoAtomicWriteRollsBackEveryModuleOnMidRepoFailure() {
         // A second module in the same repo. When SourceExtraction persists a whole repo, both
         // modules' writes (and the shared clearRepoFileRefs) share one caller-owned transaction.

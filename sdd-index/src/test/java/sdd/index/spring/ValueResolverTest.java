@@ -136,4 +136,26 @@ class ValueResolverTest {
         var x1 = ValueResolver.resolve(exprs.get(0), PROPS);
         assertThat(x1.resolution()).isEqualTo(ValueResolver.Resolution.DYNAMIC);
     }
+
+    /**
+     * Pins the visited-set cycle guard's externally observable contract (DYNAMIC/null): a
+     * distinct two-node cycle referenced through a third field, so the fix is exercised via a
+     * fresh declarator pair rather than reusing {@link #cyclicConstantsResolveToDynamicWithoutHanging}'s.
+     * The guard's actual payoff — bounded recursion depth instead of relying on a
+     * StackOverflowError to terminate the cycle — isn't observable through {@code resolve()}'s
+     * return value (both the old SOE-catch path and the new visited-set path land on the same
+     * DYNAMIC/null result), so this is a regression pin over the contract, not a red/green proof
+     * of the internal recursion-depth change.
+     */
+    @Test
+    void cyclicConstantsResolveDynamicWithoutDeepRecursion() throws Exception {
+        List<Expression> exprs = parseInitializers("""
+                    static final String CYC_A = CYC_B;
+                    static final String CYC_B = CYC_A;
+                    Object X1 = CYC_A;
+                """);
+        var r = ValueResolver.resolve(exprs.get(0), PROPS);
+        assertThat(r.resolution()).isEqualTo(ValueResolver.Resolution.DYNAMIC);
+        assertThat(r.value()).isNull();
+    }
 }

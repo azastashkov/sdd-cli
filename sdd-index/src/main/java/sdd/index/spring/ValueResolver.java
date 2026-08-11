@@ -8,8 +8,11 @@ import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
 
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -23,7 +26,8 @@ public final class ValueResolver {
 
     public static Resolved resolve(Expression expr, Map<String, String> defaultProfileProps) {
         String raw = expr.toString();
-        Optional<Part> part = resolvePart(expr);
+        Set<VariableDeclarator> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        Optional<Part> part = resolvePart(expr, visited);
         if (part.isEmpty()) {
             return new Resolved(null, Resolution.DYNAMIC, raw);
         }
@@ -32,13 +36,23 @@ public final class ValueResolver {
 
     private record Part(String text, Resolution origin) {}
 
-    private static Optional<Part> resolvePart(Expression expr) {
+    /**
+     * {@code visited} is the identity set of {@link VariableDeclarator}s already followed in this
+     * resolution chain, threaded through every recursive call from {@link #resolve}. A constant
+     * whose initializer refers back to a declarator already on the chain (directly or through
+     * intermediates) is a cycle: {@code visited.add(v)} returning {@code false} short-circuits to
+     * {@link Optional#empty()} immediately instead of recursing further. This bounds recursion
+     * depth by the number of distinct declarators in the chain, rather than relying on the
+     * {@code StackOverflowError} catch below to terminate an unbounded cyclic recursion — that
+     * catch stays in place purely as a backstop for cases this guard doesn't anticipate.
+     */
+    private static Optional<Part> resolvePart(Expression expr, Set<VariableDeclarator> visited) {
         if (expr instanceof StringLiteralExpr lit) {
             return Optional.of(new Part(lit.asString(), Resolution.LITERAL));
         }
         if (expr instanceof BinaryExpr bin && bin.getOperator() == BinaryExpr.Operator.PLUS) {
-            Optional<Part> left = resolvePart(bin.getLeft());
-            Optional<Part> right = resolvePart(bin.getRight());
+            Optional<Part> left = resolvePart(bin.getLeft(), visited);
+            Optional<Part> right = resolvePart(bin.getRight(), visited);
             if (left.isPresent() && right.isPresent()) {
                 Resolution origin = left.get().origin() == Resolution.CONSTANT
                         || right.get().origin() == Resolution.CONSTANT
@@ -53,8 +67,8 @@ public final class ValueResolver {
                 if (resolved instanceof com.github.javaparser.resolution.declarations.ResolvedFieldDeclaration
                         || resolved instanceof com.github.javaparser.resolution.declarations.ResolvedValueDeclaration) {
                     VariableDeclarator v = declaratorOf(resolved).orElse(null);
-                    if (v != null && v.getInitializer().isPresent()) {
-                        return resolvePart(v.getInitializer().get())
+                    if (v != null && v.getInitializer().isPresent() && visited.add(v)) {
+                        return resolvePart(v.getInitializer().get(), visited)
                                 .map(p -> new Part(p.text(), Resolution.CONSTANT));
                     }
                 }

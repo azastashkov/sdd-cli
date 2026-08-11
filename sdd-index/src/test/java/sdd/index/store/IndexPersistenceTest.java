@@ -252,4 +252,17 @@ class IndexPersistenceTest {
             assertThat(error).contains("prior note").contains("network down");
         }
     }
+
+    @Test
+    void markStaleDoesNotAppendDuplicateIdenticalMessages() {
+        try (Database db = Database.open(ws)) {
+            RepoScan scan = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");
+            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "OK", null);
+            IndexPersistence.markStale(db.jdbi(), "svc-orders", "network down");
+            IndexPersistence.markStale(db.jdbi(), "svc-orders", "network down");
+            String error = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT error FROM repo WHERE name='svc-orders'").mapTo(String.class).one());
+            assertThat(error.split("network down", -1).length - 1).isEqualTo(1);
+        }
+    }
 }
