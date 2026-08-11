@@ -1,0 +1,86 @@
+import groovy.json.JsonOutput
+
+// NOTE: deviation from the original brief. settingsEvaluated fires before Gradle's
+// internal includedBuilds list is populated (DefaultSettingsPreparer#loadBuild calls
+// gradle.setIncludedBuilds(...) only after the settingsEvaluated broadcast), so reading
+// settings.gradle.includedBuilds here always throws IllegalStateException("Included
+// builds are not yet available for this build."), independent of whether any builds are
+// actually included. projectsLoaded fires later in the build lifecycle, after that call,
+// so includedBuilds is safe to read there. Guard on gradle.parent == null so only the
+// root build (not any included builds) writes the settings-out file.
+projectsLoaded { gradle ->
+    if (gradle.parent != null) return
+    def out = gradle.startParameter.projectProperties['sddSettingsOut']
+    if (out != null) {
+        def included = gradle.includedBuilds.collect { it.projectDir.absolutePath }
+        new File(out).text = JsonOutput.toJson([includedBuilds: included])
+    }
+}
+
+rootProject { root ->
+    root.tasks.register('sddExtract') {
+        doLast {
+            def result = [projects: []]
+            root.allprojects { p ->
+                def entry = [
+                        path        : p.path,
+                        name        : p.name,
+                        group       : p.group?.toString(),
+                        version     : p.version?.toString(),
+                        projectDir  : p.projectDir.absolutePath,
+                        plugins     : [],
+                        hasBootJarTask: p.tasks.findByName('bootJar') != null,
+                        publications: [],
+                        configurations: [:]
+                ]
+                ['org.springframework.boot', 'java', 'java-library', 'application', 'maven-publish'].each { id ->
+                    if (p.pluginManager.hasPlugin(id)) entry.plugins << id
+                }
+                def publishing = p.extensions.findByName('publishing')
+                if (publishing != null) {
+                    try {
+                        publishing.publications.each { pub ->
+                            if (pub.hasProperty('groupId') && pub.hasProperty('artifactId')) {
+                                entry.publications << [groupId: pub.groupId?.toString(), artifactId: pub.artifactId?.toString()]
+                            }
+                        }
+                    } catch (Exception ignored) { }
+                }
+                ['compileClasspath', 'runtimeClasspath'].each { cfgName ->
+                    def cfg = p.configurations.findByName(cfgName)
+                    if (cfg == null) return
+                    def declared = []
+                    cfg.allDependencies.each { d ->
+                        if (d instanceof org.gradle.api.artifacts.ExternalDependency) {
+                            declared << [group: d.group, name: d.name, version: d.version]
+                        }
+                    }
+                    def resolvedList = []
+                    def unresolved = []
+                    try {
+                        def lenient = cfg.resolvedConfiguration.lenientConfiguration
+                        lenient.allModuleDependencies.each { d ->
+                            def files = []
+                            try {
+                                d.moduleArtifacts.each { a -> files << a.file.absolutePath }
+                            } catch (Exception ignored) { }
+                            resolvedList << [group: d.moduleGroup, name: d.moduleName,
+                                             version: d.moduleVersion, files: files]
+                        }
+                        lenient.unresolvedModuleDependencies.each { u ->
+                            unresolved << u.selector.toString()
+                        }
+                    } catch (Exception e) {
+                        unresolved << ("configuration-failed: " + e.message).toString()
+                    }
+                    entry.configurations[cfgName] = [declared: declared, resolved: resolvedList, unresolved: unresolved]
+                }
+                result.projects << entry
+            }
+            def outPath = root.findProperty('sddOut')
+            if (outPath != null) {
+                new File(outPath).text = JsonOutput.toJson(result)
+            }
+        }
+    }
+}
