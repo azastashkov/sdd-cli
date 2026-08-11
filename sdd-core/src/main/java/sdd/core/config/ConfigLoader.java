@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -82,18 +83,23 @@ public final class ConfigLoader {
             }
         }
 
-        java.util.List<ManualEdge> manualEdges = new java.util.ArrayList<>();
-        if (root.get("manual_edges") instanceof List<?> edges) {
+        List<ManualEdge> manualEdges = new ArrayList<>();
+        Object manualEdgesNode = root.get("manual_edges");
+        if (manualEdgesNode == null) {
+            // empty
+        } else if (manualEdgesNode instanceof List<?> edges) {
             for (int i = 0; i < edges.size(); i++) {
                 if (!(edges.get(i) instanceof Map<?, ?> e)) {
                     throw new ConfigException("manual_edges[" + i + "] must be a mapping");
                 }
                 manualEdges.add(new ManualEdge(
                         requiredEdgeKey(e, "client_repo", i, env),
-                        requiredEdgeKey(e, "http_method", i, env),
+                        requiredEdgeKey(e, "http_method", i, env).toUpperCase(java.util.Locale.ROOT),
                         requiredEdgeKey(e, "path", i, env),
                         requiredEdgeKey(e, "provider_repo", i, env)));
             }
+        } else {
+            throw new ConfigException("manual_edges must be a list, got: " + manualEdgesNode);
         }
 
         return new SddConfig(workspace, retrieval, Map.copyOf(models), Map.copyOf(jdkHomes),

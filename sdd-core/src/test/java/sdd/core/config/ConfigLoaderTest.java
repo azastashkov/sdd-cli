@@ -197,4 +197,24 @@ class ConfigLoaderTest {
     void manualEdgesDefaultEmpty() throws Exception {
         assertThat(ConfigLoader.load(write(MINIMAL), ENV).manualEdges()).isEmpty();
     }
+
+    @Test
+    void nonListManualEdgesFails() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + "manual_edges: oops\n"), ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("manual_edges");
+    }
+
+    @Test
+    void httpMethodNormalizedToUppercase() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL + """
+                manual_edges:
+                  - client_repo: svc-orders
+                    http_method: post
+                    path: /pay/charge
+                    provider_repo: billing-service
+                """), ENV);
+        assertThat(c.manualEdges()).containsExactly(
+                new ManualEdge("svc-orders", "POST", "/pay/charge", "billing-service"));
+    }
 }
