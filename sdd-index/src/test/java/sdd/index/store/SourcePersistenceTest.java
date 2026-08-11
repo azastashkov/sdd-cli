@@ -88,4 +88,19 @@ class SourcePersistenceTest {
         assertThat(repo.get("parse_status")).isEqualTo("DEGRADED");
         assertThat((String) repo.get("error")).contains("old note").contains("3 files failed");
     }
+
+    @Test
+    void overloadedMembersProduceOneFtsRow() {
+        SourceModel.TypeInfo overloaded = new SourceModel.TypeInfo(
+                "com.acme.pricing.PriceCalculator", "CLASS", true,
+                "src/main/java/com/acme/pricing/PriceCalculator.java",
+                List.of(), "OK", "e".repeat(64),
+                List.of(new SourceModel.MemberInfo("quote", "quote(String)", "String", null),
+                        new SourceModel.MemberInfo("quote", "quote(String,int)", "String", null)));
+        SourcePersistence.persistModuleSource(db.jdbi(), repoId, moduleId,
+                List.of(overloaded), List.of(), List.of());
+        Integer quoteRows = db.jdbi().withHandle(h -> h.createQuery(
+                "SELECT count(*) FROM fts_symbol WHERE identifier='quote'").mapTo(Integer.class).one());
+        assertThat(quoteRows).isEqualTo(1);
+    }
 }

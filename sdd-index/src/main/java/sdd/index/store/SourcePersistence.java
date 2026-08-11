@@ -60,12 +60,13 @@ public final class SourcePersistence {
         long typeId = h.createQuery("SELECT last_insert_rowid()").mapTo(Long.class).one();
         String simpleName = t.fqcn().substring(t.fqcn().lastIndexOf('.') + 1);
         FtsSymbolWriter.insert(h, moduleId, simpleName, t.fqcn());
+        java.util.Set<String> ftsEmitted = new java.util.HashSet<>();
         for (SourceModel.MemberInfo m : t.members()) {
             h.createUpdate("INSERT INTO api_member(type_id, name, signature, return_type, synthesized_by) "
                             + "VALUES (:t, :name, :sig, :ret, :by)")
                     .bind("t", typeId).bind("name", m.name()).bind("sig", m.signature())
                     .bind("ret", m.returnType()).bind("by", m.synthesizedBy()).execute();
-            if (!m.name().equals("<init>")) {
+            if (!m.name().equals("<init>") && ftsEmitted.add(m.name())) {
                 FtsSymbolWriter.insert(h, moduleId, m.name(), t.fqcn());
             }
         }
