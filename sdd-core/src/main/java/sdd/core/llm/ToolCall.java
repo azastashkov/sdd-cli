@@ -1,0 +1,3 @@
+package sdd.core.llm;
+
+public record ToolCall(String id, String name, String argumentsJson) {}
