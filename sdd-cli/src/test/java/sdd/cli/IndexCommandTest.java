@@ -57,4 +57,17 @@ class IndexCommandTest {
         assertThat(run.out()).contains("cards: skipped");
         assertThat(run.exitCode()).isEqualTo(0); // empty workspace: no repos, nothing to fail
     }
+
+    @Test
+    void cardsEnabledByDefaultPrintsCountsLineEvenWithNoRepos() throws Exception {
+        // yaml()'s coder base_url (127.0.0.1:1) is unreachable — proves the default path
+        // constructs an HttpChatModel without --no-cards, yet with zero scanned repos
+        // RepoCardGenerator's repo loop is a no-op, so the model is never actually called.
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+
+        Run run = index(ws); // no --no-cards
+
+        assertThat(run.out()).contains("cards: 0 generated, 0 cached, 0 failed");
+        assertThat(run.exitCode()).isZero();
+    }
 }
