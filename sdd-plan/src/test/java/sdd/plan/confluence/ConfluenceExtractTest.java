@@ -87,4 +87,24 @@ class ConfluenceExtractTest {
                 .isInstanceOf(SpecNormalizationException.class)
                 .hasMessageContaining("too large");
     }
+
+    @Test
+    void imagesInsideListItemsAreMarkedAndRecorded() {
+        String storage = "<ul><li>gold <ac:image><ri:attachment ri:filename=\"gold.png\"/></ac:image></li></ul>";
+
+        ConfluenceExtract.Extracted extracted = ConfluenceExtract.extract(storage);
+
+        assertThat(extracted.text()).contains("- gold").contains("[attachment: gold.png]");
+        assertThat(extracted.attachments()).containsExactly("gold.png");
+    }
+
+    @Test
+    void imagesInsideTableCellsAreMarkedAndRecorded() {
+        String storage = "<table><tr><td>Info <img src=\"attachments/123/cell.png\"/></td></tr></table>";
+
+        ConfluenceExtract.Extracted extracted = ConfluenceExtract.extract(storage);
+
+        assertThat(extracted.text()).contains("| Info").contains("[attachment: cell.png]");
+        assertThat(extracted.attachments()).containsExactly("cell.png");
+    }
 }

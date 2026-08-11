@@ -71,13 +71,13 @@ public final class ConfluenceExtract {
             case "ul", "ol" -> {
                 for (Element li : el.children()) {
                     if (li.tagName().equals("li")) {
-                        text.append("- ").append(li.text()).append('\n');
+                        text.append("- ").append(paragraph(li, attachments)).append('\n');
                     }
                 }
                 text.append('\n');
             }
             case "table" -> {
-                table(el, text);
+                table(el, text, attachments);
                 text.append('\n');
             }
             case "pre" -> text.append("```\n").append(el.wholeText().strip()).append("\n```\n\n");
@@ -140,12 +140,12 @@ public final class ConfluenceExtract {
         return sb.toString().strip();
     }
 
-    private static void table(Element tableEl, StringBuilder text) {
+    private static void table(Element tableEl, StringBuilder text, List<String> attachments) {
         List<List<String>> rows = new ArrayList<>();
         for (Element tr : tableEl.select("tr")) {
             List<String> cells = new ArrayList<>();
             for (Element cell : tr.select("th, td")) {
-                cells.add(cell.text().replace("|", "\\|"));
+                cells.add(paragraph(cell, attachments).replace("|", "\\|"));
             }
             if (!cells.isEmpty()) {
                 rows.add(cells);
