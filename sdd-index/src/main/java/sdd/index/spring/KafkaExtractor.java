@@ -23,6 +23,20 @@ public final class KafkaExtractor {
                                       List<Path> classpathJars, Collection<String> allConfigKeys) {
         List<SpringModel.KafkaUse> uses = new ArrayList<>();
         for (SourceParser.ParsedUnit unit : session.units()) {
+            for (ClassOrInterfaceDeclaration c : unit.cu().findAll(ClassOrInterfaceDeclaration.class)) {
+                // Spring Kafka supports a class-level @KafkaListener paired with per-method
+                // @KafkaHandler dispatch methods (multi-method listener pattern). That is a
+                // separate, legitimate listener registration from any method-level
+                // @KafkaListener elsewhere in the file, so both are emitted independently with
+                // no de-duplication between them. Per-handler payload types would require
+                // resolving which @KafkaHandler method Spring routes each message to, based on
+                // parameter-type dispatch — out of scope for v1; payloadType is left null here
+                // and left as a 2C refinement.
+                AnnotationValues.annotation(c, "KafkaListener").ifPresent(ann -> {
+                    String fqcn = c.getFullyQualifiedName().orElse(c.getNameAsString());
+                    extractListenerAnnotation(ann, fqcn, null, defaultProps, uses);
+                });
+            }
             for (MethodDeclaration m : unit.cu().findAll(MethodDeclaration.class)) {
                 AnnotationValues.annotation(m, "KafkaListener").ifPresent(ann ->
                         extractListener(m, ann, defaultProps, uses));
@@ -45,10 +59,16 @@ public final class KafkaExtractor {
                                         Map<String, String> props, List<SpringModel.KafkaUse> uses) {
         String fqcn = m.findAncestor(ClassOrInterfaceDeclaration.class)
                 .flatMap(ClassOrInterfaceDeclaration::getFullyQualifiedName).orElse("unknown");
-        String groupId = AnnotationValues.attr(ann, "groupId")
-                .map(e -> ValueResolver.resolve(e, props).value()).orElse(null);
         String payloadType = m.getParameters().isEmpty() ? null
                 : m.getParameter(0).getType().asString();
+        extractListenerAnnotation(ann, fqcn, payloadType, props, uses);
+    }
+
+    private static void extractListenerAnnotation(com.github.javaparser.ast.expr.AnnotationExpr ann,
+                                                   String fqcn, String payloadType,
+                                                   Map<String, String> props, List<SpringModel.KafkaUse> uses) {
+        String groupId = AnnotationValues.attr(ann, "groupId")
+                .map(e -> ValueResolver.resolve(e, props).value()).orElse(null);
         for (Expression topicExpr : AnnotationValues.attrListAny(ann, "topics", "value")) {
             ValueResolver.Resolved r = ValueResolver.resolve(topicExpr, props);
             uses.add(new SpringModel.KafkaUse(

@@ -75,6 +75,27 @@ class KafkaExtractorTest {
     }
 
     @Test
+    void classLevelKafkaListenerWithHandlersIsExtracted() throws Exception {
+        var session = parse("""
+                package com.acme;
+                import org.springframework.kafka.annotation.KafkaListener;
+                import org.springframework.kafka.annotation.KafkaHandler;
+                @KafkaListener(topics = "class.level.topic", groupId = "g1")
+                public class K {
+                    @KafkaHandler public void onA(String a) {}
+                    @KafkaHandler public void onB(Integer b) {}
+                }
+                """);
+        KafkaExtractor.KafkaResult result = KafkaExtractor.extract(session, Map.of(), List.of(), List.of());
+        assertThat(result.uses()).singleElement().satisfies(u -> {
+            assertThat(u.role()).isEqualTo("CONSUMER");
+            assertThat(u.topic()).isEqualTo("class.level.topic");
+            assertThat(u.groupId()).isEqualTo("g1");
+            assertThat(u.payloadType()).isNull();
+        });
+    }
+
+    @Test
     void streamDetectionByJarNameAndConfigKey() throws Exception {
         var session = parse("package com.acme;\npublic class K {}\n");
         assertThat(KafkaExtractor.extract(session, Map.of(),
