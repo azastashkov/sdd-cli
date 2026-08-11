@@ -15,3 +15,7 @@ dependencies {
     testImplementation(libs.bundles.test)
     testRuntimeOnly(libs.junit.launcher)
 }
+
+tasks.test {
+    systemProperty("sdd.regenGolden", System.getProperty("sdd.regenGolden", "false"))
+}

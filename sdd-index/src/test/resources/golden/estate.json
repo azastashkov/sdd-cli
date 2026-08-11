@@ -1,0 +1,360 @@
+{
+  "api_member" : [ {
+    "id" : 1,
+    "name" : "quote",
+    "return_type" : "String",
+    "signature" : "quote(String)",
+    "synthesized_by" : null,
+    "type_id" : 1
+  }, {
+    "id" : 2,
+    "name" : "getCurrency",
+    "return_type" : "String",
+    "signature" : "getCurrency()",
+    "synthesized_by" : "lombok:@Getter",
+    "type_id" : 1
+  }, {
+    "id" : 3,
+    "name" : "charge",
+    "return_type" : "String",
+    "signature" : "charge(String)",
+    "synthesized_by" : null,
+    "type_id" : 2
+  }, {
+    "id" : 4,
+    "name" : "in",
+    "return_type" : "void",
+    "signature" : "in(String)",
+    "synthesized_by" : null,
+    "type_id" : 3
+  }, {
+    "id" : 5,
+    "name" : "out",
+    "return_type" : "void",
+    "signature" : "out(String)",
+    "synthesized_by" : null,
+    "type_id" : 3
+  }, {
+    "id" : 6,
+    "name" : "get",
+    "return_type" : "String",
+    "signature" : "get(String)",
+    "synthesized_by" : null,
+    "type_id" : 4
+  }, {
+    "id" : 7,
+    "name" : "helper",
+    "return_type" : "OrderHelper",
+    "signature" : "helper()",
+    "synthesized_by" : null,
+    "type_id" : 6
+  } ],
+  "api_usage" : [ {
+    "from_module_id" : 1,
+    "ref_kind" : "IMPORT",
+    "target_fqcn" : "lombok.Getter",
+    "target_module_id" : null
+  }, {
+    "from_module_id" : 2,
+    "ref_kind" : "IMPORT",
+    "target_fqcn" : "com.acme.pricing.PriceCalculator",
+    "target_module_id" : 1
+  }, {
+    "from_module_id" : 2,
+    "ref_kind" : "IMPORT",
+    "target_fqcn" : "org.springframework.cloud.openfeign.FeignClient",
+    "target_module_id" : null
+  }, {
+    "from_module_id" : 2,
+    "ref_kind" : "IMPORT",
+    "target_fqcn" : "org.springframework.kafka.annotation.KafkaListener",
+    "target_module_id" : null
+  }, {
+    "from_module_id" : 2,
+    "ref_kind" : "TYPE",
+    "target_fqcn" : "org.springframework.kafka.core.KafkaTemplate",
+    "target_module_id" : null
+  }, {
+    "from_module_id" : 2,
+    "ref_kind" : "IMPORT",
+    "target_fqcn" : "org.springframework.web.bind.annotation.PostMapping",
+    "target_module_id" : null
+  } ],
+  "artifact" : [ {
+    "grp" : "com.acme",
+    "id" : 1,
+    "module_id" : 1,
+    "name" : "lib-pricing"
+  }, {
+    "grp" : "com.acme",
+    "id" : 2,
+    "module_id" : 2,
+    "name" : "svc-orders"
+  } ],
+  "config_property" : [ {
+    "key" : "kafka.in-topic",
+    "module_id" : 2,
+    "profile" : null,
+    "source_file" : "src/main/resources/application.yml",
+    "value" : "orders.v1.incoming"
+  }, {
+    "key" : "server.servlet.context-path",
+    "module_id" : 2,
+    "profile" : null,
+    "source_file" : "src/main/resources/application.yml",
+    "value" : "/orders"
+  }, {
+    "key" : "spring.application.name",
+    "module_id" : 2,
+    "profile" : null,
+    "source_file" : "src/main/resources/application.yml",
+    "value" : "order-service"
+  } ],
+  "dep_edge" : [ {
+    "configuration" : "compileClasspath",
+    "declared_version" : "1.0",
+    "declared_via" : "DIRECT",
+    "from_module_id" : 2,
+    "id" : 1,
+    "is_internal" : 1,
+    "mode" : "PINNED",
+    "resolved_version" : null,
+    "to_grp" : "com.acme",
+    "to_module_id" : 1,
+    "to_name" : "lib-pricing"
+  } ],
+  "file_ref" : [ {
+    "dst_file" : "src/main/java/com/acme/orders/OrderHelper.java",
+    "ref_count" : 3,
+    "repo_id" : 2,
+    "src_file" : "src/main/java/com/acme/orders/OrderService.java"
+  } ],
+  "fts_symbol" : [ {
+    "fqcn" : "com.acme.orders.BillingClient",
+    "identifier" : "BillingClient",
+    "module_id" : 2,
+    "words" : "billing client"
+  }, {
+    "fqcn" : "com.acme.orders.Events",
+    "identifier" : "Events",
+    "module_id" : 2,
+    "words" : "events"
+  }, {
+    "fqcn" : "com.acme.orders.OrderController",
+    "identifier" : "OrderController",
+    "module_id" : 2,
+    "words" : "order controller"
+  }, {
+    "fqcn" : "com.acme.orders.OrderHelper",
+    "identifier" : "OrderHelper",
+    "module_id" : 2,
+    "words" : "order helper"
+  }, {
+    "fqcn" : "com.acme.orders.OrderService",
+    "identifier" : "OrderService",
+    "module_id" : 2,
+    "words" : "order service"
+  }, {
+    "fqcn" : "com.acme.pricing.PriceCalculator",
+    "identifier" : "PriceCalculator",
+    "module_id" : 1,
+    "words" : "price calculator"
+  }, {
+    "fqcn" : "com.acme.orders.BillingClient",
+    "identifier" : "charge",
+    "module_id" : 2,
+    "words" : "charge"
+  }, {
+    "fqcn" : "com.acme.orders.OrderController",
+    "identifier" : "get",
+    "module_id" : 2,
+    "words" : "get"
+  }, {
+    "fqcn" : "com.acme.pricing.PriceCalculator",
+    "identifier" : "getCurrency",
+    "module_id" : 1,
+    "words" : "get currency"
+  }, {
+    "fqcn" : "com.acme.orders.OrderService",
+    "identifier" : "helper",
+    "module_id" : 2,
+    "words" : "helper"
+  }, {
+    "fqcn" : "com.acme.orders.Events",
+    "identifier" : "in",
+    "module_id" : 2,
+    "words" : "in"
+  }, {
+    "fqcn" : "com.acme.orders.Events",
+    "identifier" : "out",
+    "module_id" : 2,
+    "words" : "out"
+  }, {
+    "fqcn" : "com.acme.pricing.PriceCalculator",
+    "identifier" : "quote",
+    "module_id" : 1,
+    "words" : "quote"
+  } ],
+  "java_type" : [ {
+    "annotations" : "[\"Getter\"]",
+    "api_confidence" : "OK",
+    "file_path" : "src/main/java/com/acme/pricing/PriceCalculator.java",
+    "fqcn" : "com.acme.pricing.PriceCalculator",
+    "id" : 1,
+    "is_api" : 1,
+    "kind" : "CLASS",
+    "module_id" : 1,
+    "signature_hash" : "18b0107ef5547df855c5675a3d4eccab1e910799a4c9a0b045c132ef19c72553"
+  }, {
+    "annotations" : "[\"FeignClient\"]",
+    "api_confidence" : "OK",
+    "file_path" : "src/main/java/com/acme/orders/BillingClient.java",
+    "fqcn" : "com.acme.orders.BillingClient",
+    "id" : 2,
+    "is_api" : 0,
+    "kind" : "INTERFACE",
+    "module_id" : 2,
+    "signature_hash" : "507767bf7abaad88723e984d1ebe4a2faa26acb94e9ea8b94203390071e0c8ae"
+  }, {
+    "annotations" : "[]",
+    "api_confidence" : "OK",
+    "file_path" : "src/main/java/com/acme/orders/Events.java",
+    "fqcn" : "com.acme.orders.Events",
+    "id" : 3,
+    "is_api" : 0,
+    "kind" : "CLASS",
+    "module_id" : 2,
+    "signature_hash" : "448703d3884da21b4b332980f67d5b78ddbb26e3530674c9a1ca3eb322915163"
+  }, {
+    "annotations" : "[\"RestController\",\"RequestMapping\"]",
+    "api_confidence" : "OK",
+    "file_path" : "src/main/java/com/acme/orders/OrderController.java",
+    "fqcn" : "com.acme.orders.OrderController",
+    "id" : 4,
+    "is_api" : 0,
+    "kind" : "CLASS",
+    "module_id" : 2,
+    "signature_hash" : "105e940b00bfc63f083ae27a28722ddb625f1e40a716137a9a10ddc9c2ae3bf3"
+  }, {
+    "annotations" : "[]",
+    "api_confidence" : "OK",
+    "file_path" : "src/main/java/com/acme/orders/OrderHelper.java",
+    "fqcn" : "com.acme.orders.OrderHelper",
+    "id" : 5,
+    "is_api" : 0,
+    "kind" : "CLASS",
+    "module_id" : 2,
+    "signature_hash" : "b96125c5d3dc1a09c22e8c7721acdde351952dc6290a644e075b0f984989fa00"
+  }, {
+    "annotations" : "[]",
+    "api_confidence" : "OK",
+    "file_path" : "src/main/java/com/acme/orders/OrderService.java",
+    "fqcn" : "com.acme.orders.OrderService",
+    "id" : 6,
+    "is_api" : 0,
+    "kind" : "CLASS",
+    "module_id" : 2,
+    "signature_hash" : "09c5da1e41f5bedd1ae12b5cf97c7425182963f5c6fa47956823396f144984ed"
+  } ],
+  "kafka_role" : [ {
+    "class_fqcn" : "com.acme.orders.Events",
+    "group_id" : null,
+    "module_id" : 2,
+    "payload_type" : "String",
+    "role" : "CONSUMER",
+    "topic_id" : 1
+  }, {
+    "class_fqcn" : "com.acme.orders.Events",
+    "group_id" : null,
+    "module_id" : 2,
+    "payload_type" : "java.lang.String",
+    "role" : "PRODUCER",
+    "topic_id" : 2
+  } ],
+  "kafka_topic" : [ {
+    "id" : 1,
+    "name" : "orders.v1.incoming",
+    "resolution" : "PROPERTY"
+  }, {
+    "id" : 2,
+    "name" : "orders.v1.placed",
+    "resolution" : "CONSTANT"
+  } ],
+  "module" : [ {
+    "context_path" : null,
+    "gradle_path" : ":",
+    "grp" : "com.acme",
+    "id" : 1,
+    "kafka_status" : null,
+    "kind" : "LIBRARY",
+    "name" : "lib-pricing",
+    "repo_id" : 1,
+    "spring_app_name" : null,
+    "version" : "1.0"
+  }, {
+    "context_path" : "/orders",
+    "gradle_path" : ":",
+    "grp" : "com.acme",
+    "id" : 2,
+    "kafka_status" : null,
+    "kind" : "SERVICE",
+    "name" : "svc-orders",
+    "repo_id" : 2,
+    "spring_app_name" : "order-service",
+    "version" : "1.0"
+  } ],
+  "repo" : [ {
+    "branch" : "main",
+    "dirty_hash" : "<scrubbed>",
+    "error" : null,
+    "gradle_status" : "OK",
+    "head_commit" : "<scrubbed>",
+    "id" : 1,
+    "included_builds" : "[]",
+    "indexed_at" : "<scrubbed>",
+    "kind" : "LIBRARY",
+    "name" : "lib-pricing",
+    "parse_status" : "OK",
+    "path" : "lib-pricing"
+  }, {
+    "branch" : "main",
+    "dirty_hash" : "<scrubbed>",
+    "error" : null,
+    "gradle_status" : "OK",
+    "head_commit" : "<scrubbed>",
+    "id" : 2,
+    "included_builds" : "[]",
+    "indexed_at" : "<scrubbed>",
+    "kind" : "SERVICE",
+    "name" : "svc-orders",
+    "parse_status" : "OK",
+    "path" : "svc-orders"
+  } ],
+  "repo_card" : [ ],
+  "rest_call_edge" : [ ],
+  "rest_client" : [ {
+    "class_fqcn" : "com.acme.orders.BillingClient",
+    "http_method" : "POST",
+    "id" : 1,
+    "kind" : "FEIGN",
+    "method_or_site" : "charge",
+    "module_id" : 2,
+    "norm_path" : "/pay/charge",
+    "raw_expr" : "\"/charge\"",
+    "resolution" : "LITERAL",
+    "target_hint" : "billing",
+    "uri_template" : "/pay/charge"
+  } ],
+  "rest_endpoint" : [ {
+    "class_fqcn" : "com.acme.orders.OrderController",
+    "http_method" : "GET",
+    "id" : 1,
+    "method_name" : "get",
+    "module_id" : 2,
+    "norm_path" : "/orders/api/orders/{}",
+    "path_template" : "/api/orders/{id}",
+    "profile" : null,
+    "request_type" : null,
+    "response_type" : "String"
+  } ]
+}
