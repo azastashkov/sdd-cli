@@ -7,6 +7,7 @@ import sdd.index.gradle.GradleModel;
 import sdd.index.scan.RepoScan;
 
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -74,6 +75,37 @@ class IndexPersistenceTest {
             Integer edgeCount = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT count(*) FROM dep_edge").mapTo(Integer.class).one());
             assertThat(edgeCount).isEqualTo(3);
+        }
+    }
+
+    @Test
+    void mergesMultipleConfigurationsKeepingFirstSeenVersions() {
+        try (Database db = Database.open(ws)) {
+            Map<String, GradleModel.DepConfig> configs = new LinkedHashMap<>();
+            configs.put("compileClasspath", new GradleModel.DepConfig(
+                    List.of(new GradleModel.DeclaredDep("com.acme", "lib-core", "2.3.0")),
+                    List.of(new GradleModel.ResolvedDep("com.acme", "lib-core", "2.3.0", List.of())),
+                    List.of()));
+            configs.put("runtimeClasspath", new GradleModel.DepConfig(
+                    List.of(new GradleModel.DeclaredDep("com.acme", "lib-core", "2.3.0")),
+                    List.of(new GradleModel.ResolvedDep("com.acme", "lib-core", "2.4.0", List.of())),
+                    List.of()));
+
+            GradleModel.Extract extract = new GradleModel.Extract(
+                    List.of(new GradleModel.Project(":", "lib-core", "com.acme", "0.1.0",
+                            Path.of("/w/lib-core"), List.of("java"), false, List.of(), configs)),
+                    List.of());
+
+            RepoScan scan = new RepoScan("lib-core", Path.of("/w/lib-core"), "a".repeat(40), "main", "");
+            IndexPersistence.persistRepo(db.jdbi(), scan, extract, "OK", null);
+
+            List<Map<String, Object>> edges = db.jdbi().withHandle(h ->
+                    h.createQuery("SELECT to_name, configuration, resolved_version FROM dep_edge WHERE to_name='lib-core'")
+                            .mapToMap().list());
+            assertThat(edges).hasSize(1);
+            assertThat(edges.get(0))
+                    .containsEntry("configuration", "compileClasspath")
+                    .containsEntry("resolved_version", "2.3.0");
         }
     }
 }

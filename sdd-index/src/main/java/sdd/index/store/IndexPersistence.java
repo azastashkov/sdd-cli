@@ -1,5 +1,6 @@
 package sdd.index.store;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
 import sdd.index.gradle.CatalogReader;
@@ -16,15 +17,21 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 public final class IndexPersistence {
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
     private IndexPersistence() {}
 
     public static void persistRepo(Jdbi jdbi, RepoScan scan, GradleModel.Extract extract,
                                    String gradleStatus, String error) {
         Set<String> catalogGAs = CatalogReader.internalGAs(scan.path());
         jdbi.useTransaction(h -> {
-            String includedJson = extract.includedBuilds().stream()
-                    .map(p -> '"' + p.toString().replace("\\", "\\\\").replace("\"", "\\\"") + '"')
-                    .collect(Collectors.joining(",", "[", "]"));
+            String includedJson;
+            try {
+                includedJson = MAPPER.writeValueAsString(extract.includedBuilds().stream()
+                        .map(Path::toString).toList());
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to serialize included builds", e);
+            }
             String repoKind = rollupKind(extract);
             h.createUpdate("""
                             INSERT INTO repo(name, path, kind, head_commit, branch, dirty_hash,
@@ -70,12 +77,18 @@ public final class IndexPersistence {
         Map<String, MergedDep> merged = new LinkedHashMap<>();
         p.configurations().forEach((cfgName, cfg) -> {
             for (GradleModel.DeclaredDep d : cfg.declared()) {
-                merged.computeIfAbsent(d.group() + ":" + d.name(),
-                        k -> new MergedDep(d.group(), d.name(), cfgName)).declaredVersion = d.version();
+                MergedDep m = merged.computeIfAbsent(d.group() + ":" + d.name(),
+                        k -> new MergedDep(d.group(), d.name(), cfgName));
+                if (m.declaredVersion == null) {
+                    m.declaredVersion = d.version();
+                }
             }
             for (GradleModel.ResolvedDep r : cfg.resolved()) {
-                merged.computeIfAbsent(r.group() + ":" + r.name(),
-                        k -> new MergedDep(r.group(), r.name(), cfgName)).resolvedVersion = r.version();
+                MergedDep m = merged.computeIfAbsent(r.group() + ":" + r.name(),
+                        k -> new MergedDep(r.group(), r.name(), cfgName));
+                if (m.resolvedVersion == null) {
+                    m.resolvedVersion = r.version();
+                }
             }
         });
         for (MergedDep d : merged.values()) {
