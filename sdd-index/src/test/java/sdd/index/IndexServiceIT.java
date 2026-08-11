@@ -48,6 +48,19 @@ class IndexServiceIT {
                         dependencies { implementation 'com.acme:lib-core:2.3.0' }
                         """)
                 .withFile("src/main/java/A.java", "public class A {}\n")
+                .withFile("src/main/resources/application.yml", """
+                        server:
+                          servlet:
+                            context-path: /orders
+                        """)
+                .withFile("src/main/java/OrderController.java", """
+                        import org.springframework.web.bind.annotation.GetMapping;
+                        import org.springframework.web.bind.annotation.RestController;
+                        @RestController
+                        public class OrderController {
+                            @GetMapping("/orders") public String list() { return "ok"; }
+                        }
+                        """)
                 .withFile(".gitignore", GITIGNORE)
                 .commit();
         FixtureGradleRepo.in(ws, "broken-build", "8.10.2")
@@ -102,6 +115,13 @@ class IndexServiceIT {
             List<String> filePaths = db.jdbi().withHandle(h -> h.createQuery(
                     "SELECT file_path FROM java_type").mapTo(String.class).list());
             assertThat(filePaths).isNotEmpty().allSatisfy(p -> assertThat(p).doesNotStartWith(".."));
+
+            // Spring extraction also ran on the real-Gradle path (svc-orders' OrderController +
+            // application.yml); the e2e test already covers row-level detail, so just confirm
+            // something landed here.
+            Integer endpointCount = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT count(*) FROM rest_endpoint").mapTo(Integer.class).one());
+            assertThat(endpointCount).isGreaterThanOrEqualTo(1);
 
             // second run: clean repos skip (fingerprint unchanged); DEGRADED repo retries
             List<IndexService.RepoResult> second = service.run(config(), db);

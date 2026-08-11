@@ -23,7 +23,8 @@ CREATE TABLE module(
   version TEXT,
   kind TEXT NOT NULL DEFAULT 'UNKNOWN',
   spring_app_name TEXT,
-  context_path TEXT);
+  context_path TEXT,
+  kafka_status TEXT);
 ;
 CREATE TABLE artifact(
   id INTEGER PRIMARY KEY,

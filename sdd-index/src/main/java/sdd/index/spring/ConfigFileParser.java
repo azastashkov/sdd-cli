@@ -9,6 +9,7 @@ import java.io.StringReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -23,6 +24,19 @@ public final class ConfigFileParser {
     private static final Pattern CONFIG_FILE = Pattern.compile(
             "(application|bootstrap)(?:-([A-Za-z0-9_-]+))?\\.(yml|yaml|properties)");
 
+    /**
+     * Processing order determines "last wins" precedence for same-key entries collapsed by
+     * {@link SpringConfigPersistence#defaultProfileProps}: {@code bootstrap*} files are Spring's
+     * parent-context config and must be processed first so {@code application*} files (the
+     * child/application context) are applied last and win — matching real Spring precedence,
+     * where application-context property sources take priority over the bootstrap context's.
+     * Plain alphabetical order gets this backwards ("application" < "bootstrap"), so the group
+     * is ordered explicitly before falling back to alphabetical within each group.
+     */
+    private static final Comparator<Path> FILE_ORDER = Comparator
+            .comparing((Path f) -> f.getFileName().toString().startsWith("bootstrap") ? 0 : 1)
+            .thenComparing(f -> f.getFileName().toString());
+
     private ConfigFileParser() {}
 
     public static Result parseModuleConfig(Path repoRoot, Path moduleDir) {
@@ -33,7 +47,7 @@ public final class ConfigFileParser {
             return new Result(List.of(), List.of());
         }
         try (Stream<Path> files = Files.list(resources)) {
-            files.sorted().forEach(file -> {
+            files.sorted(FILE_ORDER).forEach(file -> {
                 Matcher m = CONFIG_FILE.matcher(file.getFileName().toString());
                 if (!m.matches()) {
                     return;

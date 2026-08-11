@@ -136,4 +136,46 @@ class ValueResolverTest {
         var x1 = ValueResolver.resolve(exprs.get(0), PROPS);
         assertThat(x1.resolution()).isEqualTo(ValueResolver.Resolution.DYNAMIC);
     }
+
+    /**
+     * Pins the visited-set cycle guard's externally observable contract for a true cycle
+     * (DYNAMIC/null): a distinct two-node cycle referenced through a third field, so the fix is
+     * exercised via a fresh declarator pair rather than reusing
+     * {@link #cyclicConstantsResolveToDynamicWithoutHanging}'s. For a genuine cycle specifically,
+     * this outcome is unchanged from the pre-guard {@code StackOverflowError}-catch behavior — see
+     * {@link #diamondConstantDependenciesResolveNotFalseCycle} for a case (a DAG, not a cycle)
+     * where the guard's implementation *does* change the observable result, and must be
+     * path-scoped (with backtracking) rather than "everything ever visited" to get it right.
+     */
+    @Test
+    void cyclicConstantsResolveDynamicWithoutDeepRecursion() throws Exception {
+        List<Expression> exprs = parseInitializers("""
+                    static final String CYC_A = CYC_B;
+                    static final String CYC_B = CYC_A;
+                    Object X1 = CYC_A;
+                """);
+        var r = ValueResolver.resolve(exprs.get(0), PROPS);
+        assertThat(r.resolution()).isEqualTo(ValueResolver.Resolution.DYNAMIC);
+        assertThat(r.value()).isNull();
+    }
+
+    /**
+     * B and C both reach D through independent branches; that's a diamond-shaped DAG, not a
+     * cycle, and must fold to CONSTANT. A visited set that tracks "everything ever visited" in
+     * the whole resolution (rather than just the current resolution path, backtracking as each
+     * subtree finishes) would wrongly treat C's legitimate revisit of D — after B's branch
+     * already resolved through D and returned — as a false cycle.
+     */
+    @Test
+    void diamondConstantDependenciesResolveNotFalseCycle() throws Exception {
+        List<Expression> exprs = parseInitializers("""
+                    static final String DIA_D = "leaf";
+                    static final String DIA_B = DIA_D;
+                    static final String DIA_C = DIA_D;
+                    Object X1 = DIA_B + DIA_C;
+                """);
+        var r = ValueResolver.resolve(exprs.get(0), PROPS);
+        assertThat(r.resolution()).isEqualTo(ValueResolver.Resolution.CONSTANT);
+        assertThat(r.value()).isEqualTo("leafleaf");
+    }
 }

@@ -22,12 +22,8 @@ public final class SourceParser {
 
     private SourceParser() {}
 
-    public static Session parseModule(Path repoRoot, Path moduleDir, List<Path> classpathJars) {
-        return parseModule(repoRoot, moduleDir, classpathJars, new JarSolverCache());
-    }
-
-    public static Session parseModule(Path repoRoot, Path moduleDir, List<Path> classpathJars,
-                                      JarSolverCache jarCache) {
+    /** {@code src/main/java} plus {@code build/generated} when present, for a single module. */
+    public static List<Path> sourceRootsOf(Path moduleDir) {
         List<Path> roots = new ArrayList<>();
         Path main = moduleDir.resolve("src/main/java");
         if (Files.isDirectory(main)) {
@@ -37,6 +33,16 @@ public final class SourceParser {
         if (Files.isDirectory(generated)) {
             roots.add(generated);
         }
+        return roots;
+    }
+
+    public static Session parseModule(Path repoRoot, Path moduleDir, List<Path> classpathJars) {
+        return parseModule(repoRoot, moduleDir, classpathJars, new JarSolverCache());
+    }
+
+    public static Session parseModule(Path repoRoot, Path moduleDir, List<Path> classpathJars,
+                                      JarSolverCache jarCache) {
+        List<Path> roots = sourceRootsOf(moduleDir);
         if (roots.isEmpty()) {
             return new Session(List.of(), List.of());
         }
@@ -51,8 +57,23 @@ public final class SourceParser {
         ParserConfiguration config = new ParserConfiguration()
                 .setSymbolResolver(new JavaSymbolSolver(solver))
                 .setLanguageLevel(ParserConfiguration.LanguageLevel.BLEEDING_EDGE);
-        JavaParser parser = new JavaParser(config);
+        return parseRoots(repoRoot, roots, new JavaParser(config));
+    }
 
+    /**
+     * Parses a single module's source roots with an already-built configuration — used by
+     * {@link RepoSolver}, where one {@code ParserConfiguration} (and its shared symbol solver) is
+     * built once for the whole repo and reused across every module's parse.
+     */
+    public static Session parseModule(Path repoRoot, Path moduleDir, ParserConfiguration config) {
+        List<Path> roots = sourceRootsOf(moduleDir);
+        if (roots.isEmpty()) {
+            return new Session(List.of(), List.of());
+        }
+        return parseRoots(repoRoot, roots, new JavaParser(config));
+    }
+
+    private static Session parseRoots(Path repoRoot, List<Path> roots, JavaParser parser) {
         List<ParsedUnit> units = new ArrayList<>();
         List<String> issues = new ArrayList<>();
         for (Path root : roots) {

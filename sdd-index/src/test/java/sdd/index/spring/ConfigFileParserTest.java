@@ -5,6 +5,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -105,6 +106,18 @@ class ConfigFileParserTest {
         assertThat(r.entries()).isEmpty();
         assertThat(r.issues()).hasSize(1);
         assertThat(r.issues().get(0)).contains("application.yml");
+    }
+
+    @Test
+    void applicationWinsOverBootstrapInDefaultProfileProps() throws Exception {
+        Path res = resources();
+        Files.writeString(res.resolve("bootstrap.yml"), "shared.key: from-bootstrap\n");
+        Files.writeString(res.resolve("application.yml"), "shared.key: from-application\n");
+
+        ConfigFileParser.Result r = ConfigFileParser.parseModuleConfig(repo, repo);
+        Map<String, String> defaults = SpringConfigPersistence.defaultProfileProps(r.entries());
+
+        assertThat(defaults).containsEntry("shared.key", "from-application");
     }
 
     @Test

@@ -92,11 +92,18 @@ public final class SourcePersistence {
      * "; "-terminated, but the existing error may not be (a gradle failure message is written
      * raw), so the separator is re-established rather than assumed: rtrim any trailing "; " off
      * what is there and put exactly one back. An empty/NULL error gains no leading separator.
+     * If the exact append text is already present as a "; "-delimited segment, the append is
+     * skipped — a repeated identical failure (e.g. retried indexing hitting the same error) must
+     * not grow the column unbounded. The match is delimiter-anchored rather than a raw substring
+     * check: notes are "; "-terminated by construction, so both the existing error and the
+     * needle are wrapped in "; " before comparing, which also means "3 ... failed" is not
+     * mistaken for already-present inside "13 ... failed".
      */
     public static void updateParseStatus(Jdbi jdbi, String repoName, String parseStatus, String errorAppend) {
         jdbi.useHandle(h -> h.createUpdate("""
                         UPDATE repo SET parse_status=:status,
                           error = CASE WHEN :append IS NULL THEN error
+                                       WHEN instr('; ' || COALESCE(error, ''), '; ' || :append || '; ') > 0 THEN error
                                        ELSE COALESCE(NULLIF(rtrim(COALESCE(error, ''), '; '), '') || '; ', '')
                                             || :append || '; ' END
                         WHERE name=:name""")

@@ -49,6 +49,12 @@ public final class IndexCommand implements Callable<Integer> {
             link.conflicts().forEach(c -> out.println("  conflict: " + c));
             link.orphanArtifacts().forEach(o -> out.println("  orphan: " + o));
             out.printf(Locale.ROOT, "usage: %d internal type refs%n", service.lastUsageReport().internalRefs());
+            int[] springCounts = db.jdbi().withHandle(h -> new int[]{
+                    h.createQuery("SELECT count(*) FROM rest_endpoint").mapTo(Integer.class).one(),
+                    h.createQuery("SELECT count(*) FROM rest_client").mapTo(Integer.class).one(),
+                    h.createQuery("SELECT count(*) FROM kafka_role").mapTo(Integer.class).one()});
+            out.printf(Locale.ROOT, "spring: %d endpoints, %d clients, %d kafka roles%n",
+                    springCounts[0], springCounts[1], springCounts[2]);
             boolean allFailed = !results.isEmpty()
                     && results.stream().allMatch(r -> r.status().equals("FAILED"));
             return allFailed ? 1 : 0;

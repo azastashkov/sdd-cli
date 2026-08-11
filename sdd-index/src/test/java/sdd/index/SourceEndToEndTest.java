@@ -57,6 +57,39 @@ class SourceEndToEndTest {
                         server:
                           servlet:
                             context-path: /orders
+                        kafka:
+                          in-topic: orders.v1.incoming
+                        """)
+                .file("src/main/java/com/acme/orders/OrderController.java", """
+                        package com.acme.orders;
+                        import org.springframework.web.bind.annotation.*;
+                        @RestController
+                        @RequestMapping("/api/orders")
+                        public class OrderController {
+                            @GetMapping("/{id}") public String get(@PathVariable String id) { return id; }
+                        }
+                        """)
+                .file("src/main/java/com/acme/orders/BillingClient.java", """
+                        package com.acme.orders;
+                        import org.springframework.cloud.openfeign.FeignClient;
+                        import org.springframework.web.bind.annotation.PostMapping;
+                        @FeignClient(name = "billing", path = "/pay")
+                        public interface BillingClient {
+                            @PostMapping("/charge") String charge(String req);
+                        }
+                        """)
+                .file("src/main/java/com/acme/orders/Events.java", """
+                        package com.acme.orders;
+                        import org.springframework.kafka.annotation.KafkaListener;
+                        public class Events {
+                            private static final String OUT = "orders.v1.placed";
+                            private Object kafkaTemplate;
+                            @KafkaListener(topics = "${kafka.in-topic}")
+                            public void in(String msg) {}
+                            public void out(String e) {
+                                ((org.springframework.kafka.core.KafkaTemplate) kafkaTemplate).send(OUT, e);
+                            }
+                        }
                         """)
                 .commit("init");
 
@@ -108,9 +141,32 @@ class SourceEndToEndTest {
                     .mapToMap().one());
             assertThat(module.get("spring_app_name")).isEqualTo("order-service");
             assertThat(module.get("context_path")).isEqualTo("/orders");
+            // spring.application.name, server.servlet.context-path, kafka.in-topic
             Integer propCount = db.jdbi().withHandle(h -> h.createQuery(
                     "SELECT count(*) FROM config_property").mapTo(Integer.class).one());
-            assertThat(propCount).isEqualTo(2);
+            assertThat(propCount).isEqualTo(3);
+            // rest_endpoint norm_path prepends the module's context-path (from application.yml)
+            // ahead of the class-level @RequestMapping and method-level @GetMapping paths.
+            Map<String, Object> endpoint = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT http_method, norm_path FROM rest_endpoint").mapToMap().one());
+            assertThat(endpoint).containsEntry("http_method", "GET")
+                    .containsEntry("norm_path", "/orders/api/orders/{}");
+            // Feign client: target_hint resolves from @FeignClient's "name" attribute
+            Integer feignCount = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT count(*) FROM rest_client WHERE kind='FEIGN' AND target_hint='billing'")
+                    .mapTo(Integer.class).one());
+            assertThat(feignCount).isEqualTo(1);
+            // Kafka: one CONSUMER topic resolved from the ${kafka.in-topic} placeholder (via
+            // application.yml) and one PRODUCER topic resolved from Events' static final OUT
+            // constant, sent through a field typed only by its cast to KafkaTemplate.
+            var topics = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT t.name, r.role FROM kafka_role r JOIN kafka_topic t ON t.id=r.topic_id "
+                            + "ORDER BY t.name").mapToMap().list());
+            assertThat(topics).hasSize(2);
+            assertThat(topics.get(0)).containsEntry("name", "orders.v1.incoming")
+                    .containsEntry("role", "CONSUMER");
+            assertThat(topics.get(1)).containsEntry("name", "orders.v1.placed")
+                    .containsEntry("role", "PRODUCER");
         }
     }
 }

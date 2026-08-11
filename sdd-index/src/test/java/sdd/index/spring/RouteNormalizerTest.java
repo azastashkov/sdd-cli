@@ -1,5 +1,6 @@
 package sdd.index.spring;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
@@ -28,5 +29,10 @@ class RouteNormalizerTest {
     })
     void normalizes(String input, String expected) {
         assertThat(RouteNormalizer.normalize(input)).isEqualTo(expected);
+    }
+
+    @Test
+    void nullTemplateNormalizesToRoot() {
+        assertThat(RouteNormalizer.normalize(null)).isEqualTo("/");
     }
 }

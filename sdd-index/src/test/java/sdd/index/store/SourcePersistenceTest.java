@@ -111,6 +111,29 @@ class SourcePersistenceTest {
     }
 
     @Test
+    void parseStatusAppendDoesNotDuplicateIdenticalMessages() {
+        SourcePersistence.updateParseStatus(db.jdbi(), "lib-core", "DEGRADED", "3 files failed");
+        SourcePersistence.updateParseStatus(db.jdbi(), "lib-core", "DEGRADED", "3 files failed");
+        String error = db.jdbi().withHandle(h ->
+                h.createQuery("SELECT error FROM repo").mapTo(String.class).one());
+        assertThat(error.split("3 files failed", -1).length - 1).isEqualTo(1);
+    }
+
+    @Test
+    void parseStatusAppendIsNotSwallowedByARawSubstringOfAnExistingLargerCount() {
+        // "3 source files failed to parse" is a raw substring of "13 source files failed to
+        // parse" — a naive instr() dedup check treats the shorter note as already present and
+        // silently drops it. Both distinct counts must survive as separate delimited notes.
+        db.jdbi().useHandle(h -> h.execute(
+                "UPDATE repo SET error='13 source files failed to parse; ' WHERE id=" + repoId));
+        SourcePersistence.updateParseStatus(db.jdbi(), "lib-core", "DEGRADED",
+                "3 source files failed to parse");
+        String error = db.jdbi().withHandle(h ->
+                h.createQuery("SELECT error FROM repo").mapTo(String.class).one());
+        assertThat(error).isEqualTo("13 source files failed to parse; 3 source files failed to parse; ");
+    }
+
+    @Test
     void repoAtomicWriteRollsBackEveryModuleOnMidRepoFailure() {
         // A second module in the same repo. When SourceExtraction persists a whole repo, both
         // modules' writes (and the shared clearRepoFileRefs) share one caller-owned transaction.

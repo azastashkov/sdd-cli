@@ -160,10 +160,21 @@ public final class IndexPersistence {
         return lib ? "LIBRARY" : "UNKNOWN";
     }
 
+    /**
+     * If the exact append text is already present as a "; "-delimited segment of the existing
+     * error, the append is skipped — a repeated identical staleness cause (e.g. the same repo
+     * going stale for the same reason on successive runs) must not grow the column unbounded.
+     * The match is delimiter-anchored rather than a raw substring check: notes are
+     * "; "-terminated by construction, so both the existing error and the needle are wrapped in
+     * "; " before comparing, which also means "3 ... failed" is not mistaken for already-present
+     * inside "13 ... failed". Kept mirrored with {@link SourcePersistence#updateParseStatus}'s
+     * equivalent CASE expression.
+     */
     public static void markStale(Jdbi jdbi, String repoName, String error) {
         jdbi.useHandle(h -> h.createUpdate("""
                         UPDATE repo SET gradle_status='STALE_OK',
                           error = CASE WHEN :append IS NULL THEN error
+                                       WHEN instr('; ' || COALESCE(error, ''), '; ' || :append || '; ') > 0 THEN error
                                        ELSE COALESCE(NULLIF(rtrim(COALESCE(error, ''), '; '), '') || '; ', '')
                                             || :append || '; ' END
                         WHERE name=:name""")
