@@ -12,7 +12,9 @@ import sdd.index.scan.WorkspaceScanner;
 import sdd.index.source.SourceExtraction;
 import sdd.index.store.ArtifactLinker;
 import sdd.index.store.IndexPersistence;
+import sdd.index.store.RestMatcher;
 import sdd.index.store.SourcePersistence;
+import sdd.index.store.TopicJanitor;
 import sdd.index.store.UsageLinker;
 
 import java.util.ArrayList;
@@ -33,6 +35,8 @@ public final class IndexService {
 
     private ArtifactLinker.LinkReport lastLinkReport;
     private UsageLinker.Report lastUsageReport;
+    private RestMatcher.Report lastRestReport;
+    private int lastTopicsCleaned;
 
     public IndexService() {
         this(null);
@@ -58,6 +62,8 @@ public final class IndexService {
         }
         lastLinkReport = ArtifactLinker.link(db.jdbi(), config.artifactOverrides());
         lastUsageReport = UsageLinker.link(db.jdbi());
+        lastRestReport = RestMatcher.match(db.jdbi(), config.manualEdges());
+        lastTopicsCleaned = TopicJanitor.clean(db.jdbi());
         return results.stream().map(r -> withCounts(db.jdbi(), r)).toList();
     }
 
@@ -75,6 +81,14 @@ public final class IndexService {
 
     public UsageLinker.Report lastUsageReport() {
         return lastUsageReport;
+    }
+
+    public RestMatcher.Report lastRestReport() {
+        return lastRestReport;
+    }
+
+    public int lastTopicsCleaned() {
+        return lastTopicsCleaned;
     }
 
     RepoResult indexRepo(Jdbi jdbi, Extractor extractor, RepoScan scan) {

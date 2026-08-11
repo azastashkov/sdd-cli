@@ -9,6 +9,7 @@ import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
 import sdd.index.IndexService;
 import sdd.index.store.ArtifactLinker;
+import sdd.index.store.RestMatcher;
 
 import java.io.PrintWriter;
 import java.nio.file.Path;
@@ -55,6 +56,10 @@ public final class IndexCommand implements Callable<Integer> {
                     h.createQuery("SELECT count(*) FROM kafka_role").mapTo(Integer.class).one()});
             out.printf(Locale.ROOT, "spring: %d endpoints, %d clients, %d kafka roles%n",
                     springCounts[0], springCounts[1], springCounts[2]);
+            RestMatcher.Report matchReport = service.lastRestReport();
+            out.printf(Locale.ROOT, "match: %d high, %d medium, %d low, %d manual edges%n",
+                    matchReport.high(), matchReport.medium(), matchReport.low(), matchReport.manual());
+            matchReport.warnings().forEach(w -> out.println("  warn: " + w));
             boolean allFailed = !results.isEmpty()
                     && results.stream().allMatch(r -> r.status().equals("FAILED"));
             return allFailed ? 1 : 0;
