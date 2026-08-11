@@ -24,4 +24,18 @@ public final class FtsSymbolWriter {
         handle.createUpdate("DELETE FROM fts_symbol WHERE module_id = :mod")
                 .bind("mod", moduleId).execute();
     }
+
+    /**
+     * Drops every symbol row belonging to a repo's modules. Needed because re-indexing a repo
+     * deletes and reinserts its modules with NEW ids: rows keyed to the old ids are unreachable
+     * by {@link #deleteForModule} afterwards and would accumulate as orphans that still answer
+     * searches. fts5 has no foreign keys, so the sweep has to be explicit — and, per this class's
+     * sole-write-path rule, it lives here rather than in the caller.
+     */
+    public static void deleteForRepo(Handle handle, long repoId) {
+        handle.createUpdate(
+                        "DELETE FROM fts_symbol WHERE module_id IN "
+                                + "(SELECT id FROM module WHERE repo_id = :r)")
+                .bind("r", repoId).execute();
+    }
 }

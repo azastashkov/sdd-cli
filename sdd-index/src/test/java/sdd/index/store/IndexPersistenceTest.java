@@ -3,6 +3,7 @@ package sdd.index.store;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import sdd.core.db.Database;
+import sdd.core.retrieve.FtsSymbolWriter;
 import sdd.index.gradle.GradleModel;
 import sdd.index.scan.RepoScan;
 
@@ -134,6 +135,53 @@ class IndexPersistenceTest {
             Integer edgeCount = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT count(*) FROM dep_edge").mapTo(Integer.class).one());
             assertThat(edgeCount).isEqualTo(3);
+        }
+    }
+
+    @Test
+    void reindexingUsageTargetRepoDoesNotViolateForeignKeysAndKeepsTheUsageRow() {
+        try (Database db = Database.open(ws)) {
+            RepoScan producer = new RepoScan("lib-core", Path.of("/w/lib-core"), "b".repeat(40), "main", "");
+            GradleModel.Extract producerExtract = publisherExtract("lib-core", "com.acme", "lib-core");
+            IndexPersistence.persistRepo(db.jdbi(), producer, producerExtract, "OK", null);
+            RepoScan consumer = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");
+            IndexPersistence.persistRepo(db.jdbi(), consumer, serviceExtract(), "OK", null);
+            // what UsageLinker writes: a consumer-module row pointing at a module of ANOTHER repo
+            db.jdbi().useHandle(h -> h.execute("""
+                    INSERT INTO api_usage(from_module_id, target_fqcn, target_module_id, ref_kind)
+                    VALUES ((SELECT m.id FROM module m JOIN repo r ON r.id=m.repo_id
+                             WHERE r.name='svc-orders'),
+                            'com.acme.Lib',
+                            (SELECT m.id FROM module m JOIN repo r ON r.id=m.repo_id
+                             WHERE r.name='lib-core'),
+                            'IMPORT')"""));
+
+            // re-persisting the TARGET repo deletes its modules — must not wedge the run
+            IndexPersistence.persistRepo(db.jdbi(), producer, producerExtract, "OK", null);
+
+            Map<String, Object> usage = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT target_fqcn, target_module_id FROM api_usage").mapToMap().one());
+            assertThat(usage).containsEntry("target_fqcn", "com.acme.Lib");
+            assertThat(usage.get("target_module_id")).isNull();
+        }
+    }
+
+    @Test
+    void reindexingRepoDropsFtsRowsOfItsOldModules() {
+        try (Database db = Database.open(ws)) {
+            RepoScan scan = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");
+            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "OK", null);
+            long moduleId = db.jdbi().withHandle(h ->
+                    h.createQuery("SELECT id FROM module").mapTo(Long.class).one());
+            db.jdbi().useHandle(h -> FtsSymbolWriter.insert(h, moduleId, "OrderService", "com.acme.OrderService"));
+
+            // re-persist: modules are deleted and reinserted with NEW ids, so the symbol rows keyed
+            // to the old ids can never be reached by a later per-module delete
+            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "OK", null);
+
+            Integer orphans = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT count(*) FROM fts_symbol").mapTo(Integer.class).one());
+            assertThat(orphans).isZero();
         }
     }
 

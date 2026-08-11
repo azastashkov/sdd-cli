@@ -3,6 +3,7 @@ package sdd.index.store;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
+import sdd.core.retrieve.FtsSymbolWriter;
 import sdd.index.gradle.CatalogReader;
 import sdd.index.gradle.GradleModel;
 import sdd.index.gradle.ModeClassifier;
@@ -51,6 +52,10 @@ public final class IndexPersistence {
                     .execute();
             long repoId = h.createQuery("SELECT id FROM repo WHERE name=:n")
                     .bind("n", scan.name()).mapTo(Long.class).one();
+            // Must precede the module delete: fts_symbol rows are keyed by module id and the
+            // modules about to be reinserted get fresh ids, so this is the last moment the old
+            // symbol rows are reachable at all.
+            FtsSymbolWriter.deleteForRepo(h, repoId);
             h.createUpdate("DELETE FROM module WHERE repo_id=:r").bind("r", repoId).execute();
             for (GradleModel.Project p : extract.projects()) {
                 insertModule(h, repoId, p, catalogGAs);

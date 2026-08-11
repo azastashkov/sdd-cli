@@ -113,6 +113,11 @@ class SourcePersistenceTest {
         Integer typeCount = db.jdbi().withHandle(h -> h.createQuery("SELECT count(*) FROM java_type")
                 .mapTo(Integer.class).one());
         assertThat(typeCount).isEqualTo(0);
+        // fts_symbol is a virtual table — prove its writes ride the same transaction rather than
+        // leaving searchable ghosts of rolled-back types.
+        Integer ftsCount = db.jdbi().withHandle(h -> h.createQuery("SELECT count(*) FROM fts_symbol")
+                .mapTo(Integer.class).one());
+        assertThat(ftsCount).isEqualTo(0);
     }
 
     @Test

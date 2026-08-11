@@ -71,7 +71,7 @@ CREATE TABLE api_member(
 CREATE TABLE api_usage(
   from_module_id INTEGER NOT NULL REFERENCES module(id) ON DELETE CASCADE,
   target_fqcn TEXT NOT NULL,
-  target_module_id INTEGER REFERENCES module(id),
+  target_module_id INTEGER REFERENCES module(id) ON DELETE SET NULL,
   ref_kind TEXT);
 ;
 CREATE INDEX ix_usage_target ON api_usage(target_module_id, target_fqcn);
