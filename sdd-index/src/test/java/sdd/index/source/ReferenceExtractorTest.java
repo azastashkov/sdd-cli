@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class ReferenceExtractorTest {
     @TempDir Path repo;
@@ -62,5 +63,133 @@ class ReferenceExtractorTest {
         // no self file refs
         assertThat(refs.fileRefs()).noneSatisfy(fr ->
                 assertThat(fr.srcRel()).isEqualTo(fr.dstRel()));
+    }
+
+    @Test
+    void samePackageNewWithoutImportProducesFileRef() throws Exception {
+        var session = write(Map.of(
+                "src/main/java/com/acme/svc/OrderService.java", """
+                        package com.acme.svc;
+                        public class OrderService {
+                            public OrderHelper helper() { return new OrderHelper(); }
+                        }
+                        """,
+                "src/main/java/com/acme/svc/OrderHelper.java",
+                        "package com.acme.svc;\npublic class OrderHelper {}\n"));
+        Map<String, String> index = session.units().stream().collect(Collectors.toMap(
+                u -> "com.acme.svc." + u.file().getFileName().toString().replace(".java", ""),
+                SourceParser.ParsedUnit::relPath));
+
+        ReferenceExtractor.Refs refs = ReferenceExtractor.extract(session, index);
+
+        assertThat(refs.fileRefs()).anySatisfy(fr -> {
+            assertThat(fr.srcRel()).endsWith("OrderService.java");
+            assertThat(fr.dstRel()).endsWith("OrderHelper.java");
+        });
+    }
+
+    @Test
+    void fieldTypeOnlyReferenceProducesFileRefAndExternalTypeProducesUsage() throws Exception {
+        var session = write(Map.of(
+                "src/main/java/com/acme/svc/Holder.java", """
+                        package com.acme.svc;
+                        public class Holder {
+                            private Held held;
+                            public com.acme.pricing.PriceCalculator calc() { return null; }
+                        }
+                        """,
+                "src/main/java/com/acme/svc/Held.java",
+                        "package com.acme.svc;\npublic class Held {}\n"));
+        Map<String, String> index = session.units().stream().collect(Collectors.toMap(
+                u -> "com.acme.svc." + u.file().getFileName().toString().replace(".java", ""),
+                SourceParser.ParsedUnit::relPath));
+
+        ReferenceExtractor.Refs refs = ReferenceExtractor.extract(session, index);
+
+        assertThat(refs.fileRefs()).anySatisfy(fr -> assertThat(fr.dstRel()).endsWith("Held.java"));
+        assertThat(refs.usages()).anySatisfy(u -> {
+            assertThat(u.targetFqcn()).isEqualTo("com.acme.pricing.PriceCalculator");
+            assertThat(u.refKind()).isEqualTo("TYPE");
+        });
+    }
+
+    @Test
+    void nestedClassReferenceResolvesWithCanonicalFqcn() throws Exception {
+        var session = write(Map.of(
+                "src/main/java/com/acme/svc/Outer.java", """
+                        package com.acme.svc;
+                        public class Outer { public static class Inner {} }
+                        """,
+                "src/main/java/com/acme/svc/User.java", """
+                        package com.acme.svc;
+                        public class User { private Outer.Inner inner; }
+                        """));
+        // index keyed the way ApiSurfaceExtractor keys it: JavaParser getFullyQualifiedName (dots)
+        Map<String, String> index = Map.of(
+                "com.acme.svc.Outer", "src/main/java/com/acme/svc/Outer.java",
+                "com.acme.svc.Outer.Inner", "src/main/java/com/acme/svc/Outer.java",
+                "com.acme.svc.User", "src/main/java/com/acme/svc/User.java");
+
+        ReferenceExtractor.Refs refs = ReferenceExtractor.extract(session, index);
+
+        assertThat(refs.fileRefs()).anySatisfy(fr -> {
+            assertThat(fr.srcRel()).endsWith("User.java");
+            assertThat(fr.dstRel()).endsWith("Outer.java");
+        });
+    }
+
+    @Test
+    void unresolvablePartiallyQualifiedNestedTypeIsDroppedNotLeaked() throws Exception {
+        var session = write(Map.of("src/main/java/com/acme/svc/User.java", """
+                package com.acme.svc;
+                public class User { private Ghost.Inner inner; }
+                """));
+        ReferenceExtractor.Refs refs = ReferenceExtractor.extract(session, Map.of());
+        assertThat(refs.usages()).noneSatisfy(u ->
+                assertThat(u.targetFqcn()).isEqualTo("Ghost.Inner"));
+    }
+
+    /**
+     * Cross-repo ("estate") resolution: a type that lives only in a classpath jar must resolve
+     * through the JarTypeSolver. The reference is written as a bare {@code Widget} behind an
+     * import, so the literal-text fallback in ReferenceExtractor cannot fire — a TYPE usage for
+     * the fully-qualified name can only come from the symbol solver reading the jar.
+     */
+    @Test
+    void estateJarTypeResolvesThroughClasspathJarNotLiteralFallback() throws Exception {
+        assumeTrue(TestJars.compilerAvailable(), "system java compiler unavailable");
+        Path jar = TestJars.compiledJar(repo, "estate-lib.jar", "Widget", """
+                package com.estate.lib;
+                public class Widget { public String name() { return "w"; } }
+                """);
+        Path src = repo.resolve("src/main/java/com/acme/svc");
+        Files.createDirectories(src);
+        Files.writeString(src.resolve("Consumer.java"), """
+                package com.acme.svc;
+                import com.estate.lib.Widget;
+                public class Consumer { private Widget widget; }
+                """);
+
+        SourceParser.Session session = SourceParser.parseModule(repo, repo, List.of(jar));
+
+        assertThat(session.issues()).isEmpty();
+        ReferenceExtractor.Refs refs = ReferenceExtractor.extract(session, Map.of());
+        assertThat(refs.usages()).anySatisfy(u -> {
+            assertThat(u.targetFqcn()).isEqualTo("com.estate.lib.Widget");
+            assertThat(u.refKind()).isEqualTo("TYPE");
+        });
+    }
+
+    @Test
+    void unresolvableFullyQualifiedTypeStillFallsBackToLiteralText() throws Exception {
+        var session = write(Map.of("src/main/java/com/acme/svc/User.java", """
+                package com.acme.svc;
+                public class User { private com.ghost.api.Client client; }
+                """));
+        ReferenceExtractor.Refs refs = ReferenceExtractor.extract(session, Map.of());
+        assertThat(refs.usages()).anySatisfy(u -> {
+            assertThat(u.targetFqcn()).isEqualTo("com.ghost.api.Client");
+            assertThat(u.refKind()).isEqualTo("TYPE");
+        });
     }
 }

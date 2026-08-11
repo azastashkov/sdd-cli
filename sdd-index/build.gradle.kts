@@ -9,6 +9,7 @@ dependencies {
     implementation(libs.jgit)
     implementation(libs.jackson)
     implementation(libs.javaparser.symbol.solver)
+    implementation(libs.snakeyaml)
     runtimeOnly(libs.slf4j.nop)
     testFixturesApi(testFixtures(project(":sdd-core")))
     testImplementation(libs.bundles.test)

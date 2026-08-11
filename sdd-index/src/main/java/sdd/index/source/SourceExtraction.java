@@ -2,6 +2,8 @@ package sdd.index.source;
 
 import org.jdbi.v3.core.Jdbi;
 import sdd.index.gradle.GradleModel;
+import sdd.index.spring.ConfigFileParser;
+import sdd.index.spring.SpringConfigPersistence;
 import sdd.index.store.Paths2;
 import sdd.index.store.SourcePersistence;
 
@@ -17,13 +19,15 @@ public final class SourceExtraction {
 
     public static String extractRepo(Jdbi jdbi, long repoId, String repoName,
                                      Path repoPath, GradleModel.Extract extract) {
-        record ModuleWork(long moduleId, boolean library, SourceParser.Session session) {}
+        record ModuleWork(long moduleId, boolean library, SourceParser.Session session,
+                          ConfigFileParser.Result config) {}
         List<ModuleWork> work = new ArrayList<>();
         int totalIssues = 0;
         // Both sides of the relativize below must be canonical or the relative path degenerates
         // into "../../../private/var/..." junk: the scanner reports the repo path as listed
         // (symlinks intact) while Gradle reports projectDir already canonicalized.
         Path repoRoot = Paths2.canonical(repoPath);
+        JarSolverCache jarCache = new JarSolverCache();
         for (GradleModel.Project p : extract.projects()) {
             Optional<Long> moduleId = jdbi.withHandle(h -> h.createQuery(
                             "SELECT id FROM module WHERE repo_id=:r AND gradle_path=:p")
@@ -34,13 +38,15 @@ public final class SourceExtraction {
             List<Path> jars = Optional.ofNullable(p.configurations().get("compileClasspath"))
                     .map(c -> c.resolved().stream().flatMap(r -> r.files().stream()).toList())
                     .orElse(List.of());
-            SourceParser.Session session = SourceParser.parseModule(
-                    repoRoot, Paths2.canonical(p.projectDir()), jars);
+            Path projectDir = Paths2.canonical(p.projectDir());
+            SourceParser.Session session = SourceParser.parseModule(repoRoot, projectDir, jars, jarCache);
             totalIssues += session.issues().size();
+            ConfigFileParser.Result config = ConfigFileParser.parseModuleConfig(repoRoot, projectDir);
+            totalIssues += config.issues().size();
             boolean library = jdbi.withHandle(h -> h.createQuery(
                             "SELECT kind FROM module WHERE id=:m").bind("m", moduleId.get())
                     .mapTo(String.class).one()).equals("LIBRARY");
-            work.add(new ModuleWork(moduleId.get(), library, session));
+            work.add(new ModuleWork(moduleId.get(), library, session, config));
         }
 
         Map<String, String> repoTypeIndex = new LinkedHashMap<>();
@@ -60,6 +66,7 @@ public final class SourceExtraction {
                 ReferenceExtractor.Refs refs = ReferenceExtractor.extract(w.session(), repoTypeIndex);
                 SourcePersistence.persistModuleSource(h, repoId, w.moduleId(),
                         typesByModule.get(w.moduleId()), refs.usages(), refs.fileRefs());
+                SpringConfigPersistence.persistModuleConfig(h, w.moduleId(), w.config().entries());
             }
         });
 

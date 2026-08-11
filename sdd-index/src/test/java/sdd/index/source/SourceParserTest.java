@@ -53,4 +53,34 @@ class SourceParserTest {
         String resolved = method.getType().resolve().describe();
         assertThat(resolved).isEqualTo("com.acme.B");
     }
+
+    /**
+     * Two modules of one repo sharing a classpath jar and a single {@link JarSolverCache}: the
+     * cache must not hand the same JarTypeSolver to both modules' CombinedTypeSolver, because
+     * {@code CombinedTypeSolver.add} re-parents it and JarTypeSolver refuses a second parent
+     * (JavaParser 3.26.2). Regression for the whole-repo parse failure that bug caused.
+     */
+    @Test
+    void sharedJarCacheParsesEveryModuleOfMultiModuleRepo() throws Exception {
+        Path jar = TestJars.tinyJar(repo, "shared-lib.jar");
+        Path moduleA = writeModule("moduleA", "Alpha");
+        Path moduleB = writeModule("moduleB", "Beta");
+        JarSolverCache cache = new JarSolverCache();
+
+        SourceParser.Session a = SourceParser.parseModule(repo, moduleA, List.of(jar), cache);
+        SourceParser.Session b = SourceParser.parseModule(repo, moduleB, List.of(jar), cache);
+
+        assertThat(a.units()).hasSize(1);
+        assertThat(a.issues()).isEmpty();
+        assertThat(b.units()).hasSize(1);
+        assertThat(b.issues()).isEmpty();
+    }
+
+    private Path writeModule(String moduleName, String typeName) throws Exception {
+        Path src = repo.resolve(moduleName + "/src/main/java/com/acme");
+        Files.createDirectories(src);
+        Files.writeString(src.resolve(typeName + ".java"),
+                "package com.acme;\npublic class " + typeName + " {}\n");
+        return repo.resolve(moduleName);
+    }
 }

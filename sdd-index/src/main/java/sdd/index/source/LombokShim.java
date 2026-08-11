@@ -32,16 +32,15 @@ public final class LombokShim {
     public static Result apply(TypeDeclaration<?> type) {
         Set<String> annotationNames = type.getAnnotations().stream()
                 .map(a -> a.getName().getIdentifier()).collect(Collectors.toSet());
-        // Nothing below synthesizes from field-level annotations (that is 2B-2), so a field-level
-        // @Getter/@Setter/... means members exist that we are not reporting. Say so via PARTIAL
-        // instead of claiming an OK surface we know is incomplete.
-        boolean fieldLevelGenerating = type.getFields().stream()
+        // Field-level @Getter/@Setter are synthesized below, so they no longer trip PARTIAL. Any
+        // other field-level lombok-imported annotation still produces members we are not
+        // reporting, so it stays honest via PARTIAL.
+        boolean fieldLevelUnknown = type.getFields().stream()
                 .flatMap(f -> f.getAnnotations().stream())
                 .map(a -> a.getName().getIdentifier())
-                .anyMatch(n -> GENERATING.contains(n) && importedFromLombok(type, n));
-        boolean unknownLombok = fieldLevelGenerating || annotationNames.stream()
-                .anyMatch(n -> !GENERATING.contains(n) && !IGNORED.contains(n)
-                        && importedFromLombok(type, n));
+                .anyMatch(n -> isUnknownLombok(type, n));
+        boolean unknownLombok = fieldLevelUnknown || annotationNames.stream()
+                .anyMatch(n -> isUnknownLombok(type, n));
         List<SourceModel.MemberInfo> synthesized = new ArrayList<>();
         boolean data = annotationNames.contains("Data");
         boolean value = annotationNames.contains("Value");
@@ -88,6 +87,27 @@ public final class LombokShim {
                             .map(VariableDeclarator::getTypeAsString).toList(),
                     data ? "Data" : "RequiredArgsConstructor"));
         }
+        for (FieldDeclaration f : type.getFields()) {
+            if (f.isStatic()) {
+                continue;
+            }
+            Set<String> fieldAnnotations = f.getAnnotations().stream()
+                    .map(a -> a.getName().getIdentifier())
+                    .collect(Collectors.toSet());
+            for (VariableDeclarator v : f.getVariables()) {
+                if (fieldAnnotations.contains("Getter")) {
+                    String prefix = v.getTypeAsString().equals("boolean") ? "is" : "get";
+                    String name = prefix + capitalize(v.getNameAsString());
+                    synthesized.add(new SourceModel.MemberInfo(name, name + "()",
+                            v.getTypeAsString(), "lombok:@Getter"));
+                }
+                if (fieldAnnotations.contains("Setter") && !f.isFinal()) {
+                    String name = "set" + capitalize(v.getNameAsString());
+                    synthesized.add(new SourceModel.MemberInfo(name,
+                            name + "(" + v.getTypeAsString() + ")", "void", "lombok:@Setter"));
+                }
+            }
+        }
         // Dedup by signature: first occurrence wins
         Map<String, SourceModel.MemberInfo> deduped = new LinkedHashMap<>();
         for (SourceModel.MemberInfo member : synthesized) {
@@ -99,6 +119,11 @@ public final class LombokShim {
     private static SourceModel.MemberInfo ctor(String typeName, List<String> paramTypes, String by) {
         return new SourceModel.MemberInfo("<init>",
                 "<init>(" + String.join(",", paramTypes) + ")", typeName, "lombok:@" + by);
+    }
+
+    private static boolean isUnknownLombok(TypeDeclaration<?> type, String simpleName) {
+        return !GENERATING.contains(simpleName) && !IGNORED.contains(simpleName)
+                && importedFromLombok(type, simpleName);
     }
 
     private static boolean isFinal(VariableDeclarator v) {

@@ -107,19 +107,41 @@ class LombokShimTest {
     }
 
     @Test
-    void fieldLevelGeneratingAnnotationMarksPartial() throws Exception {
+    void fieldLevelGetterSynthesizesAccessorForThatFieldOnlyAndStaysOk() throws Exception {
         SourceModel.TypeInfo t = extractFirst("""
                 package com.acme;
                 import lombok.Getter;
                 public class T {
                     @Getter private String id;
-                    public void real() {}
+                    private int hidden;
                 }
                 """);
-        // the shim only synthesizes from type-level annotations, so getId() is missing from the
-        // member list — PARTIAL is the honest confidence until field-level synthesis lands
         assertThat(t.members()).extracting(SourceModel.MemberInfo::signature)
-                .doesNotContain("getId()");
+                .contains("getId()").doesNotContain("getHidden()");
+        assertThat(t.apiConfidence()).isEqualTo("OK");
+    }
+
+    @Test
+    void fieldLevelSetterSkipsFinalFields() throws Exception {
+        SourceModel.TypeInfo t = extractFirst("""
+                package com.acme;
+                import lombok.Setter;
+                public class T {
+                    @Setter private String name;
+                    @Setter private final String fixed = "x";
+                }
+                """);
+        assertThat(t.members()).extracting(SourceModel.MemberInfo::signature)
+                .contains("setName(String)").doesNotContain("setFixed(String)");
+    }
+
+    @Test
+    void unknownFieldLevelLombokAnnotationStillMarksPartial() throws Exception {
+        SourceModel.TypeInfo t = extractFirst("""
+                package com.acme;
+                import lombok.experimental.Wither;
+                public class T { @Wither private String id; }
+                """);
         assertThat(t.apiConfidence()).isEqualTo("PARTIAL");
     }
 
