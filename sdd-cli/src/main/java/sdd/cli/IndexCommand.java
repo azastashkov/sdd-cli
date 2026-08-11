@@ -5,9 +5,12 @@ import picocli.CommandLine.Model.CommandSpec;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Spec;
 import sdd.core.config.ConfigLoader;
+import sdd.core.config.ModelEndpoint;
 import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
+import sdd.core.llm.HttpChatModel;
 import sdd.index.IndexService;
+import sdd.index.cards.RepoCardGenerator;
 import sdd.index.store.ArtifactLinker;
 import sdd.index.store.RestMatcher;
 
@@ -22,6 +25,9 @@ public final class IndexCommand implements Callable<Integer> {
     @Option(names = "--workspace", description = "Workspace directory (default: current dir)")
     Path workspace = Path.of(".");
 
+    @Option(names = "--no-cards", description = "Skip model-generated repo card summaries")
+    boolean noCards;
+
     @Spec CommandSpec spec;
 
     @Override
@@ -35,7 +41,13 @@ public final class IndexCommand implements Callable<Integer> {
             return 1;
         }
         try (Database db = Database.open(workspace)) {
-            IndexService service = new IndexService();
+            IndexService service;
+            if (noCards) {
+                service = new IndexService();
+            } else {
+                ModelEndpoint coder = config.models().get("coder");
+                service = new IndexService(null, new HttpChatModel(coder), coder.model());
+            }
             List<IndexService.RepoResult> results = service.run(config, db);
             for (IndexService.RepoResult r : results) {
                 out.printf(Locale.ROOT, "%-28s %-9s parse=%-8s modules=%-3d internal-deps=%-3d%s%s%n",
@@ -60,6 +72,13 @@ public final class IndexCommand implements Callable<Integer> {
             out.printf(Locale.ROOT, "match: %d high, %d medium, %d low, %d manual edges%n",
                     matchReport.high(), matchReport.medium(), matchReport.low(), matchReport.manual());
             matchReport.warnings().forEach(w -> out.println("  warn: " + w));
+            RepoCardGenerator.CardResult cardResult = service.lastCardResult();
+            if (cardResult == null) {
+                out.println("cards: skipped");
+            } else {
+                out.printf(Locale.ROOT, "cards: %d generated, %d cached, %d failed%n",
+                        cardResult.generated(), cardResult.cached(), cardResult.failed());
+            }
             boolean allFailed = !results.isEmpty()
                     && results.stream().allMatch(r -> r.status().equals("FAILED"));
             return allFailed ? 1 : 0;

@@ -4,6 +4,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
+import sdd.core.llm.ChatMessage;
+import sdd.core.llm.ChatResponse;
+import sdd.core.llm.Usage;
+import sdd.core.testing.FixtureRepo;
+import sdd.core.testing.ScriptedChatModel;
 import sdd.index.gradle.ExtractionException;
 import sdd.index.gradle.GradleModel;
 import sdd.index.scan.RepoScan;
@@ -166,6 +171,54 @@ class IndexServiceTest {
             assertThat(r.status()).isEqualTo("OK");
             assertThat(r.parseStatus()).isEqualTo("OK");
             assertThat(typeCount(db, "has-source")).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void cardsRunAfterIndexingWhenModelProvided() {
+        FixtureRepo.in(ws, "has-source").file("src/main/java/P.java", "public class P {}\n").commit("init");
+        ScriptedChatModel cardModel = new ScriptedChatModel(List.of(new ChatResponse(
+                ChatMessage.assistant("{\"card_line\": \"L.\", \"card_md\": \"## Purpose\\nP.\"}"),
+                "stop", new Usage(1, 1))));
+        try (Database db = Database.open(ws)) {
+            IndexService service = new IndexService(
+                    repoDir -> oneModuleAt("has-source", repoDir), cardModel, "qwen");
+
+            service.run(config(), db);
+
+            assertThat(service.lastCardResult()).isNotNull();
+            assertThat(service.lastCardResult().generated()).isEqualTo(1);
+            Integer cardCount = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT count(*) FROM repo_card").mapTo(Integer.class).one());
+            assertThat(cardCount).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void cardGenerationRuntimeExceptionIsSwallowedAndRunSucceeds() {
+        FixtureRepo.in(ws, "has-source").file("src/main/java/P.java", "public class P {}\n").commit("init");
+        sdd.core.llm.ChatModel blowsUp = req -> { throw new IllegalStateException("boom"); };
+        try (Database db = Database.open(ws)) {
+            IndexService service = new IndexService(
+                    repoDir -> oneModuleAt("has-source", repoDir), blowsUp, "qwen");
+
+            List<IndexService.RepoResult> results = service.run(config(), db);
+
+            assertThat(results).singleElement()
+                    .satisfies(r -> assertThat(r.status()).isEqualTo("OK"));
+            assertThat(service.lastCardResult()).isNull();
+        }
+    }
+
+    @Test
+    void noCardModelLeavesCardResultNull() {
+        FixtureRepo.in(ws, "has-source").file("src/main/java/P.java", "public class P {}\n").commit("init");
+        try (Database db = Database.open(ws)) {
+            IndexService service = new IndexService(repoDir -> oneModuleAt("has-source", repoDir));
+
+            service.run(config(), db);
+
+            assertThat(service.lastCardResult()).isNull();
         }
     }
 

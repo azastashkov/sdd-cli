@@ -3,6 +3,8 @@ package sdd.index;
 import org.jdbi.v3.core.Jdbi;
 import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
+import sdd.core.llm.ChatModel;
+import sdd.index.cards.RepoCardGenerator;
 import sdd.index.gradle.ExtractionException;
 import sdd.index.gradle.GradleExtractor;
 import sdd.index.gradle.GradleModel;
@@ -32,11 +34,14 @@ public final class IndexService {
     }
 
     private final Extractor injectedExtractor;
+    private final ChatModel cardModel;
+    private final String cardModelName;
 
     private ArtifactLinker.LinkReport lastLinkReport;
     private UsageLinker.Report lastUsageReport;
     private RestMatcher.Report lastRestReport;
     private int lastTopicsCleaned;
+    private RepoCardGenerator.CardResult lastCardResult;
 
     public IndexService() {
         this(null);
@@ -44,7 +49,19 @@ public final class IndexService {
 
     /** Seam so tests can inject a stub {@link Extractor} without shelling out to Gradle. */
     IndexService(Extractor extractor) {
+        this(extractor, null, null);
+    }
+
+    /**
+     * Full constructor: {@code cardModel} is optional (null skips repo-card generation entirely,
+     * e.g. the CLI's {@code --no-cards} escape hatch) and {@code extractor} is optional (null uses
+     * the real {@link GradleExtractor}). Public so callers outside this package (the CLI) can wire
+     * a real {@link ChatModel} without reaching for the package-private test seam.
+     */
+    public IndexService(Extractor extractor, ChatModel cardModel, String cardModelName) {
         this.injectedExtractor = extractor;
+        this.cardModel = cardModel;
+        this.cardModelName = cardModelName;
     }
 
     public List<RepoResult> run(SddConfig config, Database db) {
@@ -64,7 +81,25 @@ public final class IndexService {
         lastUsageReport = UsageLinker.link(db.jdbi());
         lastRestReport = RestMatcher.match(db.jdbi(), config.manualEdges());
         lastTopicsCleaned = TopicJanitor.clean(db.jdbi());
+        lastCardResult = generateCards(db.jdbi(), config.workspace());
         return results.stream().map(r -> withCounts(db.jdbi(), r)).toList();
+    }
+
+    /**
+     * Repo cards are a model-touching nicety, not core indexing: a broken/unreachable endpoint,
+     * a bug in the generator, anything RuntimeException-shaped must degrade to "no cards this run"
+     * rather than sink an otherwise-successful index. Returns null when cards were skipped
+     * (no card model configured) or when generation itself blew up.
+     */
+    private RepoCardGenerator.CardResult generateCards(Jdbi jdbi, java.nio.file.Path workspace) {
+        if (cardModel == null) {
+            return null;
+        }
+        try {
+            return RepoCardGenerator.generate(jdbi, workspace, cardModel, cardModelName);
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     /** A repo we could not even scan: keep whatever we already know, else record the failure. */
@@ -89,6 +124,11 @@ public final class IndexService {
 
     public int lastTopicsCleaned() {
         return lastTopicsCleaned;
+    }
+
+    /** Null when cards were skipped ({@code --no-cards}, no card model) or generation failed. */
+    public RepoCardGenerator.CardResult lastCardResult() {
+        return lastCardResult;
     }
 
     RepoResult indexRepo(Jdbi jdbi, Extractor extractor, RepoScan scan) {
