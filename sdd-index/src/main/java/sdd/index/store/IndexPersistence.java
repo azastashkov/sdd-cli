@@ -161,9 +161,13 @@ public final class IndexPersistence {
     }
 
     public static void markStale(Jdbi jdbi, String repoName, String error) {
-        jdbi.useHandle(h -> h.createUpdate(
-                        "UPDATE repo SET gradle_status='STALE_OK', error=:e WHERE name=:n")
-                .bind("e", error).bind("n", repoName).execute());
+        jdbi.useHandle(h -> h.createUpdate("""
+                        UPDATE repo SET gradle_status='STALE_OK',
+                          error = CASE WHEN :append IS NULL THEN error
+                                       ELSE COALESCE(NULLIF(rtrim(COALESCE(error, ''), '; '), '') || '; ', '')
+                                            || :append || '; ' END
+                        WHERE name=:name""")
+                .bind("append", error).bind("name", repoName).execute());
     }
 
     private static final class MergedDep {

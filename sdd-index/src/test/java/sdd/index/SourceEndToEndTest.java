@@ -50,6 +50,14 @@ class SourceEndToEndTest {
                         """)
                 .file("src/main/java/com/acme/orders/OrderHelper.java",
                         "package com.acme.orders;\npublic class OrderHelper {}\n")
+                .file("src/main/resources/application.yml", """
+                        spring:
+                          application:
+                            name: order-service
+                        server:
+                          servlet:
+                            context-path: /orders
+                        """)
                 .commit("init");
 
         SddConfig config = new SddConfig(ws, "fts", Map.of(), Map.of(), List.of(), Map.of());
@@ -94,6 +102,15 @@ class SourceEndToEndTest {
             // internalRefs counts api_usage rows with a resolved target_module_id; still exactly
             // the one PriceCalculator/IMPORT row from above.
             assertThat(service.lastUsageReport().internalRefs()).isEqualTo(1);
+            Map<String, Object> module = db.jdbi().withHandle(h -> h.createQuery("""
+                            SELECT m.spring_app_name, m.context_path FROM module m
+                            JOIN repo r ON r.id = m.repo_id WHERE r.name='svc-orders'""")
+                    .mapToMap().one());
+            assertThat(module.get("spring_app_name")).isEqualTo("order-service");
+            assertThat(module.get("context_path")).isEqualTo("/orders");
+            Integer propCount = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT count(*) FROM config_property").mapTo(Integer.class).one());
+            assertThat(propCount).isEqualTo(2);
         }
     }
 }
