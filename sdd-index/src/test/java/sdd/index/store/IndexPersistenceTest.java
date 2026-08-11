@@ -58,6 +58,65 @@ class IndexPersistenceTest {
     }
 
     @Test
+    void edgesAreCreatedOnlyForDeclaredDependenciesNotResolvedTransitives() {
+        try (Database db = Database.open(ws)) {
+            GradleModel.Extract extract = new GradleModel.Extract(List.of(new GradleModel.Project(
+                    ":", "svc-orders", "com.acme", "0.1.0", Path.of("/w/svc-orders"),
+                    List.of("java"), false, List.of(),
+                    Map.of("compileClasspath", new GradleModel.DepConfig(
+                            List.of(new GradleModel.DeclaredDep("com.acme", "lib-core", "2.3.0")),
+                            List.of(new GradleModel.ResolvedDep("com.acme", "lib-core", "2.3.0", List.of()),
+                                    new GradleModel.ResolvedDep("org.slf4j", "slf4j-api", "2.0.13", List.of())),
+                            List.of())))),
+                    List.of());
+            RepoScan scan = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");
+            IndexPersistence.persistRepo(db.jdbi(), scan, extract, "OK", null);
+
+            List<Map<String, Object>> edges = db.jdbi().withHandle(h ->
+                    h.createQuery("SELECT to_name, declared_version, resolved_version, mode FROM dep_edge")
+                            .mapToMap().list());
+            assertThat(edges).hasSize(1);
+            assertThat(edges.get(0)).containsEntry("to_name", "lib-core")
+                    .containsEntry("declared_version", "2.3.0")
+                    .containsEntry("resolved_version", "2.3.0")
+                    .containsEntry("mode", "PINNED");
+        }
+    }
+
+    @Test
+    void gaPublishedByAnotherRepoRecordsConflictWarningOnTheRepoRow() {
+        try (Database db = Database.open(ws)) {
+            GradleModel.Extract owner = publisherExtract("lib-core", "com.acme", "lib-core");
+            IndexPersistence.persistRepo(db.jdbi(),
+                    new RepoScan("lib-core", Path.of("/w/lib-core"), "a".repeat(40), "main", ""),
+                    owner, "OK", null);
+            GradleModel.Extract squatter = publisherExtract("lib-core-fork", "com.acme", "lib-core");
+            IndexPersistence.persistRepo(db.jdbi(),
+                    new RepoScan("lib-core-fork", Path.of("/w/lib-core-fork"), "b".repeat(40), "main", ""),
+                    squatter, "OK", null);
+
+            String error = db.jdbi().withHandle(h -> h.createQuery(
+                            "SELECT error FROM repo WHERE name='lib-core-fork'")
+                    .mapTo(String.class).one());
+            assertThat(error).contains("GA conflict").contains("com.acme:lib-core").contains("lib-core");
+            // the original owner's row is untouched
+            java.util.Optional<String> ownerError = db.jdbi().withHandle(h -> h.createQuery(
+                            "SELECT error FROM repo WHERE name='lib-core'")
+                    .mapTo(String.class).findOne());
+            assertThat(ownerError).isEmpty();
+        }
+    }
+
+    private static GradleModel.Extract publisherExtract(String moduleName, String grp, String artifactId) {
+        return new GradleModel.Extract(List.of(new GradleModel.Project(
+                ":", moduleName, grp, "1.0.0", Path.of("/w/" + moduleName),
+                List.of("java-library", "maven-publish"), false,
+                List.of(new GradleModel.Publication(grp, artifactId)),
+                Map.of("compileClasspath", new GradleModel.DepConfig(List.of(), List.of(), List.of())))),
+                List.of());
+    }
+
+    @Test
     void reindexReplacesOldRowsAndMarkStalePreservesThem() {
         try (Database db = Database.open(ws)) {
             RepoScan scan = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");

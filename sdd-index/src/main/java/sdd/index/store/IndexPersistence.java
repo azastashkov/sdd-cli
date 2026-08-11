@@ -68,12 +68,14 @@ public final class IndexPersistence {
 
         if (!p.publications().isEmpty()) {
             for (GradleModel.Publication pub : p.publications()) {
-                insertArtifact(h, moduleId, pub.groupId(), pub.artifactId());
+                insertArtifact(h, repoId, moduleId, pub.groupId(), pub.artifactId());
             }
         } else if (p.group() != null && !p.group().isBlank()) {
-            insertArtifact(h, moduleId, p.group(), p.name());
+            insertArtifact(h, repoId, moduleId, p.group(), p.name());
         }
 
+        // Edges are DECLARED dependencies only. The resolved set from the init script is the
+        // full lenient classpath (transitives included); those are not this module's own edges.
         Map<String, MergedDep> merged = new LinkedHashMap<>();
         p.configurations().forEach((cfgName, cfg) -> {
             for (GradleModel.DeclaredDep d : cfg.declared()) {
@@ -83,14 +85,16 @@ public final class IndexPersistence {
                     m.declaredVersion = d.version();
                 }
             }
+        });
+        // Resolution results only enrich declared edges with the version actually selected.
+        for (GradleModel.DepConfig cfg : p.configurations().values()) {
             for (GradleModel.ResolvedDep r : cfg.resolved()) {
-                MergedDep m = merged.computeIfAbsent(r.group() + ":" + r.name(),
-                        k -> new MergedDep(r.group(), r.name(), cfgName));
-                if (m.resolvedVersion == null) {
+                MergedDep m = merged.get(r.group() + ":" + r.name());
+                if (m != null && m.resolvedVersion == null) {
                     m.resolvedVersion = r.version();
                 }
             }
-        });
+        }
         for (MergedDep d : merged.values()) {
             boolean inCatalog = catalogGAs.contains(d.group + ":" + d.name);
             h.createUpdate("""
@@ -105,7 +109,22 @@ public final class IndexPersistence {
         }
     }
 
-    private static void insertArtifact(Handle h, long moduleId, String grp, String name) {
+    private static void insertArtifact(Handle h, long repoId, long moduleId, String grp, String name) {
+        // The GA may already be claimed by a module in another repo. The upsert still wins
+        // (last writer owns the mapping) but the takeover must not be silent: record it on the
+        // repo row so `sdd index` surfaces it. Full resolution lives in the linker report.
+        h.createQuery("""
+                        SELECT r.name FROM artifact a
+                        JOIN module m ON m.id = a.module_id
+                        JOIN repo r ON r.id = m.repo_id
+                        WHERE a.grp = :g AND a.name = :n AND r.id <> :repo""")
+                .bind("g", grp).bind("n", name).bind("repo", repoId)
+                .mapTo(String.class).findOne()
+                .ifPresent(other -> h.createUpdate(
+                                "UPDATE repo SET error = COALESCE(error, '') || :note WHERE id = :repo")
+                        .bind("note", "GA conflict: " + grp + ":" + name
+                                + " also published by " + other + "; ")
+                        .bind("repo", repoId).execute());
         h.createUpdate("INSERT INTO artifact(grp, name, module_id) VALUES (:g, :n, :m) "
                         + "ON CONFLICT(grp, name) DO UPDATE SET module_id=excluded.module_id")
                 .bind("g", grp).bind("n", name).bind("m", moduleId).execute();
