@@ -132,4 +132,22 @@ class RestMatcherTest {
         assertThat(RestMatcher.verbsCompatible("GET", "ANY")).isTrue();
         assertThat(RestMatcher.verbsCompatible("GET", "POST")).isFalse();
     }
+
+    @Test
+    void manualPinDecrementsCountersForReplacedEdges() {
+        client(ordersModule, "RESTTEMPLATE", "POST", "/pay/charge", null, "/pay/charge");
+        endpoint(billingModule, "POST", "/pay/charge");
+        endpoint(inventoryModule, "POST", "/pay/charge");   // ambiguous: LOW × 2 before the pin
+
+        RestMatcher.Report report = RestMatcher.match(db.jdbi(), List.of(
+                new ManualEdge("svc-orders", "POST", "/pay/charge", "billing-service")));
+
+        // the pin deleted the svc-orders→billing LOW row and replaced it with HIGH/MANUAL;
+        // the svc-orders→inventory LOW row survives — counters must match surviving rows
+        assertThat(report.low()).isEqualTo(1);
+        assertThat(report.manual()).isEqualTo(1);
+        Integer lowRows = db.jdbi().withHandle(h -> h.createQuery(
+                "SELECT count(*) FROM rest_call_edge WHERE confidence='LOW'").mapTo(Integer.class).one());
+        assertThat(lowRows).isEqualTo(report.low());
+    }
 }

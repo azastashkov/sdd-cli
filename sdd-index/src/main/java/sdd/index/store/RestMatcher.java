@@ -97,6 +97,17 @@ public final class RestMatcher {
                 }
                 for (long cid : clientIds) {
                     for (long eid : endpointIds) {
+                        List<String> replaced = h.createQuery(
+                                "SELECT confidence FROM rest_call_edge WHERE client_id=:c AND endpoint_id=:e")
+                                .bind("c", cid).bind("e", eid).mapTo(String.class).list();
+                        for (String confidence : replaced) {
+                            switch (confidence) {
+                                case "HIGH" -> high--;
+                                case "MEDIUM" -> medium--;
+                                case "LOW" -> low--;
+                                default -> { }
+                            }
+                        }
                         h.createUpdate("DELETE FROM rest_call_edge WHERE client_id=:c AND endpoint_id=:e")
                                 .bind("c", cid).bind("e", eid).execute();
                         insertEdge(h, cid, eid, "HIGH", "MANUAL");
