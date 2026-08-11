@@ -8,6 +8,7 @@ CREATE TABLE repo(
   head_commit TEXT,
   branch TEXT,
   dirty_hash TEXT,
+  included_builds TEXT,
   gradle_status TEXT,
   parse_status TEXT,
   error TEXT,
