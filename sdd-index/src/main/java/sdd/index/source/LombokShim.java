@@ -32,7 +32,14 @@ public final class LombokShim {
     public static Result apply(TypeDeclaration<?> type) {
         Set<String> annotationNames = type.getAnnotations().stream()
                 .map(a -> a.getName().getIdentifier()).collect(Collectors.toSet());
-        boolean unknownLombok = annotationNames.stream()
+        // Nothing below synthesizes from field-level annotations (that is 2B-2), so a field-level
+        // @Getter/@Setter/... means members exist that we are not reporting. Say so via PARTIAL
+        // instead of claiming an OK surface we know is incomplete.
+        boolean fieldLevelGenerating = type.getFields().stream()
+                .flatMap(f -> f.getAnnotations().stream())
+                .map(a -> a.getName().getIdentifier())
+                .anyMatch(n -> GENERATING.contains(n) && importedFromLombok(type, n));
+        boolean unknownLombok = fieldLevelGenerating || annotationNames.stream()
                 .anyMatch(n -> !GENERATING.contains(n) && !IGNORED.contains(n)
                         && importedFromLombok(type, n));
         List<SourceModel.MemberInfo> synthesized = new ArrayList<>();

@@ -134,6 +134,26 @@ class IndexServiceTest {
     }
 
     @Test
+    void repoIndexedBeforeSourceExtractionExistedIsStillIndexed() throws Exception {
+        Path dir = Files.createDirectories(ws.resolve("legacy"));
+        Files.createDirectories(dir.resolve("src/main/java"));
+        Files.writeString(dir.resolve("src/main/java/L.java"), "public class L {}\n");
+        try (Database db = Database.open(ws)) {
+            RepoScan scan = new RepoScan("legacy", dir, "a".repeat(40), "main", "");
+            IndexPersistence.persistRepo(db.jdbi(), scan, oneModuleAt("legacy", dir), "OK", null);
+            // a row written by a pre-source-extraction build: gradle status OK, fingerprint
+            // current, but parse_status never set — it must not be mistaken for "already parsed"
+            db.jdbi().useHandle(h -> h.execute("UPDATE repo SET parse_status=NULL WHERE name='legacy'"));
+
+            IndexService.RepoResult r = new IndexService().indexRepo(db.jdbi(),
+                    p -> oneModuleAt("legacy", dir), scan); // identical fingerprint
+
+            assertThat(r.skipped()).isFalse();
+            assertThat(typeCount(db, "legacy")).isEqualTo(1);
+        }
+    }
+
+    @Test
     void successfulIndexRunExtractsSourceAndPersistsApiSurface() throws Exception {
         Path dir = Files.createDirectories(ws.resolve("has-source"));
         Files.createDirectories(dir.resolve("src/main/java"));

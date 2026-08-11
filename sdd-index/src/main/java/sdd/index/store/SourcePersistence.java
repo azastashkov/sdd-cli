@@ -87,11 +87,18 @@ public final class SourcePersistence {
         }
     }
 
+    /**
+     * Sets parse_status and, when given, appends a note to the repo's error column. Notes are
+     * "; "-terminated, but the existing error may not be (a gradle failure message is written
+     * raw), so the separator is re-established rather than assumed: rtrim any trailing "; " off
+     * what is there and put exactly one back. An empty/NULL error gains no leading separator.
+     */
     public static void updateParseStatus(Jdbi jdbi, String repoName, String parseStatus, String errorAppend) {
         jdbi.useHandle(h -> h.createUpdate("""
                         UPDATE repo SET parse_status=:status,
                           error = CASE WHEN :append IS NULL THEN error
-                                       ELSE COALESCE(error, '') || :append || '; ' END
+                                       ELSE COALESCE(NULLIF(rtrim(COALESCE(error, ''), '; '), '') || '; ', '')
+                                            || :append || '; ' END
                         WHERE name=:name""")
                 .bind("status", parseStatus).bind("append", errorAppend)
                 .bind("name", repoName).execute());

@@ -38,8 +38,10 @@ public final class ReferenceExtractor {
                 try {
                     String declaring = call.resolve().declaringType().getQualifiedName();
                     targets.add(new Target(declaring, "CALL"));
-                } catch (Exception ignored) {
-                    // best-effort: unresolvable call sites are skipped
+                } catch (Exception | StackOverflowError ignored) {
+                    // best-effort: unresolvable call sites are skipped. StackOverflowError is in
+                    // the list because the symbol solver recurses without bound on deep generics;
+                    // it unwinds harmlessly here and costs us one call site, not the run.
                 }
             }
 
@@ -71,7 +73,9 @@ public final class ReferenceExtractor {
     private static java.util.Optional<String> resolveType(ClassOrInterfaceType type) {
         try {
             return java.util.Optional.of(type.resolve().asReferenceType().getQualifiedName());
-        } catch (Exception e) {
+        } catch (Exception | StackOverflowError e) {
+            // see the call-site catch above: an unresolvable (or stack-blowing) supertype is
+            // skipped rather than sinking the module
             return java.util.Optional.empty();
         }
     }

@@ -66,8 +66,13 @@ public final class SourceParser {
                         } else {
                             issues.add(rel + ": " + result.getProblems());
                         }
-                    } catch (Exception e) {
-                        issues.add(rel + ": " + e.getMessage());
+                    } catch (Exception | StackOverflowError e) {
+                        // The symbol solver recurses on deeply generic or mutually referential
+                        // types and overflows the stack on real code. By the time this catch runs
+                        // the stack has unwound, so the file is recorded as an issue and the walk
+                        // continues — one pathological file must not cost us the whole module.
+                        // Named explicitly instead of catching Error: OOM must still be fatal.
+                        issues.add(rel + ": " + describe(e));
                     }
                 });
             } catch (IOException e) {
@@ -75,5 +80,10 @@ public final class SourceParser {
             }
         }
         return new Session(List.copyOf(units), List.copyOf(issues));
+    }
+
+    /** StackOverflowError carries no message, so fall back to the type name. */
+    private static String describe(Throwable t) {
+        return t.getMessage() == null ? t.toString() : t.getMessage();
     }
 }

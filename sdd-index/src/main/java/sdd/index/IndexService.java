@@ -81,9 +81,12 @@ public final class IndexService {
         // A FAILED parse_status must not be treated as "unchanged, skip": with repo-atomic source
         // writes, a failed extraction leaves the previous (pre-failure) data intact, so retrying
         // on the next run is coherent and cheap — unlike a gradle-status skip, nothing was lost.
+        // A NULL parse_status is not "parsed fine" either: rows written before source extraction
+        // existed have one, and skipping them would leave those repos without source data forever.
         Optional<String> stored = jdbi.withHandle(h -> h.createQuery("""
                         SELECT head_commit || ':' || dirty_hash FROM repo
-                        WHERE name=:n AND gradle_status='OK' AND COALESCE(parse_status,'') != 'FAILED'""")
+                        WHERE name=:n AND gradle_status='OK'
+                          AND parse_status IS NOT NULL AND parse_status != 'FAILED'""")
                 .bind("n", scan.name()).mapTo(String.class).findOne());
         if (stored.isPresent() && stored.get().equals(scan.fingerprint())) {
             return new RepoResult(scan.name(), "OK", null, 0, 0, true, null);
@@ -134,13 +137,19 @@ public final class IndexService {
      * Runs source extraction for a repo whose gradle model was just persisted (OK or DEGRADED).
      * A failure here — a JavaParser bug, an unreadable jar, anything — must stay confined to this
      * repo's parse_status; it must never propagate and sink the whole indexing run.
+     *
+     * <p>StackOverflowError is caught alongside RuntimeException because JavaParser's symbol
+     * solver recurses on deeply generic or mutually referential types and blows the stack on
+     * real-world code. It is recoverable (the stack has already unwound by the time we get here)
+     * and it is the one Error this pipeline provokes by itself, so it is named explicitly rather
+     * than swallowing every Error — an OutOfMemoryError still ends the run, as it should.
      */
     private String runSourceExtraction(Jdbi jdbi, RepoScan scan, GradleModel.Extract extract) {
         try {
             long repoId = jdbi.withHandle(h -> h.createQuery("SELECT id FROM repo WHERE name=:n")
                     .bind("n", scan.name()).mapTo(Long.class).one());
             return SourceExtraction.extractRepo(jdbi, repoId, scan.name(), scan.path(), extract);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | StackOverflowError e) {
             SourcePersistence.updateParseStatus(jdbi, scan.name(), "FAILED",
                     "source extraction failed: " + firstLine(e.getMessage()));
             return "FAILED";

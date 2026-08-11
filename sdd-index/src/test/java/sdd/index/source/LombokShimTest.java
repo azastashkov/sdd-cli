@@ -102,6 +102,37 @@ class LombokShimTest {
         assertThat(count).isEqualTo(1);
         assertThat(t.members()).filteredOn(m -> m.signature().equals("getId()")).first()
                 .satisfies(m -> assertThat(m.synthesizedBy()).isNull());
+        // type-level @Getter is fully synthesized, so confidence stays OK
+        assertThat(t.apiConfidence()).isEqualTo("OK");
+    }
+
+    @Test
+    void fieldLevelGeneratingAnnotationMarksPartial() throws Exception {
+        SourceModel.TypeInfo t = extractFirst("""
+                package com.acme;
+                import lombok.Getter;
+                public class T {
+                    @Getter private String id;
+                    public void real() {}
+                }
+                """);
+        // the shim only synthesizes from type-level annotations, so getId() is missing from the
+        // member list — PARTIAL is the honest confidence until field-level synthesis lands
+        assertThat(t.members()).extracting(SourceModel.MemberInfo::signature)
+                .doesNotContain("getId()");
+        assertThat(t.apiConfidence()).isEqualTo("PARTIAL");
+    }
+
+    @Test
+    void fieldAnnotationThatIsNotLombokStaysOk() throws Exception {
+        SourceModel.TypeInfo t = extractFirst("""
+                package com.acme;
+                import org.junit.jupiter.api.io.TempDir;
+                public class T {
+                    @TempDir private String id;
+                }
+                """);
+        assertThat(t.apiConfidence()).isEqualTo("OK");
     }
 
     @Test

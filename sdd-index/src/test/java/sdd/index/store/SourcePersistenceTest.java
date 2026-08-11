@@ -87,7 +87,27 @@ class SourcePersistenceTest {
         Map<String, Object> repo = db.jdbi().withHandle(h ->
                 h.createQuery("SELECT parse_status, error FROM repo").mapToMap().one());
         assertThat(repo.get("parse_status")).isEqualTo("DEGRADED");
-        assertThat((String) repo.get("error")).contains("old note").contains("3 files failed");
+        // an already-separated note is not double-separated
+        assertThat(repo.get("error")).isEqualTo("old note; 3 files failed; ");
+    }
+
+    @Test
+    void parseStatusAppendSeparatesFromAnErrorThatDoesNotEndInASeparator() {
+        // what a gradle failure leaves behind: persistRepo writes the raw message, no trailing "; "
+        db.jdbi().useHandle(h -> h.execute("UPDATE repo SET error='gradle kaput' WHERE id=" + repoId));
+        SourcePersistence.updateParseStatus(db.jdbi(), "lib-core", "DEGRADED",
+                "3 source files failed to parse");
+        String error = db.jdbi().withHandle(h ->
+                h.createQuery("SELECT error FROM repo").mapTo(String.class).one());
+        assertThat(error).isEqualTo("gradle kaput; 3 source files failed to parse; ");
+    }
+
+    @Test
+    void parseStatusAppendOnAnEmptyErrorDoesNotLeadWithASeparator() {
+        SourcePersistence.updateParseStatus(db.jdbi(), "lib-core", "DEGRADED", "1 file failed");
+        String error = db.jdbi().withHandle(h ->
+                h.createQuery("SELECT error FROM repo").mapTo(String.class).one());
+        assertThat(error).isEqualTo("1 file failed; ");
     }
 
     @Test
