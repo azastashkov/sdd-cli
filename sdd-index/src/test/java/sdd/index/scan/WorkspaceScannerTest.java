@@ -31,6 +31,20 @@ class WorkspaceScannerTest {
     }
 
     @Test
+    void unreadableRepoIsRecordedAsFailureAndDoesNotStopTheScan() throws Exception {
+        FixtureRepo.in(ws, "healthy").file("a.txt", "x").commit("init");
+        Files.createDirectories(ws.resolve("wrecked"));
+        Files.writeString(ws.resolve("wrecked/.git"), "this is not a gitdir link\n");
+
+        List<String> failures = new java.util.ArrayList<>();
+        List<RepoScan> scans = WorkspaceScanner.scan(ws, List.of(), failures);
+
+        assertThat(scans).extracting(RepoScan::name).containsExactly("healthy");
+        assertThat(failures).hasSize(1);
+        assertThat(failures.get(0)).startsWith("wrecked:").contains("wrecked");
+    }
+
+    @Test
     void dirtyTreeChangesFingerprint() throws Exception {
         FixtureRepo repo = FixtureRepo.in(ws, "r").file("a.txt", "one").commit("init");
         String cleanFp = WorkspaceScanner.scan(ws, List.of()).get(0).fingerprint();

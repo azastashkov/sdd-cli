@@ -24,17 +24,37 @@ public final class WorkspaceScanner {
     private WorkspaceScanner() {}
 
     public static List<RepoScan> scan(Path workspace, List<String> excludes) {
+        return scan(workspace, excludes, new ArrayList<>());
+    }
+
+    /**
+     * Scans every git repo directly under {@code workspace}. A repo whose git metadata cannot be
+     * read is skipped rather than aborting the whole scan; {@code failuresOut} receives one
+     * {@code "name: error"} entry per skipped repo so callers can report it.
+     */
+    public static List<RepoScan> scan(Path workspace, List<String> excludes, List<String> failuresOut) {
         List<RepoScan> result = new ArrayList<>();
         try (Stream<Path> children = Files.list(workspace)) {
             children.filter(Files::isDirectory)
                     .filter(dir -> Files.exists(dir.resolve(".git")))
                     .filter(dir -> !excludes.contains(dir.getFileName().toString()))
                     .sorted()
-                    .forEach(dir -> result.add(scanRepo(dir)));
+                    .forEach(dir -> {
+                        try {
+                            result.add(scanRepo(dir));
+                        } catch (RuntimeException e) {
+                            failuresOut.add(dir.getFileName() + ": " + describe(e));
+                        }
+                    });
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
         return result;
+    }
+
+    private static String describe(RuntimeException e) {
+        String message = e.getMessage() == null ? e.toString() : e.getMessage();
+        return e.getCause() == null ? message : message + " (" + e.getCause() + ")";
     }
 
     private static RepoScan scanRepo(Path dir) {
