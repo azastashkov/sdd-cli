@@ -82,4 +82,27 @@ class ApiSurfaceExtractorTest {
         String h2 = ApiSurfaceExtractor.extract(s2, true).get(0).signatureHash();
         assertThat(h1).isNotEqualTo(h2);
     }
+
+    @Test
+    void recordComponentsAppearAsMembersAndAffectHash() throws Exception {
+        var s1 = parse("src/main/java/com/acme/Money.java",
+                "package com.acme;\npublic record Money(String currency) {}\n");
+        SourceModel.TypeInfo t1 = ApiSurfaceExtractor.extract(s1, true).get(0);
+        assertThat(t1.members()).extracting(SourceModel.MemberInfo::signature).contains("currency()");
+        assertThat(t1.members()).filteredOn(m -> m.signature().equals("currency()")).first()
+                .satisfies(m -> assertThat(m.synthesizedBy()).isEqualTo("record-component"));
+        var s2 = parse("src/main/java/com/acme/Money.java",
+                "package com.acme;\npublic record Money(String currency, long cents) {}\n");
+        String h2 = ApiSurfaceExtractor.extract(s2, true).get(0).signatureHash();
+        assertThat(t1.signatureHash()).isNotEqualTo(h2);
+    }
+
+    @Test
+    void nestedTypeInsideAnnotationIsExtracted() throws Exception {
+        var session = parse("src/main/java/com/acme/Marker.java",
+                "package com.acme;\npublic @interface Marker { enum Nested { A } }\n");
+        assertThat(ApiSurfaceExtractor.extract(session, true))
+                .extracting(SourceModel.TypeInfo::kind)
+                .containsExactlyInAnyOrder("ANNOTATION", "ENUM");
+    }
 }

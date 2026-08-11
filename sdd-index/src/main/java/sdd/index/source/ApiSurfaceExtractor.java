@@ -26,7 +26,8 @@ public final class ApiSurfaceExtractor {
                     .map(p -> p.getNameAsString()).orElse("");
             unit.cu().findAll(TypeDeclaration.class).stream()
                     .filter(t -> t.isPublic() || t.hasModifier(com.github.javaparser.ast.Modifier.Keyword.PROTECTED)
-                            || t.getParentNode().filter(p -> p instanceof ClassOrInterfaceDeclaration c && c.isInterface()).isPresent())
+                            || (!t.isPrivate() && (t.getParentNode().filter(p -> p instanceof ClassOrInterfaceDeclaration c && c.isInterface()).isPresent()
+                                    || t.getParentNode().filter(p -> p instanceof AnnotationDeclaration).isPresent())))
                     .forEach(t -> out.add(toTypeInfo(t, pkg, unit.relPath(), libraryModule)));
         }
         return List.copyOf(out);
@@ -61,6 +62,24 @@ public final class ApiSurfaceExtractor {
                 f.getVariables().forEach(v -> members.add(new SourceModel.MemberInfo(
                         v.getNameAsString(), v.getNameAsString(),
                         v.getType().asString(), null)));
+            }
+        }
+        // Add record components as synthesized members
+        if (t instanceof RecordDeclaration r) {
+            var existingMethods = members.stream()
+                    .filter(m -> m.synthesizedBy() == null)
+                    .map(SourceModel.MemberInfo::signature)
+                    .collect(Collectors.toSet());
+            for (var component : r.getParameters()) {
+                String componentSig = component.getNameAsString() + "()";
+                // Skip if an explicit method already has this signature
+                if (!existingMethods.contains(componentSig)) {
+                    members.add(new SourceModel.MemberInfo(
+                            component.getNameAsString(),
+                            componentSig,
+                            component.getType().asString(),
+                            "record-component"));
+                }
             }
         }
         return members;
