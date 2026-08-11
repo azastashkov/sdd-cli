@@ -104,7 +104,8 @@ public final class LombokShim {
                 .flatMap(List::stream)
                 .anyMatch(imp -> {
                     String name = imp.getNameAsString();
-                    if (!name.startsWith("lombok.")) {
+                    boolean lombokRoot = name.equals("lombok") || name.startsWith("lombok.");
+                    if (!lombokRoot) {
                         return false;
                     }
                     if (!imp.isAsterisk()) {

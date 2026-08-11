@@ -139,4 +139,15 @@ class LombokShimTest {
                 """);
         assertThat(t.apiConfidence()).isEqualTo("PARTIAL");
     }
+
+    @Test
+    void bareLombokWildcardStillFlagsUnknownLombokAnnotations() throws Exception {
+        SourceModel.TypeInfo t = extractFirst("""
+                package com.acme;
+                import lombok.*;
+                @SuperBuilder
+                public class T {}
+                """);
+        assertThat(t.apiConfidence()).isEqualTo("PARTIAL");
+    }
 }
