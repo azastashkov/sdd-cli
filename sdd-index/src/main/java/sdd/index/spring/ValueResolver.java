@@ -37,14 +37,20 @@ public final class ValueResolver {
     private record Part(String text, Resolution origin) {}
 
     /**
-     * {@code visited} is the identity set of {@link VariableDeclarator}s already followed in this
-     * resolution chain, threaded through every recursive call from {@link #resolve}. A constant
-     * whose initializer refers back to a declarator already on the chain (directly or through
-     * intermediates) is a cycle: {@code visited.add(v)} returning {@code false} short-circuits to
-     * {@link Optional#empty()} immediately instead of recursing further. This bounds recursion
-     * depth by the number of distinct declarators in the chain, rather than relying on the
-     * {@code StackOverflowError} catch below to terminate an unbounded cyclic recursion — that
-     * catch stays in place purely as a backstop for cases this guard doesn't anticipate.
+     * {@code visited} is the identity set of {@link VariableDeclarator}s on the <em>current
+     * resolution path</em> — not everything ever visited in this call to {@link #resolve} — so it
+     * has to be path-scoped with backtracking, not append-only. A constant whose initializer
+     * refers back to a declarator already on the active path (directly or through intermediates)
+     * is a true cycle: {@code visited.add(v)} returning {@code false} short-circuits to
+     * {@link Optional#empty()} immediately instead of recursing further. Once a declarator's
+     * subtree has been fully resolved, it is removed from {@code visited} in a {@code finally}
+     * block so a sibling branch may legitimately revisit it: e.g. {@code B = D; C = D; X = B + C}
+     * is a diamond-shaped DAG, not a cycle, and C reaching D again after B's branch already
+     * resolved through D and returned must not be mistaken for a cycle. This bounds recursion
+     * depth on any single path by the number of distinct declarators on that path, rather than
+     * relying on the {@code StackOverflowError} catch below to terminate an unbounded cyclic
+     * recursion — that catch stays in place purely as a backstop for cases this guard doesn't
+     * anticipate.
      */
     private static Optional<Part> resolvePart(Expression expr, Set<VariableDeclarator> visited) {
         if (expr instanceof StringLiteralExpr lit) {
@@ -67,9 +73,16 @@ public final class ValueResolver {
                 if (resolved instanceof com.github.javaparser.resolution.declarations.ResolvedFieldDeclaration
                         || resolved instanceof com.github.javaparser.resolution.declarations.ResolvedValueDeclaration) {
                     VariableDeclarator v = declaratorOf(resolved).orElse(null);
-                    if (v != null && v.getInitializer().isPresent() && visited.add(v)) {
-                        return resolvePart(v.getInitializer().get(), visited)
-                                .map(p -> new Part(p.text(), Resolution.CONSTANT));
+                    if (v != null && v.getInitializer().isPresent()) {
+                        if (!visited.add(v)) {
+                            return Optional.empty(); // true cycle: v is on the current path
+                        }
+                        try {
+                            return resolvePart(v.getInitializer().get(), visited)
+                                    .map(p -> new Part(p.text(), Resolution.CONSTANT));
+                        } finally {
+                            visited.remove(v); // backtrack: siblings may legitimately revisit v
+                        }
                     }
                 }
             } catch (Exception | StackOverflowError ignored) {
