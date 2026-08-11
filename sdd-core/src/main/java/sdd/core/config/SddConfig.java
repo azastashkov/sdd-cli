@@ -9,4 +9,5 @@ public record SddConfig(
         String retrieval,
         Map<String, ModelEndpoint> models,
         Map<Integer, Path> jdkHomes,
-        List<String> excludes) {}
+        List<String> excludes,
+        Map<String, String> artifactOverrides) {}

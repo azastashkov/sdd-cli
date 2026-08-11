@@ -51,4 +51,31 @@ class DatabaseTest {
                     .hasMessageContaining("FOREIGN KEY");
         }
     }
+
+    @Test
+    void migrationIsAtomic() throws Exception {
+        // Corrupt path: a migration that fails half-way must leave no trace.
+        // Simulate by opening a db, then attempting a second migrate with a bad script
+        // via the package-visible seam.
+        try (Database db = Database.open(ws)) {
+            assertThat(db.schemaVersion()).isEqualTo(1);
+        }
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                Database.applyMigrationForTest(ws, "CREATE TABLE t_ok(id INTEGER);\n;\nCREATE BROKEN SYNTAX"))
+                .isInstanceOf(Exception.class);
+        try (Database db = Database.open(ws)) {
+            List<String> tables = db.jdbi().withHandle(h ->
+                    h.createQuery("SELECT name FROM sqlite_master WHERE type='table'").mapTo(String.class).list());
+            assertThat(tables).doesNotContain("t_ok"); // first statement rolled back with the failure
+        }
+    }
+
+    @Test
+    void busyTimeoutIsConfigured() throws Exception {
+        try (Database db = Database.open(ws)) {
+            Integer timeout = db.jdbi().withHandle(h ->
+                    h.createQuery("PRAGMA busy_timeout").mapTo(Integer.class).one());
+            assertThat(timeout).isEqualTo(5000);
+        }
+    }
 }

@@ -146,4 +146,25 @@ class ConfigLoaderTest {
                 .isInstanceOf(ConfigException.class)
                 .hasMessageContaining("jdk_homes");
     }
+
+    @Test
+    void nonListExcludesFails() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + "excludes: oops\n"), ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("excludes");
+    }
+
+    @Test
+    void parsesArtifactOverrides() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL + """
+                artifact_overrides:
+                  com.acme:legacy-lib: platform-repo
+                """), ENV);
+        assertThat(c.artifactOverrides()).containsEntry("com.acme:legacy-lib", "platform-repo");
+    }
+
+    @Test
+    void artifactOverridesDefaultEmpty() throws Exception {
+        assertThat(ConfigLoader.load(write(MINIMAL), ENV).artifactOverrides()).isEmpty();
+    }
 }

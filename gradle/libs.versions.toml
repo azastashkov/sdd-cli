@@ -8,6 +8,9 @@ jgit = "6.10.0.202406032230-r"
 junit = "5.10.3"
 assertj = "3.26.3"
 wiremock = "3.9.1"
+gradle-tooling = "8.10.2"
+tomlj = "1.1.1"
+slf4j-nop = "2.0.13"
 
 [libraries]
 picocli = { module = "info.picocli:picocli", version.ref = "picocli" }
@@ -20,6 +23,9 @@ junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "jun
 junit-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 assertj = { module = "org.assertj:assertj-core", version.ref = "assertj" }
 wiremock = { module = "org.wiremock:wiremock", version.ref = "wiremock" }
+gradle-tooling = { module = "org.gradle:gradle-tooling-api", version.ref = "gradle-tooling" }
+tomlj = { module = "org.tomlj:tomlj", version.ref = "tomlj" }
+slf4j-nop = { module = "org.slf4j:slf4j-nop", version.ref = "slf4j-nop" }
 
 [bundles]
 test = ["junit-jupiter", "assertj"]

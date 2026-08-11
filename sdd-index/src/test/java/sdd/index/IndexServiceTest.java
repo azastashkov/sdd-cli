@@ -1,0 +1,132 @@
+package sdd.index;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import sdd.core.config.SddConfig;
+import sdd.core.db.Database;
+import sdd.index.gradle.ExtractionException;
+import sdd.index.gradle.GradleModel;
+import sdd.index.scan.RepoScan;
+import sdd.index.store.IndexPersistence;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/** Gradle-free coverage of IndexService's failure handling. */
+class IndexServiceTest {
+    @TempDir Path ws;
+
+    private SddConfig config() {
+        return new SddConfig(ws, "fts", Map.of(), Map.of(), List.of(), Map.of());
+    }
+
+    private static GradleModel.Extract oneModule(String name) {
+        return new GradleModel.Extract(List.of(new GradleModel.Project(
+                ":", name, "com.acme", "1.0.0", Path.of("/w/" + name),
+                List.of("java"), false, List.of(),
+                Map.of("compileClasspath", new GradleModel.DepConfig(
+                        List.of(new GradleModel.DeclaredDep("com.acme", "lib-core", "2.3.0")),
+                        List.of(), List.of())))),
+                List.of());
+    }
+
+    private Path wreckedRepo(String name) throws Exception {
+        Path dir = Files.createDirectories(ws.resolve(name));
+        Files.writeString(dir.resolve(".git"), "this is not a gitdir link\n");
+        return dir;
+    }
+
+    private String repoStatus(Database db, String name) {
+        return db.jdbi().withHandle(h -> h.createQuery("SELECT gradle_status FROM repo WHERE name=:n")
+                .bind("n", name).mapTo(String.class).one());
+    }
+
+    private int moduleCount(Database db, String repo) {
+        return db.jdbi().withHandle(h -> h.createQuery("""
+                        SELECT count(*) FROM module m JOIN repo r ON r.id=m.repo_id WHERE r.name=:n""")
+                .bind("n", repo).mapTo(Integer.class).one());
+    }
+
+    @Test
+    void unscannableRepoWithNoStoredRowsIsReportedFailedAndTheRunSurvives() throws Exception {
+        wreckedRepo("wrecked");
+        try (Database db = Database.open(ws)) {
+            List<IndexService.RepoResult> results = new IndexService().run(config(), db);
+
+            assertThat(results).singleElement().satisfies(r -> {
+                assertThat(r.repo()).isEqualTo("wrecked");
+                assertThat(r.status()).isEqualTo("FAILED");
+                assertThat(r.error()).isNotBlank();
+            });
+            assertThat(repoStatus(db, "wrecked")).isEqualTo("FAILED");
+        }
+    }
+
+    @Test
+    void unscannableRepoWithStoredRowsKeepsThemAsStale() throws Exception {
+        Path dir = wreckedRepo("wrecked");
+        try (Database db = Database.open(ws)) {
+            IndexPersistence.persistRepo(db.jdbi(),
+                    new RepoScan("wrecked", dir, "a".repeat(40), "main", ""),
+                    oneModule("wrecked"), "OK", null);
+
+            List<IndexService.RepoResult> results = new IndexService().run(config(), db);
+
+            assertThat(results).singleElement().satisfies(r -> {
+                assertThat(r.status()).isEqualTo("STALE_OK");
+                assertThat(r.modules()).isEqualTo(1);
+            });
+            assertThat(moduleCount(db, "wrecked")).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void unexpectedExtractorFailureIsContainedInsteadOfSinkingTheRun() throws Exception {
+        Path dir = Files.createDirectories(ws.resolve("boom"));
+        try (Database db = Database.open(ws)) {
+            IndexService.RepoResult r = new IndexService().indexRepo(db.jdbi(),
+                    p -> { throw new IllegalStateException("tooling api exploded"); },
+                    new RepoScan("boom", dir, "a".repeat(40), "main", ""));
+
+            assertThat(r.status()).isEqualTo("FAILED");
+            assertThat(r.error()).contains("tooling api exploded");
+            assertThat(repoStatus(db, "boom")).isEqualTo("FAILED");
+        }
+    }
+
+    @Test
+    void emptyStaticFallbackKeepsExistingRowsInsteadOfWipingThem() throws Exception {
+        Path dir = Files.createDirectories(ws.resolve("half-broken")); // no build files to parse
+        try (Database db = Database.open(ws)) {
+            IndexPersistence.persistRepo(db.jdbi(),
+                    new RepoScan("half-broken", dir, "a".repeat(40), "main", ""),
+                    oneModule("half-broken"), "OK", null);
+
+            IndexService.RepoResult r = new IndexService().indexRepo(db.jdbi(),
+                    p -> { throw new ExtractionException("gradle kaput"); },
+                    new RepoScan("half-broken", dir, "b".repeat(40), "main", ""));
+
+            assertThat(r.status()).isEqualTo("STALE_OK");
+            assertThat(r.error()).contains("gradle kaput");
+            assertThat(repoStatus(db, "half-broken")).isEqualTo("STALE_OK");
+            assertThat(moduleCount(db, "half-broken")).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void emptyStaticFallbackWithNoStoredRowsStillPersistsDegraded() throws Exception {
+        Path dir = Files.createDirectories(ws.resolve("fresh-broken"));
+        try (Database db = Database.open(ws)) {
+            IndexService.RepoResult r = new IndexService().indexRepo(db.jdbi(),
+                    p -> { throw new ExtractionException("gradle kaput"); },
+                    new RepoScan("fresh-broken", dir, "a".repeat(40), "main", ""));
+
+            assertThat(r.status()).isEqualTo("DEGRADED");
+            assertThat(repoStatus(db, "fresh-broken")).isEqualTo("DEGRADED");
+        }
+    }
+}

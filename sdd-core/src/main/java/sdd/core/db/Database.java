@@ -31,6 +31,7 @@ public final class Database implements AutoCloseable {
         }
         SQLiteConfig config = new SQLiteConfig();
         config.enforceForeignKeys(true);
+        config.setBusyTimeout(5000);
         config.setJournalMode(SQLiteConfig.JournalMode.WAL);
         SQLiteDataSource ds = new SQLiteDataSource(config);
         ds.setUrl("jdbc:sqlite:" + workspace.resolve(".sdd/index.db"));
@@ -51,19 +52,31 @@ public final class Database implements AutoCloseable {
                     .mapTo(Integer.class).findOne().orElse(0);
         });
         for (int v = current + 1; v <= MIGRATIONS.size(); v++) {
-            String script = readResource("/sdd/db/" + MIGRATIONS.get(v - 1));
-            int version = v;
-            jdbi.useHandle(h -> {
-                for (String statement : script.split("\\n;\\n")) {
-                    if (!statement.isBlank()) {
-                        h.execute(statement);
-                    }
-                }
-                h.execute("INSERT INTO meta(key, value) VALUES ('schema_version', ?) "
-                        + "ON CONFLICT(key) DO UPDATE SET value = excluded.value", version);
-            });
+            applyMigration(jdbi, v, readResource("/sdd/db/" + MIGRATIONS.get(v - 1)));
         }
         return MIGRATIONS.size();
+    }
+
+    private static void applyMigration(Jdbi jdbi, int version, String script) {
+        jdbi.useTransaction(h -> {
+            for (String statement : script.split("\\n;\\n")) {
+                if (!statement.isBlank()) {
+                    h.execute(statement);
+                }
+            }
+            h.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+            h.execute("INSERT INTO meta(key, value) VALUES ('schema_version', ?) "
+                    + "ON CONFLICT(key) DO UPDATE SET value = excluded.value", version);
+        });
+    }
+
+    static void applyMigrationForTest(Path workspace, String script) {
+        SQLiteConfig config = new SQLiteConfig();
+        config.enforceForeignKeys(true);
+        config.setBusyTimeout(5000);
+        SQLiteDataSource ds = new SQLiteDataSource(config);
+        ds.setUrl("jdbc:sqlite:" + workspace.resolve(".sdd/index.db"));
+        applyMigration(Jdbi.create(ds), 999, script);
     }
 
     private static String readResource(String path) {
@@ -82,5 +95,5 @@ public final class Database implements AutoCloseable {
     public int schemaVersion() { return schemaVersion; }
 
     @Override
-    public void close() { /* pooled per-call connections; nothing to close */ }
+    public void close() { /* one physical connection per Jdbi handle, closed per call; nothing pooled to release */ }
 }

@@ -64,11 +64,26 @@ public final class ConfigLoader {
             }
         }
 
-        List<String> excludes = root.get("excludes") instanceof List<?> l
-                ? l.stream().map(String::valueOf).toList()
-                : List.of();
+        Object excludesNode = root.get("excludes");
+        List<String> excludes;
+        if (excludesNode == null) {
+            excludes = List.of();
+        } else if (excludesNode instanceof List<?> l) {
+            excludes = l.stream().map(String::valueOf).toList();
+        } else {
+            throw new ConfigException("excludes must be a list, got: " + excludesNode);
+        }
 
-        return new SddConfig(workspace, retrieval, Map.copyOf(models), Map.copyOf(jdkHomes), excludes);
+        Map<String, String> artifactOverrides = new LinkedHashMap<>();
+        if (root.get("artifact_overrides") instanceof Map<?, ?> am) {
+            for (Map.Entry<?, ?> e : am.entrySet()) {
+                artifactOverrides.put(String.valueOf(e.getKey()),
+                        str(e.getValue(), env, "artifact_overrides"));
+            }
+        }
+
+        return new SddConfig(workspace, retrieval, Map.copyOf(models), Map.copyOf(jdkHomes),
+                excludes, Map.copyOf(artifactOverrides));
     }
 
     @SuppressWarnings("unchecked")

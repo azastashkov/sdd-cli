@@ -3,11 +3,13 @@ plugins {
 }
 dependencies {
     implementation(project(":sdd-core"))
+    implementation(project(":sdd-index"))
     implementation(libs.picocli)
     testImplementation(libs.bundles.test)
     testRuntimeOnly(libs.junit.launcher)
     testImplementation(libs.wiremock)
     testImplementation(testFixtures(project(":sdd-core")))
+    testImplementation(testFixtures(project(":sdd-index")))
 }
 application {
     mainClass.set("sdd.cli.SddCli")
