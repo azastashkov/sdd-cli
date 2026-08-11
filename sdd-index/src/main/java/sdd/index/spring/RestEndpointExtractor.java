@@ -9,7 +9,6 @@ import sdd.index.source.SourceParser;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 public final class RestEndpointExtractor {
     private static final Map<String, String> VERB_ANNOTATIONS = Map.of(
@@ -57,13 +56,17 @@ public final class RestEndpointExtractor {
                     mappings.add(new Mapping(e.getValue(), resolvePaths(ann, props))));
         }
         AnnotationValues.annotation(m, "RequestMapping").ifPresent(ann -> {
-            String verb = AnnotationValues.attr(ann, "method")
-                    .map(expr -> {
-                        String text = expr.toString();
-                        int dot = text.lastIndexOf('.');
-                        return dot >= 0 ? text.substring(dot + 1) : text;
-                    }).orElse("ANY");
-            mappings.add(new Mapping(verb, resolvePaths(ann, props)));
+            List<Expression> methodExprs = AnnotationValues.attrList(ann, "method");
+            if (methodExprs.isEmpty()) {
+                mappings.add(new Mapping("ANY", resolvePaths(ann, props)));
+            } else {
+                List<String> paths = resolvePaths(ann, props);
+                for (Expression me : methodExprs) {
+                    String text = me.toString();
+                    int dot = text.lastIndexOf('.');
+                    mappings.add(new Mapping(dot >= 0 ? text.substring(dot + 1) : text, paths));
+                }
+            }
         });
         return mappings;
     }

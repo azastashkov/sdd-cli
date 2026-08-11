@@ -94,4 +94,21 @@ class RestEndpointExtractorTest {
         assertThat(endpoints).extracting(SpringModel.EndpointInfo::pathTemplate)
                 .containsExactlyInAnyOrder("/a", "/b", "/health");
     }
+
+    @Test
+    void multiVerbRequestMappingFansOutOneEndpointPerVerb() throws Exception {
+        var session = parse("""
+                package com.acme.web;
+                import org.springframework.web.bind.annotation.*;
+                @RestController
+                public class C {
+                    @RequestMapping(path = "/multi", method = {RequestMethod.GET, RequestMethod.POST})
+                    public String multi() { return "m"; }
+                }
+                """);
+        List<SpringModel.EndpointInfo> endpoints = RestEndpointExtractor.extract(session, Map.of());
+        assertThat(endpoints).extracting(SpringModel.EndpointInfo::httpMethod)
+                .containsExactlyInAnyOrder("GET", "POST");
+        assertThat(endpoints).allSatisfy(e -> assertThat(e.pathTemplate()).isEqualTo("/multi"));
+    }
 }
