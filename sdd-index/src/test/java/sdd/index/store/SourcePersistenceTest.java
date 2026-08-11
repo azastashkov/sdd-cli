@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SourcePersistenceTest {
     @TempDir Path ws;
@@ -87,6 +88,31 @@ class SourcePersistenceTest {
                 h.createQuery("SELECT parse_status, error FROM repo").mapToMap().one());
         assertThat(repo.get("parse_status")).isEqualTo("DEGRADED");
         assertThat((String) repo.get("error")).contains("old note").contains("3 files failed");
+    }
+
+    @Test
+    void repoAtomicWriteRollsBackEveryModuleOnMidRepoFailure() {
+        // A second module in the same repo. When SourceExtraction persists a whole repo, both
+        // modules' writes (and the shared clearRepoFileRefs) share one caller-owned transaction.
+        long module2Id = db.jdbi().withHandle(h -> {
+            h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (" + repoId + ", ':sub', 'LIBRARY')");
+            return h.createQuery("SELECT id FROM module WHERE gradle_path=':sub'").mapTo(Long.class).one();
+        });
+        // A null target_fqcn violates api_usage's NOT NULL constraint, forcing a mid-transaction
+        // failure on the second module — after the first module already wrote fresh java_type rows.
+        SourceModel.UsageRef invalidUsage = new SourceModel.UsageRef(null, "IMPORT");
+
+        assertThatThrownBy(() -> db.jdbi().useTransaction(h -> {
+            SourcePersistence.clearRepoFileRefs(h, repoId);
+            SourcePersistence.persistModuleSource(h, repoId, moduleId, List.of(type()), List.of(), List.of());
+            SourcePersistence.persistModuleSource(h, repoId, module2Id, List.of(), List.of(invalidUsage), List.of());
+        })).isInstanceOf(RuntimeException.class);
+
+        // Full rollback: the first module's otherwise-successful java_type write must not survive
+        // a failure elsewhere in the same repo-wide transaction.
+        Integer typeCount = db.jdbi().withHandle(h -> h.createQuery("SELECT count(*) FROM java_type")
+                .mapTo(Integer.class).one());
+        assertThat(typeCount).isEqualTo(0);
     }
 
     @Test

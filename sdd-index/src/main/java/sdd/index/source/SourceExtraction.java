@@ -45,12 +45,17 @@ public final class SourceExtraction {
             types.forEach(t -> repoTypeIndex.putIfAbsent(t.fqcn(), t.relPath()));
         }
 
-        SourcePersistence.clearRepoFileRefs(jdbi, repoId);
-        for (ModuleWork w : work) {
-            ReferenceExtractor.Refs refs = ReferenceExtractor.extract(w.session(), repoTypeIndex);
-            SourcePersistence.persistModuleSource(jdbi, repoId, w.moduleId(),
-                    typesByModule.get(w.moduleId()), refs.usages(), refs.fileRefs());
-        }
+        // One transaction for the whole repo: a mid-loop failure (bad row, constraint violation)
+        // must roll back every module written so far, not leave a mix of freshly extracted and
+        // stale modules plus a wiped file_ref table.
+        jdbi.useTransaction(h -> {
+            SourcePersistence.clearRepoFileRefs(h, repoId);
+            for (ModuleWork w : work) {
+                ReferenceExtractor.Refs refs = ReferenceExtractor.extract(w.session(), repoTypeIndex);
+                SourcePersistence.persistModuleSource(h, repoId, w.moduleId(),
+                        typesByModule.get(w.moduleId()), refs.usages(), refs.fileRefs());
+            }
+        });
 
         String status = totalIssues == 0 ? "OK" : "DEGRADED";
         SourcePersistence.updateParseStatus(jdbi, repoName, status,

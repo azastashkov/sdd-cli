@@ -78,8 +78,12 @@ public final class IndexService {
     }
 
     RepoResult indexRepo(Jdbi jdbi, Extractor extractor, RepoScan scan) {
-        Optional<String> stored = jdbi.withHandle(h -> h.createQuery(
-                        "SELECT head_commit || ':' || dirty_hash FROM repo WHERE name=:n AND gradle_status='OK'")
+        // A FAILED parse_status must not be treated as "unchanged, skip": with repo-atomic source
+        // writes, a failed extraction leaves the previous (pre-failure) data intact, so retrying
+        // on the next run is coherent and cheap — unlike a gradle-status skip, nothing was lost.
+        Optional<String> stored = jdbi.withHandle(h -> h.createQuery("""
+                        SELECT head_commit || ':' || dirty_hash FROM repo
+                        WHERE name=:n AND gradle_status='OK' AND COALESCE(parse_status,'') != 'FAILED'""")
                 .bind("n", scan.name()).mapTo(String.class).findOne());
         if (stored.isPresent() && stored.get().equals(scan.fingerprint())) {
             return new RepoResult(scan.name(), "OK", null, 0, 0, true, null);
@@ -170,10 +174,14 @@ public final class IndexService {
                 .bind("n", r.repo()).mapTo(Integer.class).one());
         // Re-read from the repo row rather than trust r.parseStatus(): it is the source of truth
         // for skipped repos (which never ran extraction this call) and matches what a freshly
-        // extracted repo already wrote, so a single read covers every case uniformly.
-        String parseStatus = jdbi.withHandle(h -> h.createQuery(
+        // extracted repo already wrote. But a repo whose gradle scan itself failed and was never
+        // persisted before (persistRepo never touches parse_status) has no stored value yet — fall
+        // back to the in-flight result's parseStatus (e.g. the literal "FAILED" staleOrFailed sets)
+        // rather than losing it to a stray NULL.
+        String stored = jdbi.withHandle(h -> h.createQuery(
                         "SELECT parse_status FROM repo WHERE name=:n")
                 .bind("n", r.repo()).mapTo(String.class).findOne().orElse(null));
+        String parseStatus = stored != null ? stored : r.parseStatus();
         return new RepoResult(r.repo(), r.status(), parseStatus, modules, internal, r.skipped(), r.error());
     }
 }

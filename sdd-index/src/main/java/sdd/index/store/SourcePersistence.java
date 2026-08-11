@@ -12,34 +12,49 @@ public final class SourcePersistence {
     private SourcePersistence() {}
 
     public static void clearRepoFileRefs(Jdbi jdbi, long repoId) {
-        jdbi.useHandle(h -> h.createUpdate("DELETE FROM file_ref WHERE repo_id=:r")
-                .bind("r", repoId).execute());
+        jdbi.useHandle(h -> clearRepoFileRefs(h, repoId));
+    }
+
+    /**
+     * Handle-based overload so callers that must write a whole repo's source atomically (see
+     * {@link sdd.index.source.SourceExtraction#extractRepo}) can compose this with
+     * {@link #persistModuleSource(Handle, long, long, java.util.List, java.util.List, java.util.List)}
+     * inside a single caller-owned transaction, instead of each getting its own.
+     */
+    public static void clearRepoFileRefs(Handle h, long repoId) {
+        h.createUpdate("DELETE FROM file_ref WHERE repo_id=:r").bind("r", repoId).execute();
     }
 
     public static void persistModuleSource(Jdbi jdbi, long repoId, long moduleId,
                                            java.util.List<SourceModel.TypeInfo> types,
                                            java.util.List<SourceModel.UsageRef> usages,
                                            java.util.List<SourceModel.FileRef> fileRefs) {
-        jdbi.useTransaction(h -> {
-            h.createUpdate("DELETE FROM java_type WHERE module_id=:m").bind("m", moduleId).execute();
-            h.createUpdate("DELETE FROM api_usage WHERE from_module_id=:m").bind("m", moduleId).execute();
-            FtsSymbolWriter.deleteForModule(h, moduleId);
-            for (SourceModel.TypeInfo t : types) {
-                insertType(h, moduleId, t);
-            }
-            for (SourceModel.UsageRef u : usages) {
-                h.createUpdate("INSERT INTO api_usage(from_module_id, target_fqcn, ref_kind) "
-                                + "VALUES (:m, :fqcn, :kind)")
-                        .bind("m", moduleId).bind("fqcn", u.targetFqcn())
-                        .bind("kind", u.refKind()).execute();
-            }
-            for (SourceModel.FileRef fr : fileRefs) {
-                h.createUpdate("INSERT INTO file_ref(repo_id, src_file, dst_file, ref_count) "
-                                + "VALUES (:r, :src, :dst, :count)")
-                        .bind("r", repoId).bind("src", fr.srcRel())
-                        .bind("dst", fr.dstRel()).bind("count", fr.count()).execute();
-            }
-        });
+        jdbi.useTransaction(h -> persistModuleSource(h, repoId, moduleId, types, usages, fileRefs));
+    }
+
+    /** Handle-based overload — see {@link #clearRepoFileRefs(Handle, long)}. */
+    public static void persistModuleSource(Handle h, long repoId, long moduleId,
+                                           java.util.List<SourceModel.TypeInfo> types,
+                                           java.util.List<SourceModel.UsageRef> usages,
+                                           java.util.List<SourceModel.FileRef> fileRefs) {
+        h.createUpdate("DELETE FROM java_type WHERE module_id=:m").bind("m", moduleId).execute();
+        h.createUpdate("DELETE FROM api_usage WHERE from_module_id=:m").bind("m", moduleId).execute();
+        FtsSymbolWriter.deleteForModule(h, moduleId);
+        for (SourceModel.TypeInfo t : types) {
+            insertType(h, moduleId, t);
+        }
+        for (SourceModel.UsageRef u : usages) {
+            h.createUpdate("INSERT INTO api_usage(from_module_id, target_fqcn, ref_kind) "
+                            + "VALUES (:m, :fqcn, :kind)")
+                    .bind("m", moduleId).bind("fqcn", u.targetFqcn())
+                    .bind("kind", u.refKind()).execute();
+        }
+        for (SourceModel.FileRef fr : fileRefs) {
+            h.createUpdate("INSERT INTO file_ref(repo_id, src_file, dst_file, ref_count) "
+                            + "VALUES (:r, :src, :dst, :count)")
+                    .bind("r", repoId).bind("src", fr.srcRel())
+                    .bind("dst", fr.dstRel()).bind("count", fr.count()).execute();
+        }
     }
 
     private static void insertType(Handle h, long moduleId, SourceModel.TypeInfo t) {

@@ -72,6 +72,9 @@ class IndexServiceTest {
                 assertThat(r.repo()).isEqualTo("wrecked");
                 assertThat(r.status()).isEqualTo("FAILED");
                 assertThat(r.error()).isNotBlank();
+                // persistRepo never sets parse_status, so the DB has no stored value yet — withCounts
+                // must fall back to the in-flight "FAILED" instead of losing it to a NULL re-read.
+                assertThat(r.parseStatus()).isEqualTo("FAILED");
             });
             assertThat(repoStatus(db, "wrecked")).isEqualTo("FAILED");
         }
@@ -106,6 +109,27 @@ class IndexServiceTest {
             assertThat(r.status()).isEqualTo("FAILED");
             assertThat(r.error()).contains("tooling api exploded");
             assertThat(repoStatus(db, "boom")).isEqualTo("FAILED");
+        }
+    }
+
+    @Test
+    void failedParseStatusForcesRetryEvenWhenGradleFingerprintUnchanged() throws Exception {
+        Path dir = Files.createDirectories(ws.resolve("retry-me"));
+        try (Database db = Database.open(ws)) {
+            RepoScan scan = new RepoScan("retry-me", dir, "a".repeat(40), "main", "");
+            IndexPersistence.persistRepo(db.jdbi(), scan, oneModule("retry-me"), "OK", null);
+            // Simulate what a prior run's mid-repo source-extraction failure would have left behind:
+            // the gradle picture is OK and the fingerprint is unchanged, but the source parse failed.
+            db.jdbi().useHandle(h -> h.execute(
+                    "UPDATE repo SET parse_status='FAILED' WHERE name='retry-me'"));
+
+            boolean[] extractorCalled = {false};
+            IndexService.RepoResult r = new IndexService().indexRepo(db.jdbi(),
+                    p -> { extractorCalled[0] = true; return oneModule("retry-me"); },
+                    scan); // identical fingerprint to the persisted row
+
+            assertThat(extractorCalled[0]).isTrue();
+            assertThat(r.skipped()).isFalse();
         }
     }
 
