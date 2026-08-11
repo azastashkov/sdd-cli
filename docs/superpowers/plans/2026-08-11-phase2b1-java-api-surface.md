@@ -1594,3 +1594,17 @@ git commit -m "test: end-to-end source pipeline coverage without and with real g
 1. **Spec coverage (2B-1 scope):** JavaParser + symbol solver backed by resolved classpath → Task 2; library API surface with signature hashes + `.internal.` exclusion → Task 3; Lombok synthesis + ignore-list + PARTIAL flood guard → Task 4; `api_usage` (type granularity) + `file_ref` → Tasks 5–7; FTS population via `FtsSymbolWriter` (types + members, words invariant enforced) → Task 6; `parse_status` per repo with per-file degradation → Tasks 6–7; generated-code source root (`build/generated`) → Task 2; composite-build IT carry-forward → Task 1. Deliberately deferred: REST/Kafka/config extraction + resolution ladder + `spring_app_name`/`context_path` (Plan 2B-2); repo cards, REST matching, curation report (2C); `.internal.` config knob (2B-2, constant for now).
 2. **Placeholder scan:** all code steps complete; the two documented contingencies (nested-type modifier filter in Task 3, constructor seam in Task 8) specify exactly what to do, not "handle later".
 3. **Type consistency:** `SourceParser.Session/ParsedUnit` used identically in Tasks 2–5, 7; `SourceModel.TypeInfo(fqcn, kind, isApi, relPath, annotations, apiConfidence, signatureHash, members)` order consistent across Tasks 3, 4, 6; `LombokShim.Result(synthesized, unknownLombok)` matches wiring; `SourcePersistence` signatures match Task 7's calls; `UsageLinker.Report(internalRefs, prunedExternal)` matches Tasks 7–8; `RepoResult` gains `parseStatus` after `status` with all construction sites enumerated.
+
+---
+
+## Execution outcome (2026-08-11)
+
+All 8 tasks complete; final whole-branch review found 2 Criticals (api_usage FK wedge on referenced-repo re-index; FTS orphan leak on module-id churn) + 6 Importants — all fixed in one wave and re-review-verified (138 tests green incl. real-Gradle ITs). Bonus: the composite IT caught and fixed a real 2A bug (macOS symlink path canonicalization).
+
+**Key contracts established for 2B-2/2C:**
+1. `api_usage` retains unmatched rows with NULL `target_module_id` (non-destructive linking, self-healing) — consumers MUST filter `target_module_id IS NOT NULL`.
+2. Signature hashes now include return/field/component types (`signature:returnType`) — safe to build contract detection on.
+3. All paths entering the DB go through `Paths2.canonical*` — keep it that way.
+4. FTS writes remain exclusively via `FtsSymbolWriter` (now incl. `deleteForRepo`).
+
+**Carry into 2B-2:** widen ReferenceExtractor (ObjectCreationExpr, field/return/param types — same-package recall near zero today; e2e test masks it with an artificial import); real field-level Lombok synthesis (PARTIAL flag is a stopgap); share JarTypeSolver instances across modules keyed by jar path (memory: ~150-jar classpaths × modules); measure parse+resolve time on 2–3 real repos before scaling; nested-class fqcn agreement test; enum constants/annotation members as members; consider ReflectionTypeSolver(jreOnly=true); markStale overwrites error (append instead); stream per-repo CLI output during long runs.

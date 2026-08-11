@@ -3,18 +3,16 @@ package sdd.index.store;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
+import sdd.core.retrieve.FtsSymbolWriter;
 import sdd.index.gradle.CatalogReader;
 import sdd.index.gradle.GradleModel;
 import sdd.index.gradle.ModeClassifier;
 import sdd.index.scan.RepoScan;
 
-import java.nio.file.Path;
 import java.time.Instant;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 public final class IndexPersistence {
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -28,7 +26,7 @@ public final class IndexPersistence {
             String includedJson;
             try {
                 includedJson = MAPPER.writeValueAsString(extract.includedBuilds().stream()
-                        .map(Path::toString).toList());
+                        .map(Paths2::canonicalString).toList());
             } catch (Exception e) {
                 throw new RuntimeException("Failed to serialize included builds", e);
             }
@@ -42,7 +40,7 @@ public final class IndexPersistence {
                               branch=excluded.branch, dirty_hash=excluded.dirty_hash,
                               included_builds=excluded.included_builds, gradle_status=excluded.gradle_status,
                               error=excluded.error, indexed_at=excluded.indexed_at""")
-                    .bind("name", scan.name()).bind("path", scan.path().toString())
+                    .bind("name", scan.name()).bind("path", Paths2.canonicalString(scan.path()))
                     .bind("kind", repoKind).bind("head", scan.headCommit())
                     .bind("branch", scan.branch()).bind("dirty", scan.dirtyHash())
                     .bind("included", includedJson).bind("status", gradleStatus)
@@ -50,6 +48,10 @@ public final class IndexPersistence {
                     .execute();
             long repoId = h.createQuery("SELECT id FROM repo WHERE name=:n")
                     .bind("n", scan.name()).mapTo(Long.class).one();
+            // Must precede the module delete: fts_symbol rows are keyed by module id and the
+            // modules about to be reinserted get fresh ids, so this is the last moment the old
+            // symbol rows are reachable at all.
+            FtsSymbolWriter.deleteForRepo(h, repoId);
             h.createUpdate("DELETE FROM module WHERE repo_id=:r").bind("r", repoId).execute();
             for (GradleModel.Project p : extract.projects()) {
                 insertModule(h, repoId, p, catalogGAs);

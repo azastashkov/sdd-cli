@@ -105,3 +105,17 @@ Each phase lands with its tests; TDD per superpowers:test-driven-development dur
 ## Open items deliberately deferred (post-v1)
 
 Git-hosting API integration (auto-PRs), central server/CI mode, embeddings-quality eval harness, spring-cloud-stream extraction, shared-DB edges, weekly live eval set.
+
+---
+
+## Amendment (2026-08-11): Spec ingestion — Confluence-first, format-extensible
+
+Requirement change: SDD specs currently exist ONLY as Confluence pages (plain text + pictures + table data); no canonical SDD format is defined yet. The original "own markdown format" decision is retained as the INTERNAL model, not the input format.
+
+**Design:** `sdd-plan` ingests specs through a `SpecSource` seam:
+- `interface SpecSource { NormalizedSpec load(String ref); }` — implementations are selected by ref shape/config.
+- **v1 adapter — ConfluenceExportSource:** reads an exported Confluence page file (storage-format XHTML or exported HTML). Text is extracted; tables are converted to markdown tables; images are NOT interpreted in v1 — they are recorded as attachment references in the normalized spec so the Gate-1 reviewer knows visual context exists.
+- **Normalization step (planner model, DeepSeek):** maps the free-form content into the internal structured spec model — unchanged from the original design: front matter (id/title/owner/status) + Goal + Requirements `R#` + Acceptance Criteria `A#` + Constraints `C#` + optional Touchpoints/Out of Scope/Open Questions. IDs are auto-assigned; anything the model cannot confidently map becomes an Open Question. The normalized spec is written to a file the human edits/approves exactly like a hand-written spec BEFORE impact analysis runs — Gate 1 covers normalization errors.
+- **Extensibility:** when the canonical SDD format is specified, it becomes another `SpecSource` adapter (the already-designed structured-markdown parser is the passthrough case). A Confluence REST API source (config: `confluence: {base_url, api_token: ${CONFLUENCE_API_TOKEN}}`) is a planned extension of the same seam — v1 uses exported files to avoid new infrastructure.
+
+**Unchanged:** everything downstream of ingestion (impact analysis, plan.md, contracts, agents) consumes the internal structured model only; the deterministic-first principle holds because normalization output is human-gated before anything acts on it.

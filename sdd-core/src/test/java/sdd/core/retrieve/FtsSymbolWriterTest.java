@@ -38,6 +38,27 @@ class FtsSymbolWriterTest {
     }
 
     @Test
+    void deleteForRepoRemovesRowsOfEveryModuleInThatRepoOnly() {
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> {
+                h.execute("INSERT INTO repo(name, path) VALUES ('r1', '/w/r1')");
+                h.execute("INSERT INTO repo(name, path) VALUES ('r2', '/w/r2')");
+                h.execute("INSERT INTO module(id, repo_id, gradle_path) VALUES (10, 1, ':')");
+                h.execute("INSERT INTO module(id, repo_id, gradle_path) VALUES (11, 1, ':sub')");
+                h.execute("INSERT INTO module(id, repo_id, gradle_path) VALUES (20, 2, ':')");
+                FtsSymbolWriter.insert(h, 10L, "A", "p.A");
+                FtsSymbolWriter.insert(h, 11L, "B", "p.B");
+                FtsSymbolWriter.insert(h, 20L, "C", "p.C");
+
+                FtsSymbolWriter.deleteForRepo(h, 1L);
+            });
+            List<Long> remaining = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT module_id FROM fts_symbol").mapTo(Long.class).list());
+            assertThat(remaining).containsExactly(20L);
+        }
+    }
+
+    @Test
     void rejectsNullAndBlank() {
         try (Database db = Database.open(ws)) {
             db.jdbi().useHandle(h -> {

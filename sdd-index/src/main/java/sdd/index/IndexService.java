@@ -9,16 +9,19 @@ import sdd.index.gradle.GradleModel;
 import sdd.index.gradle.StaticGradleParser;
 import sdd.index.scan.RepoScan;
 import sdd.index.scan.WorkspaceScanner;
+import sdd.index.source.SourceExtraction;
 import sdd.index.store.ArtifactLinker;
 import sdd.index.store.IndexPersistence;
+import sdd.index.store.SourcePersistence;
+import sdd.index.store.UsageLinker;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
 public final class IndexService {
-    public record RepoResult(String repo, String status, int modules, int internalDeps,
-                             boolean skipped, String error) {}
+    public record RepoResult(String repo, String status, String parseStatus, int modules,
+                             int internalDeps, boolean skipped, String error) {}
 
     /** Seam over {@link GradleExtractor#extract} so failure handling is testable without Gradle. */
     @FunctionalInterface
@@ -26,20 +29,35 @@ public final class IndexService {
         GradleModel.Extract extract(java.nio.file.Path repoDir);
     }
 
+    private final Extractor injectedExtractor;
+
     private ArtifactLinker.LinkReport lastLinkReport;
+    private UsageLinker.Report lastUsageReport;
+
+    public IndexService() {
+        this(null);
+    }
+
+    /** Seam so tests can inject a stub {@link Extractor} without shelling out to Gradle. */
+    IndexService(Extractor extractor) {
+        this.injectedExtractor = extractor;
+    }
 
     public List<RepoResult> run(SddConfig config, Database db) {
         List<String> scanFailures = new ArrayList<>();
         List<RepoScan> scans = WorkspaceScanner.scan(config.workspace(), config.excludes(), scanFailures);
-        GradleExtractor extractor = new GradleExtractor(config.jdkHomes());
+        Extractor extractor = injectedExtractor != null
+                ? injectedExtractor
+                : new GradleExtractor(config.jdkHomes())::extract;
         List<RepoResult> results = new ArrayList<>();
         for (RepoScan scan : scans) {
-            results.add(indexRepo(db.jdbi(), extractor::extract, scan));
+            results.add(indexRepo(db.jdbi(), extractor, scan));
         }
         for (String failure : scanFailures) {
             results.add(scanFailureResult(db.jdbi(), config.workspace(), failure));
         }
         lastLinkReport = ArtifactLinker.link(db.jdbi(), config.artifactOverrides());
+        lastUsageReport = UsageLinker.link(db.jdbi());
         return results.stream().map(r -> withCounts(db.jdbi(), r)).toList();
     }
 
@@ -55,17 +73,29 @@ public final class IndexService {
         return lastLinkReport;
     }
 
+    public UsageLinker.Report lastUsageReport() {
+        return lastUsageReport;
+    }
+
     RepoResult indexRepo(Jdbi jdbi, Extractor extractor, RepoScan scan) {
-        Optional<String> stored = jdbi.withHandle(h -> h.createQuery(
-                        "SELECT head_commit || ':' || dirty_hash FROM repo WHERE name=:n AND gradle_status='OK'")
+        // A FAILED parse_status must not be treated as "unchanged, skip": with repo-atomic source
+        // writes, a failed extraction leaves the previous (pre-failure) data intact, so retrying
+        // on the next run is coherent and cheap — unlike a gradle-status skip, nothing was lost.
+        // A NULL parse_status is not "parsed fine" either: rows written before source extraction
+        // existed have one, and skipping them would leave those repos without source data forever.
+        Optional<String> stored = jdbi.withHandle(h -> h.createQuery("""
+                        SELECT head_commit || ':' || dirty_hash FROM repo
+                        WHERE name=:n AND gradle_status='OK'
+                          AND parse_status IS NOT NULL AND parse_status != 'FAILED'""")
                 .bind("n", scan.name()).mapTo(String.class).findOne());
         if (stored.isPresent() && stored.get().equals(scan.fingerprint())) {
-            return new RepoResult(scan.name(), "OK", 0, 0, true, null);
+            return new RepoResult(scan.name(), "OK", null, 0, 0, true, null);
         }
         try {
             GradleModel.Extract extract = extractor.extract(scan.path());
             IndexPersistence.persistRepo(jdbi, scan, extract, "OK", null);
-            return new RepoResult(scan.name(), "OK", extract.projects().size(), 0, false, null);
+            String parseStatus = runSourceExtraction(jdbi, scan, extract);
+            return new RepoResult(scan.name(), "OK", parseStatus, extract.projects().size(), 0, false, null);
         } catch (ExtractionException gradleFailure) {
             return degraded(jdbi, scan, describe(gradleFailure));
         } catch (RuntimeException unexpected) {
@@ -82,10 +112,12 @@ public final class IndexService {
                 // Persisting an empty DEGRADED extract would delete modules and edges we already
                 // have. Keep the previous (now stale) picture instead.
                 IndexPersistence.markStale(jdbi, scan.name(), gradleError);
-                return new RepoResult(scan.name(), "STALE_OK", 0, 0, false, gradleError);
+                return new RepoResult(scan.name(), "STALE_OK", null, 0, 0, false, gradleError);
             }
             IndexPersistence.persistRepo(jdbi, scan, fallback, "DEGRADED", gradleError);
-            return new RepoResult(scan.name(), "DEGRADED", fallback.projects().size(), 0, false, gradleError);
+            String parseStatus = runSourceExtraction(jdbi, scan, fallback);
+            return new RepoResult(scan.name(), "DEGRADED", parseStatus,
+                    fallback.projects().size(), 0, false, gradleError);
         } catch (RuntimeException fallbackFailure) {
             return staleOrFailed(jdbi, scan, describe(fallbackFailure));
         }
@@ -94,11 +126,42 @@ public final class IndexService {
     private RepoResult staleOrFailed(Jdbi jdbi, RepoScan scan, String error) {
         if (hasRows(jdbi, scan.name())) {
             IndexPersistence.markStale(jdbi, scan.name(), error);
-            return new RepoResult(scan.name(), "STALE_OK", 0, 0, false, error);
+            return new RepoResult(scan.name(), "STALE_OK", null, 0, 0, false, error);
         }
         IndexPersistence.persistRepo(jdbi, scan,
                 new GradleModel.Extract(List.of(), List.of()), "FAILED", error);
-        return new RepoResult(scan.name(), "FAILED", 0, 0, false, error);
+        return new RepoResult(scan.name(), "FAILED", "FAILED", 0, 0, false, error);
+    }
+
+    /**
+     * Runs source extraction for a repo whose gradle model was just persisted (OK or DEGRADED).
+     * A failure here — a JavaParser bug, an unreadable jar, anything — must stay confined to this
+     * repo's parse_status; it must never propagate and sink the whole indexing run.
+     *
+     * <p>StackOverflowError is caught alongside RuntimeException because JavaParser's symbol
+     * solver recurses on deeply generic or mutually referential types and blows the stack on
+     * real-world code. It is recoverable (the stack has already unwound by the time we get here)
+     * and it is the one Error this pipeline provokes by itself, so it is named explicitly rather
+     * than swallowing every Error — an OutOfMemoryError still ends the run, as it should.
+     */
+    private String runSourceExtraction(Jdbi jdbi, RepoScan scan, GradleModel.Extract extract) {
+        try {
+            long repoId = jdbi.withHandle(h -> h.createQuery("SELECT id FROM repo WHERE name=:n")
+                    .bind("n", scan.name()).mapTo(Long.class).one());
+            return SourceExtraction.extractRepo(jdbi, repoId, scan.name(), scan.path(), extract);
+        } catch (RuntimeException | StackOverflowError e) {
+            SourcePersistence.updateParseStatus(jdbi, scan.name(), "FAILED",
+                    "source extraction failed: " + firstLine(e.getMessage()));
+            return "FAILED";
+        }
+    }
+
+    private static String firstLine(String s) {
+        if (s == null) {
+            return "unknown error";
+        }
+        int nl = s.indexOf('\n');
+        return nl < 0 ? s : s.substring(0, nl);
     }
 
     private static boolean hasRows(Jdbi jdbi, String repoName) {
@@ -118,6 +181,16 @@ public final class IndexService {
                         SELECT count(*) FROM dep_edge e JOIN module m ON m.id=e.from_module_id
                         JOIN repo rp ON rp.id=m.repo_id WHERE rp.name=:n AND e.is_internal=1""")
                 .bind("n", r.repo()).mapTo(Integer.class).one());
-        return new RepoResult(r.repo(), r.status(), modules, internal, r.skipped(), r.error());
+        // Re-read from the repo row rather than trust r.parseStatus(): it is the source of truth
+        // for skipped repos (which never ran extraction this call) and matches what a freshly
+        // extracted repo already wrote. But a repo whose gradle scan itself failed and was never
+        // persisted before (persistRepo never touches parse_status) has no stored value yet — fall
+        // back to the in-flight result's parseStatus (e.g. the literal "FAILED" staleOrFailed sets)
+        // rather than losing it to a stray NULL.
+        String stored = jdbi.withHandle(h -> h.createQuery(
+                        "SELECT parse_status FROM repo WHERE name=:n")
+                .bind("n", r.repo()).mapTo(String.class).findOne().orElse(null));
+        String parseStatus = stored != null ? stored : r.parseStatus();
+        return new RepoResult(r.repo(), r.status(), parseStatus, modules, internal, r.skipped(), r.error());
     }
 }

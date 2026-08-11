@@ -37,8 +37,9 @@ public final class IndexCommand implements Callable<Integer> {
             IndexService service = new IndexService();
             List<IndexService.RepoResult> results = service.run(config, db);
             for (IndexService.RepoResult r : results) {
-                out.printf(Locale.ROOT, "%-28s %-9s modules=%-3d internal-deps=%-3d%s%s%n",
-                        r.repo(), r.status(), r.modules(), r.internalDeps(),
+                out.printf(Locale.ROOT, "%-28s %-9s parse=%-8s modules=%-3d internal-deps=%-3d%s%s%n",
+                        r.repo(), r.status(), r.parseStatus() == null ? "-" : r.parseStatus(),
+                        r.modules(), r.internalDeps(),
                         r.skipped() ? " (unchanged, skipped)" : "",
                         r.error() == null ? "" : "  ! " + firstLine(r.error()));
             }
@@ -47,6 +48,7 @@ public final class IndexCommand implements Callable<Integer> {
                     link.internalEdges(), link.conflicts().size(), link.orphanArtifacts().size());
             link.conflicts().forEach(c -> out.println("  conflict: " + c));
             link.orphanArtifacts().forEach(o -> out.println("  orphan: " + o));
+            out.printf(Locale.ROOT, "usage: %d internal type refs%n", service.lastUsageReport().internalRefs());
             boolean allFailed = !results.isEmpty()
                     && results.stream().allMatch(r -> r.status().equals("FAILED"));
             return allFailed ? 1 : 0;
