@@ -81,6 +81,21 @@ class ConfigFileParserTest {
     }
 
     @Test
+    void hyphenatedProfileInFilenameIsRecognised() throws Exception {
+        Path res = resources();
+        Files.writeString(res.resolve("application-us-east.yml"), "region:\n  id: us-east-1\n");
+
+        ConfigFileParser.Result r = ConfigFileParser.parseModuleConfig(repo, repo);
+
+        assertThat(r.issues()).isEmpty();
+        assertThat(r.entries()).anySatisfy(e -> {
+            assertThat(e.key()).isEqualTo("region.id");
+            assertThat(e.value()).isEqualTo("us-east-1");
+            assertThat(e.profile()).isEqualTo("us-east");
+        });
+    }
+
+    @Test
     void unparseableYamlBecomesIssueNotException() throws Exception {
         Path res = resources();
         Files.writeString(res.resolve("application.yml"), "key: [unclosed\n  broken");

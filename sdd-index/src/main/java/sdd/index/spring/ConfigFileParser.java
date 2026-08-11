@@ -21,7 +21,7 @@ public final class ConfigFileParser {
     public record Result(List<ConfigEntry> entries, List<String> issues) {}
 
     private static final Pattern CONFIG_FILE = Pattern.compile(
-            "(application|bootstrap)(?:-([A-Za-z0-9_]+))?\\.(yml|yaml|properties)");
+            "(application|bootstrap)(?:-([A-Za-z0-9_-]+))?\\.(yml|yaml|properties)");
 
     private ConfigFileParser() {}
 

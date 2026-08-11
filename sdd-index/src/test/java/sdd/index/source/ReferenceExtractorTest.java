@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class ReferenceExtractorTest {
     @TempDir Path repo;
@@ -146,6 +147,37 @@ class ReferenceExtractorTest {
         ReferenceExtractor.Refs refs = ReferenceExtractor.extract(session, Map.of());
         assertThat(refs.usages()).noneSatisfy(u ->
                 assertThat(u.targetFqcn()).isEqualTo("Ghost.Inner"));
+    }
+
+    /**
+     * Cross-repo ("estate") resolution: a type that lives only in a classpath jar must resolve
+     * through the JarTypeSolver. The reference is written as a bare {@code Widget} behind an
+     * import, so the literal-text fallback in ReferenceExtractor cannot fire — a TYPE usage for
+     * the fully-qualified name can only come from the symbol solver reading the jar.
+     */
+    @Test
+    void estateJarTypeResolvesThroughClasspathJarNotLiteralFallback() throws Exception {
+        assumeTrue(TestJars.compilerAvailable(), "system java compiler unavailable");
+        Path jar = TestJars.compiledJar(repo, "estate-lib.jar", "Widget", """
+                package com.estate.lib;
+                public class Widget { public String name() { return "w"; } }
+                """);
+        Path src = repo.resolve("src/main/java/com/acme/svc");
+        Files.createDirectories(src);
+        Files.writeString(src.resolve("Consumer.java"), """
+                package com.acme.svc;
+                import com.estate.lib.Widget;
+                public class Consumer { private Widget widget; }
+                """);
+
+        SourceParser.Session session = SourceParser.parseModule(repo, repo, List.of(jar));
+
+        assertThat(session.issues()).isEmpty();
+        ReferenceExtractor.Refs refs = ReferenceExtractor.extract(session, Map.of());
+        assertThat(refs.usages()).anySatisfy(u -> {
+            assertThat(u.targetFqcn()).isEqualTo("com.estate.lib.Widget");
+            assertThat(u.refKind()).isEqualTo("TYPE");
+        });
     }
 
     @Test
