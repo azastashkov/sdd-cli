@@ -13,9 +13,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 public final class KafkaExtractor {
     public record KafkaResult(List<SpringModel.KafkaUse> uses, boolean streamDetected) {}
+
+    private static final Set<String> TEMPLATE_TYPE_SUFFIXES = Set.of("KafkaTemplate", "KafkaOperations");
 
     private KafkaExtractor() {}
 
@@ -107,12 +110,25 @@ public final class KafkaExtractor {
             return false;
         }
         try {
-            if (scope.get().calculateResolvedType().describe().contains("KafkaTemplate")) {
+            String qualified = scope.get().calculateResolvedType().describe();
+            // Resolution succeeded: this is a definite answer. Accept only the known
+            // KafkaTemplate-family types; do NOT fall back to the name heuristic for a
+            // resolved-but-wrong type (that would let e.g. an unrelated field named
+            // "kafkaTemplateBacklog" rescue itself via a lucky name).
+            return isTemplateTypeName(qualified);
+        } catch (Exception | StackOverflowError ignored) {
+            // Resolution failed (e.g. unresolvable/synthetic scope): fall back to the
+            // text heuristic, which is our only signal in that case.
+            return scope.get().toString().toLowerCase(Locale.ROOT).contains("kafkatemplate");
+        }
+    }
+
+    private static boolean isTemplateTypeName(String qualified) {
+        for (String suffix : TEMPLATE_TYPE_SUFFIXES) {
+            if (qualified.endsWith(suffix)) {
                 return true;
             }
-        } catch (Exception | StackOverflowError ignored) {
-            // fall through
         }
-        return scope.get().toString().toLowerCase(Locale.ROOT).contains("kafkatemplate");
+        return false;
     }
 }

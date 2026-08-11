@@ -96,6 +96,33 @@ class KafkaExtractorTest {
     }
 
     @Test
+    void resolvedNonKafkaReceiverIsRejectedDespiteLuckyName() throws Exception {
+        var session = parse("""
+                package com.acme;
+                import java.util.ArrayList;
+                public class K2 {
+                    private ArrayList<String> kafkaTemplateBacklog = new ArrayList<>();
+                    public void go() { kafkaTemplateBacklog.add("orders.v1"); }
+                }
+                """);
+        // add() isn't send(), so also verify with a send-named helper class:
+        // (brief's literal K3 body has no send() call at all, which means the receiver check
+        // is never reached and the assertion is vacuous; adding a send() invocation here makes
+        // it actually exercise the resolved-definite-non-match rejection path, per the comment's
+        // stated intent — see task-1-report.md for details.)
+        var session2 = parse("""
+                package com.acme;
+                public class K3 {
+                    private java.util.concurrent.ExecutorService kafkaTemplateExec
+                            = java.util.concurrent.Executors.newSingleThreadExecutor();
+                    public void go() { kafkaTemplateExec.send("orders.v1"); }
+                }
+                """);
+        assertThat(KafkaExtractor.extract(session, Map.of(), List.of(), List.of()).uses()).isEmpty();
+        assertThat(KafkaExtractor.extract(session2, Map.of(), List.of(), List.of()).uses()).isEmpty();
+    }
+
+    @Test
     void streamDetectionByJarNameAndConfigKey() throws Exception {
         var session = parse("package com.acme;\npublic class K {}\n");
         assertThat(KafkaExtractor.extract(session, Map.of(),

@@ -151,4 +151,35 @@ class RestClientExtractorTest {
             assertThat(c.uriTemplate()).isEqualTo("/api/items");
         });
     }
+
+    @Test
+    void reflectiveMethodChainEmitsRowWithVerbFromHttpMethodArg() throws Exception {
+        var session = parse("src/main/java/com/acme/W2.java", """
+                package com.acme;
+                import org.springframework.http.HttpMethod;
+                public class W2 {
+                    private org.springframework.web.reactive.function.client.WebClient webClient;
+                    public void go() { webClient.method(HttpMethod.GET).uri("/api/generic").retrieve(); }
+                }
+                """);
+        List<SpringModel.ClientInfo> clients = RestClientExtractor.extract(session, Map.of());
+        assertThat(clients).singleElement().satisfies(c -> {
+            assertThat(c.kind()).isEqualTo("WEBCLIENT");
+            assertThat(c.httpMethod()).isEqualTo("GET");
+            assertThat(c.uriTemplate()).isEqualTo("/api/generic");
+        });
+    }
+
+    @Test
+    void resolvedNonTemplateReceiverIsRejectedDespiteLuckyName() throws Exception {
+        var session = parse("src/main/java/com/acme/M.java", """
+                package com.acme;
+                import java.util.HashMap;
+                public class M {
+                    private HashMap<String, String> restTemplateCache = new HashMap<>();
+                    public void go() { restTemplateCache.put("k", "v"); }
+                }
+                """);
+        assertThat(RestClientExtractor.extract(session, Map.of())).isEmpty();
+    }
 }

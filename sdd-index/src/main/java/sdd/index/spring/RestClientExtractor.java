@@ -13,6 +13,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class RestClientExtractor {
     private static final Map<String, String> TEMPLATE_VERBS = Map.of(
@@ -23,6 +25,9 @@ public final class RestClientExtractor {
             "GetMapping", "GET", "PostMapping", "POST", "PutMapping", "PUT",
             "DeleteMapping", "DELETE", "PatchMapping", "PATCH");
     private static final Set<String> CHAIN_VERBS = Set.of("get", "post", "put", "delete", "patch");
+    private static final Set<String> TEMPLATE_TYPE_SUFFIXES =
+            Set.of("RestTemplate", "RestOperations", "TestRestTemplate");
+    private static final Pattern HTTP_METHOD_ARG = Pattern.compile("HttpMethod\\.([A-Z]+)");
 
     private RestClientExtractor() {}
 
@@ -151,51 +156,82 @@ public final class RestClientExtractor {
         }
         try {
             String qualified = scope.get().calculateResolvedType().describe();
-            if (qualified.endsWith("RestTemplate")) {
+            // Resolution succeeded: this is a definite answer. Accept only the known
+            // RestTemplate-family types; do NOT fall back to the name heuristic for a
+            // resolved-but-wrong type (that would let e.g. a HashMap field named
+            // "restTemplateCache" rescue itself via a lucky name).
+            return isTemplateTypeName(qualified);
+        } catch (Exception | StackOverflowError ignored) {
+            // Resolution failed (e.g. unresolvable/synthetic scope): fall back to the
+            // text heuristic, which is our only signal in that case.
+            return scope.get().toString().toLowerCase(Locale.ROOT).contains("resttemplate");
+        }
+    }
+
+    private static boolean isTemplateTypeName(String qualified) {
+        for (String suffix : TEMPLATE_TYPE_SUFFIXES) {
+            if (qualified.endsWith(suffix)) {
                 return true;
             }
-        } catch (Exception | StackOverflowError ignored) {
-            // fall through to text heuristic
         }
-        return scope.get().toString().toLowerCase(Locale.ROOT).contains("resttemplate");
+        return false;
     }
 
     private record VerbKind(String verb, String kind) {}
 
     private static Optional<VerbKind> chainVerbAndKind(MethodCallExpr uriCall) {
-        String chainText = uriCall.toString();
-        String kind = null;
-        try {
-            Optional<Expression> scope = uriCall.getScope();
-            if (scope.isPresent()) {
-                String resolved = scope.get().calculateResolvedType().describe();
-                if (resolved.contains("WebClient")) {
-                    kind = "WEBCLIENT";
-                } else if (resolved.contains("RestClient")) {
-                    kind = "RESTCLIENT";
-                }
-            }
-        } catch (Exception | StackOverflowError ignored) {
-            // text heuristic below
-        }
+        String kind = resolveChainKind(uriCall).orElse(null);
         if (kind == null) {
-            if (chainText.contains("webClient") || chainText.contains("WebClient")) {
-                kind = "WEBCLIENT";
-            } else if (chainText.contains("restClient") || chainText.contains("RestClient")) {
-                kind = "RESTCLIENT";
-            } else {
-                return Optional.empty();
-            }
+            return Optional.empty();
         }
         Expression scope = uriCall.getScope().orElse(null);
         while (scope instanceof MethodCallExpr chained) {
-            if (CHAIN_VERBS.contains(chained.getNameAsString())) {
-                return Optional.of(new VerbKind(
-                        chained.getNameAsString().toUpperCase(Locale.ROOT), kind));
+            String chainedName = chained.getNameAsString();
+            if (CHAIN_VERBS.contains(chainedName)) {
+                return Optional.of(new VerbKind(chainedName.toUpperCase(Locale.ROOT), kind));
+            }
+            if (chainedName.equals("method")) {
+                return Optional.of(new VerbKind(httpMethodArgVerb(chained), kind));
             }
             scope = chained.getScope().orElse(null);
         }
         return Optional.empty();
+    }
+
+    private static Optional<String> resolveChainKind(MethodCallExpr uriCall) {
+        Optional<Expression> scope = uriCall.getScope();
+        if (scope.isEmpty()) {
+            return Optional.empty();
+        }
+        try {
+            String resolved = scope.get().calculateResolvedType().describe();
+            // Resolution succeeded: this is a definite answer. Accept only WebClient/RestClient;
+            // do NOT fall back to the text heuristic for a resolved-but-wrong type.
+            if (resolved.contains("WebClient")) {
+                return Optional.of("WEBCLIENT");
+            } else if (resolved.contains("RestClient")) {
+                return Optional.of("RESTCLIENT");
+            }
+            return Optional.empty();
+        } catch (Exception | StackOverflowError ignored) {
+            // Resolution failed: fall back to the text heuristic, our only signal here.
+            String chainText = uriCall.toString();
+            if (chainText.contains("webClient") || chainText.contains("WebClient")) {
+                return Optional.of("WEBCLIENT");
+            } else if (chainText.contains("restClient") || chainText.contains("RestClient")) {
+                return Optional.of("RESTCLIENT");
+            }
+            return Optional.empty();
+        }
+    }
+
+    private static String httpMethodArgVerb(MethodCallExpr methodCall) {
+        if (methodCall.getArguments().isEmpty()) {
+            return "ANY";
+        }
+        String argText = methodCall.getArgument(0).toString();
+        Matcher matcher = HTTP_METHOD_ARG.matcher(argText);
+        return matcher.find() ? matcher.group(1) : "ANY";
     }
 
     private static String enclosingTypeFqcn(MethodCallExpr call) {
