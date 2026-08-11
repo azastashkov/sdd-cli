@@ -2,6 +2,7 @@ package sdd.index.spring;
 
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import sdd.index.source.SourceParser;
@@ -50,28 +51,68 @@ public final class RestClientExtractor {
                         ValueResolver.Resolved r = ValueResolver.resolve(expr, props);
                         return r.value() != null ? r.value() : r.rawExpr();
                     }).orElse(null);
-            String base = AnnotationValues.attr(feign.get(), "path")
-                    .map(expr -> Optional.ofNullable(ValueResolver.resolve(expr, props).value()).orElse(""))
+            ValueResolver.Resolved baseResolved = AnnotationValues.attr(feign.get(), "path")
+                    .map(expr -> ValueResolver.resolve(expr, props))
+                    .orElse(new ValueResolver.Resolved("", ValueResolver.Resolution.LITERAL, ""));
+            String feignBase = baseResolved.value() != null ? baseResolved.value() : "";
+            // A class-level @RequestMapping on the @FeignClient interface (pre-2020 Spring Cloud
+            // style) contributes an additional base-path segment ahead of every method mapping.
+            // v1: only the first value/path entry is folded in — multiple class-level paths are
+            // rare enough to leave for a later pass.
+            String classPath = AnnotationValues.annotation(c, "RequestMapping")
+                    .map(ann -> AnnotationValues.attrListAny(ann, "value", "path"))
+                    .filter(paths -> !paths.isEmpty())
+                    .map(paths -> Optional.ofNullable(ValueResolver.resolve(paths.get(0), props).value())
+                            .orElse(""))
                     .orElse("");
+            String base = RouteNormalizer.join(feignBase, classPath);
             for (MethodDeclaration m : c.getMethods()) {
                 for (Map.Entry<String, String> verb : FEIGN_VERBS.entrySet()) {
-                    AnnotationValues.annotation(m, verb.getKey()).ifPresent(ann -> {
-                        List<Expression> paths = AnnotationValues.attrListAny(ann, "value", "path");
-                        if (paths.isEmpty()) {
-                            out.add(new SpringModel.ClientInfo("FEIGN", fqcn, m.getNameAsString(),
-                                    verb.getValue(), RouteNormalizer.join(base, ""), targetHint,
-                                    "LITERAL", ann.toString()));
-                            return;
-                        }
-                        for (Expression pathExpr : paths) {
-                            ValueResolver.Resolved r = ValueResolver.resolve(pathExpr, props);
-                            out.add(new SpringModel.ClientInfo("FEIGN", fqcn, m.getNameAsString(),
-                                    verb.getValue(),
-                                    r.value() != null ? RouteNormalizer.join(base, r.value()) : null,
-                                    targetHint, r.resolution().name(), r.rawExpr()));
-                        }
-                    });
+                    AnnotationValues.annotation(m, verb.getKey()).ifPresent(ann ->
+                            emitFeignRoutes(out, fqcn, m, base, targetHint, baseResolved, props,
+                                    List.of(verb.getValue()), ann));
                 }
+                // Pre-2020 Spring Cloud style: methods mapped with the generic @RequestMapping
+                // instead of one of the five verb-shortcut annotations above.
+                AnnotationValues.annotation(m, "RequestMapping").ifPresent(ann ->
+                        emitFeignRoutes(out, fqcn, m, base, targetHint, baseResolved, props,
+                                requestMappingVerbs(ann), ann));
+            }
+        }
+    }
+
+    private static List<String> requestMappingVerbs(AnnotationExpr ann) {
+        List<Expression> methodExprs = AnnotationValues.attrList(ann, "method");
+        if (methodExprs.isEmpty()) {
+            return List.of("ANY");
+        }
+        List<String> verbs = new ArrayList<>();
+        for (Expression me : methodExprs) {
+            String text = me.toString();
+            int dot = text.lastIndexOf('.');
+            verbs.add(dot >= 0 ? text.substring(dot + 1) : text);
+        }
+        return verbs;
+    }
+
+    private static void emitFeignRoutes(List<SpringModel.ClientInfo> out, String fqcn, MethodDeclaration m,
+                                        String base, String targetHint, ValueResolver.Resolved baseResolved,
+                                        Map<String, String> props, List<String> verbs, AnnotationExpr ann) {
+        List<Expression> paths = AnnotationValues.attrListAny(ann, "value", "path");
+        for (String verb : verbs) {
+            if (paths.isEmpty()) {
+                // No method-level path: the row's resolution/rawExpr describe how the base
+                // itself resolved (e.g. a property placeholder), not a hardcoded literal.
+                out.add(new SpringModel.ClientInfo("FEIGN", fqcn, m.getNameAsString(), verb,
+                        RouteNormalizer.join(base, ""), targetHint,
+                        baseResolved.resolution().name(), baseResolved.rawExpr()));
+                continue;
+            }
+            for (Expression pathExpr : paths) {
+                ValueResolver.Resolved r = ValueResolver.resolve(pathExpr, props);
+                out.add(new SpringModel.ClientInfo("FEIGN", fqcn, m.getNameAsString(), verb,
+                        r.value() != null ? RouteNormalizer.join(base, r.value()) : null,
+                        targetHint, r.resolution().name(), r.rawExpr()));
             }
         }
     }

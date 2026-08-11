@@ -92,6 +92,50 @@ class RestClientExtractorTest {
     }
 
     @Test
+    void feignRequestMappingStyleMethodsAreExtracted() throws Exception {
+        var session = parse("src/main/java/com/acme/LegacyClient.java", """
+                package com.acme;
+                import org.springframework.cloud.openfeign.FeignClient;
+                import org.springframework.web.bind.annotation.RequestMapping;
+                import org.springframework.web.bind.annotation.RequestMethod;
+                @FeignClient(name = "legacy")
+                @RequestMapping("/v1")
+                public interface LegacyClient {
+                    @RequestMapping(value = "/things", method = RequestMethod.GET) String list();
+                }
+                """);
+        List<SpringModel.ClientInfo> clients = RestClientExtractor.extract(session, Map.of());
+        assertThat(clients).singleElement().satisfies(c -> {
+            assertThat(c.kind()).isEqualTo("FEIGN");
+            assertThat(c.httpMethod()).isEqualTo("GET");
+            assertThat(c.uriTemplate()).isEqualTo("/v1/things");
+            assertThat(c.targetHint()).isEqualTo("legacy");
+        });
+    }
+
+    @Test
+    void feignNoPathMethodInheritsBasePathResolutionInsteadOfHardcodedLiteral() throws Exception {
+        var session = parse("src/main/java/com/acme/PropClient.java", """
+                package com.acme;
+                import org.springframework.cloud.openfeign.FeignClient;
+                import org.springframework.web.bind.annotation.GetMapping;
+                @FeignClient(name = "propd", path = "${propd.base-path}")
+                public interface PropClient {
+                    @GetMapping String root();
+                }
+                """);
+        List<SpringModel.ClientInfo> clients = RestClientExtractor.extract(
+                session, Map.of("propd.base-path", "/api"));
+        assertThat(clients).singleElement().satisfies(c -> {
+            assertThat(c.uriTemplate()).isEqualTo("/api");
+            // resolution/rawExpr must reflect how the @FeignClient path base itself resolved
+            // (a property placeholder here), not a hardcoded LITERAL/annotation-text fallback.
+            assertThat(c.resolution()).isEqualTo("PROPERTY");
+            assertThat(c.rawExpr()).contains("propd.base-path");
+        });
+    }
+
+    @Test
     void webClientChainYieldsVerbAndUri() throws Exception {
         var session = parse("src/main/java/com/acme/W.java", """
                 package com.acme;
