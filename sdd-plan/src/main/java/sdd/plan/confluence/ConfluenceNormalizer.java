@@ -59,10 +59,11 @@ public final class ConfluenceNormalizer {
         }
         List<Touchpoint> touchpoints = new ArrayList<>();
         for (JsonNode node : root.path("touchpoints")) {
-            Touchpoint.Kind kind = Touchpoint.Kind.fromKey(node.path("kind").asText());
+            String kindText = oneLine(node.path("kind").asText());
+            Touchpoint.Kind kind = Touchpoint.Kind.fromKey(kindText);
             String value = oneLine(node.path("value").asText());
             if (kind == null || value.isBlank()) {
-                questionTexts.add("[unmapped touchpoint] " + node.path("kind").asText() + ": " + value);
+                questionTexts.add("[unmapped touchpoint] " + kindText + ": " + value);
             } else {
                 touchpoints.add(new Touchpoint(kind, value));
             }

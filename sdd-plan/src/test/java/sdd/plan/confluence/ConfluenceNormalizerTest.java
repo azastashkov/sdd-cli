@@ -110,4 +110,24 @@ class ConfluenceNormalizerTest {
         assertThat(sdd.plan.spec.SpecParser.parse(sdd.plan.spec.SpecRenderer.render(spec)))
                 .isEqualTo(spec);
     }
+
+    @Test
+    void unmappedTouchpointKindIsSanitizedSoTheSpecReparses() {
+        // an embedded newline in the model-supplied kind must not survive into the rendered
+        // gate file as a raw newline inside a bullet — SpecRenderer would emit a multi-line
+        // bullet that SpecParser then rejects
+        String json = """
+                {"title": "T", "owner": "", "status": "", "goal": "G", "background": "",
+                 "requirements": ["r"], "acceptance": ["a"], "constraints": [],
+                 "touchpoints": [{"kind": "weird\\nkind", "value": "x"}],
+                 "out_of_scope": [], "open_questions": [], "unmapped": []}""";
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(response(json, "stop")));
+
+        NormalizedSpec spec = ConfluenceNormalizer.normalize(EXTRACTED, planner, "m", 100, "id");
+
+        assertThat(spec.openQuestions()).containsExactly(
+                new SpecItem("Q1", "[unmapped touchpoint] weird kind: x"));
+        assertThat(sdd.plan.spec.SpecParser.parse(sdd.plan.spec.SpecRenderer.render(spec)))
+                .isEqualTo(spec);
+    }
 }
