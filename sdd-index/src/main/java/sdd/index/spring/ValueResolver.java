@@ -72,19 +72,37 @@ public final class ValueResolver {
      * directly to the {@link VariableDeclarator} — a field declaration can list several
      * variables ({@code static final String A = "1", B = "2";}), so the declarator matching
      * the resolved symbol's name has to be picked out explicitly.
+     *
+     * <p>Rung 2 of the ladder is scoped to {@code static final} fields only (spec: "a static
+     * final String with a literal initializer"). A non-static field can vary per instance and a
+     * non-final field can be reassigned, so neither is a safe compile-time constant to fold —
+     * this method returns empty for both, which sends the caller to {@code DYNAMIC} instead of
+     * mislabeling a mutable value as {@code CONSTANT}.
      */
     private static Optional<VariableDeclarator> declaratorOf(
             com.github.javaparser.resolution.declarations.ResolvedValueDeclaration resolved) {
         var node = resolved.toAst().orElse(null);
-        if (node instanceof VariableDeclarator v) {
-            return Optional.of(v);
+        FieldDeclaration fd;
+        VariableDeclarator v;
+        if (node instanceof FieldDeclaration f) {
+            fd = f;
+            v = f.getVariables().stream()
+                    .filter(candidate -> candidate.getNameAsString().equals(resolved.getName()))
+                    .findFirst()
+                    .orElse(null);
+        } else if (node instanceof VariableDeclarator candidate) {
+            v = candidate;
+            fd = candidate.getParentNode()
+                    .filter(FieldDeclaration.class::isInstance)
+                    .map(FieldDeclaration.class::cast)
+                    .orElse(null);
+        } else {
+            return Optional.empty();
         }
-        if (node instanceof FieldDeclaration fd) {
-            return fd.getVariables().stream()
-                    .filter(v -> v.getNameAsString().equals(resolved.getName()))
-                    .findFirst();
+        if (v == null || fd == null || !fd.isStatic() || !fd.isFinal()) {
+            return Optional.empty();
         }
-        return Optional.empty();
+        return Optional.of(v);
     }
 
     private static Resolved substitute(Part part, Map<String, String> props, String raw) {

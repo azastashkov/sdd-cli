@@ -77,4 +77,63 @@ class ValueResolverTest {
         assertThat(x8.value()).isEqualTo("/api/v2");
         assertThat(x8.resolution()).isEqualTo(ValueResolver.Resolution.CONSTANT);
     }
+
+    @Test
+    void instanceFieldInitializerIsDynamicNotConstant() throws Exception {
+        List<Expression> exprs = parseInitializers("""
+                    private String mutable = "instance-value";
+                    Object X1 = mutable;
+                """);
+        var x1 = ValueResolver.resolve(exprs.get(0), PROPS);
+        assertThat(x1.value()).isNull();
+        assertThat(x1.resolution()).isEqualTo(ValueResolver.Resolution.DYNAMIC);
+    }
+
+    @Test
+    void staticNonFinalFieldIsDynamic() throws Exception {
+        List<Expression> exprs = parseInitializers("""
+                    static String s = "x";
+                    Object X1 = s;
+                """);
+        var x1 = ValueResolver.resolve(exprs.get(0), PROPS);
+        assertThat(x1.value()).isNull();
+        assertThat(x1.resolution()).isEqualTo(ValueResolver.Resolution.DYNAMIC);
+    }
+
+    @Test
+    void multiVariableDeclarationResolvesEachIndependently() throws Exception {
+        List<Expression> exprs = parseInitializers("""
+                    static final String A = "one", B = "two";
+                    Object X1 = A;
+                    Object X2 = B;
+                """);
+        var x1 = ValueResolver.resolve(exprs.get(0), PROPS);
+        assertThat(x1.value()).isEqualTo("one");
+        assertThat(x1.resolution()).isEqualTo(ValueResolver.Resolution.CONSTANT);
+        var x2 = ValueResolver.resolve(exprs.get(1), PROPS);
+        assertThat(x2.value()).isEqualTo("two");
+        assertThat(x2.resolution()).isEqualTo(ValueResolver.Resolution.CONSTANT);
+    }
+
+    @Test
+    void adjacentPlaceholdersBothSubstitute() throws Exception {
+        List<Expression> exprs = parseInitializers("""
+                    Object X1 = "${a}${b}";
+                """);
+        Map<String, String> props = Map.of("a", "AA", "b", "BB");
+        var x1 = ValueResolver.resolve(exprs.get(0), props);
+        assertThat(x1.value()).isEqualTo("AABB");
+        assertThat(x1.resolution()).isEqualTo(ValueResolver.Resolution.PROPERTY);
+    }
+
+    @Test
+    void cyclicConstantsResolveToDynamicWithoutHanging() throws Exception {
+        List<Expression> exprs = parseInitializers("""
+                    static final String C1 = C2;
+                    static final String C2 = C1;
+                    Object X1 = C1;
+                """);
+        var x1 = ValueResolver.resolve(exprs.get(0), PROPS);
+        assertThat(x1.resolution()).isEqualTo(ValueResolver.Resolution.DYNAMIC);
+    }
 }
