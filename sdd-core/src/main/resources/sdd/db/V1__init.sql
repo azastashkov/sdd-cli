@@ -43,7 +43,7 @@ CREATE TABLE dep_edge(
   declared_via TEXT,
   mode TEXT,
   is_internal INTEGER NOT NULL DEFAULT 0,
-  to_module_id INTEGER REFERENCES module(id));
+  to_module_id INTEGER REFERENCES module(id) ON DELETE SET NULL);
 ;
 CREATE INDEX ix_dep_to ON dep_edge(to_module_id) WHERE is_internal = 1;
 ;

@@ -108,4 +108,28 @@ class IndexPersistenceTest {
                     .containsEntry("resolved_version", "2.3.0");
         }
     }
+
+    @Test
+    void reindexingProducerAfterLinkDoesNotViolateForeignKeys() {
+        try (Database db = Database.open(ws)) {
+            RepoScan producer = new RepoScan("lib-core", Path.of("/w/lib-core"), "b".repeat(40), "main", "");
+            GradleModel.Extract producerExtract = new GradleModel.Extract(List.of(new GradleModel.Project(
+                    ":", "lib-core", "com.acme", "2.3.0", Path.of("/w/lib-core"),
+                    List.of("java-library", "maven-publish"), false, List.of(),
+                    Map.of("compileClasspath", new GradleModel.DepConfig(List.of(), List.of(), List.of())))),
+                    List.of());
+            IndexPersistence.persistRepo(db.jdbi(), producer, producerExtract, "OK", null);
+            RepoScan consumer = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");
+            IndexPersistence.persistRepo(db.jdbi(), consumer, serviceExtract(), "OK", null);
+            ArtifactLinker.link(db.jdbi(), Map.of());
+            // re-persist the PRODUCER after linking — must not throw
+            IndexPersistence.persistRepo(db.jdbi(), producer, producerExtract, "OK", null);
+            // and a fresh link restores the internal edge to the new module row
+            ArtifactLinker.link(db.jdbi(), Map.of());
+            Integer internal = db.jdbi().withHandle(h -> h.createQuery(
+                            "SELECT count(*) FROM dep_edge WHERE to_name='lib-core' AND is_internal=1")
+                    .mapTo(Integer.class).one());
+            assertThat(internal).isEqualTo(1);
+        }
+    }
 }
