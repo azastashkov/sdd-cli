@@ -41,4 +41,13 @@ class WorkspaceScannerTest {
         assertThat(dirty.dirtyHash()).isNotEmpty();
         assertThat(dirty.fingerprint()).isNotEqualTo(cleanFp);
     }
+
+    @Test
+    void dirtyHashIsStableAcrossRescans() throws Exception {
+        FixtureRepo repo = FixtureRepo.in(ws, "r").file("a.txt", "one").commit("init");
+        Files.writeString(repo.path().resolve("a.txt"), "two");
+        String first = WorkspaceScanner.scan(ws, List.of()).get(0).dirtyHash();
+        String second = WorkspaceScanner.scan(ws, List.of()).get(0).dirtyHash();
+        assertThat(first).isNotEmpty().isEqualTo(second);
+    }
 }

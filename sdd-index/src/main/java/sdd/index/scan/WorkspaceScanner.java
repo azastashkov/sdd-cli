@@ -56,7 +56,7 @@ public final class WorkspaceScanner {
         try (DiffFormatter fmt = new DiffFormatter(out); RevWalk walk = new RevWalk(repo)) {
             fmt.setRepository(repo);
             CanonicalTreeParser treeParser = new CanonicalTreeParser();
-            treeParser.reset(repo.getObjectDatabase().newReader(), walk.parseCommit(head).getTree());
+            treeParser.reset(walk.getObjectReader(), walk.parseCommit(head).getTree());
             AbstractTreeIterator workingTree = new FileTreeIterator(repo);
             fmt.format(fmt.scan(treeParser, workingTree));
         }
