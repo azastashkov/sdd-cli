@@ -92,6 +92,11 @@ class IndexServiceIT {
                     "SELECT count(*) FROM dep_edge WHERE is_internal=1").mapTo(Integer.class).one());
             assertThat(internalCount).isEqualTo(2);
 
+            // source extraction ran on the real-Gradle path
+            Integer typeCount = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT count(*) FROM java_type").mapTo(Integer.class).one());
+            assertThat(typeCount).isGreaterThanOrEqualTo(2); // A (svc-orders) + C (lib-core)
+
             // second run: clean repos skip (fingerprint unchanged); DEGRADED repo retries
             List<IndexService.RepoResult> second = service.run(config(), db);
             assertThat(second).filteredOn(r -> r.repo().equals("svc-orders")).first()
