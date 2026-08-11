@@ -62,6 +62,8 @@ public final class GradleExtractor {
         ByteArrayOutputStream stderr = new ByteArrayOutputStream();
         CancellationTokenSource cancel = GradleConnector.newCancellationTokenSource();
         ExecutorService executor = Executors.newSingleThreadExecutor();
+        String jdkRisk = jdkRiskNote(version, jdkHomes, Runtime.version().feature());
+        String riskPrefix = jdkRisk == null ? "" : jdkRisk;
         try (ProjectConnection connection = connector.connect()) {
             List<String> args = new ArrayList<>(List.of(
                     "--init-script", initScript.toString(),
@@ -83,12 +85,14 @@ public final class GradleExtractor {
             run.get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
             cancel.cancel();
-            throw new ExtractionException("gradle extraction timed out after " + TIMEOUT + " in " + repoDir);
+            String tail = stderrTail(stderr);
+            throw new ExtractionException(riskPrefix + "gradle extraction timed out after " + TIMEOUT
+                    + " in " + repoDir + (tail.isEmpty() ? "" : "\nstderr: " + tail));
         } catch (Exception e) {
             String tail = stderrTail(stderr);
             Throwable cause = e.getCause() != null ? e.getCause() : e;
             throw new ExtractionException(
-                    "gradle extraction failed in " + repoDir + ": " + cause.getMessage()
+                    riskPrefix + "gradle extraction failed in " + repoDir + ": " + cause.getMessage()
                             + (tail.isEmpty() ? "" : "\nstderr: " + tail), cause);
         } finally {
             executor.shutdownNow();
@@ -109,6 +113,20 @@ public final class GradleExtractor {
         } catch (IOException e) {
             return null;
         }
+    }
+
+    /**
+     * Describes the risk that an extraction ran on the wrong JVM: the wrapper version maps to a
+     * JDK major we have no {@code jdk_homes} entry for, and that major is not the JVM we are
+     * running on. Returns {@code null} when there is no such risk.
+     */
+    static String jdkRiskNote(String wrapperVersion, Map<Integer, Path> jdkHomes, int currentMajor) {
+        int mapped = jdkMajorFor(wrapperVersion);
+        if (jdkHomes.get(mapped) != null || mapped == currentMajor) {
+            return null;
+        }
+        return "no jdk_homes entry for " + mapped + " (wrapper " + wrapperVersion
+                + "); ran on current JVM " + currentMajor + ". ";
     }
 
     public static int jdkMajorFor(String wrapperVersion) {

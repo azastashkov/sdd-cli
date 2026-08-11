@@ -8,7 +8,7 @@ dependencies {
     implementation(libs.tomlj)
     implementation(libs.jgit)
     implementation(libs.jackson)
-    runtimeOnly("org.slf4j:slf4j-nop:2.0.13")
+    runtimeOnly(libs.slf4j.nop)
     testFixturesApi(testFixtures(project(":sdd-core")))
     testImplementation(libs.bundles.test)
     testRuntimeOnly(libs.junit.launcher)

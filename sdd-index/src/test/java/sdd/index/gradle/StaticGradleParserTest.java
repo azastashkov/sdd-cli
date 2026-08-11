@@ -68,6 +68,17 @@ class StaticGradleParserTest {
     }
 
     @Test
+    void wordsEndingInIdAreNotMistakenForPluginIds() throws Exception {
+        Files.writeString(repo.resolve("settings.gradle"), "rootProject.name = 'svc-d'\n");
+        Files.writeString(repo.resolve("build.gradle"), """
+                plugins { id 'java' }
+                android 'com.example.not-a-plugin'
+                """);
+        GradleModel.Project p = StaticGradleParser.parse(repo).projects().get(0);
+        assertThat(p.plugins()).containsExactly("java");
+    }
+
+    @Test
     void commentedOutDependenciesAreIgnored() throws Exception {
         Files.writeString(repo.resolve("settings.gradle"), "rootProject.name = 'svc-c'\n");
         Files.writeString(repo.resolve("build.gradle"), """

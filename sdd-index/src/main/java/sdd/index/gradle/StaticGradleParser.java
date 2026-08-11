@@ -24,7 +24,8 @@ public final class StaticGradleParser {
     // implementation(libs.foo.bar) / implementation libs.foo.bar
     private static final Pattern CATALOG_REF = Pattern.compile(
             "\\b(implementation|api|compileOnly|runtimeOnly)\\s*\\(?\\s*libs((?:\\.[A-Za-z0-9]+)+)\\)?");
-    private static final Pattern PLUGIN_ID = Pattern.compile("id\\s*\\(?['\"]([\\w.\\-]+)['\"]\\)?");
+    // \b keeps words that merely end in "id" (android 'x') from reading as a plugin id
+    private static final Pattern PLUGIN_ID = Pattern.compile("\\bid\\s*\\(?['\"]([\\w.\\-]+)['\"]\\)?");
 
     private StaticGradleParser() {}
 
