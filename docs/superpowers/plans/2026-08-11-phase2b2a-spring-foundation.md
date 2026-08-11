@@ -1217,3 +1217,17 @@ git commit -m "feat: literal-constant-property-dynamic resolution ladder"
 1. **Spec coverage (2B-2a scope):** config extraction with profile flattening + `spring_app_name`/`context_path` → Tasks 4–6; resolution ladder exactly per spec's four-rung design → Task 8; route normalization (spec: "normalize template (`/orders/{id}` → segments, vars wildcarded)") → Task 7; carry-forwards: JarTypeSolver sharing + jreOnly → Task 1, ReferenceExtractor widening + nested-class fqcn test + e2e fixture realism → Task 2, field-Lombok synthesis → Task 3, markStale append → Task 6. Deliberately deferred to 2B-2b: REST endpoint/client extractors, Kafka extractor, `module.kafka_status` column, context-path prepending at endpoint-persistence time; to 2C: client↔endpoint matching, curation report, repo cards; not planned: perf measurement (needs the real estate — run `sdd index` against it and record numbers before 2B-2b if possible).
 2. **Placeholder scan:** all steps carry complete code; the two flagged API-uncertainty contingencies (Paths2 helper name, `toAst()` accessor) specify the exact fallback procedure.
 3. **Type consistency:** `ConfigFileParser.ConfigEntry(key, value, profile, sourceFile)` used identically in Tasks 4, 5, 6; `Result(entries, issues)` in 4, 6; `SpringConfigPersistence.persistModuleConfig(Handle, long, List<ConfigEntry>)` + `defaultProfileProps(List<ConfigEntry>)` in 5, 6, 8; `ValueResolver.Resolved(value, resolution, rawExpr)` self-consistent; `JarSolverCache.get(Path)` → `Optional<TypeSolver>` in 1; refKind vocabulary `IMPORT|EXTENDS|CALL|TYPE` in Task 2 only (no other task references it).
+
+---
+
+## Execution outcome (2026-08-11)
+
+All 8 tasks complete; final whole-branch review found 1 Critical — the plan's own Task-1 design (shared JarTypeSolver instances) is architecturally unsupported on JavaParser 3.26.2 (`setParent` throws on reuse; every multi-module repo with shared jars would FAIL source extraction) — masked by a green build because no test exercised the shared-cache path. Fixed as a failure-only cache with red-first regression coverage. Implementers also fixed two plan bugs en route (RouteNormalizer join() double-slash; ValueResolver toAst() shape) and reviews forced guards on the reference-extractor literal fallback (package-shape) and constant folding (static-final gate, mutation-verified).
+
+**Carry into 2B-2b:**
+1. Consider a repo-level shared CombinedTypeSolver (one per repo: all source roots + jar union) — restores the memory/perf win the failure-only cache gave up AND fixes the JarFile handle multiplication + O(modules×jars) entry re-reads. Needs its own validation (getRoot semantics).
+2. ValueResolver: replace SOE-based cycle safety with a depth budget/visited set; callers must never pass null to RouteNormalizer.normalize.
+3. ConfigFileParser: .properties activation-key handling; spring.profiles list form; YAML "null"-string substitution is the failure shape to watch in ladder consumers; defaultProfileProps precedence is alphabetical (bootstrap beats application) — align with real Spring precedence when the first consumer lands.
+4. LombokShim: static-field accessors not synthesized (silently incomplete, confidence stays OK).
+5. Measure real-estate indexing time/memory (TYPE-widening resolve cost + per-module jar solver construction are unmeasured) before building 2B-2b extractors on top.
+6. Error-append dedup (repeated identical failure messages grow repo.error unboundedly).
