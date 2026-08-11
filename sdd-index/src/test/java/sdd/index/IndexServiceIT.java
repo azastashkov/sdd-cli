@@ -7,6 +7,7 @@ import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
 import sdd.index.testing.FixtureGradleRepo;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -122,6 +123,14 @@ class IndexServiceIT {
             Integer endpointCount = db.jdbi().withHandle(h -> h.createQuery(
                     "SELECT count(*) FROM rest_endpoint").mapTo(Integer.class).one());
             assertThat(endpointCount).isGreaterThanOrEqualTo(1);
+
+            // RestMatcher and CurationReport both run unconditionally at the end of
+            // IndexService.run — confirm they executed on the real-Gradle path too (row-level
+            // matching detail is already covered by SourceEndToEndTest).
+            Integer edgeCount = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT count(*) FROM rest_call_edge").mapTo(Integer.class).one());
+            assertThat(edgeCount).isGreaterThanOrEqualTo(0);   // table queryable post-run
+            assertThat(Files.exists(ws.resolve(".sdd/curation-report.md"))).isTrue();
 
             // second run: clean repos skip (fingerprint unchanged); DEGRADED repo retries
             List<IndexService.RepoResult> second = service.run(config(), db);

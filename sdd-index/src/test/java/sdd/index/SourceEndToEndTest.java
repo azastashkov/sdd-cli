@@ -8,6 +8,7 @@ import sdd.core.retrieve.FtsRetriever;
 import sdd.core.testing.FixtureRepo;
 import sdd.index.gradle.GradleModel;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -92,17 +93,41 @@ class SourceEndToEndTest {
                         }
                         """)
                 .commit("init");
+        // billing-service: the endpoint that BillingClient's @FeignClient(name="billing", path="/pay")
+        // + @PostMapping("/charge") resolves against. spring.application.name matches the Feign
+        // client's target_hint ("billing") and no server.servlet.context-path is declared, so the
+        // endpoint's norm_path is exactly "/pay/charge" — same as the client's — for a HIGH
+        // FEIGN_NAME_PATH match.
+        FixtureRepo.in(ws, "billing-service")
+                .file("src/main/java/com/acme/billing/PayController.java", """
+                        package com.acme.billing;
+                        import org.springframework.web.bind.annotation.*;
+                        @RestController
+                        @RequestMapping("/pay")
+                        public class PayController {
+                            @PostMapping("/charge") public String charge(@RequestBody String req) { return req; }
+                        }
+                        """)
+                .file("src/main/resources/application.yml", """
+                        spring:
+                          application:
+                            name: billing
+                        """)
+                .commit("init");
 
         SddConfig config = new SddConfig(ws, "fts", Map.of(), Map.of(), List.of(), Map.of(), List.of());
         try (Database db = Database.open(ws)) {
             IndexService service = new IndexService(repoDir -> {
                 String name = repoDir.getFileName().toString();
-                return name.equals("lib-pricing")
-                        ? extractFor(repoDir, "lib-pricing", "com.acme",
-                                List.of("java-library", "maven-publish"), List.of())
-                        : extractFor(repoDir, "svc-orders", "com.acme",
-                                List.of("java", "org.springframework.boot"),
-                                List.of(new GradleModel.DeclaredDep("com.acme", "lib-pricing", "1.0")));
+                return switch (name) {
+                    case "lib-pricing" -> extractFor(repoDir, "lib-pricing", "com.acme",
+                            List.of("java-library", "maven-publish"), List.of());
+                    case "billing-service" -> extractFor(repoDir, "billing-service", "com.acme",
+                            List.of("java", "org.springframework.boot"), List.of());
+                    default -> extractFor(repoDir, "svc-orders", "com.acme",
+                            List.of("java", "org.springframework.boot"),
+                            List.of(new GradleModel.DeclaredDep("com.acme", "lib-pricing", "1.0")));
+                };
             });
             List<IndexService.RepoResult> results = service.run(config, db);
 
@@ -141,14 +166,23 @@ class SourceEndToEndTest {
                     .mapToMap().one());
             assertThat(module.get("spring_app_name")).isEqualTo("order-service");
             assertThat(module.get("context_path")).isEqualTo("/orders");
-            // spring.application.name, server.servlet.context-path, kafka.in-topic
-            Integer propCount = db.jdbi().withHandle(h -> h.createQuery(
-                    "SELECT count(*) FROM config_property").mapTo(Integer.class).one());
+            // spring.application.name, server.servlet.context-path, kafka.in-topic — scoped to
+            // svc-orders since billing-service's own application.yml (added below) now also
+            // contributes a config_property row to the (otherwise unscoped) table.
+            Integer propCount = db.jdbi().withHandle(h -> h.createQuery("""
+                            SELECT count(*) FROM config_property c
+                            JOIN module m ON m.id = c.module_id
+                            JOIN repo r ON r.id = m.repo_id WHERE r.name='svc-orders'""")
+                    .mapTo(Integer.class).one());
             assertThat(propCount).isEqualTo(3);
             // rest_endpoint norm_path prepends the module's context-path (from application.yml)
-            // ahead of the class-level @RequestMapping and method-level @GetMapping paths.
-            Map<String, Object> endpoint = db.jdbi().withHandle(h -> h.createQuery(
-                    "SELECT http_method, norm_path FROM rest_endpoint").mapToMap().one());
+            // ahead of the class-level @RequestMapping and method-level @GetMapping paths. Scoped
+            // to svc-orders since billing-service's PayController adds a second rest_endpoint row.
+            Map<String, Object> endpoint = db.jdbi().withHandle(h -> h.createQuery("""
+                            SELECT e.http_method, e.norm_path FROM rest_endpoint e
+                            JOIN module m ON m.id = e.module_id
+                            JOIN repo r ON r.id = m.repo_id WHERE r.name='svc-orders'""")
+                    .mapToMap().one());
             assertThat(endpoint).containsEntry("http_method", "GET")
                     .containsEntry("norm_path", "/orders/api/orders/{}");
             // Feign client: target_hint resolves from @FeignClient's "name" attribute
@@ -167,6 +201,12 @@ class SourceEndToEndTest {
                     .containsEntry("role", "CONSUMER");
             assertThat(topics.get(1)).containsEntry("name", "orders.v1.placed")
                     .containsEntry("role", "PRODUCER");
+            // Feign(name=billing, path=/pay, POST /charge) ↔ billing-service endpoint: HIGH edge
+            Map<String, Object> edge = db.jdbi().withHandle(h -> h.createQuery("""
+                            SELECT confidence, matched_by FROM rest_call_edge""").mapToMap().one());
+            assertThat(edge).containsEntry("confidence", "HIGH")
+                    .containsEntry("matched_by", "FEIGN_NAME_PATH");
+            assertThat(Files.exists(ws.resolve(".sdd/curation-report.md"))).isTrue();
         }
     }
 }
