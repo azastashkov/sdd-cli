@@ -5,8 +5,11 @@ import org.jdbi.v3.core.Jdbi;
 import sdd.index.gradle.GradleModel;
 import sdd.index.spring.ConfigFileParser;
 import sdd.index.spring.SpringConfigPersistence;
+import sdd.index.spring.SpringExtraction;
+import sdd.index.spring.SpringModel;
 import sdd.index.store.Paths2;
 import sdd.index.store.SourcePersistence;
+import sdd.index.store.SpringPersistence;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -21,7 +24,7 @@ public final class SourceExtraction {
     public static String extractRepo(Jdbi jdbi, long repoId, String repoName,
                                      Path repoPath, GradleModel.Extract extract) {
         record ModuleWork(long moduleId, boolean library, SourceParser.Session session,
-                          ConfigFileParser.Result config) {}
+                          ConfigFileParser.Result config, List<Path> jars) {}
         record EligibleProject(long moduleId, boolean library, Path projectDir, List<Path> jars) {}
 
         // Both sides of the relativize below must be canonical or the relative path degenerates
@@ -68,7 +71,7 @@ public final class SourceExtraction {
             totalIssues += session.issues().size();
             ConfigFileParser.Result config = ConfigFileParser.parseModuleConfig(repoRoot, ep.projectDir());
             totalIssues += config.issues().size();
-            work.add(new ModuleWork(ep.moduleId(), ep.library(), session, config));
+            work.add(new ModuleWork(ep.moduleId(), ep.library(), session, config, ep.jars()));
         }
 
         Map<String, String> repoTypeIndex = new LinkedHashMap<>();
@@ -89,6 +92,15 @@ public final class SourceExtraction {
                 SourcePersistence.persistModuleSource(h, repoId, w.moduleId(),
                         typesByModule.get(w.moduleId()), refs.usages(), refs.fileRefs());
                 SpringConfigPersistence.persistModuleConfig(h, w.moduleId(), w.config().entries());
+
+                Map<String, String> defaults =
+                        SpringConfigPersistence.defaultProfileProps(w.config().entries());
+                List<String> allKeys = w.config().entries().stream()
+                        .map(ConfigFileParser.ConfigEntry::key).toList();
+                SpringModel.SpringExtract spring = SpringExtraction.extractModule(
+                        w.session(), defaults, w.jars(), allKeys);
+                SpringPersistence.persistModuleSpring(h, w.moduleId(),
+                        defaults.get("server.servlet.context-path"), spring);
             }
         });
 

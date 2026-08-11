@@ -58,6 +58,15 @@ class SourceEndToEndTest {
                           servlet:
                             context-path: /orders
                         """)
+                .file("src/main/java/com/acme/orders/OrderController.java", """
+                        package com.acme.orders;
+                        import org.springframework.web.bind.annotation.*;
+                        @RestController
+                        @RequestMapping("/api/orders")
+                        public class OrderController {
+                            @GetMapping("/{id}") public String get(@PathVariable String id) { return id; }
+                        }
+                        """)
                 .commit("init");
 
         SddConfig config = new SddConfig(ws, "fts", Map.of(), Map.of(), List.of(), Map.of());
@@ -111,6 +120,12 @@ class SourceEndToEndTest {
             Integer propCount = db.jdbi().withHandle(h -> h.createQuery(
                     "SELECT count(*) FROM config_property").mapTo(Integer.class).one());
             assertThat(propCount).isEqualTo(2);
+            // rest_endpoint norm_path prepends the module's context-path (from application.yml)
+            // ahead of the class-level @RequestMapping and method-level @GetMapping paths.
+            Map<String, Object> endpoint = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT http_method, norm_path FROM rest_endpoint").mapToMap().one());
+            assertThat(endpoint).containsEntry("http_method", "GET")
+                    .containsEntry("norm_path", "/orders/api/orders/{}");
         }
     }
 }
