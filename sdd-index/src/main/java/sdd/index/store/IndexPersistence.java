@@ -9,14 +9,10 @@ import sdd.index.gradle.GradleModel;
 import sdd.index.gradle.ModeClassifier;
 import sdd.index.scan.RepoScan;
 
-import java.io.IOException;
-import java.nio.file.Path;
 import java.time.Instant;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 public final class IndexPersistence {
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -30,7 +26,7 @@ public final class IndexPersistence {
             String includedJson;
             try {
                 includedJson = MAPPER.writeValueAsString(extract.includedBuilds().stream()
-                        .map(IndexPersistence::canonicalPathString).toList());
+                        .map(Paths2::canonicalString).toList());
             } catch (Exception e) {
                 throw new RuntimeException("Failed to serialize included builds", e);
             }
@@ -44,7 +40,7 @@ public final class IndexPersistence {
                               branch=excluded.branch, dirty_hash=excluded.dirty_hash,
                               included_builds=excluded.included_builds, gradle_status=excluded.gradle_status,
                               error=excluded.error, indexed_at=excluded.indexed_at""")
-                    .bind("name", scan.name()).bind("path", canonicalPathString(scan.path()))
+                    .bind("name", scan.name()).bind("path", Paths2.canonicalString(scan.path()))
                     .bind("kind", repoKind).bind("head", scan.headCommit())
                     .bind("branch", scan.branch()).bind("dirty", scan.dirtyHash())
                     .bind("included", includedJson).bind("status", gradleStatus)
@@ -61,26 +57,6 @@ public final class IndexPersistence {
                 insertModule(h, repoId, p, catalogGAs);
             }
         });
-    }
-
-    /**
-     * Resolves a path to its canonical (symlink-free) form so that the composite-build match in
-     * {@link ArtifactLinker} — which compares {@code repo.path} against entries recorded in
-     * {@code repo.included_builds} — sees the same string on both sides. The two sides are
-     * captured by different code paths that disagree about symlinks on some platforms: repo
-     * directories come from {@link sdd.index.scan.WorkspaceScanner}'s directory listing (not
-     * symlink-resolved), while includedBuilds directories come from Gradle's own
-     * {@code projectDir.absolutePath}, which Gradle canonicalizes internally. On macOS this shows
-     * up as {@code /var/...} vs. the real {@code /private/var/...} for the same temp directory.
-     * Falls back to a plain absolute, normalized path when the path does not exist on disk (e.g.
-     * fixture paths in unit tests), so behavior for non-existent paths is unchanged.
-     */
-    private static String canonicalPathString(Path p) {
-        try {
-            return p.toRealPath().toString();
-        } catch (IOException e) {
-            return p.toAbsolutePath().normalize().toString();
-        }
     }
 
     private static void insertModule(Handle h, long repoId, GradleModel.Project p, Set<String> catalogGAs) {

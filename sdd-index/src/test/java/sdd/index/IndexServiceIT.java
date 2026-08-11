@@ -96,6 +96,12 @@ class IndexServiceIT {
             Integer typeCount = db.jdbi().withHandle(h -> h.createQuery(
                     "SELECT count(*) FROM java_type").mapTo(Integer.class).one());
             assertThat(typeCount).isGreaterThanOrEqualTo(2); // A (svc-orders) + C (lib-core)
+            // ...and stored repo-relative. Gradle canonicalizes projectDir while the scanner does
+            // not, so on a symlinked root (macOS: /var -> /private/var) an uncanonicalized
+            // relativize silently produces "../../.." escapes instead of usable paths.
+            List<String> filePaths = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT file_path FROM java_type").mapTo(String.class).list());
+            assertThat(filePaths).isNotEmpty().allSatisfy(p -> assertThat(p).doesNotStartWith(".."));
 
             // second run: clean repos skip (fingerprint unchanged); DEGRADED repo retries
             List<IndexService.RepoResult> second = service.run(config(), db);

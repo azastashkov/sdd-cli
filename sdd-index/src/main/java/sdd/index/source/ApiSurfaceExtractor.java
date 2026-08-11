@@ -14,6 +14,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.Collectors;
 import java.util.Set;
 
@@ -110,9 +111,17 @@ public final class ApiSurfaceExtractor {
         return "CLASS";
     }
 
+    /**
+     * Digest of the type's whole API shape. The member signature alone is not enough: it carries
+     * the name and parameter types but not the return type, so {@code String quote(String)} and
+     * {@code int quote(String)} would hash identically — and for fields the signature is just the
+     * name, making every field retype invisible. Both are breaking changes, so the return type
+     * (which for a field is its type) is part of the canonical string.
+     */
     static String hash(String fqcn, List<SourceModel.MemberInfo> members) {
         String canonical = fqcn + "\n" + members.stream()
-                .map(SourceModel.MemberInfo::signature).sorted()
+                .map(m -> m.signature() + ":" + Objects.toString(m.returnType(), ""))
+                .sorted()
                 .collect(Collectors.joining("\n"));
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")

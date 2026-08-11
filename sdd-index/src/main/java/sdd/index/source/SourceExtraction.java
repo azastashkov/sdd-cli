@@ -2,6 +2,7 @@ package sdd.index.source;
 
 import org.jdbi.v3.core.Jdbi;
 import sdd.index.gradle.GradleModel;
+import sdd.index.store.Paths2;
 import sdd.index.store.SourcePersistence;
 
 import java.nio.file.Path;
@@ -19,6 +20,10 @@ public final class SourceExtraction {
         record ModuleWork(long moduleId, boolean library, SourceParser.Session session) {}
         List<ModuleWork> work = new ArrayList<>();
         int totalIssues = 0;
+        // Both sides of the relativize below must be canonical or the relative path degenerates
+        // into "../../../private/var/..." junk: the scanner reports the repo path as listed
+        // (symlinks intact) while Gradle reports projectDir already canonicalized.
+        Path repoRoot = Paths2.canonical(repoPath);
         for (GradleModel.Project p : extract.projects()) {
             Optional<Long> moduleId = jdbi.withHandle(h -> h.createQuery(
                             "SELECT id FROM module WHERE repo_id=:r AND gradle_path=:p")
@@ -29,7 +34,8 @@ public final class SourceExtraction {
             List<Path> jars = Optional.ofNullable(p.configurations().get("compileClasspath"))
                     .map(c -> c.resolved().stream().flatMap(r -> r.files().stream()).toList())
                     .orElse(List.of());
-            SourceParser.Session session = SourceParser.parseModule(repoPath, p.projectDir(), jars);
+            SourceParser.Session session = SourceParser.parseModule(
+                    repoRoot, Paths2.canonical(p.projectDir()), jars);
             totalIssues += session.issues().size();
             boolean library = jdbi.withHandle(h -> h.createQuery(
                             "SELECT kind FROM module WHERE id=:m").bind("m", moduleId.get())

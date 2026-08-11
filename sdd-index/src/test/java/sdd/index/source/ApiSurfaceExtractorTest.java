@@ -84,6 +84,29 @@ class ApiSurfaceExtractorTest {
     }
 
     @Test
+    void signatureHashChangesWhenOnlyAReturnTypeChanges() throws Exception {
+        var s1 = parse("src/main/java/com/acme/A.java",
+                "package com.acme;\npublic class A { public String quote(String r) { return r; } }\n");
+        String h1 = ApiSurfaceExtractor.extract(s1, true).get(0).signatureHash();
+        var s2 = parse("src/main/java/com/acme/A.java",
+                "package com.acme;\npublic class A { public int quote(String r) { return 1; } }\n");
+        String h2 = ApiSurfaceExtractor.extract(s2, true).get(0).signatureHash();
+        // same member signature, incompatible API: the hash is the only change signal downstream
+        assertThat(h1).isNotEqualTo(h2);
+    }
+
+    @Test
+    void signatureHashChangesWhenOnlyAFieldTypeChanges() throws Exception {
+        var s1 = parse("src/main/java/com/acme/A.java",
+                "package com.acme;\npublic class A { public long amount; }\n");
+        String h1 = ApiSurfaceExtractor.extract(s1, true).get(0).signatureHash();
+        var s2 = parse("src/main/java/com/acme/A.java",
+                "package com.acme;\npublic class A { public String amount; }\n");
+        String h2 = ApiSurfaceExtractor.extract(s2, true).get(0).signatureHash();
+        assertThat(h1).isNotEqualTo(h2);
+    }
+
+    @Test
     void recordComponentsAppearAsMembersAndAffectHash() throws Exception {
         var s1 = parse("src/main/java/com/acme/Money.java",
                 "package com.acme;\npublic record Money(String currency) {}\n");
