@@ -22,6 +22,9 @@ import java.util.concurrent.Callable;
 
 @Command(name = "index", description = "Build or refresh the knowledge base for a workspace")
 public final class IndexCommand implements Callable<Integer> {
+    // Cards are cached background enrichment — fail fast, retry on the next index run.
+    private static final int CARD_MAX_ATTEMPTS = 2;
+
     @Option(names = "--workspace", description = "Workspace directory (default: current dir)")
     Path workspace = Path.of(".");
 
@@ -46,7 +49,7 @@ public final class IndexCommand implements Callable<Integer> {
                 service = new IndexService();
             } else {
                 ModelEndpoint coder = config.models().get("coder");
-                service = new IndexService(null, new HttpChatModel(coder), coder.model());
+                service = new IndexService(null, new HttpChatModel(coder, CARD_MAX_ATTEMPTS), coder.model());
             }
             List<IndexService.RepoResult> results = service.run(config, db);
             for (IndexService.RepoResult r : results) {
@@ -74,7 +77,9 @@ public final class IndexCommand implements Callable<Integer> {
             matchReport.warnings().forEach(w -> out.println("  warn: " + w));
             RepoCardGenerator.CardResult cardResult = service.lastCardResult();
             if (cardResult == null) {
-                out.println("cards: skipped");
+                out.println(service.lastCardError() == null
+                        ? "cards: skipped"
+                        : "cards: failed (" + firstLine(service.lastCardError()) + ")");
             } else {
                 out.printf(Locale.ROOT, "cards: %d generated, %d cached, %d failed%n",
                         cardResult.generated(), cardResult.cached(), cardResult.failed());

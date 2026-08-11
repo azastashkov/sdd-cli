@@ -207,6 +207,7 @@ class IndexServiceTest {
             assertThat(results).singleElement()
                     .satisfies(r -> assertThat(r.status()).isEqualTo("OK"));
             assertThat(service.lastCardResult()).isNull();
+            assertThat(service.lastCardError()).contains("boom");
         }
     }
 
@@ -219,6 +220,7 @@ class IndexServiceTest {
             service.run(config(), db);
 
             assertThat(service.lastCardResult()).isNull();
+            assertThat(service.lastCardError()).isNull();
         }
     }
 

@@ -24,15 +24,28 @@ public final class HttpChatModel implements ChatModel {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final ModelEndpoint endpoint;
+    private final int maxAttempts;
     private final HttpClient client;
     private final Sleeper sleeper;
 
     public HttpChatModel(ModelEndpoint endpoint) {
-        this(endpoint, HttpClient.newHttpClient(), Thread::sleep);
+        this(endpoint, MAX_ATTEMPTS);
+    }
+
+    public HttpChatModel(ModelEndpoint endpoint, int maxAttempts) {
+        this(endpoint, maxAttempts, HttpClient.newHttpClient(), Thread::sleep);
     }
 
     public HttpChatModel(ModelEndpoint endpoint, HttpClient client, Sleeper sleeper) {
+        this(endpoint, MAX_ATTEMPTS, client, sleeper);
+    }
+
+    public HttpChatModel(ModelEndpoint endpoint, int maxAttempts, HttpClient client, Sleeper sleeper) {
+        if (maxAttempts < 1) {
+            throw new IllegalArgumentException("maxAttempts must be >= 1");
+        }
         this.endpoint = endpoint;
+        this.maxAttempts = maxAttempts;
         this.client = client;
         this.sleeper = sleeper;
     }
@@ -41,7 +54,7 @@ public final class HttpChatModel implements ChatModel {
     public ChatResponse complete(ChatRequest req) {
         String body = toJson(req);
         ModelException last = null;
-        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 HttpResponse<String> resp = send(body);
                 int status = resp.statusCode();
@@ -83,7 +96,7 @@ public final class HttpChatModel implements ChatModel {
     }
 
     private void backoff(int attempt, Long retryAfterMillis) {
-        if (attempt >= MAX_ATTEMPTS) {
+        if (attempt >= maxAttempts) {
             return;
         }
         long delay = retryAfterMillis != null

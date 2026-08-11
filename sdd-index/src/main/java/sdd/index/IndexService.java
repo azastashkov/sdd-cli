@@ -44,6 +44,7 @@ public final class IndexService {
     private RestMatcher.Report lastRestReport;
     private int lastTopicsCleaned;
     private RepoCardGenerator.CardResult lastCardResult;
+    private String lastCardError;
     private Path lastReportPath;
 
     public IndexService() {
@@ -98,12 +99,14 @@ public final class IndexService {
      * (no card model configured) or when generation itself blew up.
      */
     private RepoCardGenerator.CardResult generateCards(Jdbi jdbi, Path workspace) {
+        lastCardError = null;
         if (cardModel == null) {
             return null;
         }
         try {
             return RepoCardGenerator.generate(jdbi, workspace, cardModel, cardModelName);
         } catch (RuntimeException e) {
+            lastCardError = String.valueOf(e);
             return null;
         }
     }
@@ -135,6 +138,11 @@ public final class IndexService {
     /** Null when cards were skipped ({@code --no-cards}, no card model) or generation failed. */
     public RepoCardGenerator.CardResult lastCardResult() {
         return lastCardResult;
+    }
+
+    /** Null unless card generation crashed; non-null distinguishes a crash from a configured skip. */
+    public String lastCardError() {
+        return lastCardError;
     }
 
     public Path lastReportPath() {

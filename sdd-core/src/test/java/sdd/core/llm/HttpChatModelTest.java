@@ -156,4 +156,16 @@ class HttpChatModelTest {
         assertThat(resp.message().toolCalls()).hasSize(1);
         assertThat(resp.message().toolCalls().get(0).name()).isEqualTo("read_file");
     }
+
+    @Test
+    void attemptCapBoundsRetries() {
+        wm.stubFor(post("/v1/chat/completions").willReturn(serverError()));
+        ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "test-model", "sk-key",
+                256, 0.0, Duration.ofSeconds(5));
+        HttpChatModel capped = new HttpChatModel(ep, 2, HttpClient.newHttpClient(), millis -> { });
+
+        assertThatThrownBy(() -> capped.complete(request()))
+                .isInstanceOf(ModelException.class);
+        wm.verify(2, postRequestedFor(urlEqualTo("/v1/chat/completions")));
+    }
 }
