@@ -127,3 +127,7 @@ evidence (consumer modules referencing provider-repo types), not from api/implem
 declaration scope: `dep_edge.configuration` records resolved classpath names
 (compileClasspath/runtimeClasspath), so declaration scope is not available in the KB. The
 annotation still never limits propagation.
+
+## Amendment (2026-08-12): sdd graph command
+
+User requirement: a small standalone phase (3C-3, after 3C-2) adds `sdd graph [--workspace <ws>] [--out <file>]` — a read-only, model-free renderer of the knowledge base's estate graph as Mermaid: repo-level nodes styled by kind (SERVICE/LIBRARY/UNKNOWN), internal Gradle edges labeled with their consumption mode, REST call edges (client repo → provider repo, labeled by confidence) and Kafka topic edges (producer → consumer, labeled by topic) as visually distinct link types. Output to stdout by default, `--out <file>` to write a file. Deterministic ordering (same KB → byte-identical output); empty-KB handling mirrors `sdd plan`'s error. Detailed scope (module-level drill-down, affected-subgraph filtering by spec) is decided when the phase is planned.
