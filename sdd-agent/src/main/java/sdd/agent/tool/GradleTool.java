@@ -25,11 +25,17 @@ public final class GradleTool {
     private final Path repoRoot;
     private final Path javaHome;
     private final Duration timeout;
+    private final java.util.List<String> extraArgs;
 
     public GradleTool(Path repoRoot, Path javaHome, Duration timeout) {
+        this(repoRoot, javaHome, timeout, java.util.List.of());
+    }
+
+    public GradleTool(Path repoRoot, Path javaHome, Duration timeout, java.util.List<String> extraArgs) {
         this.repoRoot = repoRoot;
         this.javaHome = javaHome;
         this.timeout = timeout;
+        this.extraArgs = java.util.List.copyOf(extraArgs);
     }
 
     /** Model-facing output, tail-capped at MAX_OUTPUT (the 4A behavior). */
@@ -57,8 +63,14 @@ public final class GradleTool {
         Path log = null;
         try {
             log = Files.createTempFile("sdd-agent-gradle", ".log");
-            ProcessBuilder builder = new ProcessBuilder(List.of("./gradlew", task,
-                    "--no-configuration-cache", "--no-daemon", "-q"));
+            java.util.List<String> command = new java.util.ArrayList<>();
+            command.add("./gradlew");
+            command.add(task);
+            command.addAll(extraArgs);          // orchestrator-appended substitution flags (invisible to the model)
+            command.add("--no-configuration-cache");
+            command.add("--no-daemon");
+            command.add("-q");
+            ProcessBuilder builder = new ProcessBuilder(command);
             builder.directory(repoRoot.toFile());
             builder.redirectErrorStream(true);
             builder.redirectOutput(log.toFile());
