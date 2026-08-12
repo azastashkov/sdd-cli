@@ -30,7 +30,7 @@ public final class RepoStepRunner {
 
     public StepOutcome run(RepoStep step, ChatModel model, String modelName, RunnerSettings settings) {
         OutputCompactor compactor = new OutputCompactor(step.repoRoot());
-        GradleTool gradle = new GradleTool(step.repoRoot(), settings.javaHome(), settings.gradleTimeout());
+        GradleTool gradle = new GradleTool(step.repoRoot(), settings.javaHome(), settings.gradleTimeout(), settings.gradleExtraArgs());
         Toolbox toolbox = new Toolbox(new FileTools(new PathJail(step.repoRoot())), gradle, compactor);
         VerificationRunner verifier = new VerificationRunner(gradle, compactor);
         AgentLoop loop = new AgentLoop(model, toolbox, settings.budget(), settings.contextSoftCap(),
