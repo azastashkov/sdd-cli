@@ -1,0 +1,5 @@
+package sdd.agent.loop;
+
+public enum AgentResult {
+    DONE, BLOCKED, BUDGET_TURNS, BUDGET_TIME, BUDGET_TOKENS, MALFORMED, WEDGED, CONTEXT_EXHAUSTED
+}
