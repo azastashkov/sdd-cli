@@ -4,6 +4,7 @@ import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.Expression;
+import sdd.core.route.Routes;
 import sdd.index.source.SourceParser;
 
 import java.util.ArrayList;
@@ -36,7 +37,7 @@ public final class RestEndpointExtractor {
                         for (String base : bases) {
                             for (String path : mapping.paths()) {
                                 out.add(new SpringModel.EndpointInfo(fqcn, m.getNameAsString(),
-                                        mapping.verb(), RouteNormalizer.join(base, path),
+                                        mapping.verb(), Routes.join(base, path),
                                         requestBodyType(m), m.getType().asString()));
                             }
                         }

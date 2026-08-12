@@ -1,7 +1,7 @@
 package sdd.index.store;
 
 import org.jdbi.v3.core.Handle;
-import sdd.index.spring.RouteNormalizer;
+import sdd.core.route.Routes;
 import sdd.index.spring.SpringModel;
 
 public final class SpringPersistence {
@@ -20,8 +20,8 @@ public final class SpringPersistence {
                             VALUES (:m, :cls, :name, :verb, :path, :norm, :req, :resp)""")
                     .bind("m", moduleId).bind("cls", e.classFqcn()).bind("name", e.methodName())
                     .bind("verb", e.httpMethod()).bind("path", e.pathTemplate())
-                    .bind("norm", RouteNormalizer.normalize(
-                            RouteNormalizer.join(contextPath, e.pathTemplate())))
+                    .bind("norm", Routes.normalize(
+                            Routes.join(contextPath, e.pathTemplate())))
                     .bind("req", e.requestType()).bind("resp", e.responseType()).execute();
         }
         for (SpringModel.ClientInfo c : extract.clients()) {
@@ -34,7 +34,7 @@ public final class SpringPersistence {
                     .bind("site", c.methodOrSite()).bind("verb", c.httpMethod())
                     .bind("uri", c.uriTemplate())
                     .bind("norm", c.uriTemplate() == null ? null
-                            : RouteNormalizer.normalize(c.uriTemplate()))
+                            : Routes.normalize(c.uriTemplate()))
                     .bind("hint", c.targetHint()).bind("res", c.resolution())
                     .bind("raw", c.rawExpr()).execute();
         }

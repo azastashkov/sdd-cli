@@ -1,4 +1,4 @@
-package sdd.index.spring;
+package sdd.core.route;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -6,7 +6,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class RouteNormalizerTest {
+class RoutesTest {
     @ParameterizedTest
     @CsvSource(nullValues = "NULL", value = {
             "/api,      /orders,        /api/orders",
@@ -17,7 +17,7 @@ class RouteNormalizerTest {
             "'',        orders/,        /orders",
     })
     void joins(String base, String method, String expected) {
-        assertThat(RouteNormalizer.join(base, method)).isEqualTo(expected);
+        assertThat(Routes.join(base, method)).isEqualTo(expected);
     }
 
     @ParameterizedTest
@@ -28,11 +28,21 @@ class RouteNormalizerTest {
             "/,                         /",
     })
     void normalizes(String input, String expected) {
-        assertThat(RouteNormalizer.normalize(input)).isEqualTo(expected);
+        assertThat(Routes.normalize(input)).isEqualTo(expected);
     }
 
     @Test
     void nullTemplateNormalizesToRoot() {
-        assertThat(RouteNormalizer.normalize(null)).isEqualTo("/");
+        assertThat(Routes.normalize(null)).isEqualTo("/");
+    }
+
+    @Test
+    void templateAndVerbHelpers() {
+        assertThat(Routes.templatesMatch("/a/{}/c", "/a/{}/c")).isTrue();
+        assertThat(Routes.templatesMatch("/a/42/c", "/a/{}/c")).isTrue();
+        assertThat(Routes.templatesMatch("/a/{}/c", "/a/b")).isFalse();
+        assertThat(Routes.verbsCompatible("ANY", "GET")).isTrue();
+        assertThat(Routes.verbsCompatible("GET", "ANY")).isTrue();
+        assertThat(Routes.verbsCompatible("GET", "POST")).isFalse();
     }
 }

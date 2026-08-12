@@ -5,6 +5,7 @@ import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.MethodCallExpr;
+import sdd.core.route.Routes;
 import sdd.index.source.SourceParser;
 
 import java.util.ArrayList;
@@ -70,7 +71,7 @@ public final class RestClientExtractor {
                     .map(paths -> Optional.ofNullable(ValueResolver.resolve(paths.get(0), props).value())
                             .orElse(""))
                     .orElse("");
-            String base = RouteNormalizer.join(feignBase, classPath);
+            String base = Routes.join(feignBase, classPath);
             for (MethodDeclaration m : c.getMethods()) {
                 for (Map.Entry<String, String> verb : FEIGN_VERBS.entrySet()) {
                     AnnotationValues.annotation(m, verb.getKey()).ifPresent(ann ->
@@ -109,14 +110,14 @@ public final class RestClientExtractor {
                 // No method-level path: the row's resolution/rawExpr describe how the base
                 // itself resolved (e.g. a property placeholder), not a hardcoded literal.
                 out.add(new SpringModel.ClientInfo("FEIGN", fqcn, m.getNameAsString(), verb,
-                        RouteNormalizer.join(base, ""), targetHint,
+                        Routes.join(base, ""), targetHint,
                         baseResolved.resolution().name(), baseResolved.rawExpr()));
                 continue;
             }
             for (Expression pathExpr : paths) {
                 ValueResolver.Resolved r = ValueResolver.resolve(pathExpr, props);
                 out.add(new SpringModel.ClientInfo("FEIGN", fqcn, m.getNameAsString(), verb,
-                        r.value() != null ? RouteNormalizer.join(base, r.value()) : null,
+                        r.value() != null ? Routes.join(base, r.value()) : null,
                         targetHint, r.resolution().name(), r.rawExpr()));
             }
         }

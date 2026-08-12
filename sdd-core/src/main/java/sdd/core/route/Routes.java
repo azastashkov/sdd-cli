@@ -1,7 +1,13 @@
-package sdd.index.spring;
+package sdd.core.route;
 
-public final class RouteNormalizer {
-    private RouteNormalizer() {}
+/**
+ * Shared route semantics: the indexer writes rest_endpoint.norm_path with normalize(); the
+ * planner matches touchpoints against it with templatesMatch()/verbsCompatible(). Moved from
+ * sdd-index (RouteNormalizer + RestMatcher helpers) verbatim so both modules share one truth.
+ */
+public final class Routes {
+    private Routes() {
+    }
 
     public static String join(String basePath, String methodPath) {
         String base = strip(basePath);
@@ -40,5 +46,24 @@ public final class RouteNormalizer {
             out = out.substring(0, out.length() - 1);
         }
         return out;
+    }
+
+    public static boolean templatesMatch(String clientNorm, String endpointNorm) {
+        String[] a = clientNorm.split("/");
+        String[] b = endpointNorm.split("/");
+        if (a.length != b.length) {
+            return false;
+        }
+        for (int i = 0; i < a.length; i++) {
+            if (!a[i].equals(b[i]) && !a[i].equals("{}") && !b[i].equals("{}")) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public static boolean verbsCompatible(String clientVerb, String endpointVerb) {
+        return "ANY".equals(clientVerb) || "ANY".equals(endpointVerb)
+                || clientVerb.equals(endpointVerb);
     }
 }

@@ -3,7 +3,7 @@ package sdd.index.store;
 import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
 import sdd.core.config.ManualEdge;
-import sdd.index.spring.RouteNormalizer;
+import sdd.core.route.Routes;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -81,7 +81,7 @@ public final class RestMatcher {
 
             int manual = 0;
             for (ManualEdge edge : manualEdges) {
-                String norm = RouteNormalizer.normalize(edge.path());
+                String norm = Routes.normalize(edge.path());
                 List<Long> clientIds = clients.stream()
                         .filter(c -> c.repo().equals(edge.clientRepo())
                                 && verbsCompatible(c.verb(), edge.httpMethod())
@@ -134,21 +134,10 @@ public final class RestMatcher {
     }
 
     static boolean templatesMatch(String clientNorm, String endpointNorm) {
-        String[] a = clientNorm.split("/");
-        String[] b = endpointNorm.split("/");
-        if (a.length != b.length) {
-            return false;
-        }
-        for (int i = 0; i < a.length; i++) {
-            if (!a[i].equals(b[i]) && !a[i].equals("{}") && !b[i].equals("{}")) {
-                return false;
-            }
-        }
-        return true;
+        return Routes.templatesMatch(clientNorm, endpointNorm);
     }
 
     static boolean verbsCompatible(String clientVerb, String endpointVerb) {
-        return "ANY".equals(clientVerb) || "ANY".equals(endpointVerb)
-                || clientVerb.equals(endpointVerb);
+        return Routes.verbsCompatible(clientVerb, endpointVerb);
     }
 }

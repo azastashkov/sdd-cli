@@ -124,16 +124,6 @@ class RestMatcherTest {
     }
 
     @Test
-    void templateAndVerbHelpers() {
-        assertThat(RestMatcher.templatesMatch("/a/{}/c", "/a/{}/c")).isTrue();
-        assertThat(RestMatcher.templatesMatch("/a/42/c", "/a/{}/c")).isTrue();
-        assertThat(RestMatcher.templatesMatch("/a/{}/c", "/a/b")).isFalse();
-        assertThat(RestMatcher.verbsCompatible("ANY", "GET")).isTrue();
-        assertThat(RestMatcher.verbsCompatible("GET", "ANY")).isTrue();
-        assertThat(RestMatcher.verbsCompatible("GET", "POST")).isFalse();
-    }
-
-    @Test
     void manualPinDecrementsCountersForReplacedEdges() {
         client(ordersModule, "RESTTEMPLATE", "POST", "/pay/charge", null, "/pay/charge");
         endpoint(billingModule, "POST", "/pay/charge");
