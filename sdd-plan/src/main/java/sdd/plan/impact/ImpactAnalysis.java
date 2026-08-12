@@ -30,12 +30,24 @@ public final class ImpactAnalysis {
                 scan.candidates(), planner, modelName, maxTokens);
         boolean modelUnavailable = seeding.unavailable();
 
+        Map<String, Seed> candidateByRepo = new LinkedHashMap<>();
+        for (Seed candidate : scan.candidates()) {
+            candidateByRepo.putIfAbsent(candidate.repo(), candidate);
+        }
         List<Seed> seeds = new ArrayList<>(scan.seeds());
+        Set<String> seedKeys = new LinkedHashSet<>();
+        for (Seed seed : seeds) {
+            seedKeys.add(seed.repo() + "|" + seed.source() + "|" + seed.detail());
+        }
         for (ModelSeeder.ModelSeed modelSeed : seeding.seeds()) {
+            Seed candidate = candidateByRepo.get(modelSeed.repo());
+            if (candidate != null) {
+                addSeed(seeds, seedKeys, candidate);   // model confirmed the FTS candidate: keep its evidence
+            }
             String detail = modelSeed.covers().isEmpty()
                     ? modelSeed.reason()
                     : "covers " + String.join(",", modelSeed.covers()) + "; " + modelSeed.reason();
-            seeds.add(new Seed(modelSeed.repo(), "model", detail));
+            addSeed(seeds, seedKeys, new Seed(modelSeed.repo(), "model", detail));
         }
 
         Set<String> touchpointRepos = new LinkedHashSet<>();
@@ -134,5 +146,11 @@ public final class ImpactAnalysis {
 
         return new ImpactResult(seeds, affected, excluded, expansion.cycles(),
                 discrepancies, problems, warnings);
+    }
+
+    private static void addSeed(List<Seed> seeds, Set<String> seedKeys, Seed seed) {
+        if (seedKeys.add(seed.repo() + "|" + seed.source() + "|" + seed.detail())) {
+            seeds.add(seed);
+        }
     }
 }

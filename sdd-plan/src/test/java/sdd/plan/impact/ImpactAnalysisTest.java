@@ -163,4 +163,42 @@ class ImpactAnalysisTest {
         assertThat(result.affected().get(0).reasons()).filteredOn(r -> r.contains("model"))
                 .hasSize(1);
     }
+
+    @Test
+    void modelConfirmedCandidateCarriesFtsProvenance() {
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(new ChatResponse(
+                ChatMessage.assistant("""
+                        {"repos": [{"repo": "svc-legacy", "role": "contributor", "covers": ["R1"],
+                                    "reason": "legacy adapter"}]}"""),
+                "stop", new Usage(1, 1))));
+
+        ImpactResult result = ImpactAnalysis.analyze(db.jdbi(), new FtsRetriever(db.jdbi()),
+                spec(), planner, "m", 16);
+
+        assertThat(result.seeds()).extracting(Seed::repo, Seed::source).contains(
+                tuple("svc-legacy", "fts"), tuple("svc-legacy", "model"));
+        AffectedRepo legacy = result.affected().stream()
+                .filter(a -> a.repo().equals("svc-legacy")).findFirst().orElseThrow();
+        assertThat(legacy.reasons()).anySatisfy(r ->
+                assertThat(r).isEqualTo("fts R1 hit: LegacyLoyaltyAdapter"));
+        // regression pin, not a RED driver: a model-selected candidate is affected today too,
+        // so excluded is already empty pre-change — this pins that the rework keeps it so
+        assertThat(result.excluded()).isEmpty();
+    }
+
+    @Test
+    void seedsListHoldsNoIdenticalTriples() {
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(new ChatResponse(
+                ChatMessage.assistant("""
+                        {"repos": [{"repo": "lib-core", "role": "primary", "covers": ["R1"], "reason": "owns it"},
+                                   {"repo": "lib-core", "role": "primary", "covers": ["R1"], "reason": "owns it"}]}"""),
+                "stop", new Usage(1, 1))));
+
+        ImpactResult result = ImpactAnalysis.analyze(db.jdbi(), new FtsRetriever(db.jdbi()),
+                spec(), planner, "m", 16);
+
+        long modelSeedRows = result.seeds().stream()
+                .filter(s -> s.repo().equals("lib-core") && s.source().equals("model")).count();
+        assertThat(modelSeedRows).isEqualTo(1);
+    }
 }
