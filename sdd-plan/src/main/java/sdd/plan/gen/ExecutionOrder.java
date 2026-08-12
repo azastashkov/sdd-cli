@@ -94,8 +94,8 @@ public final class ExecutionOrder {
         return order;
     }
 
-    /** [provider, consumer] pairs among affected repos: gradle edges + REST/Kafka pseudo-edges. */
-    private static List<String[]> edges(Jdbi jdbi, Set<String> affected) {
+    /** [provider, consumer] constraint edges among the given repos — shared with PlanValidator. */
+    public static List<String[]> edges(Jdbi jdbi, Set<String> affected) {
         List<String[]> edges = new ArrayList<>();
         jdbi.useHandle(h -> {
             h.createQuery("""
