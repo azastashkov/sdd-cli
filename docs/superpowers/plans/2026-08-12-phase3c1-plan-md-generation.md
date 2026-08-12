@@ -1859,3 +1859,22 @@ git commit -m "feat: sdd plan writes the gate-1 plan.md"
 2. **Placeholder scan:** none; every code step complete.
 3. **Type consistency:** `Question(String, boolean)` shared by T4/T5/T6; `ExecutionOrder.Unit(List<String>)` by T3/T5/T6/T7; `PlanDrafter.Draft/DraftStep/DraftContract` by T5/T6/T7; `SeedingOutcome` 3-component shape by T1 and ModelSeeder call sites; renderer layout strings match T7's e2e assertions; `draft/composeInput` carry the caller-computed `List<ExecutionOrder.Unit>` in T5 code, T5 tests, and T7's call site.
 4. **Adversarial critique pass (2 independent critics vs the real codebase, findings folded in):** ExecutionOrder test-1 expected order corrected to the algorithm's true emission (`lib-core, lib-api, platform, …` — newly-ready units interleave into the alphabetical pool; both critics independently simulated the Kahn trace); drafter free text can no longer forge plan.md structure (renderer `inline()`/`prose()` sanitizers + hostile-input test — the 3C-2 parser pins this layout); Task 2's `excluded()` assertion relabeled a regression pin (true pre-change); Kafka pseudo-edge ordering, fenced-JSON drafting, and EVIDENCE_CAP truncation gained tests; the unresolved-caller detector gained its Kafka counterpart; the contract-vs-constraint conflict detector is now explicitly named in 3C-2's scope; `ExecutionOrder.order` computed once and passed into the drafter. Critics verified every record shape, line reference, import, and SQL column against the real repo; the `GOOD_JSON` escape semantics and `req=null` rendering were confirmed correct.
+
+---
+
+## Execution Outcome (2026-08-12)
+
+Executed via superpowers:subagent-driven-development on branch `feature/phase3c1-plan-md-generation` (base 2fc828d, HEAD 1abcf1f, 8 commits). All 7 tasks completed with clean per-task reviews and ZERO task-level fix rounds. Final whole-branch review (most capable model): **one fix wave** — two sanitizer leaks no per-task scope could see (seeding-model text reached the Affected-Repos "why" column un-inlined; `prose()` missed backtick fences) — fixed in one commit, each finding independently RED-verified by the scoped re-review. Full `./gradlew clean build` green.
+
+### Real-estate drafting smoke (trading estate, real DeepSeek)
+
+- **Containment live-proven twice:** with `max_tokens: 16384` the drafting call hit `finish_reason=length` on BOTH runs (~165 s/227 s) and degraded exactly as designed — complete deterministic artifact, one `[blocking]` question, exit 0, all 8 sections intact.
+- **ESTATE FINDING: the design's "planner ≥16k max_tokens" floor is insufficient for DRAFTING.** At `max_tokens: 32768` the draft succeeded (~211 s): 2 grounded contracts (java-api platform-libs→product-a; rest trading-core admin surface for R3), 6 repo steps with real files/verification tasks, full R1-R3 coverage, and six blocking questions that are precisely the right human decisions (resolver method shape, publication-pipeline location, extend-vs-new endpoint, config home, A2 cache invalidation, product-b scope). The file soft-check caught the drafter's one bare filename (`JdbcTierResolver.java` without its repo-relative path) in Generation Notes, as designed.
+
+### Phase 3C-2 entry checklist
+
+1. `plan approve`: plan.md parser + validators (INCLUDING contract-vs-constraint conflict detection on parsed contracts), blocking-question resolution enforcement, plan.json compiler, `--include-build` smoke test, SHA-256 pinning, `sdd plan revise`.
+2. **Overwrite guard before plan.md edits become load-bearing:** `sdd plan` (and `normalize`) silently overwrite hand-edited artifacts — the revise design must add a guard/backup (final-review ruling: safe today, gating for 3C-2).
+3. **Drafting token budget:** recommend `max_tokens ≥ 32768` for the planner in docs/sdd.yml.example, or design per-repo draft chunking; consider a distinct drafting-tokens config knob (drafting needs ~2× seeding).
+4. Deferred minors: duplicate contract ids kept (3C-2 validator owns uniqueness; parser must tolerate); empty contract consumers render a trailing "-> "; blank-problem producer-side check; duplicate drafter steps per repo (render both; validator judges).
+5. Estate follow-ups: Redis-channel edges as a future edge type; `com.trading:services` GA collision cleanup via rename or artifact_overrides.
