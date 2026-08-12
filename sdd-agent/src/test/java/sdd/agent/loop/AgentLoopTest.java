@@ -142,6 +142,19 @@ class AgentLoopTest {
     }
 
     @Test
+    void nullDoneArgumentsIsTreatedAsMalformedInsteadOfCrashingTheLoop() {
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", null),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"ok now\"}")));
+
+        AgentOutcome outcome = loop(model, AgentBudget.defaults(), InstantSource.system())
+                .run("sys", "wo", "qwen", 4096);
+
+        assertThat(outcome.result()).isEqualTo(AgentResult.DONE);
+        assertThat(outcome.summary()).isEqualTo("ok now");
+    }
+
+    @Test
     void wallClockBudgetTerminates() {
         ScriptedChatModel model = new ScriptedChatModel(List.of(
                 call("1", "list_files", "{\"dir\":\".\"}"),

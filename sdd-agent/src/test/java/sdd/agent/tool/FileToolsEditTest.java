@@ -67,6 +67,21 @@ class FileToolsEditTest {
     }
 
     @Test
+    void creationThroughASymlinkedParentDirectoryIsRejectedAndNothingIsWrittenOutside() throws Exception {
+        Path outside = Files.createDirectory(root.resolveSibling("outside-" + root.getFileName()));
+        Files.createSymbolicLink(root.resolve("docs"), outside);
+
+        assertThatThrownBy(() -> tools.applyEdit("docs/x.txt", "", "hi"))
+                .isInstanceOf(ToolException.class).hasMessageContaining("escapes the repo");
+        assertThat(Files.exists(outside.resolve("x.txt"))).isFalse();
+
+        // a normal creation in a real (non-symlinked) subdir still works
+        assertThat(tools.applyEdit("src/Real.java", "", "class Real {}\n"))
+                .isEqualTo("created src/Real.java");
+        assertThat(Files.readString(root.resolve("src/Real.java"))).isEqualTo("class Real {}\n");
+    }
+
+    @Test
     void missingAmbiguousAndCreateOverExistingFail() throws Exception {
         Files.writeString(root.resolve("src/A.java"), "class A {\n  int x;\n  int x;\n}\n");
 

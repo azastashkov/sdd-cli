@@ -66,8 +66,8 @@ public final class FileTools {
         try (Stream<Path> children = Files.list(target)) {
             children.sorted().forEach(child ->
                     names.add(child.getFileName() + (Files.isDirectory(child) ? "/" : "")));
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
+        } catch (IOException | UncheckedIOException e) {
+            throw new ToolException("cannot list " + dir + ": " + e.getMessage());
         }
         return String.join("\n", names) + (names.isEmpty() ? "" : "\n");
     }
@@ -94,8 +94,8 @@ public final class FileTools {
                 }
                 scanFile(root, file, pattern, hits, truncated);
             }
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
+        } catch (IOException | UncheckedIOException e) {
+            throw new ToolException("search failed: " + e.getMessage());
         }
         StringBuilder out = new StringBuilder();
         for (String hit : hits) {
@@ -140,9 +140,10 @@ public final class FileTools {
 
     public String applyEdit(String path, String searchBlock, String replaceBlock) {
         boolean creating = searchBlock.isEmpty();
-        // creation resolves logically (parent may not exist yet); an edit uses resolveExisting so
-        // the toRealPath symlink jail applies to the WRITE path, not just reads.
-        Path file = creating ? jail.resolve(path) : jail.resolveExisting(path);
+        // creation resolves via resolveCreatable (parent may not exist yet, but a symlinked parent
+        // must still be caught); an edit uses resolveExisting so the toRealPath symlink jail
+        // applies to the WRITE path, not just reads.
+        Path file = creating ? jail.resolveCreatable(path) : jail.resolveExisting(path);
         String original;
         if (creating) {
             if (Files.exists(file) && !readOrEmpty(file).isEmpty()) {

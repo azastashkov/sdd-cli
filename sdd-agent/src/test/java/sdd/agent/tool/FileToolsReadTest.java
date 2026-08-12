@@ -4,11 +4,16 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class FileToolsReadTest {
     @TempDir Path root;
@@ -56,5 +61,50 @@ class FileToolsReadTest {
 
         assertThat(hits).isEqualTo("src/main/java/a/A.java:2:   int loyaltyTier;\n");
         assertThat(hits).doesNotContain("build/");
+    }
+
+    @Test
+    void listFilesOnAnUnreadableDirectoryThrowsToolExceptionNotUncheckedIOException() throws Exception {
+        Path locked = root.resolve("locked");
+        Files.createDirectory(locked);
+        Files.writeString(locked.resolve("secret.txt"), "x");
+        Files.setPosixFilePermissions(locked, PosixFilePermissions.fromString("---------"));
+        try {
+            assumeTrue(isUnreadable(locked), "POSIX perms not enforced for this user/filesystem");
+
+            assertThatThrownBy(() -> tools.listFiles("locked"))
+                    .isInstanceOf(ToolException.class)
+                    .isNotInstanceOf(UncheckedIOException.class)
+                    .hasMessageContaining("cannot list");
+        } finally {
+            Files.setPosixFilePermissions(locked, PosixFilePermissions.fromString("rwx------"));
+        }
+    }
+
+    @Test
+    void searchOverAnUnreadableSubdirectoryThrowsToolExceptionNotUncheckedIOException() throws Exception {
+        Path locked = root.resolve("src/main/java/locked");
+        Files.createDirectories(locked);
+        Files.writeString(locked.resolve("secret.txt"), "x");
+        Files.setPosixFilePermissions(locked, PosixFilePermissions.fromString("---------"));
+        try {
+            assumeTrue(isUnreadable(locked), "POSIX perms not enforced for this user/filesystem");
+
+            assertThatThrownBy(() -> tools.search("loyaltyTier"))
+                    .isInstanceOf(ToolException.class)
+                    .isNotInstanceOf(UncheckedIOException.class)
+                    .hasMessageContaining("search failed");
+        } finally {
+            Files.setPosixFilePermissions(locked, PosixFilePermissions.fromString("rwx------"));
+        }
+    }
+
+    private static boolean isUnreadable(Path dir) {
+        try (Stream<Path> probe = Files.list(dir)) {
+            probe.findAny();
+            return false;
+        } catch (IOException e) {
+            return true;
+        }
     }
 }

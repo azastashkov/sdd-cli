@@ -127,12 +127,21 @@ public final class AgentLoop {
                 } catch (ToolException e) {
                     window.addToolResult(call.id(), call.name(), "error: " + e.getMessage());
                     strikes = 0;
+                } catch (RuntimeException e) {
+                    // Defense-in-depth: no future tool bug should be able to escape run()
+                    // unhandled and break the OpenAI tool-call pairing. Treat an unexpected
+                    // crash like a legitimate ToolException failure the model can react to.
+                    window.addToolResult(call.id(), call.name(), "error: " + e.getMessage());
+                    strikes = 0;
                 }
             }
         }
     }
 
     private AgentOutcome tryDone(ToolCall call, int turns, long tokens, List<String> events) {
+        if (call.argumentsJson() == null) {
+            return null;
+        }
         try {
             JsonNode args = JSON.readTree(call.argumentsJson());
             String result = args.path("result").asText();
