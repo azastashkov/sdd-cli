@@ -1,0 +1,3 @@
+package sdd.cli.implement;
+
+public enum RepoState { PENDING, IN_PROGRESS, SUCCEEDED, FAILED, SKIPPED_UPSTREAM_FAILED }
