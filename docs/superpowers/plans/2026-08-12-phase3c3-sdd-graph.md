@@ -466,3 +466,11 @@ git commit -m "feat: sdd graph renders the estate as mermaid"
 1. **Spec coverage (amendment):** repo nodes styled by kind ✓ (T1 classDefs+switch); Gradle edges labeled with mode ✓; REST edges by confidence, distinct style ✓ (`-.->`); Kafka edges by topic, distinct style ✓ (`==>`); stdout default + `--out` ✓ (T2); deterministic ordering ✓ (ORDER BY everywhere + double-render pin); empty-KB mirrors `sdd plan` ✓ (same message, no-create). Module-level drill-down and affected-subgraph filtering explicitly deferred by the amendment ("decided when the phase is planned" — deferred to a future need; recorded).
 2. **Placeholder scan:** none.
 3. **Type consistency:** `MermaidGraph.render(Jdbi)` in T1/T2; `GraphCommand` follows ApproveCommand's config-free pattern and IndexCommand's writer/taxonomy conventions; node-id map (`idOf`) built before edge emission so all three edge loops resolve ids consistently.
+
+---
+
+## Execution Outcome (2026-08-12)
+
+Executed via superpowers:subagent-driven-development on branch `feature/phase3c3-sdd-graph` (base 97bdb33, HEAD 9553db6, 2 commits, zero fix rounds). Pre-execution critique was CLEAN — the critic materialized the plan's literal code in the repo, ran all 8 tests green, and verified Mermaid's thick-link pipe-label grammar against the upstream jison source. Final whole-branch review: **APPROVE, no fix wave**. Real-estate smoke: `sdd graph --workspace trading-estate` rendered 6 kind-styled nodes + 5 `-->|SNAPSHOT|` edges, byte-identical across runs; `--out` wrote `trading-estate/estate.mmd`.
+
+**Deferred hardening (one candidate, three items):** the node-id/label sanitizer family — digit-leading repo names (reachable: repo names come from directory names), the mermaid `end` keyword as a node id, and `"` inside quoted node labels. Generated-view-only impact; one normalizer fixes all three.
