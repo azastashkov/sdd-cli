@@ -1,0 +1,140 @@
+package sdd.agent.tool;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
+import java.util.stream.Stream;
+
+/** The agent's read/search/edit tools, all confined by a PathJail. */
+public final class FileTools {
+    static final int MAX_READ_LINES = 400;
+    static final int MAX_READ_BYTES = 16384;
+    static final int MAX_SEARCH_HITS = 100;
+    static final int MAX_SEARCHED_FILE_BYTES = 1_000_000;
+    private static final Set<String> SKIP_DIRS = Set.of(".git", "build", ".gradle", ".sdd", ".idea");
+
+    private final PathJail jail;
+
+    public FileTools(PathJail jail) {
+        this.jail = jail;
+    }
+
+    public String readFile(String path) {
+        Path file = jail.resolveExisting(path);
+        if (Files.isDirectory(file)) {
+            throw new ToolException(path + " is a directory");
+        }
+        String content;
+        try {
+            content = Files.readString(file, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new ToolException("cannot read " + path + ": " + e.getMessage());
+        }
+        List<String> lines = content.lines().toList();
+        boolean truncated = false;
+        if (lines.size() > MAX_READ_LINES) {
+            lines = lines.subList(0, MAX_READ_LINES);
+            truncated = true;
+        }
+        StringBuilder out = new StringBuilder();
+        for (String line : lines) {
+            if (out.length() + line.length() + 1 > MAX_READ_BYTES) {
+                truncated = true;
+                break;
+            }
+            out.append(line).append('\n');
+        }
+        if (truncated) {
+            out.append("... (truncated)\n");
+        }
+        return out.toString();
+    }
+
+    public String listFiles(String dir) {
+        Path target = jail.resolveExisting(dir);
+        if (!Files.isDirectory(target)) {
+            throw new ToolException(dir + " is not a directory");
+        }
+        List<String> names = new ArrayList<>();
+        try (Stream<Path> children = Files.list(target)) {
+            children.sorted().forEach(child ->
+                    names.add(child.getFileName() + (Files.isDirectory(child) ? "/" : "")));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        return String.join("\n", names) + (names.isEmpty() ? "" : "\n");
+    }
+
+    public String search(String regex) {
+        Pattern pattern;
+        try {
+            pattern = Pattern.compile(regex);
+        } catch (PatternSyntaxException e) {
+            throw new ToolException("bad regex: " + e.getMessage());
+        }
+        Path root = jail.root();
+        List<String> hits = new ArrayList<>();
+        boolean[] truncated = {false};
+        try (Stream<Path> walk = Files.walk(root)) {
+            List<Path> files = walk.filter(Files::isRegularFile)
+                    .filter(p -> skipDirs(root, p) == null)
+                    .sorted()
+                    .toList();
+            for (Path file : files) {
+                if (hits.size() >= MAX_SEARCH_HITS) {
+                    truncated[0] = true;
+                    break;
+                }
+                scanFile(root, file, pattern, hits, truncated);
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        StringBuilder out = new StringBuilder();
+        for (String hit : hits) {
+            out.append(hit).append('\n');
+        }
+        if (truncated[0]) {
+            out.append("... (more matches omitted)\n");
+        }
+        return out.toString();
+    }
+
+    private static String skipDirs(Path root, Path file) {
+        for (Path part : root.relativize(file)) {
+            if (SKIP_DIRS.contains(part.toString())) {
+                return part.toString();
+            }
+        }
+        return null;
+    }
+
+    private static void scanFile(Path root, Path file, Pattern pattern, List<String> hits,
+                                 boolean[] truncated) {
+        try {
+            if (Files.size(file) > MAX_SEARCHED_FILE_BYTES) {
+                return;
+            }
+            List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+            String rel = root.relativize(file).toString().replace('\\', '/');
+            for (int i = 0; i < lines.size(); i++) {
+                if (hits.size() >= MAX_SEARCH_HITS) {
+                    truncated[0] = true;
+                    return;
+                }
+                if (pattern.matcher(lines.get(i)).find()) {
+                    hits.add(rel + ":" + (i + 1) + ": " + lines.get(i));
+                }
+            }
+        } catch (IOException e) {
+            // unreadable/binary file — skip silently, consistent with a best-effort text search
+        }
+    }
+}
