@@ -95,4 +95,40 @@ class OutputCompactorTest {
         assertThat(compact).startsWith("exit 0").contains("BUILD SUCCESSFUL")
                 .doesNotContain("exit 0\nexit 0");
     }
+
+    @Test
+    void greenOutputsForDifferentTasksDiffer() {
+        OutputCompactor c = new OutputCompactor(repo);
+        String compileOut = c.compact("exit 0\n", "compileJava");
+        String testOut = c.compact("exit 0\n", "test");
+        assertThat(compileOut).isNotEqualTo(testOut);
+        assertThat(compileOut).startsWith("exit 0");
+        assertThat(testOut).startsWith("exit 0");
+    }
+
+    @Test
+    void timeoutDoesNotHarvestStaleTestResults() throws Exception {
+        writeReport("TEST-com.acme.FooTest.xml", """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <testsuite name="com.acme.FooTest" tests="1" failures="1" errors="0">
+                  <testcase name="old" classname="com.acme.FooTest">
+                    <failure message="stale failure" type="X">s</failure>
+                  </testcase>
+                </testsuite>
+                """);
+
+        String compact = new OutputCompactor(repo).compact("timed out after 5s", "test");
+
+        assertThat(compact).contains("timed out").doesNotContain("stale failure").doesNotContain("failed");
+    }
+
+    @Test
+    void capsCompileErrorsWithOmittedMarker() {
+        StringBuilder raw = new StringBuilder("exit 1\n");
+        for (int i = 0; i < 25; i++) {
+            raw.append("/r/F").append(i).append(".java:1: error: boom").append(i).append('\n');
+        }
+        String compact = new OutputCompactor(repo).compact(raw.toString(), "compileJava");
+        assertThat(compact).startsWith("exit 1").contains("5 more compile errors omitted");
+    }
 }

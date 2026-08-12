@@ -7,6 +7,7 @@ import org.w3c.dom.NodeList;
 
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -39,7 +40,7 @@ public final class OutputCompactor {
     public String compact(String rawGradleOutput, String task) {
         List<String> lines = rawGradleOutput.lines().toList();
         String header = lines.isEmpty() ? "" : lines.get(0);   // "exit N" / "timed out ..."
-        StringBuilder out = new StringBuilder(header).append('\n');
+        StringBuilder out = new StringBuilder(header).append(" (").append(task).append(")").append('\n');
 
         List<String> compileErrors = new ArrayList<>();
         for (String line : lines) {
@@ -53,7 +54,7 @@ public final class OutputCompactor {
             appendCapped(out, compileErrors, MAX_ERRORS, "compile errors");
         }
 
-        List<String> failures = TEST_TASKS.contains(task) ? testFailures() : List.of();
+        List<String> failures = TEST_TASKS.contains(task) && rawGradleOutput.startsWith("exit ") ? testFailures() : List.of();
         if (!failures.isEmpty()) {
             out.append(failures.size()).append(" failed:\n");
             appendCapped(out, failures, MAX_FAILURES, "test failures");
@@ -92,7 +93,7 @@ public final class OutputCompactor {
                     .filter(p -> p.getFileName().toString().endsWith(".xml"))
                     .sorted()
                     .forEach(reports::add);
-        } catch (IOException e) {
+        } catch (IOException | UncheckedIOException e) {
             return failures;
         }
         for (Path report : reports) {
