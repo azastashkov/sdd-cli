@@ -1,0 +1,175 @@
+package sdd.plan.gen;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import sdd.core.db.Database;
+import sdd.core.llm.ChatMessage;
+import sdd.core.llm.ChatResponse;
+import sdd.core.llm.Usage;
+import sdd.core.testing.ScriptedChatModel;
+import sdd.plan.impact.AffectedRepo;
+import sdd.plan.impact.ImpactResult;
+import sdd.plan.spec.NormalizedSpec;
+import sdd.plan.spec.SpecItem;
+
+import java.nio.file.Path;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class PlanDrafterTest {
+    @TempDir Path ws;
+    private Database db;
+
+    @BeforeEach
+    void seed() {
+        db = Database.open(ws);
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO repo(name, path, kind) VALUES ('lib-core','/w/1','LIBRARY')");
+            h.execute("INSERT INTO repo(name, path, kind) VALUES ('svc-pricing','/w/2','SERVICE')");
+            h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (1,':','LIBRARY')");
+            h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (2,':','SERVICE')");
+            h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path) "
+                    + "VALUES (1,'com.acme.LoyaltyTier','CLASS',1,'src/main/java/com/acme/LoyaltyTier.java')");
+            h.execute("INSERT INTO api_member(type_id, name, signature, return_type) "
+                    + "VALUES (1,'tierFor','tierFor(String)','Tier')");
+            h.execute("INSERT INTO rest_endpoint(module_id, class_fqcn, method_name, http_method, path_template, norm_path, request_type, response_type) "
+                    + "VALUES (2,'PriceController','get','GET','/price/{sku}','/price/{}',NULL,'PriceResponse')");
+        });
+    }
+
+    private static NormalizedSpec spec() {
+        return new NormalizedSpec("S-1", "T", "o", "draft", "G.", "",
+                List.of(new SpecItem("R1", "tier pricing")), List.of(new SpecItem("A1", "acc")),
+                List.of(), List.of(), List.of(), List.of(), List.of());
+    }
+
+    private static ImpactResult impact() {
+        return new ImpactResult(List.of(),
+                List.of(new AffectedRepo("lib-core", "seed", "SEED", List.of("R1"), List.of("touchpoint class:LoyaltyTier")),
+                        new AffectedRepo("svc-pricing", "dependent", "CODE_CHANGE_LIKELY", List.of(), List.of("depends on lib-core (PINNED)"))),
+                List.of(), List.of(), List.of(), List.of(), List.of());
+    }
+
+    private static List<ExecutionOrder.Unit> order() {
+        return List.of(new ExecutionOrder.Unit(List.of("lib-core")),
+                new ExecutionOrder.Unit(List.of("svc-pricing")));
+    }
+
+    private static ChatResponse response(String content, String finish) {
+        return new ChatResponse(ChatMessage.assistant(content), finish, new Usage(1, 1));
+    }
+
+    private static final String GOOD_JSON = """
+            {"summary": "Add tier lookups to lib-core and apply them in svc-pricing.",
+             "questions": [{"text": "Which tiers exist?", "blocking": false}],
+             "contracts": [{"id": "C-1", "kind": "java-api", "provider": "lib-core",
+                            "consumers": ["svc-pricing"],
+                            "body": "class: com.acme.LoyaltyTier\\nmethod: Tier tierFor(String customerId)"}],
+             "repo_steps": [
+               {"repo": "lib-core", "covers": ["R1", "R9"], "sub_spec": "Add tierFor lookup.",
+                "files": ["src/main/java/com/acme/LoyaltyTier.java"],
+                "provides_contracts": ["C-1"], "consumes_contracts": [],
+                "version_action": "minor", "verification": ["./gradlew test"]},
+               {"repo": "svc-pricing", "covers": [], "sub_spec": "Apply tier spread.",
+                "files": ["src/main/java/com/acme/Missing.java"],
+                "provides_contracts": [], "consumes_contracts": ["C-1", "C-9"],
+                "version_action": "shipit", "verification": ["./gradlew test"]},
+               {"repo": "ghost-repo", "covers": [], "sub_spec": "x", "files": [],
+                "provides_contracts": [], "consumes_contracts": [], "version_action": "none",
+                "verification": []}]}""";
+
+    @Test
+    void promptCarriesSpecImpactOrderAndKbEvidence() {
+        String input = PlanDrafter.composeInput(db.jdbi(), spec(), impact(),
+                ExecutionOrder.order(db.jdbi(), impact()));
+
+        assertThat(input).contains("- R1: tier pricing")
+                .contains("- lib-core | seed | SEED | covers: R1 | why: touchpoint class:LoyaltyTier")
+                .contains("1. lib-core").contains("2. svc-pricing")
+                .contains("- com.acme.LoyaltyTier (CLASS) @ src/main/java/com/acme/LoyaltyTier.java")
+                .contains("- com.acme.LoyaltyTier#tierFor(String): Tier")
+                .contains("- GET /price/{} req=null res=PriceResponse");
+    }
+
+    @Test
+    void validatesEveryUntrustedFieldWithNotes() {
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(response(GOOD_JSON, "stop")));
+
+        PlanDrafter.Draft draft = PlanDrafter.draft(db.jdbi(), spec(), impact(), order(), planner, "m", 4096);
+
+        assertThat(draft.unavailable()).isFalse();
+        assertThat(draft.summary()).startsWith("Add tier lookups");
+        assertThat(draft.questions()).containsExactly(new Question("Which tiers exist?", false));
+        assertThat(draft.contracts()).singleElement().satisfies(c -> {
+            assertThat(c.id()).isEqualTo("C-1");
+            assertThat(c.body()).contains("tierFor(String customerId)");
+        });
+        assertThat(draft.steps()).hasSize(2);   // ghost-repo dropped
+        PlanDrafter.DraftStep libCore = draft.steps().get(0);
+        assertThat(libCore.covers()).containsExactly("R1");                     // R9 filtered
+        PlanDrafter.DraftStep pricing = draft.steps().get(1);
+        assertThat(pricing.consumesContracts()).containsExactly("C-1");         // C-9 filtered
+        assertThat(pricing.versionAction()).isEqualTo("none");                  // 'shipit' coerced
+        assertThat(draft.notes()).anySatisfy(n -> assertThat(n).contains("ghost-repo"))
+                .anySatisfy(n -> assertThat(n).contains("R9"))
+                .anySatisfy(n -> assertThat(n).contains("C-9"))
+                .anySatisfy(n -> assertThat(n).contains("shipit"))
+                .anySatisfy(n -> assertThat(n).contains("Missing.java"));
+        assertThat(planner.requests()).singleElement().satisfies(r ->
+                assertThat(r.maxTokens()).isEqualTo(4096));
+    }
+
+    @Test
+    void fencedJsonResponseIsUnwrapped() {
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(response(
+                "```json\n{\"summary\": \"S.\", \"questions\": [], \"contracts\": [], \"repo_steps\": []}\n```",
+                "stop")));
+
+        PlanDrafter.Draft draft = PlanDrafter.draft(db.jdbi(), spec(), impact(), order(),
+                planner, "m", 256);
+
+        assertThat(draft.unavailable()).isFalse();
+        assertThat(draft.summary()).isEqualTo("S.");
+    }
+
+    @Test
+    void perRepoEvidenceIsCapped() {
+        db.jdbi().useHandle(h -> {
+            for (int i = 0; i < 25; i++) {
+                h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path) VALUES "
+                        + "(1,'com.acme.p" + i + "." + "X".repeat(300) + i + "','CLASS',0,'src/"
+                        + "y".repeat(300) + i + ".java')");
+            }
+        });
+
+        String input = PlanDrafter.composeInput(db.jdbi(), spec(), impact(),
+                List.of(new ExecutionOrder.Unit(List.of("lib-core"))));
+
+        assertThat(input).contains("…(truncated)");
+        int start = input.indexOf("## lib-core");
+        int end = input.indexOf("## svc-pricing");
+        assertThat(end - start).isLessThan(PlanDrafter.EVIDENCE_CAP + 200);
+    }
+
+    @Test
+    void allFailureChannelsDegradeToABlockingQuestion() {
+        for (ChatResponse bad : List.of(response("{", "length"), response("not json", "stop"),
+                response("[1,2]", "stop"))) {
+            PlanDrafter.Draft draft = PlanDrafter.draft(db.jdbi(), spec(), impact(), order(),
+                    new ScriptedChatModel(List.of(bad)), "m", 16);
+            assertThat(draft.unavailable()).as(bad.message().content()).isTrue();
+            assertThat(draft.questions()).singleElement().satisfies(q -> {
+                assertThat(q.blocking()).isTrue();
+                assertThat(q.text()).startsWith("plan drafting unavailable: ").endsWith("— rerun sdd plan");
+            });
+        }
+        sdd.core.llm.ChatModel down = req -> {
+            throw new sdd.core.llm.ModelException("connection refused", 0);
+        };
+        PlanDrafter.Draft draft = PlanDrafter.draft(db.jdbi(), spec(), impact(), order(), down, "m", 16);
+        assertThat(draft.unavailable()).isTrue();
+        assertThat(draft.questions().get(0).text()).contains("connection refused");
+    }
+}
