@@ -378,7 +378,7 @@ class PlanCommandTest {
         assertThat(run.exitCode()).isZero();
         Path planPath = ws.resolve("loyalty.plan.md");
         assertThat(run.out()).contains("plan written: " + planPath)
-                .contains("review and edit the plan, then run: sdd plan approve (Phase 3C-2)")
+                .contains("review and edit the plan, then run: sdd plan approve")
                 .doesNotContain("plan.md rendering is not implemented yet");
         String planMd = Files.readString(planPath);
         assertThat(planMd).startsWith("---\nspec: SPEC-7\nplan_version: 1\n---\n")
@@ -420,5 +420,87 @@ class PlanCommandTest {
                 .contains("## Affected Repos")
                 .contains("- lib-core — seed/SEED")
                 .contains("## Repo Steps\n- none (drafting unavailable)");
+    }
+
+    @Test
+    void backupLineAppearsWhenPlanFileIsRegenerated() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        try (sdd.core.db.Database db = sdd.core.db.Database.open(ws)) {
+            db.jdbi().useHandle(h -> {
+                h.execute("INSERT INTO repo(name, path, kind) VALUES ('lib-core','/w/1','LIBRARY')");
+                h.execute("INSERT INTO repo(name, path, kind) VALUES ('svc-pricing','/w/2','SERVICE')");
+                h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (1,':','LIBRARY')");
+                h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (2,':','SERVICE')");
+                h.execute("INSERT INTO dep_edge(from_module_id, to_grp, to_name, configuration, declared_version, declared_via, mode, is_internal, to_module_id) "
+                        + "VALUES (2,'com.acme','lib-core','compileClasspath','1.0','DIRECT','PINNED',1,1)");
+                h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path) "
+                        + "VALUES (1,'com.acme.LoyaltyTier','CLASS',1,'src/main/java/com/acme/LoyaltyTier.java')");
+            });
+        }
+        Path spec = ws.resolve("loyalty.md");
+        Files.writeString(spec, """
+                ---
+                id: SPEC-7
+                title: Loyalty tiers
+                owner: ana
+                status: draft
+                ---
+
+                ## Goal
+                Add loyalty tiers to pricing.
+
+                ## Requirements
+                - R1: Price response includes the customer tier.
+
+                ## Acceptance Criteria
+                - A1: GET /price returns tier for gold customers.
+
+                ## Touchpoints
+                - class: LoyaltyTier
+                """);
+
+        // First run: generate the plan
+        PlanCommand cmd1 = new PlanCommand();
+        cmd1.plannerForTest = new ScriptedChatModel(List.of(
+                new ChatResponse(ChatMessage.assistant("""
+                        {"repos": [{"repo": "lib-core", "role": "primary", "covers": ["R1"],
+                                    "reason": "owns LoyaltyTier"}]}"""), "stop", new Usage(10, 10)),
+                new ChatResponse(ChatMessage.assistant("""
+                        {"summary": "Add the tier lookup to lib-core; svc-pricing rebuilds.",
+                         "questions": [],
+                         "contracts": [{"id": "C-1", "kind": "java-api", "provider": "lib-core",
+                                        "consumers": ["svc-pricing"], "body": "method: Tier tierFor(String)"}],
+                         "repo_steps": [{"repo": "lib-core", "covers": ["R1"],
+                                         "sub_spec": "Add tierFor to LoyaltyTier.",
+                                         "files": ["src/main/java/com/acme/LoyaltyTier.java"],
+                                         "provides_contracts": ["C-1"], "consumes_contracts": [],
+                                         "version_action": "minor",
+                                         "verification": ["./gradlew test"]}]}"""), "stop", new Usage(10, 10))));
+
+        Run run1 = plan(cmd1, "--workspace", ws.toString(), spec.toString());
+        assertThat(run1.exitCode()).isZero();
+
+        // Second run: regenerate the plan — should back up the first version
+        PlanCommand cmd2 = new PlanCommand();
+        cmd2.plannerForTest = new ScriptedChatModel(List.of(
+                new ChatResponse(ChatMessage.assistant("""
+                        {"repos": [{"repo": "lib-core", "role": "primary", "covers": ["R1"],
+                                    "reason": "owns LoyaltyTier"}]}"""), "stop", new Usage(10, 10)),
+                new ChatResponse(ChatMessage.assistant("""
+                        {"summary": "Add the tier lookup to lib-core; svc-pricing rebuilds.",
+                         "questions": [],
+                         "contracts": [{"id": "C-1", "kind": "java-api", "provider": "lib-core",
+                                        "consumers": ["svc-pricing"], "body": "method: Tier tierFor(String)"}],
+                         "repo_steps": [{"repo": "lib-core", "covers": ["R1"],
+                                         "sub_spec": "Add tierFor to LoyaltyTier.",
+                                         "files": ["src/main/java/com/acme/LoyaltyTier.java"],
+                                         "provides_contracts": ["C-1"], "consumes_contracts": [],
+                                         "version_action": "minor",
+                                         "verification": ["./gradlew test"]}]}"""), "stop", new Usage(10, 10))));
+
+        Run run2 = plan(cmd2, "--workspace", ws.toString(), spec.toString());
+        assertThat(run2.exitCode()).isZero();
+        assertThat(run2.out()).contains("previous version backed up: " + ws.resolve("loyalty.plan.md.bak"));
+        assertThat(Files.exists(ws.resolve("loyalty.plan.md.bak"))).isTrue();
     }
 }

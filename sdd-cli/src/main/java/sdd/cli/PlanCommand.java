@@ -19,6 +19,7 @@ import sdd.plan.gen.OpenQuestions;
 import sdd.plan.gen.PlanDrafter;
 import sdd.plan.gen.PlanMdRenderer;
 import sdd.plan.gen.Question;
+import sdd.plan.gen.SafeWrite;
 import sdd.plan.impact.AffectedRepo;
 import sdd.plan.impact.ImpactAnalysis;
 import sdd.plan.impact.ImpactResult;
@@ -31,9 +32,7 @@ import sdd.plan.spec.SpecRenderer;
 import sdd.plan.spec.SpecSources;
 import sdd.plan.spec.SpecValidator;
 
-import java.io.IOException;
 import java.io.PrintWriter;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -96,12 +95,11 @@ public final class PlanCommand implements Callable<Integer> {
                     "normalized spec failed self-check (" + e.getMessage() + ") — rerun normalization", e);
         }
         Path target = out != null ? out : Path.of(ref + ".spec.md");
-        try {
-            Files.writeString(target, rendered);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+        Path backup = SafeWrite.writeWithBackup(target, rendered);
         outWriter.println("normalized spec written: " + target);
+        if (backup != null) {
+            outWriter.println("previous version backed up: " + backup);
+        }
         for (String problem : SpecValidator.problems(normalized)) {
             outWriter.println("  gate: " + problem);
         }
@@ -146,13 +144,12 @@ public final class PlanCommand implements Callable<Integer> {
             String planMd = PlanMdRenderer.render(parsed, result, order, questions, draft);
             String base = ref.endsWith(".md") ? ref.substring(0, ref.length() - 3) : ref;
             Path planPath = Path.of(base + ".plan.md");
-            try {
-                Files.writeString(planPath, planMd);
-            } catch (IOException e) {
-                throw new UncheckedIOException(e);
-            }
+            Path backup = SafeWrite.writeWithBackup(planPath, planMd);
             outWriter.println("plan written: " + planPath);
-            outWriter.println("review and edit the plan, then run: sdd plan approve (Phase 3C-2)");
+            if (backup != null) {
+                outWriter.println("previous version backed up: " + backup);
+            }
+            outWriter.println("review and edit the plan, then run: sdd plan approve");
         }
         return 0;
     }

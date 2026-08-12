@@ -76,8 +76,11 @@ public final class PlanMdRenderer {
         } else {
             for (PlanDrafter.DraftContract contract : draft.contracts()) {
                 md.append("\n### ").append(inline(contract.id())).append(" (").append(contract.kind())
-                        .append(") — ").append(contract.provider()).append(" -> ")
-                        .append(String.join(", ", contract.consumers())).append('\n');
+                        .append(") — ").append(contract.provider());
+                if (!contract.consumers().isEmpty()) {
+                    md.append(" -> ").append(String.join(", ", contract.consumers()));
+                }
+                md.append('\n');
                 md.append("```yaml\n").append(contract.body().replace("```", "'''"))
                         .append("\n```\n");
             }

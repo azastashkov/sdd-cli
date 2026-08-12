@@ -126,4 +126,18 @@ class PlanMdRendererTest {
                 .contains("## Interface Contracts\n- none")
                 .contains("## Repo Steps\n- none (drafting unavailable)");
     }
+
+    @Test
+    void contractWithNoConsumersRendersHeadingWithoutArrow() {
+        PlanDrafter.Draft draft = new PlanDrafter.Draft("S.",
+                List.of(),
+                List.of(new PlanDrafter.DraftContract("C-1", "java-api", "lib-core", List.of(), "body")),
+                List.of(), List.of(), false);
+
+        String md = PlanMdRenderer.render(spec(), impact(),
+                List.of(new ExecutionOrder.Unit(List.of("lib-core"))), List.of(), draft);
+
+        assertThat(md).contains("### C-1 (java-api) — lib-core\n```yaml");
+        assertThat(md).doesNotContain("-> \n");
+    }
 }
