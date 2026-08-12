@@ -35,4 +35,42 @@ class PropagationTest {
                 new PlanModel.PlanEdge("svc", "ghost", "SNAPSHOT", "INCLUDE_BUILD"));
         assertThat(Propagation.includeBuildArgs("svc", edges, PATHS)).isEmpty();
     }
+
+    @Test
+    void injectsTransitiveIncludeBuildProviders() {
+        // svc -> lib -> core, both INCLUDE_BUILD, no direct svc -> core edge: svc's composite must still
+        // pull in core, or lib builds inside svc's composite against a stale binary core.
+        List<PlanModel.PlanEdge> edges = List.of(
+                new PlanModel.PlanEdge("svc", "lib", "SNAPSHOT", "INCLUDE_BUILD"),
+                new PlanModel.PlanEdge("lib", "core", "SNAPSHOT", "INCLUDE_BUILD"));
+        Map<String, Path> paths = Map.of("lib", Path.of("/w/lib"), "core", Path.of("/w/core"));
+        assertThat(Propagation.includeBuildArgs("svc", edges, paths))
+                .containsExactly("--include-build", "/w/lib", "--include-build", "/w/core");
+    }
+
+    @Test
+    void stopsTheClosureAtAMavenLocalHop() {
+        List<PlanModel.PlanEdge> edges = List.of(
+                new PlanModel.PlanEdge("svc", "lib", "SNAPSHOT", "INCLUDE_BUILD"),
+                new PlanModel.PlanEdge("lib", "core", "PINNED", "MAVEN_LOCAL"));
+        Map<String, Path> paths = Map.of("lib", Path.of("/w/lib"), "core", Path.of("/w/core"));
+        assertThat(Propagation.includeBuildArgs("svc", edges, paths))
+                .containsExactly("--include-build", "/w/lib");   // NOT core: MAVEN_LOCAL breaks the chain
+    }
+
+    @Test
+    void dedupesASharedProviderInADiamondClosure() {
+        // svc -> a -> core and svc -> b -> core: core must appear exactly once.
+        List<PlanModel.PlanEdge> edges = List.of(
+                new PlanModel.PlanEdge("svc", "a", "SNAPSHOT", "INCLUDE_BUILD"),
+                new PlanModel.PlanEdge("svc", "b", "SNAPSHOT", "INCLUDE_BUILD"),
+                new PlanModel.PlanEdge("a", "core", "SNAPSHOT", "INCLUDE_BUILD"),
+                new PlanModel.PlanEdge("b", "core", "SNAPSHOT", "INCLUDE_BUILD"));
+        Map<String, Path> paths = Map.of("a", Path.of("/w/a"), "b", Path.of("/w/b"), "core", Path.of("/w/core"));
+        assertThat(Propagation.includeBuildArgs("svc", edges, paths))
+                .containsExactly(
+                        "--include-build", "/w/a",
+                        "--include-build", "/w/b",
+                        "--include-build", "/w/core");
+    }
 }
