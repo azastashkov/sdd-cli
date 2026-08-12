@@ -119,3 +119,11 @@ Requirement change: SDD specs currently exist ONLY as Confluence pages (plain te
 - **Extensibility:** when the canonical SDD format is specified, it becomes another `SpecSource` adapter (the already-designed structured-markdown parser is the passthrough case). A Confluence REST API source (config: `confluence: {base_url, api_token: ${CONFLUENCE_API_TOKEN}}`) is a planned extension of the same seam — v1 uses exported files to avoid new infrastructure.
 
 **Unchanged:** everything downstream of ingestion (impact analysis, plan.md, contracts, agents) consumes the internal structured model only; the deterministic-first principle holds because normalization output is human-gated before anything acts on it.
+
+## Amendment (2026-08-12): closure annotation source
+
+The M1 "code change likely" vs "bump/rebuild only" annotation derives from `api_usage`
+evidence (consumer modules referencing provider-repo types), not from api/implementation
+declaration scope: `dep_edge.configuration` records resolved classpath names
+(compileClasspath/runtimeClasspath), so declaration scope is not available in the KB. The
+annotation still never limits propagation.
