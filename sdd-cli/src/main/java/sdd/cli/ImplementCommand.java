@@ -30,6 +30,7 @@ import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.function.Function;
@@ -95,7 +96,9 @@ public final class ImplementCommand implements Callable<Integer> {
                     Path root = steps.get(repo).repoRoot();
                     Path javaHome = config.jdkHomes()
                             .get(GradleExtractor.jdkMajorFor(GradleExtractor.wrapperVersion(root)));
-                    return RunnerSettings.defaults(javaHome);
+                    List<String> extraArgs = sdd.cli.implement.Propagation.includeBuildArgs(
+                            repo, plan.edges(), paths);
+                    return RunnerSettings.defaults(javaHome, extraArgs);
                 };
 
                 String runId = sanitize(plan.specId()) + "-v" + plan.planVersion();
