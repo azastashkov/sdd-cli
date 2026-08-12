@@ -19,6 +19,7 @@ public final class GradleTool {
     static final Set<String> ALLOWED = Set.of("help", "compileJava", "classes", "testClasses",
             "assemble", "check", "test", "build");
     static final int MAX_OUTPUT = 8000;
+    static final int MAX_FULL_OUTPUT = 200_000;
     private static final List<String> KEEP_ENV = List.of("PATH", "HOME", "LANG", "TMPDIR");
 
     private final Path repoRoot;
@@ -31,7 +32,21 @@ public final class GradleTool {
         this.timeout = timeout;
     }
 
+    /** Model-facing output, tail-capped at MAX_OUTPUT (the 4A behavior). */
     public String run(String task) {
+        return execute(task, false);
+    }
+
+    /**
+     * The full build log, HEAD-preserving (capped at MAX_FULL_OUTPUT). javac prints root-cause
+     * errors first, so the compactor — which scrapes head-first — must see the start of a long log,
+     * not run()'s tail. Fed to OutputCompactor by the compacting Toolbox path and VerificationRunner.
+     */
+    public String runFull(String task) {
+        return execute(task, true);
+    }
+
+    private String execute(String task, boolean headPreserving) {
         if (!ALLOWED.contains(task)) {
             throw new ToolException("gradle task not allowed: " + task);
         }
@@ -55,9 +70,7 @@ public final class GradleTool {
                 return "timed out after " + timeout.toSeconds() + "s";
             }
             String output = Files.readString(log, StandardCharsets.UTF_8);
-            if (output.length() > MAX_OUTPUT) {
-                output = "... (head omitted)\n" + output.substring(output.length() - MAX_OUTPUT);
-            }
+            output = headPreserving ? headCap(output) : tailCap(output);
             return "exit " + process.exitValue() + "\n" + output;
         } catch (IOException e) {
             throw new ToolException("gradle run failed: " + e.getMessage());
@@ -73,6 +86,20 @@ public final class GradleTool {
                 }
             }
         }
+    }
+
+    private static String tailCap(String output) {
+        if (output.length() > MAX_OUTPUT) {
+            return "... (head omitted)\n" + output.substring(output.length() - MAX_OUTPUT);
+        }
+        return output;
+    }
+
+    private static String headCap(String output) {
+        if (output.length() > MAX_FULL_OUTPUT) {
+            return output.substring(0, MAX_FULL_OUTPUT) + "\n... (tail omitted)";
+        }
+        return output;
     }
 
     private void scrubEnvironment(Map<String, String> env) {

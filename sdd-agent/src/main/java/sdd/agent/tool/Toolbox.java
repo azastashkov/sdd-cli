@@ -17,10 +17,16 @@ public final class Toolbox {
 
     private final FileTools files;
     private final GradleTool gradle;
+    private final sdd.agent.run.OutputCompactor compactor;   // null = raw (no compaction), 4A path
 
     public Toolbox(FileTools files, GradleTool gradle) {
+        this(files, gradle, null);
+    }
+
+    public Toolbox(FileTools files, GradleTool gradle, sdd.agent.run.OutputCompactor compactor) {
         this.files = files;
         this.gradle = gradle;
+        this.compactor = compactor;
     }
 
     public List<ToolSpec> specs() {
@@ -47,7 +53,10 @@ public final class Toolbox {
             case "list_files" -> files.listFiles(str(args, "dir"));
             case "search" -> files.search(str(args, "regex"));
             case "apply_edit" -> files.applyEdit(str(args, "path"), str(args, "search"), str(args, "replace"));
-            case "run_gradle" -> gradle.run(str(args, "task"));
+            case "run_gradle" -> {
+                String task = str(args, "task");
+                yield compactor == null ? gradle.run(task) : compactor.compact(gradle.runFull(task), task);
+            }
             case "done" -> throw new MalformedCallException("done is handled by the loop, not dispatched");
             default -> throw new MalformedCallException("unknown tool: " + name);
         };
