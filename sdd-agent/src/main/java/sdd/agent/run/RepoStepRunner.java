@@ -49,7 +49,12 @@ public final class RepoStepRunner {
 
             switch (outcome.result()) {
                 case DONE -> {
-                    VerificationRunner.Verdict verdict = verifier.verify(settings.verificationTask());
+                    VerificationRunner.Verdict verdict;
+                    try {
+                        verdict = verifier.verify(settings.verificationTask());
+                    } catch (RuntimeException e) {
+                        verdict = new VerificationRunner.Verdict(false, "verification error: " + e.getMessage());
+                    }
                     lastVerification = verdict.output();
                     if (verdict.passed()) {
                         return outcome(StepResult.SUCCESS, outcome.summary(), events, lastVerification);
@@ -79,6 +84,7 @@ public final class RepoStepRunner {
                 case WEDGED -> {
                     return outcome(StepResult.WEDGED, outcome.summary(), events, lastVerification);
                 }
+                default -> throw new IllegalStateException("unhandled AgentResult: " + outcome.result());
             }
         }
     }

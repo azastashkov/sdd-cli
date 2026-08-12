@@ -81,6 +81,8 @@ class RepoStepRunnerTest {
 
         assertThat(outcome.result()).isEqualTo(StepResult.VERIFY_FAILED);
         assertThat(outcome.verificationOutput()).contains("A.java:1: error: broken");
+        // pins "exactly 2 cycles": each verify-fail cycle is one loop.run() == one model.complete()
+        assertThat(model.requests()).hasSize(2);
     }
 
     @Test
@@ -101,6 +103,19 @@ class RepoStepRunnerTest {
         assertThat(model.requests()).anySatisfy(req ->
                 assertThat(req.messages()).anySatisfy(m ->
                         assertThat(m.content()).contains("ran out of context")));
+    }
+
+    @Test
+    void secondContextExhaustionEndsInExhausted() throws Exception {
+        // run #1 exhausts → restart-with-digest; run #2 exhausts again → EXHAUSTED.
+        // Never reaches DONE, so no gradlew stub is needed.
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                new ChatResponse(ChatMessage.assistant("thinking"), "stop", new Usage(90_000, 5)),
+                new ChatResponse(ChatMessage.assistant("thinking"), "stop", new Usage(90_000, 5))));
+
+        StepOutcome outcome = run(model);
+
+        assertThat(outcome.result()).isEqualTo(StepResult.EXHAUSTED);
     }
 
     @Test
