@@ -1,0 +1,96 @@
+package sdd.cli;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import picocli.CommandLine;
+import sdd.core.db.Database;
+import sdd.core.llm.ChatMessage;
+import sdd.core.llm.ChatResponse;
+import sdd.core.llm.ToolCall;
+import sdd.core.llm.Usage;
+import sdd.core.testing.FixtureRepo;
+import sdd.core.testing.ScriptedChatModel;
+
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class ImplementCommandTest {
+    @TempDir Path ws;
+
+    private FixtureRepo repo(String name) throws Exception {
+        FixtureRepo repo = FixtureRepo.in(ws, name).file("A.java", "class A {}\n");
+        Path g = repo.path().resolve("gradlew");
+        Files.writeString(g, "#!/bin/sh\nexit 0\n");
+        Files.setPosixFilePermissions(g, PosixFilePermissions.fromString("rwxr-xr-x"));
+        // a real wrapper version so jdkMajorFor resolves
+        Path props = repo.path().resolve("gradle/wrapper/gradle-wrapper.properties");
+        Files.createDirectories(props.getParent());
+        Files.writeString(props, "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n");
+        return repo.commit("base");
+    }
+
+    @Test
+    void runsASingleRepoPlanToCompletion() throws Exception {
+        FixtureRepo lib = repo("lib");
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+        Files.writeString(ws.resolve("s.md"), """
+                ---
+                id: SPEC-101
+                title: Tiers
+                owner: me
+                status: approved
+                ---
+
+                ## Goal
+                g
+
+                ## Requirements
+                - R1: Expose tierFor.
+
+                ## Acceptance Criteria
+                - A1: tierFor returns a tier.
+                """);
+        String specSha = sdd.plan.approve.Hashes.sha256(Files.readString(ws.resolve("s.md")));
+        Files.writeString(ws.resolve("s.plan.json"), """
+                { "spec_id":"SPEC-101","plan_version":1,"spec_sha256":"%s","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x to A."}] }
+                """.formatted(specSha, lib.headSha()));
+
+        ImplementCommand cmd = new ImplementCommand();
+        cmd.coderForTest = new ScriptedChatModel(List.of(
+                new ChatResponse(new ChatMessage("assistant", null,
+                        List.of(new ToolCall("1", "apply_edit",
+                                "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int x; }\"}")),
+                        null), "tool_calls", new Usage(10, 5)),
+                new ChatResponse(new ChatMessage("assistant", null,
+                        List.of(new ToolCall("2", "done", "{\"result\":\"success\",\"summary\":\"done\"}")),
+                        null), "tool_calls", new Usage(10, 5))));
+
+        StringWriter out = new StringWriter();
+        CommandLine cli = new CommandLine(cmd);
+        cli.setOut(new PrintWriter(out));
+        int exit = cli.execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
+
+        assertThat(exit).isEqualTo(0);
+        assertThat(out.toString()).contains("lib").contains("SUCCEEDED");
+        assertThat(Files.exists(ws.resolve(".sdd/runs/SPEC-101-v1/state.json"))).isTrue();
+        assertThat(Files.readString(lib.path().resolve("A.java"))).contains("int x;");
+    }
+}
