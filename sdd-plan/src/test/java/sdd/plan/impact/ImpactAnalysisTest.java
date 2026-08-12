@@ -142,4 +142,25 @@ class ImpactAnalysisTest {
         assertThat(result.affected()).isEmpty();
         assertThat(result.problems()).anySatisfy(p -> assertThat(p).contains("no seeds"));
     }
+
+    @Test
+    void duplicateModelEntriesAreMergedNotDuplicated() {
+        // Model emits the same entry twice — covers and reasons should NOT duplicate
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(new ChatResponse(
+                ChatMessage.assistant("""
+                        {"repos": [{"repo": "lib-core", "role": "primary", "covers": ["R1"],
+                                    "reason": "owns LoyaltyTier"},
+                                   {"repo": "lib-core", "role": "primary", "covers": ["R1"],
+                                    "reason": "owns LoyaltyTier"}]}"""),
+                "stop", new Usage(1, 1))));
+
+        ImpactResult result = ImpactAnalysis.analyze(db.jdbi(), new FtsRetriever(db.jdbi()),
+                spec(), planner, "deepseek-v4-flash", 4096);
+
+        // Covers should not duplicate R1
+        assertThat(result.affected().get(0).covers()).containsExactly("R1");
+        // Model reason line should appear exactly once in reasons
+        assertThat(result.affected().get(0).reasons()).filteredOn(r -> r.contains("model"))
+                .hasSize(1);
+    }
 }

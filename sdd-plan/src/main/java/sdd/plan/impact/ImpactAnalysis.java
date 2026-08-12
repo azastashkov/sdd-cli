@@ -51,14 +51,22 @@ public final class ImpactAnalysis {
         Map<String, List<String>> coversByRepo = new LinkedHashMap<>();
         for (ModelSeeder.ModelSeed modelSeed : seeding.seeds()) {
             modelRepos.add(modelSeed.repo());
-            coversByRepo.computeIfAbsent(modelSeed.repo(), k -> new ArrayList<>())
-                    .addAll(modelSeed.covers());
+            List<String> list = coversByRepo.computeIfAbsent(modelSeed.repo(), k -> new ArrayList<>());
+            for (String id : modelSeed.covers()) {
+                if (!list.contains(id)) {
+                    list.add(id);
+                }
+            }
         }
 
         List<String> discrepancies = new ArrayList<>();
+        Set<String> modelOnlyFlagged = new LinkedHashSet<>();
         for (ModelSeeder.ModelSeed modelSeed : seeding.seeds()) {
             if (!touchpointRepos.contains(modelSeed.repo()) && !candidateRepos.contains(modelSeed.repo())) {
-                discrepancies.add("model-only: " + modelSeed.repo() + " (" + modelSeed.reason() + ")");
+                if (!modelOnlyFlagged.contains(modelSeed.repo())) {
+                    discrepancies.add("model-only: " + modelSeed.repo() + " (" + modelSeed.reason() + ")");
+                    modelOnlyFlagged.add(modelSeed.repo());
+                }
             }
         }
         for (String seeded : touchpointRepos) {
@@ -83,9 +91,14 @@ public final class ImpactAnalysis {
         } else {
             for (String root : roots) {
                 List<String> reasons = new ArrayList<>();
+                Set<String> reasonsAdded = new LinkedHashSet<>();
                 for (Seed seed : seeds) {
                     if (seed.repo().equals(root)) {
-                        reasons.add(seed.source() + " " + seed.detail());
+                        String reasonLine = seed.source() + " " + seed.detail();
+                        if (!reasonsAdded.contains(reasonLine)) {
+                            reasons.add(reasonLine);
+                            reasonsAdded.add(reasonLine);
+                        }
                     }
                 }
                 affected.add(new AffectedRepo(root, "seed", "SEED",
