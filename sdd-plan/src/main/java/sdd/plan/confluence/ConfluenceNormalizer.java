@@ -81,7 +81,7 @@ public final class ConfluenceNormalizer {
                 touchpoints,
                 strings(root, "out_of_scope"),
                 numbered("Q", questionTexts),
-                extracted.attachments());
+                extracted.attachments().stream().map(ConfluenceNormalizer::oneLine).toList());
     }
 
     private static JsonNode parseJson(String content) {
@@ -126,7 +126,7 @@ public final class ConfluenceNormalizer {
 
     /** Bullets and front-matter scalars are one-line by the spec grammar. */
     private static String oneLine(String value) {
-        return value.replaceAll("\\s+", " ").strip();
+        return value.replaceAll("(?U)\\s+", " ").strip();
     }
 
     /** Prose keeps newlines but may never collide with the '#' section grammar. */

@@ -130,4 +130,39 @@ class ConfluenceNormalizerTest {
         assertThat(sdd.plan.spec.SpecParser.parse(sdd.plan.spec.SpecRenderer.render(spec)))
                 .isEqualTo(spec);
     }
+
+
+    @Test
+    void unicodeLineSeparatorsAreCollapsedEverywhere() {
+        // U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR, U+0085 NEXT LINE — written in the
+        // JSON below as Java unicode escapes (translated to the real code points at compile time)
+        // so the test cannot be silently neutered by copy/paste normalization of invisible
+        // characters. Spell them U+xxxx in comments — the compiler translates escape forms there too.
+        String json = """
+                {"title": "T\u2028sub", "owner": "", "status": "", "goal": "G.",
+                 "background": "", "requirements": ["a\u2029b", "c\u0085d"],
+                 "acceptance": ["ok"], "constraints": [], "touchpoints": [],
+                 "out_of_scope": [], "open_questions": [], "unmapped": []}""";
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(response(json, "stop")));
+
+        NormalizedSpec spec = ConfluenceNormalizer.normalize(EXTRACTED, planner, "m", 100, "id");
+
+        assertThat(spec.title()).isEqualTo("T sub");
+        assertThat(spec.requirements()).containsExactly(
+                new SpecItem("R1", "a b"), new SpecItem("R2", "c d"));
+        assertThat(sdd.plan.spec.SpecParser.parse(sdd.plan.spec.SpecRenderer.render(spec))).isEqualTo(spec);
+    }
+
+    @Test
+    void attachmentNamesAreSanitizedBeforeEnteringTheSpec() {
+        ConfluenceExtract.Extracted withBadName = new ConfluenceExtract.Extracted(
+                "text", List.of("dia\ngram.png", "ok.png"));
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(response(GOOD_JSON, "stop")));
+
+        NormalizedSpec spec = ConfluenceNormalizer.normalize(withBadName, planner, "m", 100, "id");
+
+        assertThat(spec.attachments()).containsExactly("dia gram.png", "ok.png");
+        assertThat(sdd.plan.spec.SpecParser.parse(sdd.plan.spec.SpecRenderer.render(spec)).attachments())
+                .containsExactly("dia gram.png", "ok.png");
+    }
 }

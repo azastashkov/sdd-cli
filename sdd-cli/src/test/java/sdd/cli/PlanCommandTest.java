@@ -133,7 +133,7 @@ class PlanCommandTest {
         assertThat(run.exitCode()).isZero();
         Path written = ws.resolve("loyalty-page.html.spec.md");
         assertThat(run.out()).contains("normalized spec written: " + written)
-                .contains("review and edit the spec, then run: sdd plan " + written);
+                .contains("review and edit the spec, then run: sdd plan --workspace " + ws + " " + written);
         String content = Files.readString(written);
         assertThat(content).contains("- Q1: [unmapped] Rollout table")
                 .contains("## Attachments").contains("- diagram.png");
@@ -192,5 +192,41 @@ class PlanCommandTest {
 
         assertThat(run.out()).contains("error: sdd.yml not found");
         assertThat(run.exitCode()).isEqualTo(1);
+    }
+
+
+    @Test
+    void outOptionRejectsHtmlTargets() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        Path export = ws.resolve("page.html");
+        Files.writeString(export, "<h1>T</h1>");
+
+        Run run = plan(new PlanCommand(), "--workspace", ws.toString(),
+                "--out", ws.resolve("review.html").toString(), export.toString());
+
+        assertThat(run.out()).contains("error: --out target must be a markdown file");
+        assertThat(run.exitCode()).isEqualTo(1);
+        assertThat(Files.exists(ws.resolve("review.html"))).isFalse();
+    }
+
+    @Test
+    void followUpHintCarriesNonDefaultWorkspace() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        Path export = ws.resolve("page.html");
+        Files.writeString(export, "<h1>T</h1><p>Prose.</p>");
+        PlanCommand cmd = new PlanCommand();
+        cmd.plannerForTest = new ScriptedChatModel(List.of(new ChatResponse(
+                ChatMessage.assistant("""
+                        {"title": "T", "owner": "", "status": "", "goal": "G.",
+                         "background": "", "requirements": ["r"], "acceptance": ["a"],
+                         "constraints": [], "touchpoints": [], "out_of_scope": [],
+                         "open_questions": [], "unmapped": []}"""),
+                "stop", new Usage(10, 10))));
+
+        Run run = plan(cmd, "--workspace", ws.toString(), export.toString());
+
+        assertThat(run.out()).contains(
+                "review and edit the spec, then run: sdd plan --workspace " + ws + " "
+                        + ws.resolve("page.html.spec.md"));
     }
 }

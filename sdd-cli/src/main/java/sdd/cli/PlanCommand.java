@@ -68,6 +68,9 @@ public final class PlanCommand implements Callable<Integer> {
     }
 
     private Integer normalize(SddConfig config, PrintWriter outWriter) {
+        if (out != null && SpecSources.isConfluenceExport(out.toString())) {
+            throw new IllegalArgumentException("--out target must be a markdown file (got " + out + ")");
+        }
         ModelEndpoint planner = config.models().get("planner");
         ChatModel model = plannerForTest != null ? plannerForTest : new HttpChatModel(planner);
         NormalizedSpec normalized =
@@ -89,7 +92,7 @@ public final class PlanCommand implements Callable<Integer> {
         for (String problem : SpecValidator.problems(normalized)) {
             outWriter.println("  gate: " + problem);
         }
-        outWriter.println("review and edit the spec, then run: sdd plan " + target);
+        outWriter.println("review and edit the spec, then run: sdd plan " + workspacePrefix() + target);
         return 0;
     }
 
@@ -108,5 +111,9 @@ public final class PlanCommand implements Callable<Integer> {
                 parsed.constraints().size(), parsed.touchpoints().size(), parsed.openQuestions().size());
         outWriter.println("impact analysis is not implemented yet (Phase 3B)");
         return 0;
+    }
+
+    private String workspacePrefix() {
+        return workspace.equals(Path.of(".")) ? "" : "--workspace " + workspace + " ";
     }
 }
