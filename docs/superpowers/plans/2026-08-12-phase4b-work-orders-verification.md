@@ -1221,3 +1221,30 @@ git commit -m "feat: repo-step runner with verify-retry and context-restart"
 3. **Placeholder scan:** none; every code step is complete.
 4. **Type consistency:** `RepoStep`/`ContractRef` used by Tasks 1 and 5; `WorkOrder.build(Jdbi, RepoStep)` in 1 and 5, sharing `WorkOrder.SEP` with its test; `OutputCompactor(Path).compact(String raw, String task)` (no `identity()`) in 2, 3, 4, 5; `GradleTool.runFull(String)` (T3) consumed by T3+T4; `Toolbox(FileTools, GradleTool, OutputCompactor)` with a nullable compactor in 3 and 5; `VerificationRunner(GradleTool, OutputCompactor).verify(String) → Verdict(passed, output)` in 4 and 5; `AgentLoop(model, toolbox, budget, softCap, clock).run(sys, wo, modelName, maxTokens) → AgentOutcome` (4A, re-entrant — verified) in 5; `RunnerSettings.defaults(Path)` + `RepoStepRunner(Jdbi).run(RepoStep, ChatModel, String, RunnerSettings) → StepOutcome` in 5.
 5. **Adversarial hardening (3 critics against the real 4A/sdd-core code):** compile-correctness — clean (all seams verified). Design-conformance — one ship-blocker (compactor over the tail-capped log → head javac errors lost) FIXED via `runFull`; interpretation/deferral notes folded. Test-quality — no failing/vacuous/flaky test; folded fixes: green-branch header duplication, task-gated stale-XML harvest, index-independent restart-digest assertion, `SEP` constant; confirmed `AgentLoop.run()` is re-entrant so the build-loop-once design stands.
+
+---
+
+## Execution Outcome (2026-08-12)
+
+**Status: COMPLETE.** All 5 tasks implemented, reviewed, merged to `main`. Subagent-driven: fresh implementer per task + task review + fix loops + a final whole-branch review (most-capable tier) + one fix wave. `./gradlew build` green across all 5 modules; sdd-agent suite 59 tests.
+
+**What shipped** (package `sdd.agent.run`, sdd-agent module, sdd-core-only):
+- `WorkOrder.build(Jdbi, RepoStep)` — lean KB-grounded work order: sub-spec, covered requirements, PROVIDES/CONSUMES contract bodies (never-trimmed floors), repo card (graceful when absent), ranked file manifest (seed files = step `files` ∪ `is_api` types → 1-hop `file_ref` → tests), capped. `RepoStep`/`ContractRef` are sdd-agent-local input records.
+- `OutputCompactor.compact(raw, task)` — deterministic summary: javac scrape (from the FULL head-preserving log) + JUnit XML off disk (DOM, never console-scraped), **task-gated** (only `test`/`check`/`build`, and only on `exit ` output — no stale harvest on `compileJava` or timeouts), **task-tagged header** (so distinct tasks never collide in the wedge detector), blank-message→element-text fallback, `MAX_CHARS`/`MAX_ERRORS`/`MAX_FAILURES` caps + "N more omitted".
+- `GradleTool.runFull` (head-preserving full log) + nullable-compactor `Toolbox` overload — the compacting `run_gradle`/verify path sees the whole log; the 2-arg `Toolbox` (null compactor) keeps 4A's raw tail-capped behavior.
+- `VerificationRunner.verify(task)` → `Verdict(passed, output)` — independent deterministic gate, PASS iff compacted starts `exit 0`.
+- `RepoStepRunner(Jdbi).run(step, model, modelName, settings)` → `StepOutcome` — one attempt: work order → 4A `AgentLoop` → verify-on-done → verify-retry (≤2 cycles = `VERIFY_FAILED`) → context-restart once with machine digest (2nd = `EXHAUSTED`) → typed outcome; verify-gate exception-guarded so `run()` never throws; exhaustive switch with a `default` throw. `StepResult`/`StepOutcome`/`RunnerSettings` alongside.
+
+**Branch commits:** plan 7f15d4c; T1 091d5b7 + 8606d30; T2 c6fb7f7; T3 b52f1ca; T4 9f8f9f0; T5 8aa11cc + 78855c2; interp-(d) doc 1e417f2; final fix wave a3682b4.
+
+**Design interpretations ratified (a–d):** single `check` gate vs prose `verification[]`; "not locally verified" reused for prose acceptance (≠ M7); fresh-loop restart on verify-fail/exhaustion; per-`loop.run()` budget (not attempt-cumulative). See Self-Review §2.
+
+### Phase 4C entry pointers (what 4B deferred, with the seam already shaped for it)
+- **Orchestration + `sdd implement` CLI** in sdd-cli (the only module that sees both sdd-plan and sdd-agent). 4C owns run state + git (JGit).
+- **plan.json → `RepoStep`/`ContractRef` reader** lives in 4C/sdd-cli: parse plan.json, join step `provides`/`consumes` contract-ID strings against top-level `contracts[]` to inflate `ContractRef` bodies, and join `covers[]` IDs against the NormalizedSpec for the `"R1: text"` requirement strings. `RepoStep` is already shaped for this ("4C resolves from the spec").
+- **Multi-attempt + escalation:** 4C calls `RepoStepRunner.run(step, model, name, settings)` per attempt — attempt 1 = coder (Qwen), attempt 2 = escalation (DeepSeek) after a **git hard-reset-to-base** + attempt-1 digest. The model/settings-on-`run()` shape exists precisely so one stable runner serves both attempts.
+- **INFRA-failure classification** (resolution/network/daemon/Docker → retry once, then `PAUSED_INFRA`/scoped skip): 4B currently lets infra flakes at the verify gate degrade to `VERIFY_FAILED` (guarded, never crashes) and reach the agent — 4C's classifier closes this. `StepResult` will likely gain an INFRA/PAUSED value.
+- **Per-repo `sdd.yml` verification exclusions** (the design's real M7 "not locally verified"): needs `SddConfig` parsing, which 4B forbids — 4C wires `RunnerSettings.verificationTask` (and future per-repo task lists) from config, and must NOT overload "not locally verified" (4B already uses it for prose acceptance).
+- **Budget:** 4C owns the run-wide 30M-token budget and any cross-loop cumulative attempt ceiling (4B's budget is per `loop.run()`; see interp (d)).
+- **Recorded refinements** (dependency-free but out of 4B scope): project-package stack FILTERING in the compactor (needs a project-prefix input threaded from the KB); `disallow-doctype-decl` XXE one-liner; validate `verificationTask` against `GradleTool.ALLOWED` at wiring time so a bad value doesn't burn both verify cycles.
+- **Package cycle** `sdd.agent.tool` ↔ `sdd.agent.run` (Toolbox → run.OutputCompactor) is plan-mandated and compiles; worth untangling if `run` grows.
