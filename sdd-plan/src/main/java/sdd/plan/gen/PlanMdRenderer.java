@@ -137,7 +137,8 @@ public final class PlanMdRenderer {
 
     /** Drafter-controlled single-line text may never forge headings or front matter. */
     private static String inline(String value) {
-        return value.replaceAll("(?U)\\s+", " ").strip();
+        String collapsed = value.replaceAll("(?U)\\s+", " ").strip();
+        return collapsed.replaceAll("^#+\\s*", "");
     }
 
     /** Sub-spec prose keeps its lines but loses structural markers the renderer owns. */

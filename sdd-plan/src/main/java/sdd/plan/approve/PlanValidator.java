@@ -52,7 +52,9 @@ public final class PlanValidator {
         Set<String> covered = new LinkedHashSet<>();
         Set<String> affectedNames = new LinkedHashSet<>();
         for (PlanDocument.PlanRepo repo : plan.affected()) {
-            affectedNames.add(repo.repo());
+            if (!affectedNames.add(repo.repo())) {
+                problems.add("repo '" + repo.repo() + "' appears more than once in Affected Repos");
+            }
         }
         Set<String> contractIds = new LinkedHashSet<>();
         for (PlanDocument.PlanContract contract : plan.contracts()) {

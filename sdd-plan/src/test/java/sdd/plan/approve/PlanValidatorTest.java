@@ -162,4 +162,18 @@ class PlanValidatorTest {
         assertThat(verdict.problems()).anySatisfy(p -> assertThat(p).isEqualTo(
                 "repo 'lib-core' appears more than once in Execution Order"));
     }
+
+    @Test
+    void duplicateAffectedRepoDetection() {
+        PlanDocument.PlanRepo repo = new PlanDocument.PlanRepo("lib-core", "seed", "SEED",
+                List.of(), "w");
+        PlanDocument doc = new PlanDocument("SPEC-9", 1, "S.", List.of(),
+                List.of(repo, repo), List.of(), List.of(List.of("lib-core")),
+                List.of(), List.of(), List.of());
+
+        PlanValidator.Verdict verdict = PlanValidator.validate(db.jdbi(), doc, spec(), freshStates());
+
+        assertThat(verdict.problems()).anySatisfy(p -> assertThat(p).isEqualTo(
+                "repo 'lib-core' appears more than once in Affected Repos"));
+    }
 }

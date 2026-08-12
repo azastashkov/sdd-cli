@@ -86,6 +86,31 @@ class PlanMdParserSectionsTest {
     }
 
     @Test
+    void contractBodyHeadingLookalikeAndForgedSummaryHeadingRoundTrip() {
+        NormalizedSpec spec = new NormalizedSpec("SPEC-9", "T", "o", "draft", "G.", "",
+                List.of(new SpecItem("R1", "req")), List.of(new SpecItem("A1", "acc")),
+                List.of(), List.of(), List.of(), List.of(), List.of());
+        ImpactResult impact = new ImpactResult(List.of(),
+                List.of(new AffectedRepo("lib-core", "seed", "SEED", List.of("R1"), List.of("owns it"))),
+                List.of(), List.of(), List.of(), List.of(), List.of());
+        PlanDrafter.Draft draft = new PlanDrafter.Draft("## Sneaky summary",
+                List.of(new PlanDrafter.DraftStep("lib-core", List.of("R1"), "Do it.",
+                        List.of("src/A.java"), List.of("C-1"), List.of(), "minor",
+                        List.of("./gradlew test"))),
+                List.of(new PlanDrafter.DraftContract("C-1", "java-api", "lib-core", List.of(),
+                        "## response shape\nmethod: x")),
+                List.of(), List.of(), false);
+
+        String md = PlanMdRenderer.render(spec, impact,
+                List.of(new ExecutionOrder.Unit(List.of("lib-core"))), List.of(), draft);
+        PlanDocument doc = PlanMdParser.parse(md);
+
+        assertThat(doc.contracts()).containsExactly(new PlanDocument.PlanContract(
+                "C-1", "java-api", "lib-core", List.of(), "## response shape\nmethod: x"));
+        assertThat(doc.summary()).isEqualTo("Sneaky summary");
+    }
+
+    @Test
     void unavailableSentinelsParseToEmptyLists() {
         String plan = rendered()
                 .replaceAll("(?s)## Interface Contracts.*?## Repo Steps",

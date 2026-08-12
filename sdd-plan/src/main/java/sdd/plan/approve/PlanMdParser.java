@@ -45,10 +45,11 @@ public final class PlanMdParser {
         int sectionIdx = -1;
         List<String> body = new ArrayList<>();
         int bodyStart = 5;
+        boolean inFence = false;
         for (int i = 4; i < lines.size(); i++) {
             String line = lines.get(i);
             int lineNo = i + 1;
-            if (line.startsWith("## ")) {
+            if (!inFence && line.startsWith("## ")) {
                 dispatch(b, section, body, bodyStart);
                 String name = line.substring(3);
                 int idx = SECTIONS.indexOf(name);
@@ -70,6 +71,14 @@ public final class PlanMdParser {
                 }
             } else {
                 body.add(line);
+                // Between an exact ```yaml open and its exact ``` close, heading detection is
+                // suspended: those lines belong to the current section's (contract) body, even
+                // if a drafted line happens to start with "## ".
+                if (!inFence && line.equals("```yaml")) {
+                    inFence = true;
+                } else if (inFence && line.equals("```")) {
+                    inFence = false;
+                }
             }
         }
         dispatch(b, section, body, bodyStart);
