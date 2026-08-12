@@ -61,10 +61,14 @@ public final class RunStore {
             Path tmp = runDir.resolve("state.json.tmp");
             Files.writeString(tmp, json);
             try {
-                Files.move(tmp, runDir.resolve("state.json"),
-                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-                Files.move(tmp, runDir.resolve("state.json"), StandardCopyOption.REPLACE_EXISTING);
+                try {
+                    Files.move(tmp, runDir.resolve("state.json"),
+                            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                    Files.move(tmp, runDir.resolve("state.json"), StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(tmp);
             }
         } catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -72,8 +76,8 @@ public final class RunStore {
     }
 
     public void appendEvent(Path runDir, String repo, RepoState from, RepoState to, String detail) {
-        String line = "{\"at\":\"" + clock.instant() + "\",\"repo\":\"" + repo + "\",\"from\":\""
-                + from + "\",\"to\":\"" + to + "\",\"detail\":" + jsonString(detail) + "}\n";
+        String line = "{\"at\":\"" + clock.instant() + "\",\"repo\":" + jsonString(repo)
+                + ",\"from\":\"" + from + "\",\"to\":\"" + to + "\",\"detail\":" + jsonString(detail) + "}\n";
         try {
             Files.writeString(runDir.resolve("events.jsonl"), line,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);

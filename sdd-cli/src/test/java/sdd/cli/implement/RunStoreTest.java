@@ -40,6 +40,7 @@ class RunStoreTest {
         String events = Files.readString(runDir.resolve("events.jsonl"));
         assertThat(events).contains("\"repo\":\"lib\"").contains("\"to\":\"SUCCEEDED\"")
                 .contains("2026-08-12T00:00:00Z").endsWith("\n");
+        assertThat(Files.exists(runDir.resolve("state.json.tmp"))).isFalse();
     }
 
     @Test
@@ -57,5 +58,7 @@ class RunStoreTest {
         store.writeAgentEvents(runDir, "lib", List.of("no tool call", "wedged"));
         assertThat(Files.readString(runDir.resolve("lib/agent-events.jsonl")))
                 .contains("no tool call").contains("wedged");
+        store.writeAgentEvents(runDir, "grp/lib", List.of("x"));
+        assertThat(Files.exists(runDir.resolve("grp-lib/agent-events.jsonl"))).isTrue();
     }
 }
