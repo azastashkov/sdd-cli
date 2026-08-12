@@ -28,4 +28,25 @@ class PlanDocumentTest {
         assertThat(e.getMessage()).isEqualTo("line 7: boom");
         assertThat(e.line()).isEqualTo(7);
     }
+
+    @Test
+    void orderInnerListsAreImmutable() {
+        // Create mutable inner list and outer list
+        java.util.List<String> mutableInnerList = new java.util.ArrayList<>(List.of("a"));
+        java.util.List<List<String>> mutableOrder = new java.util.ArrayList<>(
+                List.of(mutableInnerList));
+
+        PlanDocument doc = new PlanDocument("SPEC-1", 1, "S.",
+                List.of(), List.of(), List.of(), mutableOrder, List.of(), List.of(), List.of());
+
+        // Mutate the inner list after construction
+        mutableInnerList.add("b");
+
+        // Assert that doc.order().get(0) is unaffected
+        assertThat(doc.order().get(0)).containsExactly("a");
+
+        // Assert that the inner list in the document is immutable
+        assertThatThrownBy(() -> doc.order().get(0).add("x"))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
 }
