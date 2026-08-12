@@ -2614,3 +2614,20 @@ git commit -m "feat: sdd plan revise with q&a folding and version bump"
 3. **Blank-problem producer-side check (3C-1 ledger): explicitly deferred again** — every `ImpactResult.problems()` string is a constructed literal today, the renderer renders a blank harmlessly, and no 3C-2 file produces problems; revisit if problem strings ever carry user text.
 4. **Type consistency:** `PlanDocument` nested record shapes used identically in Tasks 2-4, 6, 8-10; `LiveGit.State(head, clean)` in 5, 6, 9; `SmokeRunner.Result(ok, detail)` in 7-9; `Verdict(problems, warnings)` in 6, 9; `PlanJson.compile(Jdbi, PlanDocument, String, String, SmokeRunner, List<String>)` in 8, 9; drafter/renderer overloads in 10 match their existing 3C-1 signatures with delegation.
 5. **Adversarial critique pass (2 independent critics vs the real codebase, findings folded in):** Task 1's replacement scope made explicit (try/catch + following println as one unit — prevents double-printing) and the stale `(Phase 3C-2)` hint line + its pinning assertion now updated in Task 1; consumer-side contract closure completed (non-affected consumer → problem, step-less affected consumer → warning) with a dedicated test, replacing a false "covered elsewhere" claim; duplicate steps per repo now a validator problem with a test; conflict tokenizer trims sentence-ending periods; PlanJson gains edge-direction assertions and a COMPOSITE/NONE-no-probe test; approve gains a missing-spec-sibling test; parser gains a resolution-on-non-blocking round-trip pin. Critics verified: parser grammar against the real renderer line-by-line, Jackson 2.17 record serialization + exact pretty-print spacing empirically, picocli 4.7.6 subcommand-before-positional from bytecode, FixtureRepo/LiveGit/sha256 precedents, and ExecutionOrder.edges' current private modifier.
+
+---
+
+## Execution Outcome (2026-08-12)
+
+Executed via superpowers:subagent-driven-development on branch `feature/phase3c2-plan-approve` (base 37afa8b, HEAD e239ed2, 13 commits). All 10 tasks completed (fix rounds: T2 ×1 inner-order immutability pin; T6 ×1 duplicate-order-entry problem). Final whole-branch review (most capable model): **one fix wave** — fence-aware section splitting in the parser (renderer-emitted `## ` lines inside contract bodies broke the parse-accepts-what-render-emits law), `inline()` heading neutralization, and a duplicate-affected-rows problem — all three independently RED-verified by the scoped re-review. Sanctioned deviation: `PlanCommand.ref` became `arity = "0..1"` + null-guard (picocli rejects a missing required parent positional before subcommand dispatch — empirically reproduced). Parked (pre-existing, surfaced late): first-of-two-contracts missing its closing fence silently merges bodies (validator catches the vanished id downstream; hardening candidate). 354 tests green.
+
+### Real-estate approve smoke (trading estate, branch build)
+
+- **Negative path:** `sdd plan approve` on the generated Gate-1 plan correctly blocked with six `problem: Q<n> [blocking] has no resolution` lines, exit 1, no plan.json.
+- **Positive path:** after writing six human resolutions into the plan.md, approve passed staleness (six live-git states matched KB heads, all clean) and ran FIVE LIVE `--include-build` probes over the SNAPSHOT edges to platform-libs — all succeeded (warm daemons: 5.5 s total) — and compiled the SHA-pinned `spec-tier-spreads.plan.json`: 6 repos with real base SHAs, legal order, all edges `INCLUDE_BUILD`, both contracts, R1-R3 covered.
+
+### Phase-4 entry pointers (implement)
+
+1. plan.json is the run input: repos (base_sha, version_action), order units, edges (mode+mechanism), contracts, steps — design Component 3 consumes it (.sdd/runs/<runId>/, agent loop, orchestrator).
+2. Hardening candidates carried: contract-id comma sanitization in the drafter; the parked double-contract fence merge; the T3 pathological plan_version message; Redis-channel edge modeling (estate finding); duplicate stale-message dedup in ApproveCommand.
+3. Phase 3C-3 first (user requirement): `sdd graph` mermaid renderer — amendment at the design spec's bottom.
