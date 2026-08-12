@@ -57,4 +57,17 @@ class PreFlightTest {
         assertThat(result.problems()).anyMatch(p -> p.contains("gradle wrapper"))
                 .anyMatch(p -> p.contains("HEAD"));
     }
+
+    @Test
+    void flagsAMissingBaseShaInThePlan() throws Exception {
+        FixtureRepo repo = FixtureRepo.in(tmp, "lib").file("A.java", "class A {}\n").commit("base");
+        gradlew(repo.path());
+        repo.commit("with gradlew");
+
+        PreFlight.Result result = PreFlight.check(
+                Map.of("lib", step(repo.path())), planWithBase(""));
+
+        assertThat(result.ok()).isFalse();
+        assertThat(result.problems()).anyMatch(p -> p.contains("base SHA"));
+    }
 }

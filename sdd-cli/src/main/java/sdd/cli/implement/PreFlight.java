@@ -32,6 +32,9 @@ public final class PreFlight {
                 problems.add(repo + ": no executable gradle wrapper at " + root.resolve("gradlew"));
             }
             String base = plan.repo(repo).map(PlanModel.PlanRepo::baseSha).orElse("");
+            if (base.isEmpty()) {
+                problems.add(repo + ": plan has no base SHA for this repo");
+            }
             try {
                 if (!RunGit.isClean(root)) {
                     problems.add(repo + ": working tree is dirty");

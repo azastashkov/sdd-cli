@@ -1,5 +1,8 @@
 package sdd.cli.implement;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -27,11 +30,21 @@ public final class Scheduler {
     }
 
     public static boolean blockedByUpstream(String repo, List<PlanModel.PlanEdge> edges, RunState state) {
-        for (String up : upstreams(repo, edges)) {
+        // Transitive upstream closure: a repo is blocked iff ANY provider it (transitively) depends on
+        // is FAILED or SKIPPED_UPSTREAM_FAILED. Walking the closure (not just direct upstreams) propagates
+        // a failure through step-less intermediate repos (bom/bump-only sites not tracked in RunState).
+        Set<String> visited = new HashSet<>();
+        Deque<String> queue = new ArrayDeque<>(upstreams(repo, edges));
+        while (!queue.isEmpty()) {
+            String up = queue.poll();
+            if (!visited.add(up)) {
+                continue;
+            }
             RepoState s = state.stateOf(up);
             if (s == RepoState.FAILED || s == RepoState.SKIPPED_UPSTREAM_FAILED) {
                 return true;
             }
+            queue.addAll(upstreams(up, edges));
         }
         return false;
     }

@@ -38,4 +38,15 @@ class SchedulerTest {
         state.set("svc", RepoState.SKIPPED_UPSTREAM_FAILED, null, null, "upstream lib failed");
         assertThat(Scheduler.blockedByUpstream("app", chain, state)).isTrue();
     }
+
+    @Test
+    void cascadesThroughAStepLessIntermediate() {
+        // app consumes mid consumes lib (from=consumer,to=provider); mid has no step so it is NOT in state.
+        RunState state = new RunState("R", java.util.List.of("lib", "app"));   // mid absent (step-less)
+        List<PlanModel.PlanEdge> chain = List.of(
+                new PlanModel.PlanEdge("app", "mid", "SNAPSHOT", "INCLUDE_BUILD"),
+                new PlanModel.PlanEdge("mid", "lib", "SNAPSHOT", "INCLUDE_BUILD"));
+        state.set("lib", RepoState.FAILED, null, null, "boom");
+        assertThat(Scheduler.blockedByUpstream("app", chain, state)).isTrue();
+    }
 }

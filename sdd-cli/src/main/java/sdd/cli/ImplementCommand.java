@@ -57,7 +57,8 @@ public final class ImplementCommand implements Callable<Integer> {
                 err.println("error: implement expects a .plan.json file");
                 return 4;
             }
-            PlanModel plan = PlanJsonReader.read(Files.readString(planJsonPath));
+            String planText = Files.readString(planJsonPath);
+            PlanModel plan = PlanJsonReader.read(planText);
             Path specPath = planJsonPath.resolveSibling(
                     name.substring(0, name.length() - ".plan.json".length()) + ".md");
             String specText = Files.readString(specPath);
@@ -99,7 +100,7 @@ public final class ImplementCommand implements Callable<Integer> {
 
                 String runId = sanitize(plan.specId()) + "-v" + plan.planVersion();
                 RunStore store = RunStore.system();
-                Path runDir = store.create(workspace, runId, Files.readString(planJsonPath));
+                Path runDir = store.create(workspace, runId, planText);
                 Orchestrator orchestrator = new Orchestrator(new RepoStepRunner(jdbi), coder, coderName,
                         settingsFor, store, java.time.InstantSource.system());
                 Orchestrator.RunResult result = orchestrator.run(runDir, plan, steps);
