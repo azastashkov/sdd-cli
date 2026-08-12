@@ -1,0 +1,96 @@
+package sdd.agent.run;
+
+import org.jdbi.v3.core.Jdbi;
+import sdd.agent.loop.AgentLoop;
+import sdd.agent.loop.AgentOutcome;
+import sdd.agent.loop.AgentResult;
+import sdd.agent.tool.FileTools;
+import sdd.agent.tool.GradleTool;
+import sdd.agent.tool.PathJail;
+import sdd.agent.tool.Toolbox;
+import sdd.core.llm.ChatModel;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Drives ONE attempt for one repo step (design Component 3): build a lean work order, run the
+ * agent loop, verify independently on done, retry a verify-fail (≤2 cycles), and restart once on
+ * context exhaustion with a machine digest. Multi-attempt escalation + git are Phase 4C's (they
+ * need run state and git); this returns a typed StepOutcome for 4C to act on.
+ */
+public final class RepoStepRunner {
+    private static final int MAX_VERIFY_CYCLES = 2;
+
+    private final Jdbi jdbi;
+
+    public RepoStepRunner(Jdbi jdbi) {
+        this.jdbi = jdbi;
+    }
+
+    public StepOutcome run(RepoStep step, ChatModel model, String modelName, RunnerSettings settings) {
+        OutputCompactor compactor = new OutputCompactor(step.repoRoot());
+        GradleTool gradle = new GradleTool(step.repoRoot(), settings.javaHome(), settings.gradleTimeout());
+        Toolbox toolbox = new Toolbox(new FileTools(new PathJail(step.repoRoot())), gradle, compactor);
+        VerificationRunner verifier = new VerificationRunner(gradle, compactor);
+        AgentLoop loop = new AgentLoop(model, toolbox, settings.budget(), settings.contextSoftCap(),
+                settings.clock());
+
+        String workOrder = WorkOrder.build(jdbi, step);
+        List<String> events = new ArrayList<>();
+        int verifyCycles = 0;
+        boolean restarted = false;
+        String lastVerification = "";
+
+        while (true) {
+            AgentOutcome outcome = loop.run(settings.systemPrompt(), workOrder, modelName,
+                    settings.maxTokensPerCall());
+            events.addAll(outcome.events());
+
+            switch (outcome.result()) {
+                case DONE -> {
+                    VerificationRunner.Verdict verdict = verifier.verify(settings.verificationTask());
+                    lastVerification = verdict.output();
+                    if (verdict.passed()) {
+                        return outcome(StepResult.SUCCESS, outcome.summary(), events, lastVerification);
+                    }
+                    if (++verifyCycles >= MAX_VERIFY_CYCLES) {
+                        return outcome(StepResult.VERIFY_FAILED, "verification failed", events, lastVerification);
+                    }
+                    workOrder = WorkOrder.build(jdbi, step)
+                            + "\n\n## Verification failed — fix and finish again\n" + verdict.output();
+                }
+                case BLOCKED -> {
+                    return outcome(StepResult.BLOCKED, outcome.summary(), events, lastVerification);
+                }
+                case CONTEXT_EXHAUSTED -> {
+                    if (restarted) {
+                        return outcome(StepResult.EXHAUSTED, "context exhausted", events, lastVerification);
+                    }
+                    restarted = true;
+                    workOrder = WorkOrder.build(jdbi, step) + digest(outcome, lastVerification);
+                }
+                case BUDGET_TURNS, BUDGET_TIME, BUDGET_TOKENS -> {
+                    return outcome(StepResult.BUDGET, outcome.summary(), events, lastVerification);
+                }
+                case MALFORMED -> {
+                    return outcome(StepResult.MALFORMED, outcome.summary(), events, lastVerification);
+                }
+                case WEDGED -> {
+                    return outcome(StepResult.WEDGED, outcome.summary(), events, lastVerification);
+                }
+            }
+        }
+    }
+
+    private static String digest(AgentOutcome outcome, String lastVerification) {
+        return "\n\n## Previous attempt ran out of context after " + outcome.turns() + " turns\n"
+                + "Your edits persist on disk. Re-read the files named in the sub-spec and continue.\n"
+                + "Last build:\n" + (lastVerification.isEmpty() ? "none" : lastVerification);
+    }
+
+    private static StepOutcome outcome(StepResult result, String summary, List<String> events,
+                                       String verification) {
+        return new StepOutcome(result, summary, events, verification);
+    }
+}
