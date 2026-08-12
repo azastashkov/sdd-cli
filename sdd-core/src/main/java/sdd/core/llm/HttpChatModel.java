@@ -73,7 +73,8 @@ public final class HttpChatModel implements ChatModel {
                 }
                 throw new ModelException("HTTP " + status + ": " + resp.body(), status);
             } catch (IOException e) {
-                last = new ModelException("transport error: " + e.getMessage(), e);
+                String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                last = new ModelException("transport error: " + detail, e);
                 backoff(attempt, null);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();

@@ -150,4 +150,25 @@ class RestMatcherTest {
                 "SELECT count(*) FROM rest_call_edge WHERE confidence='LOW'").mapTo(Integer.class).one());
         assertThat(lowRows).isEqualTo(report.low());
     }
+
+    @Test
+    void duplicateManualPinsDoNotDistortCounters() {
+        long cl = client(ordersModule, "RESTTEMPLATE", "POST", "/pay/charge", null, "/pay/charge");
+        long ep = endpoint(billingModule, "POST", "/pay/charge");
+
+        // two overlapping manual edges resolve to the same (client, endpoint) pair
+        RestMatcher.Report report = RestMatcher.match(db.jdbi(), List.of(
+                new ManualEdge("svc-orders", "POST", "/pay/charge", "billing-service"),
+                new ManualEdge("svc-orders", "POST", "/pay/charge", "billing-service")));
+
+        // second pin replaces the first pin's MANUAL row: manual must be net 1, high must be
+        // untouched (the pair was MEDIUM before the first pin: unique candidate)
+        assertThat(report.manual()).isEqualTo(1);
+        assertThat(report.high()).isZero();
+        assertThat(report.medium()).isZero();
+        assertThat(edges()).singleElement().satisfies(e -> {
+            assertThat(e).containsEntry("client_id", (int) cl).containsEntry("endpoint_id", (int) ep)
+                    .containsEntry("confidence", "HIGH").containsEntry("matched_by", "MANUAL");
+        });
+    }
 }

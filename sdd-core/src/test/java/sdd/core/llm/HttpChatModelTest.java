@@ -168,4 +168,39 @@ class HttpChatModelTest {
                 .isInstanceOf(ModelException.class);
         wm.verify(2, postRequestedFor(urlEqualTo("/v1/chat/completions")));
     }
+
+    @Test
+    void transportErrorWithNullMessageFallsBackToExceptionClassName() {
+        HttpClient refusing = new HttpClient() {
+            @Override public java.util.Optional<java.time.Duration> connectTimeout() { return java.util.Optional.empty(); }
+            @Override public java.net.http.HttpClient.Redirect followRedirects() { return Redirect.NEVER; }
+            @Override public java.util.Optional<java.net.ProxySelector> proxy() { return java.util.Optional.empty(); }
+            @Override public javax.net.ssl.SSLContext sslContext() { return null; }
+            @Override public javax.net.ssl.SSLParameters sslParameters() { return null; }
+            @Override public java.util.Optional<java.net.Authenticator> authenticator() { return java.util.Optional.empty(); }
+            @Override public java.util.Optional<java.net.CookieHandler> cookieHandler() { return java.util.Optional.empty(); }
+            @Override public java.net.http.HttpClient.Version version() { return Version.HTTP_1_1; }
+            @Override public java.util.Optional<java.util.concurrent.Executor> executor() { return java.util.Optional.empty(); }
+            @Override public <T> java.net.http.HttpResponse<T> send(java.net.http.HttpRequest req,
+                    java.net.http.HttpResponse.BodyHandler<T> h2) throws java.io.IOException {
+                throw new java.net.ConnectException();   // getMessage() == null
+            }
+            @Override public <T> java.util.concurrent.CompletableFuture<java.net.http.HttpResponse<T>> sendAsync(
+                    java.net.http.HttpRequest req, java.net.http.HttpResponse.BodyHandler<T> h2) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public <T> java.util.concurrent.CompletableFuture<java.net.http.HttpResponse<T>> sendAsync(
+                    java.net.http.HttpRequest req, java.net.http.HttpResponse.BodyHandler<T> h2,
+                    java.net.http.HttpResponse.PushPromiseHandler<T> p) {
+                throw new UnsupportedOperationException();
+            }
+        };
+        ModelEndpoint ep = new ModelEndpoint("http://127.0.0.1:1/v1", "m", null, 16, 0.0, Duration.ofSeconds(1));
+        HttpChatModel model = new HttpChatModel(ep, 2, refusing, millis -> { });
+
+        assertThatThrownBy(() -> model.complete(request()))
+                .isInstanceOf(ModelException.class)
+                .hasMessageContaining("ConnectException")
+                .satisfies(e -> assertThat(e.getMessage()).doesNotContain("null"));
+    }
 }

@@ -7,6 +7,7 @@ import sdd.index.spring.RouteNormalizer;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 public final class RestMatcher {
@@ -97,11 +98,15 @@ public final class RestMatcher {
                 }
                 for (long cid : clientIds) {
                     for (long eid : endpointIds) {
-                        List<String> replaced = h.createQuery(
-                                "SELECT confidence FROM rest_call_edge WHERE client_id=:c AND endpoint_id=:e")
-                                .bind("c", cid).bind("e", eid).mapTo(String.class).list();
-                        for (String confidence : replaced) {
-                            switch (confidence) {
+                        List<Map<String, Object>> replaced = h.createQuery(
+                                "SELECT confidence, matched_by FROM rest_call_edge WHERE client_id=:c AND endpoint_id=:e")
+                                .bind("c", cid).bind("e", eid).mapToMap().list();
+                        for (Map<String, Object> row : replaced) {
+                            if ("MANUAL".equals(row.get("matched_by"))) {
+                                manual--;
+                                continue;
+                            }
+                            switch (String.valueOf(row.get("confidence"))) {
                                 case "HIGH" -> high--;
                                 case "MEDIUM" -> medium--;
                                 case "LOW" -> low--;
