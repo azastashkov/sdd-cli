@@ -17,10 +17,12 @@ if [ ! -d "$VENV" ]; then
 fi
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
-pip install --quiet --upgrade mlx-lm "huggingface_hub[cli]"
+pip install --quiet --upgrade mlx-lm huggingface_hub
 
 echo "Downloading $MODEL_REPO (tens of GB on first run; cached afterwards)..."
-huggingface-cli download "$MODEL_REPO" >/dev/null
+# Use the stable Python API rather than the CLI: the console script was renamed
+# huggingface-cli -> hf in huggingface_hub 1.x, and the [cli] extra was dropped.
+python -c "from huggingface_hub import snapshot_download; snapshot_download('$MODEL_REPO')"
 
 echo "Serving $MODEL_REPO on http://127.0.0.1:$PORT/v1 ..."
 exec mlx_lm.server --model "$MODEL_REPO" --port "$PORT"
