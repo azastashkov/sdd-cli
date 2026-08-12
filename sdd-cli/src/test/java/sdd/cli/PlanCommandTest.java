@@ -72,20 +72,21 @@ class PlanCommandTest {
         Path spec = ws.resolve("loyalty.md");
         Files.writeString(spec, VALID_SPEC);
         PlanCommand cmd = new PlanCommand();
-        cmd.plannerForTest = new ScriptedChatModel(List.of(new ChatResponse(
-                ChatMessage.assistant("""
-                        {"repos": []}"""),
-                "stop", new Usage(10, 10))));
+        cmd.plannerForTest = new ScriptedChatModel(List.of(
+                new ChatResponse(ChatMessage.assistant("""
+                        {"repos": []}"""), "stop", new Usage(10, 10)),
+                new ChatResponse(ChatMessage.assistant("not json"), "stop", new Usage(10, 10))));
 
         Run run = plan(cmd, "--workspace", ws.toString(), spec.toString());
 
         assertThat(run.out()).contains("spec OK: SPEC-7")
                 .contains("1 requirements")
-                .contains("plan.md rendering is not implemented yet (Phase 3C)")
+                .contains("plan written: ")
                 .contains("impact: 0 repos affected (0 seeds, 0 dependents, 0 contracts, 0 bom-sites)")
                 .contains("impact problem: no seeds")
                 .contains("impact problem: no repo covers R1");
         assertThat(run.exitCode()).isZero();
+        assertThat(Files.exists(ws.resolve("loyalty.plan.md"))).isTrue();
     }
 
     @Test
@@ -124,11 +125,13 @@ class PlanCommandTest {
                 - class: LoyaltyTier
                 """);
         PlanCommand cmd = new PlanCommand();
-        cmd.plannerForTest = new ScriptedChatModel(List.of(new ChatResponse(
-                ChatMessage.assistant("""
+        cmd.plannerForTest = new ScriptedChatModel(List.of(
+                new ChatResponse(ChatMessage.assistant("""
                         {"repos": [{"repo": "lib-core", "role": "primary", "covers": ["R1"],
-                                    "reason": "owns LoyaltyTier"}]}"""),
-                "stop", new Usage(10, 10))));
+                                    "reason": "owns LoyaltyTier"}]}"""), "stop", new Usage(10, 10)),
+                new ChatResponse(ChatMessage.assistant("""
+                        {"summary": "S.", "questions": [], "contracts": [], "repo_steps": []}"""),
+                        "stop", new Usage(10, 10))));
 
         Run run = plan(cmd, "--workspace", ws.toString(), spec.toString());
 
@@ -139,7 +142,7 @@ class PlanCommandTest {
                 .contains("SEED")
                 .contains("svc-pricing")
                 .contains("BUMP_REBUILD_ONLY")   // no api_usage row in this estate — annotation must survive to the CLI
-                .contains("plan.md rendering is not implemented yet (Phase 3C)");
+                .contains("plan written: ");
         assertThat(run.exitCode()).isZero();
     }
 
@@ -315,5 +318,107 @@ class PlanCommandTest {
         assertThat(run.out()).contains(
                 "review and edit the spec, then run: sdd plan --workspace " + ws + " "
                         + ws.resolve("page.html.spec.md"));
+    }
+
+    @Test
+    void validSpecWritesGate1PlanMd() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        try (sdd.core.db.Database db = sdd.core.db.Database.open(ws)) {
+            db.jdbi().useHandle(h -> {
+                h.execute("INSERT INTO repo(name, path, kind) VALUES ('lib-core','/w/1','LIBRARY')");
+                h.execute("INSERT INTO repo(name, path, kind) VALUES ('svc-pricing','/w/2','SERVICE')");
+                h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (1,':','LIBRARY')");
+                h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (2,':','SERVICE')");
+                h.execute("INSERT INTO dep_edge(from_module_id, to_grp, to_name, configuration, declared_version, declared_via, mode, is_internal, to_module_id) "
+                        + "VALUES (2,'com.acme','lib-core','compileClasspath','1.0','DIRECT','PINNED',1,1)");
+                h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path) "
+                        + "VALUES (1,'com.acme.LoyaltyTier','CLASS',1,'src/main/java/com/acme/LoyaltyTier.java')");
+            });
+        }
+        Path spec = ws.resolve("loyalty.md");
+        Files.writeString(spec, """
+                ---
+                id: SPEC-7
+                title: Loyalty tiers
+                owner: ana
+                status: draft
+                ---
+
+                ## Goal
+                Add loyalty tiers to pricing.
+
+                ## Requirements
+                - R1: Price response includes the customer tier.
+
+                ## Acceptance Criteria
+                - A1: GET /price returns tier for gold customers.
+
+                ## Touchpoints
+                - class: LoyaltyTier
+                """);
+        PlanCommand cmd = new PlanCommand();
+        cmd.plannerForTest = new ScriptedChatModel(List.of(
+                new ChatResponse(ChatMessage.assistant("""
+                        {"repos": [{"repo": "lib-core", "role": "primary", "covers": ["R1"],
+                                    "reason": "owns LoyaltyTier"}]}"""), "stop", new Usage(10, 10)),
+                new ChatResponse(ChatMessage.assistant("""
+                        {"summary": "Add the tier lookup to lib-core; svc-pricing rebuilds.",
+                         "questions": [],
+                         "contracts": [{"id": "C-1", "kind": "java-api", "provider": "lib-core",
+                                        "consumers": ["svc-pricing"], "body": "method: Tier tierFor(String)"}],
+                         "repo_steps": [{"repo": "lib-core", "covers": ["R1"],
+                                         "sub_spec": "Add tierFor to LoyaltyTier.",
+                                         "files": ["src/main/java/com/acme/LoyaltyTier.java"],
+                                         "provides_contracts": ["C-1"], "consumes_contracts": [],
+                                         "version_action": "minor",
+                                         "verification": ["./gradlew test"]}]}"""), "stop", new Usage(10, 10))));
+
+        Run run = plan(cmd, "--workspace", ws.toString(), spec.toString());
+
+        assertThat(run.exitCode()).isZero();
+        Path planPath = ws.resolve("loyalty.plan.md");
+        assertThat(run.out()).contains("plan written: " + planPath)
+                .contains("review and edit the plan, then run: sdd plan approve (Phase 3C-2)")
+                .doesNotContain("plan.md rendering is not implemented yet");
+        String planMd = Files.readString(planPath);
+        assertThat(planMd).startsWith("---\nspec: SPEC-7\nplan_version: 1\n---\n")
+                .contains("Add the tier lookup to lib-core")
+                .contains("- lib-core — seed/SEED")
+                .contains("- svc-pricing — dependent/")
+                .contains("### C-1 (java-api) — lib-core -> svc-pricing")
+                .contains("### lib-core")
+                .contains("Add tierFor to LoyaltyTier.");
+    }
+
+    @Test
+    void draftingFailureStillWritesPlanMdWithBlockingQuestion() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        try (sdd.core.db.Database db = sdd.core.db.Database.open(ws)) {
+            db.jdbi().useHandle(h -> {
+                h.execute("INSERT INTO repo(name, path, kind) VALUES ('lib-core','/w/1','LIBRARY')");
+                h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (1,':','LIBRARY')");
+                h.execute("INSERT INTO java_type(module_id, fqcn, kind) VALUES (1,'com.acme.LoyaltyTier','CLASS')");
+            });
+        }
+        Path spec = ws.resolve("loyalty.md");
+        Files.writeString(spec, VALID_SPEC + """
+
+                ## Touchpoints
+                - class: LoyaltyTier
+                """);
+        PlanCommand cmd = new PlanCommand();
+        // seeding succeeds (empty selection), drafting response is garbage
+        cmd.plannerForTest = new ScriptedChatModel(List.of(
+                new ChatResponse(ChatMessage.assistant("{\"repos\": []}"), "stop", new Usage(1, 1)),
+                new ChatResponse(ChatMessage.assistant("not json"), "stop", new Usage(1, 1))));
+
+        Run run = plan(cmd, "--workspace", ws.toString(), spec.toString());
+
+        assertThat(run.exitCode()).isZero();
+        String planMd = Files.readString(ws.resolve("loyalty.plan.md"));
+        assertThat(planMd).contains("[blocking]: plan drafting unavailable:")
+                .contains("## Affected Repos")
+                .contains("- lib-core — seed/SEED")
+                .contains("## Repo Steps\n- none (drafting unavailable)");
     }
 }

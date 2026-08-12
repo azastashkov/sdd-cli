@@ -14,6 +14,11 @@ import sdd.core.llm.HttpChatModel;
 import sdd.core.retrieve.FtsRetriever;
 import sdd.plan.confluence.ConfluenceExportSource;
 import sdd.plan.confluence.SpecNormalizationException;
+import sdd.plan.gen.ExecutionOrder;
+import sdd.plan.gen.OpenQuestions;
+import sdd.plan.gen.PlanDrafter;
+import sdd.plan.gen.PlanMdRenderer;
+import sdd.plan.gen.Question;
 import sdd.plan.impact.AffectedRepo;
 import sdd.plan.impact.ImpactAnalysis;
 import sdd.plan.impact.ImpactResult;
@@ -133,8 +138,22 @@ public final class PlanCommand implements Callable<Integer> {
             ImpactResult result = ImpactAnalysis.analyze(db.jdbi(), new FtsRetriever(db.jdbi()),
                     parsed, model, planner.model(), planner.maxTokens());
             printImpact(outWriter, result);
+
+            List<ExecutionOrder.Unit> order = ExecutionOrder.order(db.jdbi(), result);
+            List<Question> questions = OpenQuestions.detect(db.jdbi(), result);
+            PlanDrafter.Draft draft = PlanDrafter.draft(db.jdbi(), parsed, result, order,
+                    model, planner.model(), planner.maxTokens());
+            String planMd = PlanMdRenderer.render(parsed, result, order, questions, draft);
+            String base = ref.endsWith(".md") ? ref.substring(0, ref.length() - 3) : ref;
+            Path planPath = Path.of(base + ".plan.md");
+            try {
+                Files.writeString(planPath, planMd);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+            outWriter.println("plan written: " + planPath);
+            outWriter.println("review and edit the plan, then run: sdd plan approve (Phase 3C-2)");
         }
-        outWriter.println("plan.md rendering is not implemented yet (Phase 3C)");
         return 0;
     }
 
