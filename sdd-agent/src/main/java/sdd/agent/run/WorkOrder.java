@@ -75,6 +75,7 @@ public final class WorkOrder {
     }
 
     private static String repoCard(Jdbi jdbi, String repo) {
+        // No ORDER BY needed: repo_card.repo_id is the PRIMARY KEY, so at most one row matches
         return jdbi.withHandle(h -> h.createQuery("""
                         SELECT c.card_md FROM repo_card c
                         JOIN repo r ON r.id = c.repo_id
