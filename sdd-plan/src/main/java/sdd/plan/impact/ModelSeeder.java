@@ -48,7 +48,7 @@ public final class ModelSeeder {
         }
     }
 
-    public record SeedingOutcome(List<ModelSeed> seeds, List<String> warnings) {
+    public record SeedingOutcome(List<ModelSeed> seeds, List<String> warnings, boolean unavailable) {
         public SeedingOutcome {
             seeds = List.copyOf(seeds);
             warnings = List.copyOf(warnings);
@@ -69,18 +69,18 @@ public final class ModelSeeder {
                     List.of(), maxTokens, 0.15));
         } catch (ModelException e) {
             return new SeedingOutcome(List.of(),
-                    List.of("model seeding unavailable: " + e.getMessage()));
+                    List.of("model seeding unavailable: " + e.getMessage()), true);
         }
         if ("length".equals(response.finishReason())) {
             return new SeedingOutcome(List.of(),
-                    List.of("model seeding unavailable: response truncated (finish_reason=length)"));
+                    List.of("model seeding unavailable: response truncated (finish_reason=length)"), true);
         }
         return parse(jdbi, spec, response.message().content());
     }
 
     private static SeedingOutcome parse(Jdbi jdbi, NormalizedSpec spec, String content) {
         if (content == null) {
-            return new SeedingOutcome(List.of(), List.of("model seeding unavailable: empty response"));
+            return new SeedingOutcome(List.of(), List.of("model seeding unavailable: empty response"), true);
         }
         String stripped = content.strip();
         if (stripped.startsWith("```")) {
@@ -95,11 +95,11 @@ public final class ModelSeeder {
             root = JSON.readTree(stripped);
         } catch (JacksonException e) {
             return new SeedingOutcome(List.of(),
-                    List.of("model seeding unavailable: response is not valid JSON"));
+                    List.of("model seeding unavailable: response is not valid JSON"), true);
         }
         if (!root.isObject()) {
             return new SeedingOutcome(List.of(),
-                    List.of("model seeding unavailable: response is not a JSON object"));
+                    List.of("model seeding unavailable: response is not a JSON object"), true);
         }
         Set<String> knownRepos = new LinkedHashSet<>(jdbi.withHandle(h ->
                 h.createQuery("SELECT name FROM repo ORDER BY name").mapTo(String.class).list()));
@@ -125,7 +125,7 @@ public final class ModelSeeder {
             String role = "primary".equals(node.path("role").asText()) ? "primary" : "contributor";
             seeds.add(new ModelSeed(repo, role, covers, node.path("reason").asText().strip()));
         }
-        return new SeedingOutcome(seeds, warnings);
+        return new SeedingOutcome(seeds, warnings, false);
     }
 
     static String composeInput(Jdbi jdbi, NormalizedSpec spec, List<Seed> deterministicSeeds,

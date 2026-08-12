@@ -153,6 +153,7 @@ class PlanCommandTest {
 
         assertThat(run.out()).contains("error: knowledge base is empty — run sdd index first");
         assertThat(run.exitCode()).isEqualTo(1);
+        assertThat(Files.exists(ws.resolve(".sdd/index.db"))).isFalse();   // plan must never CREATE the KB
     }
 
     @Test

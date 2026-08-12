@@ -52,6 +52,8 @@ public final class PlanCommand implements Callable<Integer> {
 
     ChatModel plannerForTest;   // test seam — mirrors IndexService's injectable ChatModel
 
+    private static final int SEED_MAX_ATTEMPTS = 2;   // assistive calls fail fast — analysis degrades, reruns are cheap
+
     @Override
     public Integer call() {
         PrintWriter outWriter = spec.commandLine().getOut();
@@ -115,6 +117,10 @@ public final class PlanCommand implements Callable<Integer> {
                 "spec OK: %s — %d requirements, %d acceptance, %d constraints, %d touchpoints, %d open questions%n",
                 parsed.id(), parsed.requirements().size(), parsed.acceptance().size(),
                 parsed.constraints().size(), parsed.touchpoints().size(), parsed.openQuestions().size());
+        if (!Files.exists(workspace.resolve(".sdd/index.db"))) {
+            errWriter.println("error: knowledge base is empty — run sdd index first");
+            return 1;
+        }
         try (Database db = Database.open(workspace)) {
             Integer repoCount = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT count(*) FROM repo").mapTo(Integer.class).one());
@@ -123,7 +129,7 @@ public final class PlanCommand implements Callable<Integer> {
                 return 1;
             }
             ModelEndpoint planner = config.models().get("planner");
-            ChatModel model = plannerForTest != null ? plannerForTest : new HttpChatModel(planner);
+            ChatModel model = plannerForTest != null ? plannerForTest : new HttpChatModel(planner, SEED_MAX_ATTEMPTS);
             ImpactResult result = ImpactAnalysis.analyze(db.jdbi(), new FtsRetriever(db.jdbi()),
                     parsed, model, planner.model(), planner.maxTokens());
             printImpact(outWriter, result);

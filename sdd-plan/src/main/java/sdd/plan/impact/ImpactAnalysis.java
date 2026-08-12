@@ -28,8 +28,7 @@ public final class ImpactAnalysis {
         SeedFinder.SeedScan scan = SeedFinder.find(jdbi, retriever, spec);
         ModelSeeder.SeedingOutcome seeding = ModelSeeder.seed(jdbi, spec, scan.seeds(),
                 scan.candidates(), planner, modelName, maxTokens);
-        boolean modelUnavailable = seeding.seeds().isEmpty()
-                && seeding.warnings().stream().anyMatch(w -> w.contains("model seeding unavailable"));
+        boolean modelUnavailable = seeding.unavailable();
 
         List<Seed> seeds = new ArrayList<>(scan.seeds());
         for (ModelSeeder.ModelSeed modelSeed : seeding.seeds()) {

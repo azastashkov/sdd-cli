@@ -74,6 +74,7 @@ class ModelSeederTest {
         });
         assertThat(outcome.warnings()).anySatisfy(w -> assertThat(w).contains("ghost-repo"))
                 .anySatisfy(w -> assertThat(w).contains("R9"));
+        assertThat(outcome.unavailable()).isFalse();
         assertThat(planner.requests()).singleElement().satisfies(r ->
                 assertThat(r.maxTokens()).isEqualTo(4096));
     }
@@ -90,22 +91,26 @@ class ModelSeederTest {
         assertThat(outcome.seeds()).singleElement().satisfies(s ->
                 assertThat(s.repo()).isEqualTo("svc-pricing"));
         assertThat(outcome.warnings()).isEmpty();
+        assertThat(outcome.unavailable()).isFalse();
     }
 
     @Test
     void modelFailuresDegradeToWarningsNeverThrow() {
         ScriptedChatModel truncated = new ScriptedChatModel(List.of(response("{", "length")));
-        assertThat(ModelSeeder.seed(db.jdbi(), spec(), List.of(), List.of(), truncated, "m", 16)
-                .warnings()).anySatisfy(w -> assertThat(w).contains("model seeding unavailable"));
+        ModelSeeder.SeedingOutcome truncatedOutcome = ModelSeeder.seed(db.jdbi(), spec(), List.of(), List.of(), truncated, "m", 16);
+        assertThat(truncatedOutcome.warnings()).anySatisfy(w -> assertThat(w).contains("model seeding unavailable"));
+        assertThat(truncatedOutcome.unavailable()).isTrue();
 
         ScriptedChatModel garbage = new ScriptedChatModel(List.of(response("not json", "stop")));
-        assertThat(ModelSeeder.seed(db.jdbi(), spec(), List.of(), List.of(), garbage, "m", 16)
-                .warnings()).anySatisfy(w -> assertThat(w).contains("model seeding unavailable"));
+        ModelSeeder.SeedingOutcome garbageOutcome = ModelSeeder.seed(db.jdbi(), spec(), List.of(), List.of(), garbage, "m", 16);
+        assertThat(garbageOutcome.warnings()).anySatisfy(w -> assertThat(w).contains("model seeding unavailable"));
+        assertThat(garbageOutcome.unavailable()).isTrue();
 
         sdd.core.llm.ChatModel refusing = req -> {
             throw new sdd.core.llm.ModelException("connection refused", 0);
         };
-        assertThat(ModelSeeder.seed(db.jdbi(), spec(), List.of(), List.of(), refusing, "m", 16)
-                .warnings()).anySatisfy(w -> assertThat(w).contains("model seeding unavailable"));
+        ModelSeeder.SeedingOutcome refusingOutcome = ModelSeeder.seed(db.jdbi(), spec(), List.of(), List.of(), refusing, "m", 16);
+        assertThat(refusingOutcome.warnings()).anySatisfy(w -> assertThat(w).contains("model seeding unavailable"));
+        assertThat(refusingOutcome.unavailable()).isTrue();
     }
 }

@@ -23,7 +23,7 @@ public final class FtsRetriever implements Retriever {
         return jdbi.withHandle(h -> h.createQuery("""
                         SELECT identifier, fqcn, module_id, bm25(fts_symbol) AS score
                         FROM fts_symbol WHERE fts_symbol MATCH :match
-                        ORDER BY score LIMIT :limit""")
+                        ORDER BY score, identifier, module_id LIMIT :limit""")
                 .bind("match", match)
                 .bind("limit", limit)
                 .map((rs, ctx) -> new Hit(

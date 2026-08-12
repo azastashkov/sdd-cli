@@ -48,4 +48,20 @@ class FtsRetrieverTest {
     void punctuationOnlyQueryReturnsEmptyInsteadOfThrowing() {
         assertThat(new FtsRetriever(db.jdbi()).search("...///:::", 10)).isEmpty();
     }
+
+    @Test
+    void tiedScoresOrderDeterministicallyByIdentifierThenModule() {
+        // two rows with identical tokens => identical bm25 score; order must be pinned
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO fts_symbol(identifier, fqcn, words, module_id) VALUES ('ZetaWidget','com.acme.z.ZetaWidget','zeta widget',2)");
+            h.execute("INSERT INTO fts_symbol(identifier, fqcn, words, module_id) VALUES ('AlphaWidget','com.acme.a.AlphaWidget','alpha widget',1)");
+        });
+
+        List<Hit> first = new FtsRetriever(db.jdbi()).search("widget", 10);
+        List<Hit> second = new FtsRetriever(db.jdbi()).search("widget", 10);
+
+        assertThat(first).extracting(Hit::identifier).containsExactly("AlphaWidget", "ZetaWidget");
+        assertThat(second).extracting(Hit::identifier).isEqualTo(
+                first.stream().map(Hit::identifier).toList());
+    }
 }
