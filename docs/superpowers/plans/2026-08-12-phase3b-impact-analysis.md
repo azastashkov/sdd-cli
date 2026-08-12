@@ -2129,3 +2129,13 @@ Executed via superpowers:subagent-driven-development on branch `feature/phase3b-
 4. FTS provenance is dropped when the model confirms a candidate (only unconfirmed candidates surface in excluded) — carry "R1 hit: X" evidence into the seed reasons for plan.md's "why" column.
 5. `sdd plan` on an unindexed workspace creates `.sdd/index.db` via migrations before printing the empty-KB error (cosmetic).
 6. Deferred minors, all OK-TO-DEFER (ledger): test-fixture nits (blank lines, literal-backslash-n card fixture), untested null-content/non-object containment paths (code trivially correct), model-only dedupe unpinned by committed test, modelUnavailable stringly-typed seam (consider a boolean on SeedingOutcome in 3C).
+
+### Real-estate smoke run (2026-08-12, trading estate, branch build)
+
+Workspace: `~/projects/github/trading-estate` (symlinks to the six trading-* repos + sdd.yml). All repos remained on clean `main` — indexing is read-only for scanned repos.
+
+- **`sdd index --no-cards`: 40 s wall for 6 repos / 33 modules / 469 java files — every repo OK/OK** (no DEGRADED fallbacks; symlinked repo dirs work). 34 internal edges, 0 orphans, 342 internal type refs, 15 REST endpoints. Projected ~4.5 min for a 40-repo estate — well inside design assumptions.
+- **Zeros verified against ground truth:** 0 REST clients and 0 Kafka roles are CORRECT — production services communicate via Redis pub/sub (`common-messaging`), WebSockets, and FIX; all RestTemplate/WebClient usage lives in tests/load tooling. ESTATE FINDING for 3C+: inter-service edges here are Redis channels (unmodeled edge type, cousin of the deferred spring-cloud-stream item); closure leans on the rich Gradle+api_usage graph.
+- **Curation report caught a real smell:** three repos publish the same GA `com.trading:services` (aggregator naming collision) — surfaced as loud conflicts, linking unaffected; fix via estate rename or `artifact_overrides`.
+- **`sdd plan` live e2e (real DeepSeek): 25 s.** All three touchpoints resolved (repo, endpoint via Routes template match, class); closure pulled the other three repos off the platform-libs SNAPSHOT hub with correctly differentiated annotations (candles/product-b CODE_CHANGE_LIKELY via api_usage evidence; ops BUMP_REBUILD_ONLY); 0 contracts/bom-sites (correct for this estate); model seeding succeeded, named all seeded repos (no omission discrepancies) and covered R1-R3 (no coverage problems).
+- CLI observation for 3C: SEED rows print only the first reason; model covers/reasons surface only in plan.md — consider a covers column in the CLI table.
