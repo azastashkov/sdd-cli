@@ -137,4 +137,82 @@ public final class FileTools {
             // unreadable/binary file — skip silently, consistent with a best-effort text search
         }
     }
+
+    public String applyEdit(String path, String searchBlock, String replaceBlock) {
+        boolean creating = searchBlock.isEmpty();
+        // creation resolves logically (parent may not exist yet); an edit uses resolveExisting so
+        // the toRealPath symlink jail applies to the WRITE path, not just reads.
+        Path file = creating ? jail.resolve(path) : jail.resolveExisting(path);
+        String original;
+        if (creating) {
+            if (Files.exists(file) && !readOrEmpty(file).isEmpty()) {
+                throw new ToolException("cannot create " + path + ": file already exists");
+            }
+            original = "";
+        } else {
+            original = readOrEmpty(file);
+        }
+        String updated = creating ? replaceBlock : applyBlock(path, original, searchBlock, replaceBlock);
+        if (path.endsWith(".java")) {
+            var error = JavaSyntax.firstError(updated);
+            if (error.isPresent()) {
+                throw new ToolException("edit rejected — result has a syntax error: " + error.get());
+            }
+        }
+        try {
+            Files.createDirectories(file.getParent());
+            Files.writeString(file, updated, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new ToolException("cannot write " + path + ": " + e.getMessage());
+        }
+        return (creating ? "created " : "edited ") + path;
+    }
+
+    private static String readOrEmpty(Path file) {
+        try {
+            return Files.exists(file) ? Files.readString(file, StandardCharsets.UTF_8) : "";
+        } catch (IOException e) {
+            throw new ToolException("cannot read " + file + ": " + e.getMessage());
+        }
+    }
+
+    private static String applyBlock(String path, String original, String search, String replace) {
+        int first = original.indexOf(search);
+        if (first >= 0) {
+            if (original.indexOf(search, first + 1) >= 0) {
+                throw new ToolException("ambiguous edit in " + path + ": search block occurs more than once");
+            }
+            return original.substring(0, first) + replace + original.substring(first + search.length());
+        }
+        return lenient(path, original, search, replace);
+    }
+
+    private static String lenient(String path, String original, String search, String replace) {
+        List<String> haystack = original.lines().toList();
+        List<String> needle = search.lines().map(String::strip).toList();
+        int match = -1;
+        for (int i = 0; i + needle.size() <= haystack.size(); i++) {
+            boolean all = true;
+            for (int j = 0; j < needle.size(); j++) {
+                if (!haystack.get(i + j).strip().equals(needle.get(j))) {
+                    all = false;
+                    break;
+                }
+            }
+            if (all) {
+                if (match >= 0) {
+                    throw new ToolException("ambiguous edit in " + path + ": search block matches more than once");
+                }
+                match = i;
+            }
+        }
+        if (match < 0) {
+            throw new ToolException("no match for the search block in " + path);
+        }
+        List<String> result = new ArrayList<>(haystack.subList(0, match));
+        result.addAll(replace.lines().toList());
+        result.addAll(haystack.subList(match + needle.size(), haystack.size()));
+        String joined = String.join("\n", result);
+        return original.endsWith("\n") ? joined + "\n" : joined;
+    }
 }
