@@ -116,7 +116,9 @@ public final class PlanValidator {
         Set<String> orderNames = new LinkedHashSet<>();
         for (int i = 0; i < plan.order().size(); i++) {
             for (String member : plan.order().get(i)) {
-                position.put(member, i);
+                if (position.put(member, i) != null) {
+                    problems.add("repo '" + member + "' appears more than once in Execution Order");
+                }
                 orderNames.add(member);
             }
         }

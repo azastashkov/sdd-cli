@@ -152,4 +152,14 @@ class PlanValidatorTest {
         assertThat(verdict.warnings()).anySatisfy(w -> assertThat(w).isEqualTo(
                 "contract 'C-1' lists consumer 'svc-a' which has no step — rebuild-only dependent?"));
     }
+
+    @Test
+    void executionOrderDuplicateRepoDetection() {
+        PlanValidator.Verdict verdict = PlanValidator.validate(db.jdbi(),
+                plan(List.of(List.of("lib-core"), List.of("svc-a"), List.of("lib-core")), "resolved"),
+                spec(), freshStates());
+
+        assertThat(verdict.problems()).anySatisfy(p -> assertThat(p).isEqualTo(
+                "repo 'lib-core' appears more than once in Execution Order"));
+    }
 }
