@@ -48,7 +48,7 @@ public final class PlanMdRenderer {
             md.append("- ").append(repo.repo()).append(" — ").append(repo.role()).append('/')
                     .append(repo.annotation())
                     .append(" — covers: ").append(repo.covers().isEmpty() ? "-" : String.join(",", repo.covers()))
-                    .append(" — why: ").append(String.join("; ", repo.reasons())).append('\n');
+                    .append(" — why: ").append(inline(String.join("; ", repo.reasons()))).append('\n');
         }
 
         md.append("\n## Excluded Candidates\n");
@@ -56,7 +56,7 @@ public final class PlanMdRenderer {
             md.append("- none\n");
         } else {
             for (Seed seed : result.excluded()) {
-                md.append("- ").append(seed.repo()).append(" — ").append(seed.detail()).append('\n');
+                md.append("- ").append(seed.repo()).append(" — ").append(inline(seed.detail())).append('\n');
             }
         }
 
@@ -134,6 +134,7 @@ public final class PlanMdRenderer {
     private static String prose(String value) {
         return value.replaceAll("(?m)^\\s*#+\\s*", "")
                 .replaceAll("(?m)^---\\s*$", "—")
+                .replace("```", "'''")
                 .strip();
     }
 }

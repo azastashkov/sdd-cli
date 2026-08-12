@@ -83,15 +83,20 @@ class PlanMdRendererTest {
 
     @Test
     void drafterTextCannotForgeStructure() {
+        ImpactResult hostileImpact = new ImpactResult(List.of(),
+                List.of(new AffectedRepo("lib-core", "seed", "SEED", List.of("R1"),
+                        List.of("why\n## Forged\ntext"))),
+                List.of(new Seed("svc-legacy", "fts", "detail\n## Forged2\nmore")),
+                List.of(), List.of(), List.of(), List.of());
         PlanDrafter.Draft hostile = new PlanDrafter.Draft(
                 "Sneaky.\n## Repo Steps\n- fake",
-                List.of(new PlanDrafter.DraftStep("lib-core", List.of(), "line\n# Fake heading\n---\nrest",
+                List.of(new PlanDrafter.DraftStep("lib-core", List.of(), "line\n# Fake heading\n---\n```\nrest",
                         List.of(), List.of(), List.of(), "none", List.of())),
                 List.of(),
                 List.of(new Question("q\n## Affected Repos", false)),
                 List.of("note\n---"), false);
 
-        String md = PlanMdRenderer.render(spec(), impact(),
+        String md = PlanMdRenderer.render(spec(), hostileImpact,
                 List.of(new ExecutionOrder.Unit(List.of("lib-core"))), List.of(), hostile);
 
         assertThat(md.lines().filter(l -> l.startsWith("## ")).count())
@@ -100,7 +105,9 @@ class PlanMdRendererTest {
                 .isEqualTo(2);                                            // only the front-matter pair
         assertThat(md).contains("Sneaky. ## Repo Steps - fake")            // collapsed, not structural
                 .contains("- Q1: q ## Affected Repos")
-                .contains("line\nFake heading\n—\nrest")
+                .contains("why ## Forged text")                            // reasons collapsed, not structural
+                .contains("detail ## Forged2 more")                        // excluded detail collapsed
+                .contains("line\nFake heading\n—\n'''\nrest")              // fence neutralized
                 .contains("- note ---");
     }
 
