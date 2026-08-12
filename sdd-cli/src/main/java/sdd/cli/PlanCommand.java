@@ -41,7 +41,7 @@ import java.util.concurrent.Callable;
 
 @Command(name = "plan",
         description = "Ingest a spec (canonical markdown or Confluence export) and run impact analysis",
-        subcommands = {ApproveCommand.class})
+        subcommands = {ApproveCommand.class, ReviseCommand.class})
 public final class PlanCommand implements Callable<Integer> {
     @Option(names = "--workspace", description = "Workspace directory (default: current dir)")
     Path workspace = Path.of(".");

@@ -89,7 +89,13 @@ public final class PlanDrafter {
     public static Draft draft(Jdbi jdbi, NormalizedSpec spec, ImpactResult result,
                               List<ExecutionOrder.Unit> order, ChatModel planner,
                               String modelName, int maxTokens) {
-        String input = composeInput(jdbi, spec, result, order);
+        return draft(jdbi, spec, result, order, "", planner, modelName, maxTokens);
+    }
+
+    public static Draft draft(Jdbi jdbi, NormalizedSpec spec, ImpactResult result,
+                              List<ExecutionOrder.Unit> order, String priorQa, ChatModel planner,
+                              String modelName, int maxTokens) {
+        String input = composeInput(jdbi, spec, result, order, priorQa);
         ChatResponse response;
         try {
             response = planner.complete(new ChatRequest(modelName,
@@ -241,7 +247,7 @@ public final class PlanDrafter {
     }
 
     static String composeInput(Jdbi jdbi, NormalizedSpec spec, ImpactResult result,
-                               List<ExecutionOrder.Unit> order) {
+                               List<ExecutionOrder.Unit> order, String priorQa) {
         StringBuilder input = new StringBuilder("# Specification\n\n");
         input.append(SpecRenderer.render(spec));
         input.append("\n# Impact\n\n");
@@ -264,6 +270,9 @@ public final class PlanDrafter {
         for (AffectedRepo repo : result.affected()) {
             input.append("\n## ").append(repo.repo()).append('\n');
             input.append(evidence(jdbi, repo.repo()));
+        }
+        if (!priorQa.isBlank()) {
+            input.append("\n# Prior questions and human resolutions\n\n").append(priorQa);
         }
         return input.toString();
     }

@@ -83,7 +83,7 @@ class PlanDrafterTest {
     @Test
     void promptCarriesSpecImpactOrderAndKbEvidence() {
         String input = PlanDrafter.composeInput(db.jdbi(), spec(), impact(),
-                ExecutionOrder.order(db.jdbi(), impact()));
+                ExecutionOrder.order(db.jdbi(), impact()), "");
 
         assertThat(input).contains("- R1: tier pricing")
                 .contains("- lib-core | seed | SEED | covers: R1 | why: touchpoint class:LoyaltyTier")
@@ -145,12 +145,25 @@ class PlanDrafterTest {
         });
 
         String input = PlanDrafter.composeInput(db.jdbi(), spec(), impact(),
-                List.of(new ExecutionOrder.Unit(List.of("lib-core"))));
+                List.of(new ExecutionOrder.Unit(List.of("lib-core"))), "");
 
         assertThat(input).contains("…(truncated)");
         int start = input.indexOf("## lib-core");
         int end = input.indexOf("## svc-pricing");
         assertThat(end - start).isLessThan(PlanDrafter.EVIDENCE_CAP + 200);
+    }
+
+    @Test
+    void priorQaSectionIsAppendedWhenPresent() {
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(response(
+                "{\"summary\": \"S.\", \"questions\": [], \"contracts\": [], \"repo_steps\": []}", "stop")));
+
+        PlanDrafter.draft(db.jdbi(), spec(), impact(), order(),
+                "- Q1 [blocking]: which?\n  resolved: tierFor.", planner, "m", 256);
+
+        assertThat(planner.requests().get(0).messages().get(1).content())
+                .contains("# Prior questions and human resolutions")
+                .contains("resolved: tierFor.");
     }
 
     @Test

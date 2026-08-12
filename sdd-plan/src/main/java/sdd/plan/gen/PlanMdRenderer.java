@@ -21,8 +21,15 @@ public final class PlanMdRenderer {
     public static String render(NormalizedSpec spec, ImpactResult result,
                                 List<ExecutionOrder.Unit> order, List<Question> detectorQuestions,
                                 PlanDrafter.Draft draft) {
+        return render(spec, result, order, detectorQuestions, draft, 1);
+    }
+
+    public static String render(NormalizedSpec spec, ImpactResult result,
+                                List<ExecutionOrder.Unit> order, List<Question> detectorQuestions,
+                                PlanDrafter.Draft draft, int planVersion) {
         StringBuilder md = new StringBuilder();
-        md.append("---\nspec: ").append(spec.id()).append("\nplan_version: 1\n---\n");
+        md.append("---\nspec: ").append(spec.id()).append("\nplan_version: ").append(planVersion)
+                .append("\n---\n");
 
         md.append("\n## Summary\n");
         String summary = inline(draft.summary());
