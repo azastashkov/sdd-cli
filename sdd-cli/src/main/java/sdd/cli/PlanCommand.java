@@ -40,7 +40,8 @@ import java.util.Locale;
 import java.util.concurrent.Callable;
 
 @Command(name = "plan",
-        description = "Ingest a spec (canonical markdown or Confluence export) and run impact analysis")
+        description = "Ingest a spec (canonical markdown or Confluence export) and run impact analysis",
+        subcommands = {ApproveCommand.class})
 public final class PlanCommand implements Callable<Integer> {
     @Option(names = "--workspace", description = "Workspace directory (default: current dir)")
     Path workspace = Path.of(".");
@@ -49,7 +50,8 @@ public final class PlanCommand implements Callable<Integer> {
             description = "Where to write the normalized spec (Confluence refs only; default: <ref>.spec.md)")
     Path out;
 
-    @Parameters(index = "0", description = "Spec ref: canonical .md, or exported Confluence .html/.htm/.xhtml")
+    @Parameters(index = "0", arity = "0..1",
+            description = "Spec ref: canonical .md, or exported Confluence .html/.htm/.xhtml")
     String ref;
 
     @Spec CommandSpec spec;
@@ -62,6 +64,10 @@ public final class PlanCommand implements Callable<Integer> {
     public Integer call() {
         PrintWriter outWriter = spec.commandLine().getOut();
         PrintWriter errWriter = spec.commandLine().getErr();
+        if (ref == null) {
+            errWriter.println("error: missing required parameter: <ref>");
+            return 1;
+        }
         SddConfig config;
         try {
             config = ConfigLoader.load(workspace);
