@@ -63,14 +63,96 @@ class PlanCommandTest {
     @Test
     void validCanonicalSpecPrintsSummary() throws Exception {
         Files.writeString(ws.resolve("sdd.yml"), yaml());
+        try (sdd.core.db.Database db = sdd.core.db.Database.open(ws)) {
+            db.jdbi().useHandle(h -> {
+                h.execute("INSERT INTO repo(name, path, kind) VALUES ('lib-core','/w/1','LIBRARY')");
+                h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (1,':','LIBRARY')");
+            });
+        }
+        Path spec = ws.resolve("loyalty.md");
+        Files.writeString(spec, VALID_SPEC);
+        PlanCommand cmd = new PlanCommand();
+        cmd.plannerForTest = new ScriptedChatModel(List.of(new ChatResponse(
+                ChatMessage.assistant("""
+                        {"repos": []}"""),
+                "stop", new Usage(10, 10))));
+
+        Run run = plan(cmd, "--workspace", ws.toString(), spec.toString());
+
+        assertThat(run.out()).contains("spec OK: SPEC-7")
+                .contains("1 requirements")
+                .contains("plan.md rendering is not implemented yet (Phase 3C)")
+                .contains("impact: 0 repos affected (0 seeds, 0 dependents, 0 contracts, 0 bom-sites)")
+                .contains("impact problem: no seeds")
+                .contains("impact problem: no repo covers R1");
+        assertThat(run.exitCode()).isZero();
+    }
+
+    @Test
+    void validSpecRunsImpactAnalysisEndToEnd() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        try (sdd.core.db.Database db = sdd.core.db.Database.open(ws)) {
+            db.jdbi().useHandle(h -> {
+                h.execute("INSERT INTO repo(name, path, kind) VALUES ('lib-core','/w/1','LIBRARY')");
+                h.execute("INSERT INTO repo(name, path, kind) VALUES ('svc-pricing','/w/2','SERVICE')");
+                h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (1,':','LIBRARY')");
+                h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (2,':','SERVICE')");
+                h.execute("INSERT INTO dep_edge(from_module_id, to_grp, to_name, configuration, declared_version, declared_via, mode, is_internal, to_module_id) "
+                        + "VALUES (2,'com.acme','lib-core','compileClasspath','1.0','DIRECT','PINNED',1,1)");
+                h.execute("INSERT INTO java_type(module_id, fqcn, kind) VALUES (1,'com.acme.LoyaltyTier','CLASS')");
+            });
+        }
+        Path spec = ws.resolve("loyalty.md");
+        Files.writeString(spec, """
+                ---
+                id: SPEC-7
+                title: Loyalty tiers
+                owner: ana
+                status: draft
+                ---
+
+                ## Goal
+                Add loyalty tiers to pricing.
+
+                ## Requirements
+                - R1: Price response includes the customer tier.
+
+                ## Acceptance Criteria
+                - A1: GET /price returns tier for gold customers.
+
+                ## Touchpoints
+                - class: LoyaltyTier
+                """);
+        PlanCommand cmd = new PlanCommand();
+        cmd.plannerForTest = new ScriptedChatModel(List.of(new ChatResponse(
+                ChatMessage.assistant("""
+                        {"repos": [{"repo": "lib-core", "role": "primary", "covers": ["R1"],
+                                    "reason": "owns LoyaltyTier"}]}"""),
+                "stop", new Usage(10, 10))));
+
+        Run run = plan(cmd, "--workspace", ws.toString(), spec.toString());
+
+        assertThat(run.out())
+                .contains("spec OK: SPEC-7")
+                .contains("impact: 2 repos affected (1 seeds, 1 dependents, 0 contracts, 0 bom-sites)")
+                .contains("lib-core")
+                .contains("SEED")
+                .contains("svc-pricing")
+                .contains("BUMP_REBUILD_ONLY")   // no api_usage row in this estate — annotation must survive to the CLI
+                .contains("plan.md rendering is not implemented yet (Phase 3C)");
+        assertThat(run.exitCode()).isZero();
+    }
+
+    @Test
+    void emptyKnowledgeBaseFailsBeforeAnyModelWork() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
         Path spec = ws.resolve("loyalty.md");
         Files.writeString(spec, VALID_SPEC);
 
         Run run = plan(new PlanCommand(), "--workspace", ws.toString(), spec.toString());
 
-        assertThat(run.out()).contains("spec OK: SPEC-7")
-                .contains("1 requirements").contains("Phase 3B");
-        assertThat(run.exitCode()).isZero();
+        assertThat(run.out()).contains("error: knowledge base is empty — run sdd index first");
+        assertThat(run.exitCode()).isEqualTo(1);
     }
 
     @Test
@@ -138,10 +220,14 @@ class PlanCommandTest {
         assertThat(content).contains("- Q1: [unmapped] Rollout table")
                 .contains("## Attachments").contains("- diagram.png");
 
-        // Gate round-trip: the written file is a valid canonical spec
+        // Gate round-trip: the written file is a valid canonical spec (KB is empty here — the
+        // second PlanCommand has no planner seam, so seeding a KB would trigger a real HTTP
+        // retry against the unroutable endpoint; the round trip is still proven by "spec OK"
+        // printing before the empty-KB check runs)
         Run second = plan(new PlanCommand(), "--workspace", ws.toString(), written.toString());
-        assertThat(second.out()).contains("spec OK: spec-loyalty-page");
-        assertThat(second.exitCode()).isZero();
+        assertThat(second.out()).contains("spec OK: spec-loyalty-page")
+                .contains("error: knowledge base is empty — run sdd index first");
+        assertThat(second.exitCode()).isEqualTo(1);
     }
 
     @Test
@@ -179,8 +265,8 @@ class PlanCommandTest {
 
         int code = cmd.execute("plan", "--workspace", ws.toString(), spec.toString());
 
-        assertThat(sw.toString()).contains("spec OK: SPEC-7");
-        assertThat(code).isZero();
+        assertThat(sw.toString()).contains("error: knowledge base is empty — run sdd index first");
+        assertThat(code).isEqualTo(1);
     }
 
     @Test

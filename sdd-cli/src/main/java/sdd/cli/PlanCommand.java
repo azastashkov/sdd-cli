@@ -8,10 +8,16 @@ import picocli.CommandLine.Spec;
 import sdd.core.config.ConfigLoader;
 import sdd.core.config.ModelEndpoint;
 import sdd.core.config.SddConfig;
+import sdd.core.db.Database;
 import sdd.core.llm.ChatModel;
 import sdd.core.llm.HttpChatModel;
+import sdd.core.retrieve.FtsRetriever;
 import sdd.plan.confluence.ConfluenceExportSource;
 import sdd.plan.confluence.SpecNormalizationException;
+import sdd.plan.impact.AffectedRepo;
+import sdd.plan.impact.ImpactAnalysis;
+import sdd.plan.impact.ImpactResult;
+import sdd.plan.impact.Seed;
 import sdd.plan.spec.MarkdownSpecSource;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecParseException;
@@ -30,7 +36,7 @@ import java.util.Locale;
 import java.util.concurrent.Callable;
 
 @Command(name = "plan",
-        description = "Ingest a spec (canonical markdown or Confluence export); impact analysis lands in Phase 3B")
+        description = "Ingest a spec (canonical markdown or Confluence export) and run impact analysis")
 public final class PlanCommand implements Callable<Integer> {
     @Option(names = "--workspace", description = "Workspace directory (default: current dir)")
     Path workspace = Path.of(".");
@@ -60,7 +66,7 @@ public final class PlanCommand implements Callable<Integer> {
         try {
             return SpecSources.isConfluenceExport(ref)
                     ? normalize(config, outWriter)
-                    : validate(outWriter, errWriter);
+                    : validate(config, outWriter, errWriter);
         } catch (RuntimeException e) {
             errWriter.println("error: " + e.getMessage());
             return 1;
@@ -96,7 +102,7 @@ public final class PlanCommand implements Callable<Integer> {
         return 0;
     }
 
-    private Integer validate(PrintWriter outWriter, PrintWriter errWriter) {
+    private Integer validate(SddConfig config, PrintWriter outWriter, PrintWriter errWriter) {
         NormalizedSpec parsed = new MarkdownSpecSource().load(ref);
         List<String> problems = SpecValidator.problems(parsed);
         if (!problems.isEmpty()) {
@@ -109,8 +115,49 @@ public final class PlanCommand implements Callable<Integer> {
                 "spec OK: %s — %d requirements, %d acceptance, %d constraints, %d touchpoints, %d open questions%n",
                 parsed.id(), parsed.requirements().size(), parsed.acceptance().size(),
                 parsed.constraints().size(), parsed.touchpoints().size(), parsed.openQuestions().size());
-        outWriter.println("impact analysis is not implemented yet (Phase 3B)");
+        try (Database db = Database.open(workspace)) {
+            Integer repoCount = db.jdbi().withHandle(h ->
+                    h.createQuery("SELECT count(*) FROM repo").mapTo(Integer.class).one());
+            if (repoCount == 0) {
+                errWriter.println("error: knowledge base is empty — run sdd index first");
+                return 1;
+            }
+            ModelEndpoint planner = config.models().get("planner");
+            ChatModel model = plannerForTest != null ? plannerForTest : new HttpChatModel(planner);
+            ImpactResult result = ImpactAnalysis.analyze(db.jdbi(), new FtsRetriever(db.jdbi()),
+                    parsed, model, planner.model(), planner.maxTokens());
+            printImpact(outWriter, result);
+        }
+        outWriter.println("plan.md rendering is not implemented yet (Phase 3C)");
         return 0;
+    }
+
+    private void printImpact(PrintWriter outWriter, ImpactResult result) {
+        long seeds = result.affected().stream().filter(a -> a.role().equals("seed")).count();
+        long dependents = result.affected().stream().filter(a -> a.role().equals("dependent")).count();
+        long contracts = result.affected().stream().filter(a -> a.role().equals("contract")).count();
+        long bomSites = result.affected().stream().filter(a -> a.role().equals("bom-site")).count();
+        outWriter.printf(Locale.ROOT, "impact: %d repos affected (%d seeds, %d dependents, %d contracts, %d bom-sites)%n",
+                result.affected().size(), seeds, dependents, contracts, bomSites);
+        for (AffectedRepo repo : result.affected()) {
+            String reason = repo.reasons().isEmpty() ? "" : "  " + repo.reasons().get(0);
+            outWriter.printf(Locale.ROOT, "  %-28s %-20s%s%n", repo.repo(), repo.annotation(), reason);
+        }
+        for (Seed excluded : result.excluded()) {
+            outWriter.println("  excluded: " + excluded.repo() + " — " + excluded.detail());
+        }
+        for (String discrepancy : result.discrepancies()) {
+            outWriter.println("  discrepancy: " + discrepancy);
+        }
+        for (String cycle : result.cycles()) {
+            outWriter.println("  cycle: " + cycle);
+        }
+        for (String problem : result.problems()) {
+            outWriter.println("  impact problem: " + problem);
+        }
+        for (String warning : result.warnings()) {
+            outWriter.println("  warn: " + warning);
+        }
     }
 
     private String workspacePrefix() {
