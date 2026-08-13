@@ -18,6 +18,12 @@ public final class JapicmpCheck {
 
     public static Verdict compare(Path baselineJar, Path candidateJar) {
         JarArchiveComparatorOptions options = new JarArchiveComparatorOptions();
+        // Real jars reference classes outside themselves (superclasses/interfaces from third-party
+        // libraries, e.g. groovy.lang.Closure) that aren't in the baseline or candidate archive and
+        // aren't on this process's classpath either. Without this, japicmp throws JApiCmpException
+        // ("Could not load ... try the option '--ignore-missing-classes'") instead of comparing — this
+        // is the programmatic equivalent of that CLI flag, and is what a live real-estate run hit.
+        options.getIgnoreMissingClasses().setIgnoreAllMissingClasses(true);
         JarArchiveComparator comparator = new JarArchiveComparator(options);
         List<JApiClass> classes = comparator.compare(
                 new JApiCmpArchive(baselineJar.toFile(), "baseline"),

@@ -697,4 +697,32 @@ class OrchestratorTest {
                 .contains("\"turn\":1").contains("\"name\":\"apply_edit\"")
                 .contains("\"turn\":2").contains("\"name\":\"done\"");
     }
+
+    @Test
+    void aJapicmpComparisonFailureIsSkippedNotFatal() throws Exception {
+        // The stub gradlew plants a file named like a jar that is NOT a valid jar (plain text) for
+        // both the baseline and candidate builds. JapicmpCheck.compare must not be allowed to abort
+        // the whole run when the archive can't even be opened (the live real-estate run hit this via
+        // groovy.lang.Closure being unresolvable, but any comparator exception must be non-fatal —
+        // ratified interpretation (d): a gate that can't run is SKIPPED with a loud event, never fatal).
+        FixtureRepo lib = repoWith("lib",
+                "case \"$*\" in *assemble*) mkdir -p build/libs; "
+                        + "echo 'not a jar' > build/libs/lib-1.0.jar; exit 0 ;; "
+                        + "*) exit 0 ;; esac");
+        FixtureRepo svc = repoWith("svc", "exit 0");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of(
+                "lib", new RepoStep("lib", lib.path(), "x", List.of(), List.of(), List.of(), List.of(), List.of()),
+                "svc", new RepoStep("svc", svc.path(), "x", List.of(), List.of(), List.of(), List.of(), List.of()));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"lib ok\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"svc ok\"}")));
+
+        Orchestrator.RunResult result = orchestrator(model)
+                .run(runDir, planWithContract(lib.headSha(), svc.headSha(), "binary-compatible"), steps);
+
+        assertThat(result.exitCode()).isEqualTo(0);
+        assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.SUCCEEDED);
+        assertThat(Files.readString(runDir.resolve("lib/agent-events.jsonl"))).contains("japicmp skipped");
+    }
 }

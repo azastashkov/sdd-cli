@@ -433,11 +433,21 @@ public final class Orchestrator {
                 continue;
             }
             matchedBaselineKeys.add(key);
-            JapicmpCheck.Verdict verdict = JapicmpCheck.compare(baseline, candidate);
-            events.add("japicmp " + candidate.getFileName() + ": "
-                    + (verdict.binaryCompatible() ? "binary-compatible" : "BREAKING"));
-            if (!verdict.binaryCompatible()) {
-                drift.append(verdict.report());
+            // A gate that cannot run is SKIPPED with a loud event, never fatal (ratified interpretation
+            // (d)) — mirrors how a baseline/candidate BUILD failure is handled above. Without this, a
+            // comparator exception (e.g. an unreadable jar, or japicmp's own internal failures) propagates
+            // out of compatDrift -> runRepo -> the orchestrator's `fatal` AtomicReference and aborts the
+            // whole run, as happened on a live real-estate run.
+            try {
+                JapicmpCheck.Verdict verdict = JapicmpCheck.compare(baseline, candidate);
+                events.add("japicmp " + candidate.getFileName() + ": "
+                        + (verdict.binaryCompatible() ? "binary-compatible" : "BREAKING"));
+                if (!verdict.binaryCompatible()) {
+                    drift.append(verdict.report());
+                }
+            } catch (RuntimeException e) {
+                events.add("japicmp skipped for " + candidate.getFileName()
+                        + ": comparison failed — " + summarize(String.valueOf(e.getMessage())));
             }
         }
         for (Path baseline : baselineJars) {
