@@ -145,10 +145,12 @@ class ReviewDecisionsCommandTest {
         return new Invocation(exit, out.toString(), err.toString());
     }
 
-    private static int commitsSince(Path repo, String base) throws Exception {
+    /** Counts against the branch ref rather than HEAD, so asserting it cannot disturb (or silently
+     *  repair) the working checkout the test is also asserting about. */
+    private static int commitsOnBranch(Path repo, String base, String branch) throws Exception {
         try (Git git = Git.open(repo.toFile())) {
             var from = git.getRepository().resolve(base);
-            var to = git.getRepository().resolve("HEAD");
+            var to = git.getRepository().resolve("refs/heads/" + branch);
             int n = 0;
             for (var ignored : git.log().addRange(from, to).call()) {
                 n++;
@@ -180,9 +182,7 @@ class ReviewDecisionsCommandTest {
         // (b) the run branch collapsed to the one commit a human reviewed.
         String newHead = RunGit.branchHead(f.lib().path(), LIB_BRANCH);
         assertThat(newHead).isNotEqualTo(f.libCheckpoint());
-        RunGit.checkout(f.lib().path(), LIB_BRANCH);
-        assertThat(commitsSince(f.lib().path(), f.libBase())).isEqualTo(1);
-        RunGit.checkout(f.lib().path(), f.originalBranch());
+        assertThat(commitsOnBranch(f.lib().path(), f.libBase(), LIB_BRANCH)).isEqualTo(1);
 
         // (c) state.json now records the squashed sha. Without this, Resume.prepare would fail the
         // repo (branchHead != checkpointSha) and the retry redo prints would hard-fail.
@@ -222,6 +222,7 @@ class ReviewDecisionsCommandTest {
         // Neither repo was touched: reject never squashes, and a refused approve is a no-op.
         assertThat(RunGit.branchHead(f.lib().path(), LIB_BRANCH)).isEqualTo(f.libCheckpoint());
         assertThat(RunGit.branchHead(f.svc().path(), SVC_BRANCH)).isEqualTo(f.svcCheckpoint());
+        assertThat(commitsOnBranch(f.lib().path(), f.libBase(), LIB_BRANCH)).isEqualTo(2);
     }
 
     @Test
@@ -262,6 +263,7 @@ class ReviewDecisionsCommandTest {
         assertThat(r.err()).contains(RUN_ID).contains("lock held");
         assertThat(f.runDir().resolve("review/decisions.json")).doesNotExist();
         assertThat(RunGit.branchHead(f.lib().path(), LIB_BRANCH)).isEqualTo(f.libCheckpoint());
+        assertThat(commitsOnBranch(f.lib().path(), f.libBase(), LIB_BRANCH)).isEqualTo(2);
     }
 
     @Test
@@ -294,6 +296,21 @@ class ReviewDecisionsCommandTest {
         Invocation noPlan = exec("--workspace", ws.toString(), "approve", "lib");
         assertThat(noPlan.exit()).isEqualTo(4);
         assertThat(noPlan.err()).contains("missing <spec>.plan.json");
+
+        // The real invocation path is one level deeper than the tests above — "sdd review approve"
+        // makes ReviewCommand both a subcommand and a parent, which is where @ParentCommand
+        // injection and an inherited option could plausibly diverge from the two-level case.
+        StringWriter rootOut = new StringWriter();
+        CommandLine root = new CommandLine(new SddCli());
+        root.setOut(new PrintWriter(rootOut));
+        int rootExit = root.execute("review", "--workspace", ws.toString(), "approve", "lib",
+                f.planPath().toString());
+
+        assertThat(rootExit).isZero();
+        // Re-approving is idempotent: the branch is already the single squashed commit, so nothing
+        // is re-squashed and the recorded checkpoint stays put.
+        assertThat(rootOut.toString()).contains("lib approved").contains("already a single commit (");
+        assertThat(commitsOnBranch(f.lib().path(), f.libBase(), LIB_BRANCH)).isEqualTo(1);
     }
 
     @Test
