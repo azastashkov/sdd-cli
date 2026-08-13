@@ -9,11 +9,16 @@ import picocli.CommandLine.Spec;
 import sdd.agent.run.RepoStep;
 import sdd.agent.run.RepoStepRunner;
 import sdd.agent.run.RunnerSettings;
+import sdd.cli.implement.MavenLocalInit;
 import sdd.cli.implement.MavenLocalPublisher;
 import sdd.cli.implement.Orchestrator;
 import sdd.cli.implement.PlanJsonReader;
 import sdd.cli.implement.PlanModel;
+import sdd.cli.implement.PlannedVersions;
 import sdd.cli.implement.PreFlight;
+import sdd.cli.implement.Propagation;
+import sdd.cli.implement.PropagationPlanner;
+import sdd.cli.implement.RepoPropagation;
 import sdd.cli.implement.RepoStepResolver;
 import sdd.cli.implement.Resume;
 import sdd.cli.implement.RunState;
@@ -32,6 +37,7 @@ import sdd.plan.spec.SpecParser;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -102,6 +108,7 @@ public final class ImplementCommand implements Callable<Integer> {
                 RunStore store = RunStore.system();
                 Path runDir = workspace.resolve(".sdd/runs/" + runId);
                 RunState initialState = null;
+                Map<String, RepoPropagation> propagation = Map.of();
                 if (resume) {
                     if (!Files.exists(runDir.resolve("state.json"))) {
                         err.println("error: no run to resume at " + runDir);
@@ -123,6 +130,13 @@ public final class ImplementCommand implements Callable<Integer> {
                         gate.problems().forEach(p -> err.println("problem: " + p));
                         return 4;
                     }
+                    List<String> propagationProblems = new ArrayList<>();
+                    propagation = PropagationPlanner.plan(jdbi, plan, runDir,
+                            PlannedVersions.compute(jdbi, plan), propagationProblems);
+                    if (!propagationProblems.isEmpty()) {
+                        propagationProblems.forEach(p -> err.println("problem: " + p));
+                        return 4;
+                    }
                     store.acquireLock(runDir);   // LAST, after every gate: everything above is read-only,
                                                  // so no abort path between acquire and the orchestrator's
                                                  // finally-release can leak the lock and wedge future resumes
@@ -138,11 +152,29 @@ public final class ImplementCommand implements Callable<Integer> {
                         preflight.problems().forEach(p -> err.println("problem: " + p));
                         return 4;
                     }
+                    List<String> propagationProblems = new ArrayList<>();
+                    propagation = PropagationPlanner.plan(jdbi, plan, runDir,
+                            PlannedVersions.compute(jdbi, plan), propagationProblems);
+                    if (!propagationProblems.isEmpty()) {
+                        propagationProblems.forEach(p -> err.println("problem: " + p));
+                        return 4;
+                    }
                     runDir = store.create(workspace, runId, planText, specText);
                 }
 
                 final PlanModel activePlan = plan;
                 final Map<String, RepoStep> activeSteps = steps;
+                final Path activeRunDir = runDir;
+                final Map<String, RepoPropagation> activePropagation = propagation;
+                if (!Propagation.mavenLocalArgs(activePlan.edges(),
+                        MavenLocalInit.scriptPath(activeRunDir)).isEmpty()) {
+                    try {
+                        MavenLocalInit.write(activeRunDir);
+                    } catch (RuntimeException e) {
+                        store.releaseLock(activeRunDir);   // post-lock write must not leak the lock on failure
+                        throw e;
+                    }
+                }
                 ModelEndpoint coderEndpoint = config.models().get("coder");
                 ModelEndpoint plannerEndpoint = config.models().get("planner");
                 ChatModel coder = coderForTest != null ? coderForTest : new HttpChatModel(coderEndpoint);
@@ -154,14 +186,16 @@ public final class ImplementCommand implements Callable<Integer> {
                     Path root = activeSteps.get(repo).repoRoot();
                     Path javaHome = config.jdkHomes()
                             .get(GradleExtractor.jdkMajorFor(GradleExtractor.wrapperVersion(root)));
-                    List<String> extraArgs = sdd.cli.implement.Propagation.includeBuildArgs(
-                            repo, activePlan.edges(), paths);
+                    List<String> extraArgs = new ArrayList<>(sdd.cli.implement.Propagation.includeBuildArgs(
+                            repo, activePlan.edges(), paths));
+                    extraArgs.addAll(sdd.cli.implement.Propagation.mavenLocalArgs(
+                            activePlan.edges(), MavenLocalInit.scriptPath(activeRunDir)));
                     return RunnerSettings.defaults(javaHome, extraArgs);
                 };
 
                 Orchestrator orchestrator = new Orchestrator(new RepoStepRunner(jdbi), coder, coderName,
                         escalation, escalationName, settingsFor, store, RUN_TOKEN_BUDGET,
-                        Map.of(), new MavenLocalPublisher());
+                        activePropagation, new MavenLocalPublisher());
                 Orchestrator.RunResult result = initialState == null
                         ? orchestrator.run(runDir, activePlan, activeSteps)
                         : orchestrator.run(runDir, activePlan, activeSteps, initialState);
