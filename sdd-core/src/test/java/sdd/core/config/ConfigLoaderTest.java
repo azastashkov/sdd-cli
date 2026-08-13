@@ -358,4 +358,23 @@ class ConfigLoaderTest {
                 """);
         assertThat(ConfigLoader.load(absent).verificationExclusions()).isEmpty();
     }
+
+    @Test
+    void rejectsNullValueInExtraBody() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write("""
+                models:
+                  planner:
+                    base_url: https://api.deepseek.com/v1
+                    model: deepseek-v4-flash
+                    api_key: ${DEEPSEEK_API_KEY}
+                  coder:
+                    base_url: http://127.0.0.1:8080/v1
+                    model: mlx-community/Qwen3.6-35B-A3B-8bit
+                    extra_body:
+                      some_key:
+                """), ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("extra_body")
+                .hasMessageContaining("null");
+    }
 }

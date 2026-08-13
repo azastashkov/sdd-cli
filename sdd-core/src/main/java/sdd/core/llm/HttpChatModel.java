@@ -25,7 +25,7 @@ public final class HttpChatModel implements ChatModel {
     private static final long MAX_BACKOFF_MILLIS = 60_000;
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final Set<String> PROTECTED_BODY_KEYS =
-            Set.of("model", "messages", "tools", "max_tokens", "temperature");
+            Set.of("model", "messages", "tools", "max_tokens", "temperature", "stream");
 
     private final ModelEndpoint endpoint;
     private final int maxAttempts;

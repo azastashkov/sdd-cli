@@ -158,12 +158,13 @@ class HttpChatModelTest {
         wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
         ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "test-model", "sk-key",
                 256, 0.0, Duration.ofSeconds(5),
-                Map.of("model", "evil-model", "max_tokens", 99999));
+                Map.of("model", "evil-model", "max_tokens", 99999, "stream", true));
         new HttpChatModel(ep, HttpClient.newHttpClient(), millis -> { }).complete(request());
 
         wm.verify(postRequestedFor(urlEqualTo("/v1/chat/completions"))
                 .withRequestBody(matchingJsonPath("$.model", equalTo("test-model")))
-                .withRequestBody(matchingJsonPath("$.max_tokens", equalTo("256"))));
+                .withRequestBody(matchingJsonPath("$.max_tokens", equalTo("256")))
+                .withRequestBody(notMatching(".*\"stream\".*")));
     }
 
     @Test

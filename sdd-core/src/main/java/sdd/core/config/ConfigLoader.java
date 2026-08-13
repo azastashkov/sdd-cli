@@ -199,7 +199,28 @@ public final class ConfigLoader {
         if (!(raw instanceof Map<?, ?> map)) {
             throw new ConfigException("models." + name + ".extra_body must be a mapping, got: " + raw);
         }
+        validateNoNulls(map, "models." + name + ".extra_body");
         return (Map<String, Object>) deepCopy(map);
+    }
+
+    private static void validateNoNulls(Object value, String path) {
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> e : map.entrySet()) {
+                String key = String.valueOf(e.getKey());
+                if (e.getValue() == null) {
+                    throw new ConfigException(path + " contains null value for key '" + key + "'");
+                }
+                validateNoNulls(e.getValue(), path + "." + key);
+            }
+        } else if (value instanceof List<?> list) {
+            for (int i = 0; i < list.size(); i++) {
+                Object item = list.get(i);
+                if (item == null) {
+                    throw new ConfigException(path + "[" + i + "] contains null value");
+                }
+                validateNoNulls(item, path + "[" + i + "]");
+            }
+        }
     }
 
     private static Object deepCopy(Object value) {
