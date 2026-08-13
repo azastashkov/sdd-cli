@@ -8,6 +8,7 @@ import sdd.core.testing.FixtureRepo;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -63,5 +64,53 @@ class ResumeTest {
 
         assertThat(prep.problems()).hasSize(1);
         assertThat(prep.problems().get(0)).contains("lib").contains("checkpoint");
+    }
+
+    @Test
+    void retryingASucceededRepoResetsToPendingEvenWithADriftedCheckpoint() throws Exception {
+        // The drifted-checkpoint case above would normally abort the resume — but a retried repo is
+        // deliberately discarding its checkpoint, so branchHead must not even be consulted.
+        FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n").commit("base");
+        RunGit.startBranch(lib.path(), "sdd/S-v1/lib", lib.headSha());
+        RunState state = persisted(
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib",
+                        "0000000000000000000000000000000000000000", "done"));
+
+        Resume.Prep prep = Resume.prepare(state, Map.of("lib", step("lib", lib.path())), Set.of("lib"));
+
+        assertThat(prep.problems()).isEmpty();
+        RepoRun reset = prep.state().repos().stream().filter(r -> r.repo().equals("lib")).findFirst().orElseThrow();
+        assertThat(reset.state()).isEqualTo(RepoState.PENDING);
+        assertThat(reset.branch()).isEqualTo("sdd/S-v1/lib");
+        assertThat(reset.checkpointSha()).isNull();
+        assertThat(reset.detail()).isEmpty();
+    }
+
+    @Test
+    void retryingAFailedRepoResetsToPending() {
+        RunState state = persisted(new RepoRun("lib", RepoState.FAILED, "sdd/S-v1/lib", null, "VERIFY_FAILED"));
+
+        Resume.Prep prep = Resume.prepare(state, Map.of(), Set.of("lib"));
+
+        assertThat(prep.problems()).isEmpty();
+        assertThat(prep.state().stateOf("lib")).isEqualTo(RepoState.PENDING);
+    }
+
+    @Test
+    void aNonRetriedSucceededRepoStillKeepsStateAndStillGetsCheckpointVerified() throws Exception {
+        FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n").commit("base");
+        RunGit.startBranch(lib.path(), "sdd/S-v1/lib", lib.headSha());
+        String checkpoint = RunGit.commitAll(lib.path(), "checkpoint");
+        RunState state = persisted(
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", checkpoint, "done"),
+                new RepoRun("svc", RepoState.SUCCEEDED, "sdd/S-v1/svc",
+                        "0000000000000000000000000000000000000000", "done"));
+
+        // Retry targets "svc", not "lib" — lib must still be verified against its checkpoint.
+        Resume.Prep prep = Resume.prepare(state, Map.of("lib", step("lib", lib.path())), Set.of("svc"));
+
+        assertThat(prep.state().stateOf("lib")).isEqualTo(RepoState.SUCCEEDED);
+        assertThat(prep.state().stateOf("svc")).isEqualTo(RepoState.PENDING);
+        assertThat(prep.problems()).isEmpty();   // svc's drifted checkpoint is not checked — it's retried
     }
 }

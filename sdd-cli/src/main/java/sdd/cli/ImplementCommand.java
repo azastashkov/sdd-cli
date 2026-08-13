@@ -22,6 +22,8 @@ import sdd.cli.implement.PreFlight;
 import sdd.cli.implement.Propagation;
 import sdd.cli.implement.PropagationPlanner;
 import sdd.cli.implement.RepoPropagation;
+import sdd.cli.implement.RepoRun;
+import sdd.cli.implement.RepoState;
 import sdd.cli.implement.RepoStepResolver;
 import sdd.cli.implement.Resume;
 import sdd.cli.implement.RunState;
@@ -46,6 +48,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Semaphore;
 import java.util.function.Function;
@@ -55,6 +58,8 @@ import java.util.function.Function;
  * in-process exits reach the orchestrator's {@code finally} release — so {@code --resume} after a hard
  * crash aborts with the existing "already in progress … remove the lock to override" message. Manual
  * lock removal is the deliberate escape hatch this phase; lock-staleness detection is 4C-3b territory.
+ * {@code --retry <repo>} re-runs an already-settled (SUCCEEDED or FAILED) repo on resume — no more
+ * hand-editing {@code state.json} to force a re-run — and implies {@code --resume} on its own.
  */
 @Command(name = "implement",
         description = "Execute an approved plan.json across the estate",
@@ -65,6 +70,11 @@ public final class ImplementCommand implements Callable<Integer> {
 
     @Option(names = "--resume", description = "Resume a paused or crashed run of this plan from its checkpoints")
     boolean resume;
+
+    @Option(names = "--retry", split = ",", paramLabel = "<repo>",
+            description = "Re-run these already-settled repos on resume (repeatable or comma-separated); "
+                    + "implies --resume")
+    List<String> retry = List.of();
 
     @Option(names = "--wait-endpoint",
             description = "After an endpoint pause, poll the model endpoints and auto-resume when they answer")
@@ -158,7 +168,9 @@ public final class ImplementCommand implements Callable<Integer> {
                 Path runDir = workspace.resolve(".sdd/runs/" + runId);
                 RunState initialState = null;
                 Map<String, RepoPropagation> propagation = Map.of();
-                if (resume) {
+                boolean effectiveResume = resume || !retry.isEmpty();   // a retry is only meaningful
+                                                                         // inside an existing run
+                if (effectiveResume) {
                     if (!Files.exists(runDir.resolve("state.json"))) {
                         err.println("error: no run to resume at " + runDir);
                         return 4;
@@ -169,8 +181,28 @@ public final class ImplementCommand implements Callable<Integer> {
                     specText = Files.readString(runDir.resolve("spec.md"));
                     parsedSpec = SpecParser.parse(specText);
                     steps = RepoStepResolver.resolve(plan, parsedSpec, paths);
+                    RunState persisted = store.readState(runDir);
+                    Set<String> retrySet = Set.copyOf(retry);
+                    if (!retrySet.isEmpty()) {
+                        List<String> known = persisted.repos().stream().map(RepoRun::repo).toList();
+                        List<String> unknown = retry.stream().distinct()
+                                .filter(r -> !known.contains(r)).toList();
+                        if (!unknown.isEmpty()) {
+                            for (String u : unknown) {
+                                err.println("problem: unknown repo for --retry: " + u
+                                        + " (this run has: " + String.join(", ", known) + ")");
+                            }
+                            return 4;
+                        }
+                    }
                     warnAboutVerification(out, plan, steps, config);
-                    Resume.Prep prep = Resume.prepare(store.readState(runDir), steps);
+                    for (RepoRun r : persisted.repos()) {
+                        if (retrySet.contains(r.repo()) && r.state() == RepoState.SUCCEEDED) {
+                            out.println("warn: " + r.repo() + ": retrying discards its checkpoint "
+                                    + shortSha(r.checkpointSha()) + " — the branch will be reset to the plan base");
+                        }
+                    }
+                    Resume.Prep prep = Resume.prepare(persisted, steps, retrySet);
                     if (!prep.problems().isEmpty()) {
                         prep.problems().forEach(p -> err.println("problem: " + p));
                         return 4;
@@ -337,6 +369,10 @@ public final class ImplementCommand implements Callable<Integer> {
                         + "(kept as acceptance prose): " + nonAllowlisted);
             }
         }
+    }
+
+    private static String shortSha(String sha) {
+        return sha == null ? "" : sha.substring(0, Math.min(7, sha.length()));
     }
 
     private static String sanitize(String id) {
