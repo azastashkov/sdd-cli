@@ -46,7 +46,11 @@ rootProject { root ->
                         }
                     } catch (Exception ignored) { }
                 }
-                ['compileClasspath', 'runtimeClasspath'].each { cfgName ->
+                // Order matters: compile/runtime MUST come first. IndexPersistence's GA-merge
+                // keeps the first-seen configuration name as the edge's compile-scope label, so
+                // a dep declared in both a compile-scope config and a test-scope config below
+                // must be visited compile-scope-first to keep that labeling.
+                ['compileClasspath', 'runtimeClasspath', 'testCompileClasspath', 'testRuntimeClasspath'].each { cfgName ->
                     def cfg = p.configurations.findByName(cfgName)
                     if (cfg == null) return
                     def declared = []
@@ -57,21 +61,28 @@ rootProject { root ->
                     }
                     def resolvedList = []
                     def unresolved = []
-                    try {
-                        def lenient = cfg.resolvedConfiguration.lenientConfiguration
-                        lenient.allModuleDependencies.each { d ->
-                            def files = []
-                            try {
-                                d.moduleArtifacts.each { a -> files << a.file.absolutePath }
-                            } catch (Exception ignored) { }
-                            resolvedList << [group: d.moduleGroup, name: d.moduleName,
-                                             version: d.moduleVersion, files: files]
+                    // Test classpaths are declared-only: no lenient resolution is triggered for
+                    // them. Resolving test classpaths is slow and fragile on real estates (extra
+                    // test-framework/fixture jars, more opportunities for network flakiness) and
+                    // the KB only needs the declared edge to see the product->library
+                    // relationship — it does not need the resolved jars for test deps.
+                    if (cfgName == 'compileClasspath' || cfgName == 'runtimeClasspath') {
+                        try {
+                            def lenient = cfg.resolvedConfiguration.lenientConfiguration
+                            lenient.allModuleDependencies.each { d ->
+                                def files = []
+                                try {
+                                    d.moduleArtifacts.each { a -> files << a.file.absolutePath }
+                                } catch (Exception ignored) { }
+                                resolvedList << [group: d.moduleGroup, name: d.moduleName,
+                                                 version: d.moduleVersion, files: files]
+                            }
+                            lenient.unresolvedModuleDependencies.each { u ->
+                                unresolved << u.selector.toString()
+                            }
+                        } catch (Exception e) {
+                            unresolved << ("configuration-failed: " + e.message).toString()
                         }
-                        lenient.unresolvedModuleDependencies.each { u ->
-                            unresolved << u.selector.toString()
-                        }
-                    } catch (Exception e) {
-                        unresolved << ("configuration-failed: " + e.message).toString()
                     }
                     entry.configurations[cfgName] = [declared: declared, resolved: resolvedList, unresolved: unresolved]
                 }

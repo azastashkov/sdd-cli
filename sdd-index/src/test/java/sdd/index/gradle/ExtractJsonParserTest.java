@@ -44,4 +44,32 @@ class ExtractJsonParserTest {
     void nullSettingsMeansNoIncludedBuilds() {
         assertThat(ExtractJsonParser.parse(PROJECTS_JSON, null).includedBuilds()).isEmpty();
     }
+
+    // sdd-init.gradle now also emits testCompileClasspath/testRuntimeClasspath entries with
+    // declared deps only (empty resolved/unresolved, since test classpaths are never lenient-
+    // resolved). The parser has no hardcoded config names — it iterates whatever keys are present
+    // in the "configurations" object — so a test-scope entry parses the same way a compile-scope
+    // one does; this pins that generic behavior against the new shape.
+    private static final String PROJECTS_JSON_WITH_TEST_SCOPE = """
+            {"projects":[{
+              "path":":","name":"product-b","group":"com.trading","version":"1.0.0",
+              "projectDir":"/tmp/product-b",
+              "plugins":["java"],
+              "hasBootJarTask":false,
+              "publications":[],
+              "configurations":{
+                "compileClasspath":{"declared":[],"resolved":[],"unresolved":[]},
+                "testCompileClasspath":{
+                  "declared":[{"group":"com.trading","name":"mock-pricing-venue","version":"1.0.0"}],
+                  "resolved":[], "unresolved":[]}}}]}
+            """;
+
+    @Test
+    void parsesTestScopeConfigurationWithDeclaredDepsAndEmptyResolvedUnresolved() {
+        GradleModel.Extract e = ExtractJsonParser.parse(PROJECTS_JSON_WITH_TEST_SCOPE, null);
+        GradleModel.DepConfig tc = e.projects().get(0).configurations().get("testCompileClasspath");
+        assertThat(tc.declared()).extracting(GradleModel.DeclaredDep::name).containsExactly("mock-pricing-venue");
+        assertThat(tc.resolved()).isEmpty();
+        assertThat(tc.unresolved()).isEmpty();
+    }
 }

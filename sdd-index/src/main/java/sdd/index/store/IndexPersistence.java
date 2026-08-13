@@ -78,6 +78,18 @@ public final class IndexPersistence {
 
         // Edges are DECLARED dependencies only. The resolved set from the init script is the
         // full lenient classpath (transitives included); those are not this module's own edges.
+        // Iterates whatever configuration names sdd-init.gradle emitted (compile/runtime AND, as
+        // of the test-scope fix, testCompileClasspath/testRuntimeClasspath) — nothing here is
+        // hardcoded to a config name. p.configurations() is a LinkedHashMap that preserves the
+        // init script's emission order (compile/runtime first, test configs after), so the
+        // first-seen-wins merge below keeps compile-scope `configuration` labeling for a dep that
+        // is declared in both a compile-scope and a test-scope config. A dep declared ONLY in a
+        // test config keeps that config's name as its `configuration` label, and its dep_edge
+        // gets a normal mode/declared_via classification (design doc line 40: consumption mode is
+        // per internal edge, not per scope). Test-scope edges still feed the planner's impact
+        // closure, which runs over ALL internal Gradle edges regardless of scope (design doc line
+        // 50) — so a product's testImplementation on an internal test-fixture artifact now
+        // correctly pulls that artifact's producer repo into the affected set.
         Map<String, MergedDep> merged = new LinkedHashMap<>();
         p.configurations().forEach((cfgName, cfg) -> {
             for (GradleModel.DeclaredDep d : cfg.declared()) {

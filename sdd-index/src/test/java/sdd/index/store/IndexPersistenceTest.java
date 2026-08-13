@@ -217,6 +217,68 @@ class IndexPersistenceTest {
     }
 
     @Test
+    void testOnlyDependencyProducesADepEdgeLabeledWithTheTestConfiguration() {
+        // Reproduces the live-smoke blind spot: a product declares a dependency only in
+        // testCompileClasspath (e.g. testImplementation "com.trading:mock-pricing-venue:...")
+        // and the KB must still see it as a dep_edge, or the planner's impact closure (design doc
+        // line 50: closure runs over ALL internal edges) never pulls the producer repo in.
+        try (Database db = Database.open(ws)) {
+            Map<String, GradleModel.DepConfig> configs = new LinkedHashMap<>();
+            configs.put("compileClasspath", new GradleModel.DepConfig(List.of(), List.of(), List.of()));
+            configs.put("testCompileClasspath", new GradleModel.DepConfig(
+                    List.of(new GradleModel.DeclaredDep("com.trading", "mock-pricing-venue", "1.0.0")),
+                    List.of(), List.of()));
+
+            GradleModel.Extract extract = new GradleModel.Extract(
+                    List.of(new GradleModel.Project(":", "product-b", "com.trading", "0.1.0",
+                            Path.of("/w/product-b"), List.of("java"), false, List.of(), configs)),
+                    List.of());
+
+            RepoScan scan = new RepoScan("product-b", Path.of("/w/product-b"), "a".repeat(40), "main", "");
+            IndexPersistence.persistRepo(db.jdbi(), scan, extract, "OK", null);
+
+            List<Map<String, Object>> edges = db.jdbi().withHandle(h ->
+                    h.createQuery("SELECT to_name, configuration, mode, declared_via FROM dep_edge "
+                            + "WHERE to_name='mock-pricing-venue'").mapToMap().list());
+            assertThat(edges).hasSize(1);
+            assertThat(edges.get(0))
+                    .containsEntry("configuration", "testCompileClasspath")
+                    .containsEntry("mode", "PINNED")
+                    .containsEntry("declared_via", "DIRECT");
+        }
+    }
+
+    @Test
+    void dependencyDeclaredInBothCompileAndTestConfigurationsProducesOneEdgeLabeledCompileScope() {
+        try (Database db = Database.open(ws)) {
+            Map<String, GradleModel.DepConfig> configs = new LinkedHashMap<>();
+            configs.put("compileClasspath", new GradleModel.DepConfig(
+                    List.of(new GradleModel.DeclaredDep("com.trading", "shared-lib", "2.0.0")),
+                    List.of(new GradleModel.ResolvedDep("com.trading", "shared-lib", "2.0.0", List.of())),
+                    List.of()));
+            configs.put("testCompileClasspath", new GradleModel.DepConfig(
+                    List.of(new GradleModel.DeclaredDep("com.trading", "shared-lib", "2.0.0")),
+                    List.of(), List.of()));
+
+            GradleModel.Extract extract = new GradleModel.Extract(
+                    List.of(new GradleModel.Project(":", "product-b", "com.trading", "0.1.0",
+                            Path.of("/w/product-b"), List.of("java"), false, List.of(), configs)),
+                    List.of());
+
+            RepoScan scan = new RepoScan("product-b", Path.of("/w/product-b"), "a".repeat(40), "main", "");
+            IndexPersistence.persistRepo(db.jdbi(), scan, extract, "OK", null);
+
+            List<Map<String, Object>> edges = db.jdbi().withHandle(h ->
+                    h.createQuery("SELECT to_name, configuration, resolved_version FROM dep_edge "
+                            + "WHERE to_name='shared-lib'").mapToMap().list());
+            assertThat(edges).hasSize(1);
+            assertThat(edges.get(0))
+                    .containsEntry("configuration", "compileClasspath")
+                    .containsEntry("resolved_version", "2.0.0");
+        }
+    }
+
+    @Test
     void reindexingProducerAfterLinkDoesNotViolateForeignKeys() {
         try (Database db = Database.open(ws)) {
             RepoScan producer = new RepoScan("lib-core", Path.of("/w/lib-core"), "b".repeat(40), "main", "");
