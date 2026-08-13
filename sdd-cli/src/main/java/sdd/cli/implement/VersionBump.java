@@ -15,9 +15,11 @@ import java.util.stream.Stream;
  * get the version-bump edit at the real declaration site"). DIRECT declarations rewrite
  * {@code g:n:old -> g:n:new} in build.gradle(.kts); CATALOG declarations in libs.versions.toml
  * handle inline {@code "g:n:old"}, a {@code module = "g:n"} line carrying {@code version = "old"},
- * and {@code version.ref} indirection into [versions]. Line-based and format-conservative: an
- * unmatched declaration edits nothing and the caller records that. BOM declaration sites live in
- * repos the KB cannot locate yet — deferred with the step-less widening.
+ * and {@code version.ref} indirection into [versions] — both on the module's own line (inline
+ * table form) and spread across separate lines under a {@code [libraries.foo]} section header
+ * (table form). Line-based and format-conservative: an unmatched declaration edits nothing and
+ * the caller records that. BOM declaration sites live in repos the KB cannot locate yet — deferred
+ * with the step-less widening.
  */
 public final class VersionBump {
     private static final Pattern VERSION_REF = Pattern.compile("version\\.ref\\s*=\\s*\"([^\"]+)\"");
@@ -66,20 +68,31 @@ public final class VersionBump {
             if (!lines[i].contains("\"" + coordinate + "\"")) {
                 continue;   // not this library's module = "g:n" line
             }
-            String versionKey = "version = \"" + oldVersion + "\"";
-            if (lines[i].contains(versionKey)) {
-                lines[i] = lines[i].replace(versionKey, "version = \"" + newVersion + "\"");
-                return String.join("\n", lines);
+            // Table form spreads module = "g:n" and version.ref/version across separate lines
+            // (e.g. under a [libraries.foo] header); scan forward to the next section header.
+            int windowEnd = lines.length;
+            for (int k = i + 1; k < lines.length; k++) {
+                if (lines[k].strip().startsWith("[")) {
+                    windowEnd = k;
+                    break;
+                }
             }
-            Matcher ref = VERSION_REF.matcher(lines[i]);
-            if (ref.find()) {
-                String alias = ref.group(1);
-                for (int j = 0; j < lines.length; j++) {
-                    String stripped = lines[j].strip();
-                    if ((stripped.startsWith(alias + " ") || stripped.startsWith(alias + "="))
-                            && lines[j].contains("\"" + oldVersion + "\"")) {
-                        lines[j] = lines[j].replace("\"" + oldVersion + "\"", "\"" + newVersion + "\"");
-                        return String.join("\n", lines);
+            for (int w = i; w < windowEnd; w++) {
+                String versionKey = "version = \"" + oldVersion + "\"";
+                if (lines[w].contains(versionKey)) {
+                    lines[w] = lines[w].replace(versionKey, "version = \"" + newVersion + "\"");
+                    return String.join("\n", lines);
+                }
+                Matcher ref = VERSION_REF.matcher(lines[w]);
+                if (ref.find()) {
+                    String alias = ref.group(1);
+                    for (int j = 0; j < lines.length; j++) {
+                        String stripped = lines[j].strip();
+                        if ((stripped.startsWith(alias + " ") || stripped.startsWith(alias + "="))
+                                && lines[j].contains("\"" + oldVersion + "\"")) {
+                            lines[j] = lines[j].replace("\"" + oldVersion + "\"", "\"" + newVersion + "\"");
+                            return String.join("\n", lines);
+                        }
                     }
                 }
             }

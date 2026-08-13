@@ -88,6 +88,29 @@ class VersionBumpTest {
     }
 
     @Test
+    void bumpsATableFormCatalogEntry() throws Exception {
+        Files.createDirectories(repo.resolve("gradle"));
+        Files.writeString(repo.resolve("gradle/libs.versions.toml"), """
+                [versions]
+                acmeLib = "1.2.3"
+
+                [libraries.acme-lib]
+                module = "com.acme:lib"
+                version.ref = "acmeLib"
+
+                [libraries.other-lib]
+                module = "org.ext:thing"
+                version = "1.2.3"
+                """);
+
+        VersionBump.apply(repo, "com.acme", "lib", "1.2.3", "1.3.0");
+
+        String toml = Files.readString(repo.resolve("gradle/libs.versions.toml"));
+        assertThat(toml).contains("acmeLib = \"1.3.0\"");
+        assertThat(toml).contains("version = \"1.2.3\"");   // other-lib's own version untouched
+    }
+
+    @Test
     void unmatchedDeclarationEditsNothing() throws Exception {
         Files.writeString(repo.resolve("build.gradle"),
                 "dependencies { implementation \"com.acme:lib:9.9.9\" }\n");
