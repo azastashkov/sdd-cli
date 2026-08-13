@@ -85,6 +85,62 @@ class ContractActualizerTest {
     }
 
     @Test
+    void depthTwoModulesAreDiscoveredUnderANestingDirectory() throws Exception {
+        // Real multi-repo layout: libs/common-model/src/main/java — a module two levels below
+        // repoRoot, which the old depth-1-only scan could never find.
+        javaFile("libs/common-model/src/main/java/com/acme/model/Money.java",
+                "package com.acme.model;\npublic class Money { public String currency() { return \"USD\"; } }\n");
+        PlanModel.PlanContract contract = new PlanModel.PlanContract("c6", "java-api", "common-model",
+                List.of(), "Money", null);
+
+        Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
+
+        assertThat(actual.get("c6")).contains("com.acme.model.Money");
+    }
+
+    @Test
+    void depthTwoRestControllerModuleIsDiscovered() throws Exception {
+        // services/pricing-a/src/main/java — another two-deep module, this time exercising the
+        // REST-controller path rather than the java-api path.
+        javaFile("services/pricing-a/src/main/java/com/acme/pricing/PricingController.java", """
+                package com.acme.pricing;
+                import org.springframework.web.bind.annotation.*;
+                @RestController
+                public class PricingController {
+                    @GetMapping("/pricing/quote")
+                    public String quote() { return ""; }
+                }
+                """);
+        PlanModel.PlanContract contract = new PlanModel.PlanContract("c7", "rest", "pricing-a",
+                List.of(), "GET /pricing/quote", null);
+
+        Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
+
+        assertThat(actual.get("c7")).contains("GET").contains("/pricing/quote");
+    }
+
+    @Test
+    void modulesUnderASkipDirAreNotScanned() throws Exception {
+        // vendor/node_modules/leftpad/src/main/java looks like a module by directory shape, but
+        // "node_modules" is a vendored/dependency directory (FileTools.SKIP_DIRS) that must never
+        // be walked into as a module root. NB: unlike "node_modules", a bare "build" segment isn't
+        // usable for this test — SourceParser.sourceRootsOf deliberately treats <module>/build/
+        // generated as a legitimate extra source root for annotation-processor output, so it would
+        // get pulled in anyway once repoRoot itself is recognized as a module.
+        javaFile("vendor/node_modules/leftpad/src/main/java/com/acme/skip/ShouldSkip.java",
+                "package com.acme.skip;\npublic class ShouldSkip { public void s() {} }\n");
+        javaFile("src/main/java/com/acme/lib/Real.java",
+                "package com.acme.lib;\npublic class Real { public void r() {} }\n");
+        PlanModel.PlanContract contract = new PlanModel.PlanContract("c8", "java-api", "lib",
+                List.of(), "something unmatched", null);
+
+        Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
+
+        assertThat(actual.get("c8")).contains("com.acme.lib.Real")
+                .doesNotContain("com.acme.skip.ShouldSkip");
+    }
+
+    @Test
     void actualizesAKafkaContract() throws Exception {
         javaFile("src/main/java/com/acme/svc/OrderListener.java", """
                 package com.acme.svc;

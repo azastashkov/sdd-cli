@@ -108,19 +108,33 @@ public final class ContractActualizer {
         return body.toString();
     }
 
+    // Mirrors FileTools.SKIP_DIRS: never descend into vendored deps or tool/VCS output looking for
+    // module roots (the real estate live smoke nests modules under libs/ and services/ two deep —
+    // src/main/java at repoRoot/depth-1 alone missed every one of them).
+    private static final java.util.Set<String> SKIP_DIRS = java.util.Set.of(".git", "build", ".gradle",
+            ".sdd", ".idea", "node_modules", "dist", "target");
+    private static final int MAX_MODULE_DEPTH = 4;
+
     private static List<Path> moduleRoots(Path repoRoot) {
         List<Path> roots = new ArrayList<>();
-        if (Files.isDirectory(repoRoot.resolve("src/main/java"))) {
-            roots.add(repoRoot);
+        collectModuleRoots(repoRoot, 0, roots);
+        return roots.stream().sorted().toList();
+    }
+
+    private static void collectModuleRoots(Path dir, int depth, List<Path> roots) {
+        if (Files.isDirectory(dir.resolve("src/main/java"))) {
+            roots.add(dir);
         }
-        try (var children = Files.list(repoRoot)) {
-            children.filter(child -> Files.isDirectory(child.resolve("src/main/java")))
-                    .sorted()
-                    .forEach(roots::add);
+        if (depth >= MAX_MODULE_DEPTH) {
+            return;
+        }
+        try (var children = Files.list(dir)) {
+            children.filter(Files::isDirectory)
+                    .filter(child -> !SKIP_DIRS.contains(child.getFileName().toString()))
+                    .forEach(child -> collectModuleRoots(child, depth + 1, roots));
         } catch (java.io.IOException e) {
-            // unreadable repo root: fall through with whatever we found
+            // unreadable directory: fall through with whatever was found so far
         }
-        return roots;
     }
 
     private static String simple(String fqcn) {

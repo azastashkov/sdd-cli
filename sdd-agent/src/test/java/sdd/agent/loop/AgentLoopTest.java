@@ -118,7 +118,10 @@ class AgentLoopTest {
     }
 
     @Test
-    void identicalGradleOutputTwiceIsWedged() throws Exception {
+    void identicalFailingGradleOutputTwiceIsWedged() throws Exception {
+        // Failing output: the compacted signature stays failure-shaped across runs, so two
+        // identical FAILED results in a row still means the agent is stuck re-running the same
+        // broken build without changing anything (design line 59's intent).
         Path gradlew = root.resolve("gradlew");
         Files.writeString(gradlew, "#!/bin/sh\necho BUILD FAILED\nexit 1\n");
         Files.setPosixFilePermissions(gradlew, PosixFilePermissions.fromString("rwxr-xr-x"));
@@ -130,6 +133,55 @@ class AgentLoopTest {
                 .run("sys", "wo", "qwen", 4096);
 
         assertThat(outcome.result()).isEqualTo(AgentResult.WEDGED);
+    }
+
+    @Test
+    void identicalPassingGradleOutputTwiceIsNotWedged() throws Exception {
+        // Live-smoke false positive: a PASSING build's compacted output is inherently low-entropy
+        // ("exit 0 ...") and identical every time, so verifying twice successfully must never be
+        // mistaken for a wedge.
+        Path gradlew = root.resolve("gradlew");
+        Files.writeString(gradlew, "#!/bin/sh\necho BUILD SUCCESSFUL\nexit 0\n");
+        Files.setPosixFilePermissions(gradlew, PosixFilePermissions.fromString("rwxr-xr-x"));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "run_gradle", "{\"task\":\"build\"}"),
+                call("2", "run_gradle", "{\"task\":\"build\"}"),
+                call("3", "done", "{\"result\":\"success\",\"summary\":\"verified twice\"}")));
+
+        AgentOutcome outcome = loop(model, AgentBudget.defaults(), InstantSource.system())
+                .run("sys", "wo", "qwen", 4096);
+
+        assertThat(outcome.result()).isEqualTo(AgentResult.DONE);
+        assertThat(outcome.summary()).isEqualTo("verified twice");
+    }
+
+    @Test
+    void repeatedFailingGradleOutputSeparatedByAPassIsNotWedged() throws Exception {
+        // Non-consecutive: fail, pass, then the SAME failing output again — the agent changed
+        // something (proven by the intervening pass) rather than looping on the same broken build.
+        Path gradlew = root.resolve("gradlew");
+        Path counter = root.resolve(".gradle-run-count");
+        Files.writeString(gradlew, "#!/bin/sh\n"
+                + "COUNT=$(( $(cat '" + counter + "' 2>/dev/null || echo 0) + 1 ))\n"
+                + "echo $COUNT > '" + counter + "'\n"
+                + "if [ \"$COUNT\" -eq 2 ]; then echo BUILD SUCCESSFUL; exit 0; "
+                + "else echo BUILD FAILED; exit 1; fi\n");
+        Files.setPosixFilePermissions(gradlew, PosixFilePermissions.fromString("rwxr-xr-x"));
+        // Alternate the task name across calls solely so the generic "identical action repeated"
+        // wedge (3 consecutive identical tool_call signatures) doesn't trigger first and mask what
+        // this test targets — the run_gradle-output-equality check. The stub gradlew ignores its
+        // task argument, so build behavior is unaffected.
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "run_gradle", "{\"task\":\"build\"}"),
+                call("2", "run_gradle", "{\"task\":\"check\"}"),
+                call("3", "run_gradle", "{\"task\":\"build\"}"),
+                call("4", "done", "{\"result\":\"success\",\"summary\":\"eventually fixed\"}")));
+
+        AgentOutcome outcome = loop(model, AgentBudget.defaults(), InstantSource.system())
+                .run("sys", "wo", "qwen", 4096);
+
+        assertThat(outcome.result()).isEqualTo(AgentResult.DONE);
+        assertThat(outcome.summary()).isEqualTo("eventually fixed");
     }
 
     @Test

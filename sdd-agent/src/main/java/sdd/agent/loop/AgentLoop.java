@@ -149,7 +149,15 @@ public final class AgentLoop {
                     addToolResult(window, turnEntry, call.id(), call.name(), result);
                     strikes = 0;
                     if (call.name().equals("run_gradle")) {
-                        if (result.equals(lastGradleOutput)) {
+                        // Live-smoke false positive: a PASSING build's compacted output is
+                        // inherently low-entropy ("exit 0 (task)") and identical on every
+                        // successful verification, so an agent that verifies twice in a row was
+                        // being wedged for doing the right thing. Only compare-and-wedge when the
+                        // CURRENT result represents a build FAILURE — design line 59's actual
+                        // intent is catching a re-run of the same broken build with no changes.
+                        // lastGradleOutput still updates unconditionally so a later failure is
+                        // compared against the right baseline.
+                        if (!isPassingGradleResult(result) && result.equals(lastGradleOutput)) {
                             return outcome(AgentResult.WEDGED, "identical build output", turns, tokens, events,
                                     transcript);
                         }
@@ -173,6 +181,15 @@ public final class AgentLoop {
                 }
             }
         }
+    }
+
+    /** The compacted gradle result's header line is "exit N ..." (OutputCompactor) or, uncompacted,
+     *  "exit N\n..." (GradleTool.run/runFull) — either way "exit 0" as the first line means the
+     *  build passed. */
+    private static boolean isPassingGradleResult(String result) {
+        int newline = result.indexOf('\n');
+        String firstLine = newline >= 0 ? result.substring(0, newline) : result;
+        return firstLine.startsWith("exit 0");
     }
 
     private AgentOutcome tryDone(ToolCall call, int turns, long tokens, List<String> events,
