@@ -117,4 +117,77 @@ class ImplementCommandMavenLocalTest {
         assertThat(Files.readString(svc.path().resolve("build.gradle")))
                 .contains("com.acme:lib:1.3.0");   // pin bumped on svc's run branch
     }
+
+    @Test
+    void freshRunsSnapshotThePropagationPlanAndWarnOnSameVersionRepublish() throws Exception {
+        FixtureRepo lib = repo("lib",
+                "case \"$*\" in *publishToMavenLocal*) echo \"$*\" > publish-args; exit 0 ;; *) exit 0 ;; esac");
+        // svc's verification passes ONLY if --init-script was appended to its gradle call
+        FixtureRepo svc = repo("svc", "case \"$*\" in *--init-script*) exit 0 ;; *) exit 1 ;; esac");
+        svc.file("build.gradle", "dependencies {\n    implementation \"com.acme:lib:1.2.3\"\n}\n")
+                .commit("add build.gradle");   // committed before the SHA is recorded below
+
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> {
+                h.execute("INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString());
+                h.execute("INSERT INTO repo(name, path, kind) VALUES ('svc', ?, 'SERVICE')", svc.path().toString());
+                // template order: lib first -> repo id 1, svc second -> repo id 2
+                h.execute("INSERT INTO module(repo_id, gradle_path, grp, name, version, kind) "
+                        + "VALUES (1, ':', 'com.acme', 'lib', '1.2.3', 'LIBRARY')");     // lib root module -> PlannedVersions
+                h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (2, ':', 'SERVICE')");  // svc root module
+                h.execute("INSERT INTO dep_edge(from_module_id, to_grp, to_name, configuration, "
+                        + "declared_version, declared_via, mode, is_internal, to_module_id) "
+                        + "VALUES (2, 'com.acme', 'lib', 'compileClasspath', '1.2.3', 'DIRECT', 'PINNED', 1, 1)");
+                        // from = svc's module (id 2), to = lib's module (id 1) -> DeclaredDeps.between("svc","lib")
+            });
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+        Files.writeString(ws.resolve("s.md"), """
+                ---
+                id: SPEC-9
+                title: Prop
+                owner: me
+                status: approved
+                ---
+
+                ## Goal
+                g
+
+                ## Requirements
+                - R1: x
+
+                ## Acceptance Criteria
+                - A1: x
+                """);
+        String specSha = sdd.plan.approve.Hashes.sha256(Files.readString(ws.resolve("s.md")));
+        // lib's version_action is "none": planned == current == 1.2.3, and svc's pin needs no bump.
+        Files.writeString(ws.resolve("s.plan.json"), """
+                { "spec_id":"SPEC-9","plan_version":1,"spec_sha256":"%s","plan_sha256":"z",
+                  "repos":[
+                    {"name":"lib","role":"seed","annotation":"SEED","version_action":"none","base_sha":"%s"},
+                    {"name":"svc","role":"dependent","annotation":"CODE_CHANGE_LIKELY","version_action":"patch","base_sha":"%s"}],
+                  "order":[["lib"],["svc"]],
+                  "edges":[{"from_repo":"svc","to_repo":"lib","mode":"PINNED","mechanism":"MAVEN_LOCAL"}],
+                  "contracts":[],
+                  "steps":[
+                    {"repo":"lib","covers":["R1"],"version_action":"none","provides":[],"consumes":[],"files":[],"verification":[],"sub_spec":"x"},
+                    {"repo":"svc","covers":["R1"],"version_action":"patch","provides":[],"consumes":[],"files":[],"verification":[],"sub_spec":"x"}] }
+                """.formatted(specSha, lib.headSha(), svc.headSha()));
+
+        ImplementCommand cmd = new ImplementCommand();
+        cmd.coderForTest = new ScriptedChatModel(List.of(done(), done()));   // lib done, svc done
+
+        StringWriter out = new StringWriter();
+        CommandLine cli = new CommandLine(cmd);
+        cli.setOut(new PrintWriter(out));
+        int exit = cli.execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
+
+        assertThat(exit).isEqualTo(0);
+        assertThat(ws.resolve(".sdd/runs/SPEC-9-v1/propagation.json")).exists();
+        assertThat(out.toString()).contains("warn: lib republishes its current version 1.2.3");
+    }
 }

@@ -15,10 +15,9 @@ import java.util.Map;
  * already-published artifact. Bumps: PINNED-shaped declarations (non-null, non-SNAPSHOT,
  * non-dynamic) onto stepped providers, on ALL mechanisms — under INCLUDE_BUILD the substitution
  * ignores the requested version, and the release runbook needs the new pin either way. BOM
- * declaration sites are deferred until the KB records declaration files. Known limitation:
- * --resume recomputes this from the live KB against the snapshot plan; re-indexing between
- * pause and resume can shift planned versions mid-run. Snapshotting the propagation map into
- * the run dir is 4C-3b work.
+ * declaration sites are deferred until the KB records declaration files. --resume reads the
+ * frozen snapshot from the run dir (propagation.json); live recomputation happens only for
+ * pre-4C-3b run dirs.
  */
 public final class PropagationPlanner {
     private PropagationPlanner() {

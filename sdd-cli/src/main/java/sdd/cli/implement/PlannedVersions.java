@@ -23,7 +23,7 @@ public final class PlannedVersions {
     public static Map<String, String> compute(Jdbi jdbi, PlanModel plan) {
         Map<String, String> planned = new LinkedHashMap<>();
         for (PlanModel.PlanRepo repo : plan.repos()) {
-            String current = rootVersion(jdbi, repo.name());
+            String current = current(jdbi, repo.name());
             if (current == null || current.isBlank()) {
                 continue;
             }
@@ -55,7 +55,8 @@ public final class PlannedVersions {
         };
     }
 
-    private static String rootVersion(Jdbi jdbi, String repo) {
+    /** The repo's current KB root-module version, or null when unindexed. */
+    public static String current(Jdbi jdbi, String repo) {
         return jdbi.withHandle(h -> h.createQuery(
                         "SELECT m.version FROM module m JOIN repo r ON r.id = m.repo_id "
                                 + "WHERE r.name = :repo AND m.gradle_path = ':'")

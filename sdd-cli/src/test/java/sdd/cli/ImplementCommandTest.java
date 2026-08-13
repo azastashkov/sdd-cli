@@ -96,6 +96,74 @@ class ImplementCommandTest {
     }
 
     @Test
+    void sddYmlVerificationExclusionsSkipTheGateAndSurfaceNotLocallyVerified() throws Exception {
+        FixtureRepo libRepo = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
+        Path g = libRepo.path().resolve("gradlew");
+        Files.writeString(g, "#!/bin/sh\nexit 1\n");
+        Files.setPosixFilePermissions(g, PosixFilePermissions.fromString("rwxr-xr-x"));
+        Path props = libRepo.path().resolve("gradle/wrapper/gradle-wrapper.properties");
+        Files.createDirectories(props.getParent());
+        Files.writeString(props, "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n");
+        FixtureRepo lib = libRepo.commit("base");
+
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                verification_exclusions:
+                  lib: [check]
+                """);
+        Files.writeString(ws.resolve("s.md"), """
+                ---
+                id: SPEC-101
+                title: Tiers
+                owner: me
+                status: approved
+                ---
+
+                ## Goal
+                g
+
+                ## Requirements
+                - R1: Expose tierFor.
+
+                ## Acceptance Criteria
+                - A1: tierFor returns a tier.
+                """);
+        String specSha = sdd.plan.approve.Hashes.sha256(Files.readString(ws.resolve("s.md")));
+        Files.writeString(ws.resolve("s.plan.json"), """
+                { "spec_id":"SPEC-101","plan_version":1,"spec_sha256":"%s","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x to A."}] }
+                """.formatted(specSha, lib.headSha()));
+
+        ImplementCommand cmd = new ImplementCommand();
+        cmd.coderForTest = new ScriptedChatModel(List.of(
+                new ChatResponse(new ChatMessage("assistant", null,
+                        List.of(new ToolCall("1", "apply_edit",
+                                "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int x; }\"}")),
+                        null), "tool_calls", new Usage(10, 5)),
+                new ChatResponse(new ChatMessage("assistant", null,
+                        List.of(new ToolCall("2", "done", "{\"result\":\"success\",\"summary\":\"done\"}")),
+                        null), "tool_calls", new Usage(10, 5))));
+
+        StringWriter out = new StringWriter();
+        CommandLine cli = new CommandLine(cmd);
+        cli.setOut(new PrintWriter(out));
+        int exit = cli.execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
+
+        assertThat(exit).isEqualTo(0);
+        String runDirEvents = Files.readString(ws.resolve(".sdd/runs/SPEC-101-v1/lib/agent-events.jsonl"));
+        assertThat(runDirEvents).contains("not locally verified");   // lib/agent-events.jsonl content
+    }
+
+    @Test
     void unknownOptionAbortsWithExitFour() {
         int exit = new CommandLine(new ImplementCommand()).execute("--no-such-flag");
         assertThat(exit).isEqualTo(4);
