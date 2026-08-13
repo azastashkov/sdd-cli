@@ -183,4 +183,76 @@ class ReviewCommandTest {
         assertThat(noRunExit).isEqualTo(4);
         assertThat(err.toString()).contains("no run to review");
     }
+
+    @Test
+    void anUnresolvableCheckpointShaYieldsADiffFailureNotALostReport() throws Exception {
+        FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
+        Path g = lib.path().resolve("gradlew");
+        Files.writeString(g, "#!/bin/sh\nexit 0\n");
+        Files.setPosixFilePermissions(g, PosixFilePermissions.fromString("rwxr-xr-x"));
+        Path props = lib.path().resolve("gradle/wrapper/gradle-wrapper.properties");
+        Files.createDirectories(props.getParent());
+        Files.writeString(props, "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n");
+        lib.commit("base");
+        String baseSha = lib.headSha();
+
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+        Files.writeString(ws.resolve("s.md"), """
+                ---
+                id: SPEC-9
+                title: Tiers
+                owner: me
+                status: approved
+                ---
+
+                ## Goal
+                g
+
+                ## Requirements
+                - R1: Expose tierFor.
+
+                ## Acceptance Criteria
+                - A1: tierFor returns a tier.
+                """);
+        String specSha = sdd.plan.approve.Hashes.sha256(Files.readString(ws.resolve("s.md")));
+        String planJson = """
+                { "spec_id":"SPEC-9","plan_version":1,"spec_sha256":"%s","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x to A."}] }
+                """.formatted(specSha, baseSha);
+        Files.writeString(ws.resolve("s.plan.json"), planJson);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", planJson, Files.readString(ws.resolve("s.md")));
+        store.releaseLock(runDir);
+        // A checkpoint sha that does not exist in the repo — e.g. the run branch was pruned, or
+        // the object was gc'd. The diff/diffstat pass must not be allowed to abort the whole review.
+        String missingSha = "0000000000000000000000000000000000000000";
+        RunState state = new RunState("SPEC-9-v1",
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/lib", missingSha, "ok")), null, 5L);
+        store.writeState(runDir, state);
+
+        ReviewCommand cmd = new ReviewCommand();
+        int exit = new CommandLine(cmd).execute("--workspace", ws.toString(), "--no-rebuild",
+                ws.resolve("s.plan.json").toString());
+
+        Path review = ws.resolve(".sdd/runs/SPEC-9-v1/review");
+        assertThat(review.resolve("report.md")).exists();
+        String report = Files.readString(review.resolve("report.md"));
+        assertThat(report).contains("Diff failures").contains("lib");
+        assertThat(review.resolve("lib.diff")).doesNotExist();
+        // The exit code still reflects only state/rebuild outcome (SUCCEEDED, no rebuild run) — a
+        // diff failure alone must not change it.
+        assertThat(exit).isEqualTo(0);
+    }
 }

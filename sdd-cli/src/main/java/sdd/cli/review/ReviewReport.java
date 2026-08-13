@@ -25,6 +25,7 @@ public final class ReviewReport {
                                 Map<String, RunGit.DiffStat> diffStats,
                                 Map<String, EstateRebuild.Result> rebuilds,
                                 List<String> notLocallyVerified, List<String> restoreFailures,
+                                List<String> diffFailures,
                                 List<ContractRecheck.Finding> contracts, String runbook, boolean rebuilt) {
         Map<String, RepoRun> byName = new LinkedHashMap<>();
         for (RepoRun run : state.repos()) {
@@ -40,6 +41,7 @@ public final class ReviewReport {
         appendRebuildFailures(md, rebuilds);
         appendContracts(md, contracts);
         appendRestoreFailures(md, restoreFailures);
+        appendDiffFailures(md, diffFailures);
 
         md.append("## Release runbook\n\n");
         md.append(runbook);
@@ -149,6 +151,17 @@ public final class ReviewReport {
         md.append("## Branch restore failures\n\n");
         md.append("These repos were left off their original branch/commit and need human action:\n\n");
         for (String failure : restoreFailures) {
+            md.append("- ").append(failure).append('\n');
+        }
+        md.append('\n');
+    }
+
+    private static void appendDiffFailures(StringBuilder md, List<String> diffFailures) {
+        if (diffFailures.isEmpty()) {
+            return;
+        }
+        md.append("## Diff failures\n\n");
+        for (String failure : diffFailures) {
             md.append("- ").append(failure).append('\n');
         }
         md.append('\n');

@@ -99,6 +99,7 @@ public final class ReviewCommand implements Callable<Integer> {
                 }
 
                 Map<String, RunGit.DiffStat> diffStats = new LinkedHashMap<>();
+                List<String> diffFailures = new ArrayList<>();
                 for (String repo : Scheduler.sequence(plan.order())) {
                     RepoRun run = byName.get(repo);
                     Path root = paths.get(repo);
@@ -107,8 +108,15 @@ public final class ReviewCommand implements Callable<Integer> {
                         continue;
                     }
                     String baseSha = plan.repo(repo).orElseThrow().baseSha();
-                    store.writeReview(runDir, repo + ".diff", RunGit.diff(root, baseSha, run.checkpointSha()));
-                    diffStats.put(repo, RunGit.diffStat(root, baseSha, run.checkpointSha()));
+                    // An unresolvable checkpoint sha (pruned run branch, gc'd object, stale KB repo
+                    // path) must not abort the whole review — it's a per-repo reporting gap, not a
+                    // verification failure. Record it and keep going so the report still gets out.
+                    try {
+                        store.writeReview(runDir, repo + ".diff", RunGit.diff(root, baseSha, run.checkpointSha()));
+                        diffStats.put(repo, RunGit.diffStat(root, baseSha, run.checkpointSha()));
+                    } catch (RuntimeException e) {
+                        diffFailures.add(repo + ": " + e.getMessage());
+                    }
                 }
 
                 List<ContractRecheck.Finding> contracts =
@@ -124,7 +132,7 @@ public final class ReviewCommand implements Callable<Integer> {
 
                 String runbook = ReleaseRunbook.render(plan, state);
                 String report = ReviewReport.render(runId, plan, state, diffStats, rebuilds,
-                        notLocallyVerified, restoreFailures, contracts, runbook, !noRebuild);
+                        notLocallyVerified, restoreFailures, diffFailures, contracts, runbook, !noRebuild);
                 store.writeReview(runDir, "report.md", report);
                 Path reportPath = store.reviewDir(runDir).resolve("report.md");
                 out.println("review written: " + reportPath);
