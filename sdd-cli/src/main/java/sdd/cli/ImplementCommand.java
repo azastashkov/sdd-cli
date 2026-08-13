@@ -9,6 +9,7 @@ import picocli.CommandLine.Spec;
 import sdd.agent.run.RepoStep;
 import sdd.agent.run.RepoStepRunner;
 import sdd.agent.run.RunnerSettings;
+import sdd.cli.implement.JarBuilder;
 import sdd.cli.implement.MavenLocalInit;
 import sdd.cli.implement.MavenLocalPublisher;
 import sdd.cli.implement.Orchestrator;
@@ -288,7 +289,7 @@ public final class ImplementCommand implements Callable<Integer> {
 
                 Orchestrator orchestrator = new Orchestrator(new RepoStepRunner(jdbi), coder, coderName,
                         escalation, escalationName, settingsFor, store, config.run().tokenBudget(),
-                        activePropagation, new MavenLocalPublisher());
+                        activePropagation, new MavenLocalPublisher(), new JarBuilder());
                 Orchestrator.RunResult result = initialState == null
                         ? orchestrator.run(runDir, activePlan, activeSteps)
                         : orchestrator.run(runDir, activePlan, activeSteps, initialState);

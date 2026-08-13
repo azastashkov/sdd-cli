@@ -9,6 +9,7 @@ import sdd.agent.run.StepResult;
 import sdd.core.llm.ChatModel;
 import sdd.core.llm.ModelException;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -28,6 +29,8 @@ import java.util.function.Function;
  * state is guarded by a single lock, and the first pause wins.
  * MAVEN_LOCAL propagation (4C-2b): bump edits re-applied after every branch reset; providers
  * publish to the run-scoped m2 after their checkpoint commit.
+ * Contract actualization + japicmp gate (design line 62): baseline jars from the pinned base tree,
+ * candidates after green, breaking drift fails the provider before consumers start.
  */
 public final class Orchestrator {
     /** Attempt-2 triggers. BLOCKED asked for a human; INFRA pauses; SUCCESS needs nothing. */
@@ -44,6 +47,7 @@ public final class Orchestrator {
     private final long runTokenBudget;
     private final Map<String, RepoPropagation> propagation;
     private final MavenLocalPublisher publisher;
+    private final JarBuilder jarBuilder;
 
     public record RunResult(int exitCode, RunState state) {
     }
@@ -51,7 +55,8 @@ public final class Orchestrator {
     public Orchestrator(RepoStepRunner runner, ChatModel coder, String coderModelName,
                         ChatModel escalation, String escalationModelName,
                         Function<String, RunnerSettings> settingsFor, RunStore store, long runTokenBudget,
-                        Map<String, RepoPropagation> propagation, MavenLocalPublisher publisher) {
+                        Map<String, RepoPropagation> propagation, MavenLocalPublisher publisher,
+                        JarBuilder jarBuilder) {
         this.runner = runner;
         this.coder = coder;
         this.coderModelName = coderModelName;
@@ -62,6 +67,7 @@ public final class Orchestrator {
         this.runTokenBudget = runTokenBudget;
         this.propagation = Map.copyOf(propagation);
         this.publisher = publisher;
+        this.jarBuilder = jarBuilder;
     }
 
     public RunResult run(Path runDir, PlanModel plan, Map<String, RepoStep> steps) {
@@ -158,10 +164,22 @@ public final class Orchestrator {
         List<String> events = new ArrayList<>();
         StepOutcome outcome;
         boolean escalated = false;
+        Path baselineDir = runDir.resolve("contracts").resolve(slug(repo) + "-baseline");
+        boolean compatGate = false;
         try {
             RunGit.startBranch(step.repoRoot(), branch, base);
             applyBumps(repo, step, events);
-            outcome = runner.run(step, coder, coderModelName, settingsFor.apply(repo), "");
+            if (needsCompatGate(plan, repo)) {
+                JarBuilder.Result baseline = buildJars(step, repo, baselineDir);
+                if (baseline.ok() && !baseline.jars().isEmpty()) {
+                    compatGate = true;
+                } else {
+                    events.add("japicmp skipped: baseline build failed — "
+                            + summarize(baseline.log()));
+                }
+            }
+            String contracts = contractDigest(runDir, step);
+            outcome = runner.run(step, coder, coderModelName, settingsFor.apply(repo), contracts);
             events.addAll(outcome.events());
             boolean escalationAllowed;
             synchronized (lock) {
@@ -174,7 +192,7 @@ public final class Orchestrator {
                 RunGit.startBranch(step.repoRoot(), branch, base);
                 applyBumps(repo, step, events);
                 StepOutcome second = runner.run(step, escalation, escalationModelName,
-                        settingsFor.apply(repo), attemptDigest(outcome));
+                        settingsFor.apply(repo), contracts + attemptDigest(outcome));
                 events.addAll(second.events());
                 synchronized (lock) {
                     state.addTokens(second.tokens());
@@ -236,6 +254,30 @@ public final class Orchestrator {
                     return true;
                 }
             }
+            Map<String, String> actualized = ContractActualizer.actualize(step.repoRoot(),
+                    providedContracts(plan, repo));
+            for (Map.Entry<String, String> entry : actualized.entrySet()) {
+                store.writeContract(runDir, entry.getKey(), entry.getValue());
+                events.add("contract " + entry.getKey() + " actualized");
+            }
+            if (compatGate) {
+                JarBuilder.Result candidate = buildJars(step, repo,
+                        runDir.resolve("contracts").resolve(slug(repo) + "-candidate"));
+                if (!candidate.ok() || candidate.jars().isEmpty()) {
+                    events.add("japicmp skipped: candidate build failed — " + summarize(candidate.log()));
+                } else {
+                    String drift = compatDrift(baselineDir, candidate.jars(), events);
+                    if (drift != null) {
+                        store.writeAgentEvents(runDir, repo, events);
+                        synchronized (lock) {
+                            transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
+                                    attemptTag + "binary-incompatible drift: " + drift);
+                        }
+                        return true;
+                    }
+                }
+            }
+            store.writeAgentEvents(runDir, repo, events);
             synchronized (lock) {
                 transitionLocked(runDir, state, repo, RepoState.SUCCEEDED, branch, sha,
                         attemptTag + outcome.summary());
@@ -268,6 +310,43 @@ public final class Orchestrator {
             } else {
                 events.add("bump: " + coordinate + " " + bump.oldVersion() + " -> " + bump.newVersion()
                         + " in " + edited.size() + " file(s)");
+            }
+        }
+    }
+
+    private List<PlanModel.PlanContract> providedContracts(PlanModel plan, String repo) {
+        return plan.contracts().stream().filter(c -> c.provider().equals(repo)).toList();
+    }
+
+    private boolean needsCompatGate(PlanModel plan, String repo) {
+        return providedContracts(plan, repo).stream()
+                .anyMatch(c -> "binary-compatible".equals(c.compat()));
+    }
+
+    private String contractDigest(Path runDir, RepoStep step) {
+        StringBuilder digest = new StringBuilder();
+        for (sdd.agent.run.ContractRef consumed : step.consumes()) {
+            String actual = store.readContract(runDir, consumed.id());
+            if (actual != null) {
+                digest.append("\n### ").append(consumed.id()).append(" (actualized)\n")
+                        .append(actual).append('\n');
+            }
+        }
+        return digest.isEmpty() ? "" : "\n\n## Actualized contracts (re-extracted from green "
+                + "upstreams — these supersede the drafted deltas)\n" + digest;
+    }
+
+    private JarBuilder.Result buildJars(RepoStep step, String repo, Path outDir) {
+        RunnerSettings settings = settingsFor.apply(repo);
+        java.util.concurrent.Semaphore permits = settings.gradlePermits();
+        if (permits != null) {
+            permits.acquireUninterruptibly();
+        }
+        try {
+            return jarBuilder.build(step.repoRoot(), settings.javaHome(), outDir);
+        } finally {
+            if (permits != null) {
+                permits.release();
             }
         }
     }
@@ -310,5 +389,39 @@ public final class Orchestrator {
         state.set(repo, to, branch, sha, detail);
         store.appendEvent(runDir, repo, from, to, detail);
         store.writeState(runDir, state);
+    }
+
+    /** Compares matched baseline/candidate jars; returns a short drift report or null when clean. */
+    private static String compatDrift(Path baselineDir, List<Path> candidates, List<String> events) {
+        StringBuilder drift = new StringBuilder();
+        for (Path candidate : candidates) {
+            String key = versionless(candidate.getFileName().toString());
+            Path baseline;
+            try (var jars = Files.list(baselineDir)) {
+                baseline = jars.filter(p -> versionless(p.getFileName().toString()).equals(key))
+                        .findFirst().orElse(null);
+            } catch (java.io.IOException e) {
+                baseline = null;
+            }
+            if (baseline == null) {
+                events.add("japicmp skipped for " + candidate.getFileName() + ": no matching baseline jar");
+                continue;
+            }
+            JapicmpCheck.Verdict verdict = JapicmpCheck.compare(baseline, candidate);
+            events.add("japicmp " + candidate.getFileName() + ": "
+                    + (verdict.binaryCompatible() ? "binary-compatible" : "BREAKING"));
+            if (!verdict.binaryCompatible()) {
+                drift.append(verdict.report());
+            }
+        }
+        if (drift.isEmpty()) {
+            return null;
+        }
+        String report = drift.toString().replace('\n', ' ').strip();
+        return report.length() > 200 ? report.substring(0, 200) : report;
+    }
+
+    private static String versionless(String jarName) {
+        return jarName.replaceAll("-[0-9][^/]*\\.jar$", "");
     }
 }

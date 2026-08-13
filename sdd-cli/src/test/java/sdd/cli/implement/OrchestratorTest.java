@@ -75,7 +75,7 @@ class OrchestratorTest {
                                       Map<String, RepoPropagation> propagation) {
         return new Orchestrator(new RepoStepRunner(db.jdbi()), coder, "qwen", escalation, "deepseek",
                 repo -> RunnerSettings.defaults(null), new RunStore(InstantSource.fixed(Instant.EPOCH)),
-                30_000_000L, propagation, new MavenLocalPublisher());
+                30_000_000L, propagation, new MavenLocalPublisher(), new JarBuilder());
     }
 
     private Orchestrator orchestrator(ScriptedChatModel model) {
@@ -196,7 +196,7 @@ class OrchestratorTest {
                 call("1", "done", "{\"result\":\"success\",\"summary\":\"lib ok\"}")));
         Orchestrator tight = new Orchestrator(new RepoStepRunner(db.jdbi()), model, "qwen", model, "deepseek",
                 repo -> RunnerSettings.defaults(null), new RunStore(InstantSource.fixed(Instant.EPOCH)),
-                10L, Map.of(), new MavenLocalPublisher());   // lib's single call spends 15 tokens > 10
+                10L, Map.of(), new MavenLocalPublisher(), new JarBuilder());   // lib's single call spends 15 tokens > 10
 
         Orchestrator.RunResult result = tight.run(runDir, plan(lib.headSha(), svc.headSha()), steps);
 
@@ -412,7 +412,8 @@ class OrchestratorTest {
                 call("1", "done", "{\"result\":\"success\",\"summary\":\"lib ok\"}")));
         Orchestrator tight = new Orchestrator(new RepoStepRunner(db.jdbi()), model, "qwen", model,
                 "deepseek", repo -> RunnerSettings.defaults(null),
-                new RunStore(InstantSource.fixed(Instant.EPOCH)), 10L, Map.of(), new MavenLocalPublisher());
+                new RunStore(InstantSource.fixed(Instant.EPOCH)), 10L, Map.of(), new MavenLocalPublisher(),
+                new JarBuilder());
 
         Orchestrator.RunResult result = tight.run(runDir, plan(lib.headSha(), svc.headSha()), steps);
 
@@ -472,7 +473,8 @@ class OrchestratorTest {
         ScriptedChatModel escalationScript = new ScriptedChatModel(List.of());   // must never be consumed
         Orchestrator tight = new Orchestrator(new RepoStepRunner(db.jdbi()), coderScript, "qwen",
                 escalationScript, "deepseek", repo -> RunnerSettings.defaults(null),
-                new RunStore(InstantSource.fixed(Instant.EPOCH)), 20L, Map.of(), new MavenLocalPublisher());
+                new RunStore(InstantSource.fixed(Instant.EPOCH)), 20L, Map.of(), new MavenLocalPublisher(),
+                new JarBuilder());
         // attempt 1 spends 2 calls x 15 tokens = 30 > 20: the escalation gate must refuse.
 
         Orchestrator.RunResult result = tight.run(runDir, planFor("lib", lib.headSha()), steps);
@@ -502,5 +504,119 @@ class OrchestratorTest {
         assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.FAILED);
         assertThat(result.state().stateOf("svc")).isEqualTo(RepoState.SKIPPED_UPSTREAM_FAILED);
         assertThat(model.requests()).isEmpty();
+    }
+
+    private static PlanModel planWithContract(String libBase, String svcBase, String compat) {
+        return new PlanModel("S", 1, "", "",
+                List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", libBase),
+                        new PlanModel.PlanRepo("svc", "dependent", "CODE_CHANGE_LIKELY", "patch", svcBase)),
+                List.of(List.of("lib"), List.of("svc")),
+                List.of(new PlanModel.PlanEdge("svc", "lib", "SNAPSHOT", "NONE")),
+                List.of(new PlanModel.PlanContract("c1", "java-api", "lib", List.of("svc"),
+                        "Api.f(int): int", compat)),
+                List.of(new PlanModel.PlanStep("lib", List.of(), "minor", List.of("c1"), List.of(),
+                                List.of(), List.of(), "provider step"),
+                        new PlanModel.PlanStep("svc", List.of(), "patch", List.of(), List.of("c1"),
+                                List.of(), List.of(), "consumer step")));
+    }
+
+    @Test
+    void binaryIncompatibleDriftFailsTheProviderBeforeConsumersStart() throws Exception {
+        // Baseline jar (built at branch start, tree at base) has f(int): int; the candidate jar the
+        // stub plants after the agent "worked" has f(int): long — japicmp must fail lib, cascade svc.
+        Path jars = Files.createDirectories(ws.resolve("prebuilt"));
+        Path baselineJar = TestJars.jar(jars, "base.jar", "Api",
+                "public class Api { public int f(int x) { return x; } }");
+        Path brokenJar = TestJars.jar(jars, "broken.jar", "Api",
+                "public class Api { public long f(int x) { return x; } }");
+        // First assemble (baseline) copies base.jar; every later assemble copies broken.jar.
+        // NOTE: escalation would re-run startBranch+clean, deleting .baseline-done — these scripts stay
+        // on attempt 1 (done -> verify exit 0)
+        FixtureRepo lib = repoWith("lib",
+                "case \"$*\" in *assemble*) mkdir -p build/libs; "
+                        + "if [ -f .baseline-done ]; then cp " + brokenJar + " build/libs/lib-1.0.jar; "
+                        + "else cp " + baselineJar + " build/libs/lib-1.0.jar; touch .baseline-done; fi; exit 0 ;; "
+                        + "*) exit 0 ;; esac");
+        FixtureRepo svc = repoWith("svc", "exit 0");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of(
+                "lib", new RepoStep("lib", lib.path(), "x", List.of(), List.of(), List.of(), List.of(), List.of()),
+                "svc", new RepoStep("svc", svc.path(), "x", List.of(), List.of(), List.of(), List.of(), List.of()));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"lib ok\"}")));
+
+        Orchestrator.RunResult result = orchestrator(model)
+                .run(runDir, planWithContract(lib.headSha(), svc.headSha(), "binary-compatible"), steps);
+
+        assertThat(result.exitCode()).isEqualTo(2);
+        assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.FAILED);
+        assertThat(result.state().repos().stream()
+                .filter(r -> r.repo().equals("lib")).findFirst().orElseThrow().detail())
+                .contains("binary-incompatible");
+        assertThat(result.state().stateOf("svc")).isEqualTo(RepoState.SKIPPED_UPSTREAM_FAILED);
+    }
+
+    @Test
+    void compatibleDriftPassesTheGateAndActualizesContracts() throws Exception {
+        Path jars = Files.createDirectories(ws.resolve("prebuilt"));
+        Path baselineJar = TestJars.jar(jars, "base.jar", "Api",
+                "public class Api { public int f(int x) { return x; } }");
+        Path grownJar = TestJars.jar(jars, "grown.jar", "Api",
+                "public class Api { public int f(int x) { return x; } public int g() { return 1; } }");
+        // NOTE: escalation would re-run startBranch+clean, deleting .baseline-done — these scripts stay
+        // on attempt 1 (done -> verify exit 0)
+        FixtureRepo lib = repoWith("lib",
+                "case \"$*\" in *assemble*) mkdir -p build/libs; "
+                        + "if [ -f .baseline-done ]; then cp " + grownJar + " build/libs/lib-1.0.jar; "
+                        + "else cp " + baselineJar + " build/libs/lib-1.0.jar; touch .baseline-done; fi; exit 0 ;; "
+                        + "*) exit 0 ;; esac");
+        // lib's tree carries real source so actualization has a surface to extract:
+        lib.file("src/main/java/com/acme/Api.java",
+                        "package com.acme;\npublic class Api { public int f(int x) { return x; } }\n")
+                .commit("api source");
+        FixtureRepo svc = repoWith("svc", "exit 0");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of(
+                "lib", new RepoStep("lib", lib.path(), "x", List.of(), List.of(), List.of(), List.of(), List.of()),
+                "svc", new RepoStep("svc", svc.path(), "x", List.of(), List.of(), List.of(), List.of(), List.of()));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"lib ok\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"svc ok\"}")));
+
+        Orchestrator.RunResult result = orchestrator(model)
+                .run(runDir, planWithContract(lib.headSha(), svc.headSha(), "binary-compatible"), steps);
+
+        assertThat(result.exitCode()).isEqualTo(0);
+        assertThat(new RunStore(InstantSource.fixed(Instant.EPOCH)).readContract(runDir, "c1"))
+                .contains("com.acme.Api");
+    }
+
+    @Test
+    void consumersReceiveActualizedContractsInTheirWorkOrder() throws Exception {
+        FixtureRepo lib = repoWith("lib", "exit 0");
+        lib.file("src/main/java/com/acme/Api.java",
+                        "package com.acme;\npublic class Api { public int f(int x) { return x; } }\n")
+                .commit("api source");
+        FixtureRepo svc = repoWith("svc", "exit 0");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        // CRITICAL: contractDigest iterates step.consumes() — the hand-built svc step MUST carry the
+        // ContractRef (in production RepoStepResolver fills it from plan.json; unit tests must too).
+        Map<String, RepoStep> steps = Map.of(
+                "lib", new RepoStep("lib", lib.path(), "x", List.of(), List.of(), List.of(), List.of(), List.of()),
+                "svc", new RepoStep("svc", svc.path(), "x", List.of(), List.of(), List.of(),
+                        List.of(new sdd.agent.run.ContractRef("c1", "java-api", "lib", List.of("svc"),
+                                "Api.f(int): int")), List.of()));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"lib ok\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"svc ok\"}")));
+
+        orchestrator(model).run(runDir,
+                planWithContract(lib.headSha(), svc.headSha(), null), steps);   // no japicmp gate
+
+        // svc's FIRST request (its work order) must contain the actualized section with lib's real API.
+        String svcWorkOrder = model.requests().get(1).messages().stream()
+                .map(m -> m.content() == null ? "" : m.content())
+                .reduce("", String::concat);
+        assertThat(svcWorkOrder).contains("Actualized contracts").contains("com.acme.Api");
     }
 }
