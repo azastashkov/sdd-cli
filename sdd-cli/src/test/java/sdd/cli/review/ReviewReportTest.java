@@ -9,6 +9,7 @@ import sdd.cli.implement.RunGit;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -56,7 +57,7 @@ class ReviewReportTest {
     /** The no-frills call: no diffs, no rebuilds, no failures, no decisions. */
     private static String render(PlanModel plan, RunState state) {
         return ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
-                List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), List.of(),
+                List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), RunContext.Checkpoints.none(),
                 "runbook", RebuildScope.skipped());
     }
 
@@ -67,7 +68,7 @@ class ReviewReportTest {
         PlanModel plan = planNoContracts();
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
-                List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), List.of(),
+                List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), RunContext.Checkpoints.none(),
                 "runbook", RebuildScope.skipped());
 
         assertThat(report).contains("- Contract re-check: no contracts in this plan");
@@ -85,7 +86,7 @@ class ReviewReportTest {
                         ContractRecheck.Status.MATCHES, "", "main"));
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
-                List.of(), List.of(), List.of(), List.of(), findings, Map.of(), List.of(),
+                List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
                 "runbook", RebuildScope.estate());
 
         assertThat(report).contains("- Contract re-check: 2 checked, 0 mismatches");
@@ -105,7 +106,7 @@ class ReviewReportTest {
                         ContractRecheck.Status.DRIFTED, "bodies differ", "main"));
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
-                List.of(), List.of(), List.of(), List.of(), findings, Map.of(), List.of(),
+                List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
                 "runbook", RebuildScope.estate());
 
         assertThat(report).contains("- Contract re-check: 2 checked, 1 mismatch");
@@ -127,7 +128,7 @@ class ReviewReportTest {
                         ContractRecheck.Status.MISSING_RECORD, "no record", "main"));
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
-                List.of(), List.of(), List.of(), List.of(), findings, Map.of(), List.of(),
+                List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
                 "runbook", RebuildScope.estate());
 
         assertThat(report).contains("- Contract re-check: 3 checked, 2 mismatches");
@@ -144,7 +145,7 @@ class ReviewReportTest {
 
         String report = ReviewReport.render("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
                 Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), decisions,
-                List.of(), "runbook", RebuildScope.estate());
+                RunContext.Checkpoints.none(), "runbook", RebuildScope.estate());
 
         assertThat(report).contains("- **lib**: SUCCEEDED, decision: APPROVED");
         assertThat(report).contains("- **svc**: SUCCEEDED, decision: REJECTED (wrong API)");
@@ -172,8 +173,8 @@ class ReviewReportTest {
                 + "1234567 — diffs and runbook describe the checkpoint");
 
         String report = ReviewReport.render("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
-                Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), drift,
-                "runbook", RebuildScope.estate());
+                Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(),
+                new RunContext.Checkpoints(drift, Set.of()), "runbook", RebuildScope.estate());
 
         assertThat(report).contains("## Checkpoint drift");
         assertThat(report).contains("- lib: branch sdd/SPEC-1-v1/lib is at abcdefg, checkpoint was "
@@ -183,6 +184,19 @@ class ReviewReportTest {
         assertThat(report.indexOf("## Checkpoint drift")).isLessThan(report.indexOf("## Repos"));
 
         assertThat(render(planWithEdge(), threeSucceeded())).doesNotContain("## Checkpoint drift");
+    }
+
+    @Test
+    void aRunBranchThatNoLongerExistsIsStatedOnItsRepoLineButIsNotDrift() {
+        // The runbook below still tells a human to merge this branch, so the report may not stay
+        // silent about it — but nothing MOVED, so it is not drift and must not fail the review.
+        String report = ReviewReport.render("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
+                Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(),
+                new RunContext.Checkpoints(List.of(), Set.of("lib")), "runbook", RebuildScope.estate());
+
+        assertThat(report).contains("- **lib**: SUCCEEDED, decision: PENDING, checkpoint sha, "
+                + "run branch sdd/SPEC-1-v1/lib no longer exists");
+        assertThat(report).doesNotContain("## Checkpoint drift");
     }
 
     @Test
@@ -197,7 +211,7 @@ class ReviewReportTest {
                 new RepoRun("lib", RepoState.SUCCEEDED, "b", "sha", "")), null, 0L);
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
-                List.of(), List.of(), List.of(), List.of(), findings, Map.of(), List.of(),
+                List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
                 "runbook", RebuildScope.estate());
 
         assertThat(report).contains("(extracted from: sdd/SPEC-1-v1/lib)");
@@ -211,7 +225,7 @@ class ReviewReportTest {
                 "svc", new EstateRebuild.Result(true, "ok"));
 
         String report = ReviewReport.render("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
-                subset, List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), List.of(),
+                subset, List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), RunContext.Checkpoints.none(),
                 "runbook", RebuildScope.none().withReverifiedSubtreeOf("lib"));
 
         assertThat(report).doesNotContain("- Estate rebuild: 1 passed, 0 failed");
@@ -222,7 +236,7 @@ class ReviewReportTest {
     @Test
     void aReportRefreshedByADecisionDoesNotClaimTheRebuildWasSkippedByAFlag() {
         String report = ReviewReport.render("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
-                Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), List.of(),
+                Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), RunContext.Checkpoints.none(),
                 "runbook", RebuildScope.none());
 
         assertThat(report).doesNotContain("--no-rebuild");
@@ -236,7 +250,7 @@ class ReviewReportTest {
                 "svc", new EstateRebuild.Result(true, "ok"));
 
         String report = ReviewReport.render("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
-                rebuilds, List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), List.of(),
+                rebuilds, List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), RunContext.Checkpoints.none(),
                 "runbook", RebuildScope.estate().withReverifiedSubtreeOf("lib"));
 
         assertThat(report).contains("- Estate rebuild: 2 passed, 0 failed (estate-wide, with lib's "
@@ -257,7 +271,7 @@ class ReviewReportTest {
 
         String report = ReviewReport.render("SPEC-1-v1", plan, threeSucceeded(), Map.of(),
                 rebuilds, List.of(), stagingFailures, List.of(), List.of(), findings, Map.of(),
-                List.of(), "runbook", RebuildScope.estate());
+                RunContext.Checkpoints.none(), "runbook", RebuildScope.estate());
 
         // The provider itself: its own line says it never reached its checkpoint.
         assertThat(report).contains("- **lib**: SUCCEEDED, decision: PENDING, checkpoint sha, "
@@ -285,7 +299,7 @@ class ReviewReportTest {
                 new RepoRun("lib", RepoState.SUCCEEDED, "b", "sha", "")), null, 0L);
 
         String report = ReviewReport.render("SPEC-1-v1", planWithContracts(2), state, Map.of(),
-                Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), List.of(),
+                Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), RunContext.Checkpoints.none(),
                 "runbook", RebuildScope.none());
 
         assertThat(report).doesNotContain("no contracts in this plan");
@@ -302,7 +316,7 @@ class ReviewReportTest {
                         ContractRecheck.Status.MATCHES, "", "main"));
 
         String report = ReviewReport.render("SPEC-1-v1", planWithContracts(1), state, Map.of(),
-                Map.of(), List.of(), List.of(), List.of(), List.of(), findings, Map.of(), List.of(),
+                Map.of(), List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
                 "runbook", RebuildScope.skipped());
 
         assertThat(report).contains("- Contract re-check: 1 checked, 0 mismatches — no rebuild "
@@ -316,7 +330,7 @@ class ReviewReportTest {
         Map<String, RunGit.DiffStat> stats = Map.of("lib", new RunGit.DiffStat(2, 10, 3));
 
         String report = ReviewReport.render("SPEC-1-v1", planNoContracts(), state, stats, Map.of(),
-                List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), List.of(),
+                List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), RunContext.Checkpoints.none(),
                 "runbook", RebuildScope.skipped());
 
         assertThat(report).contains("- **lib**: UNKNOWN, decision: PENDING, 2 files changed (+10/-3)");

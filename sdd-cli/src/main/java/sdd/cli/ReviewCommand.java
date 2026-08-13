@@ -160,7 +160,7 @@ public final class ReviewCommand implements Callable<Integer> {
             // Read AFTER the interactive walk, not before: an approve squashes the branch and
             // rewrites the checkpoint, so drift computed earlier would describe a run that has
             // since been decided.
-            List<String> drift = run.checkpointDrift(run.store().readDecisions(run.runDir()));
+            List<String> drift = run.checkpoints(run.store().readDecisions(run.runDir())).drift();
             // A failed restore leaves a repo stranded off its original branch — the report's own
             // legend calls that a failed checkout, so it must fail the review too. A staging
             // failure is a failed checkout by another name, and worse: it silently invalidates

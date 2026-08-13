@@ -652,6 +652,24 @@ class ReviewCommandTest {
     }
 
     @Test
+    void aDeletedRunBranchIsReportedWithoutFailingTheReview() throws Exception {
+        Fixture f = fixture();
+        try (org.eclipse.jgit.api.Git git = org.eclipse.jgit.api.Git.open(f.lib().path().toFile())) {
+            git.branchDelete().setBranchNames(f.runBranch()).setForce(true).call();
+        }
+
+        int exit = review(new StringWriter(), new StringWriter(), "--no-rebuild",
+                f.planPath().toString());
+
+        // Nothing moved, so this is not drift and must not fail the review — but the runbook still
+        // names the branch, so the report cannot stay silent about it either.
+        assertThat(exit).isZero();
+        String report = Files.readString(f.runDir().resolve("review/report.md"));
+        assertThat(report).doesNotContain("## Checkpoint drift");
+        assertThat(report).contains("run branch " + f.runBranch() + " no longer exists");
+    }
+
+    @Test
     void anApprovedRepoWhoseCheckpointWasRewrittenIsNotDrift() throws Exception {
         Fixture f = fixture();
         moveBranchPastCheckpoint(f);

@@ -20,8 +20,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Everything a Gate-2 command needs off disk — the frozen plan, the run's state, the estate's repo
@@ -119,40 +121,55 @@ public record RunContext(String runId, Path runDir, RunStore store, PlanModel pl
         String runbook = ReleaseRunbook.render(plan, state);
         String report = ReviewReport.render(runId, plan, state, diffs.stats(), rebuilds,
                 notLocallyVerified, stagingFailures, restoreFailures, diffs.failures(), contracts,
-                decisions, checkpointDrift(decisions), runbook, rebuild);
+                decisions, checkpoints(decisions), runbook, rebuild);
         store.writeReview(runDir, "report.md", report);
         return store.reviewDir(runDir).resolve("report.md");
     }
 
     /**
-     * SUCCEEDED repos whose run branch no longer points at the checkpoint recorded in
-     * {@code state.json} — the diffs, diffstats and runbook all describe that checkpoint, so a
-     * moved branch means the report describes a tree the branch no longer carries. Formatted here
-     * rather than in {@link ReviewReport} because it is the one report input that must be READ off
-     * the estate's git; the renderer stays a pure function of what it is handed.
+     * Where each SUCCEEDED repo's run branch actually is, as of report time.
      *
-     * <p>Two exclusions, both load-bearing:
+     * @param drift        rendered lines for branches that have moved off the recorded checkpoint;
+     *                     their presence fails the review
+     * @param branchGone   repos whose run branch does not exist at all any more — NOT drift (see
+     *                     {@link #checkpoints}), but the runbook below tells a human to merge that
+     *                     branch, so the report may not stay silent about it either
+     */
+    public record Checkpoints(List<String> drift, Set<String> branchGone) {
+        public static Checkpoints none() {
+            return new Checkpoints(List.of(), Set.of());
+        }
+    }
+
+    /**
+     * Reads every SUCCEEDED repo's run branch and compares it with the checkpoint recorded in
+     * {@code state.json} — the diffs, diffstats and runbook all describe that checkpoint, so a
+     * moved branch means the report describes a tree the branch no longer carries. Read here rather
+     * than in {@link ReviewReport} because it is the one report input that must come off the
+     * estate's git; the renderer stays a pure function of what it is handed.
+     *
+     * <p>Two exclusions from {@code drift}, both load-bearing:
      * <ul>
      *   <li><b>APPROVED repos.</b> {@code sdd review approve} deliberately squashes the run branch
      *       and rewrites the checkpoint. Flagging that would mean the tool accusing its own approve
      *       of tampering, and no run could exit 0 again after a single approval.</li>
-     *   <li><b>An unresolvable branch</b> ({@code branchHead} is {@code ""}, or the repo cannot be
-     *       read at all). That is already reported as a diff failure, and "the branch moved" is not
-     *       something the code knows — only that it could not look.</li>
+     *   <li><b>A branch that no longer resolves</b> ({@code branchHead} is {@code ""}). An
+     *       unresolvable sha is already reported as a diff failure, and "the branch moved" is not
+     *       something the code knows — only that there is nothing left to compare. It is reported
+     *       as {@code branchGone} instead, which does not fail the review.</li>
      * </ul>
+     * A repo whose git cannot be read at all is skipped entirely: nothing was observed, so nothing
+     * is claimed.
      */
-    public List<String> checkpointDrift(Map<String, DecisionRecord> decisions) {
+    public Checkpoints checkpoints(Map<String, DecisionRecord> decisions) {
         Map<String, RepoRun> byName = byName();
         List<String> drift = new ArrayList<>();
+        Set<String> branchGone = new LinkedHashSet<>();
         for (String repo : Scheduler.sequence(plan.order())) {
             RepoRun repoRun = byName.get(repo);
             Path root = paths.get(repo);
             if (repoRun == null || repoRun.state() != RepoState.SUCCEEDED || root == null
                     || repoRun.branch() == null || repoRun.checkpointSha() == null) {
-                continue;
-            }
-            DecisionRecord record = decisions.get(repo);
-            if (record != null && record.decision() == Decision.APPROVED) {
                 continue;
             }
             String head;
@@ -161,14 +178,20 @@ public record RunContext(String runId, Path runDir, RunStore store, PlanModel pl
             } catch (RuntimeException e) {
                 continue;
             }
-            if (head.isEmpty() || head.equals(repoRun.checkpointSha())) {
+            if (head.isEmpty()) {
+                branchGone.add(repo);
+                continue;
+            }
+            DecisionRecord record = decisions.get(repo);
+            if (head.equals(repoRun.checkpointSha())
+                    || (record != null && record.decision() == Decision.APPROVED)) {
                 continue;
             }
             drift.add(repo + ": branch " + repoRun.branch() + " is at " + DecisionCommand.shortSha(head)
                     + ", checkpoint was " + DecisionCommand.shortSha(repoRun.checkpointSha())
                     + " — diffs and runbook describe the checkpoint");
         }
-        return drift;
+        return new Checkpoints(drift, branchGone);
     }
 
     public Map<String, RepoRun> byName() {

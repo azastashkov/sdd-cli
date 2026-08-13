@@ -36,7 +36,8 @@ public final class ReviewReport {
                                 List<String> notLocallyVerified, List<String> stagingFailures,
                                 List<String> restoreFailures, List<String> diffFailures,
                                 List<ContractRecheck.Finding> contracts,
-                                Map<String, DecisionRecord> decisions, List<String> checkpointDrift,
+                                Map<String, DecisionRecord> decisions,
+                                RunContext.Checkpoints checkpoints,
                                 String runbook, RebuildScope rebuild) {
         Map<String, RepoRun> byName = new LinkedHashMap<>();
         for (RepoRun run : state.repos()) {
@@ -51,13 +52,13 @@ public final class ReviewReport {
         md.append("Run: ").append(runId).append("\n\n");
 
         appendSummary(md, plan, state, rebuilds, rebuild, contracts, decisions, unstaged,
-                checkpointDrift);
+                checkpoints.drift());
         // Both of these invalidate what the Repos section says, so they precede it: a reader who
         // meets "rebuild: OK" first has already formed a verdict by the time the caveat arrives.
         appendStagingFailures(md, stagingFailures);
-        appendCheckpointDrift(md, checkpointDrift);
+        appendCheckpointDrift(md, checkpoints.drift());
         appendRepos(md, plan, byName, diffStats, rebuilds, notLocallyVerified, decisions, unstaged,
-                voidedBy);
+                voidedBy, checkpoints.branchGone());
         appendRebuildFailures(md, rebuilds);
         appendContracts(md, contracts, unstaged);
         appendRestoreFailures(md, restoreFailures);
@@ -97,8 +98,9 @@ public final class ReviewReport {
         appendDecisionCounts(md, plan, decisions);
         if (!checkpointDrift.isEmpty()) {
             md.append("- Checkpoint drift: ").append(checkpointDrift.size())
-                    .append(checkpointDrift.size() == 1 ? " repo has" : " repos have")
-                    .append(" moved off its checkpoint — see Checkpoint drift\n");
+                    .append(checkpointDrift.size() == 1 ? " repo has moved off its checkpoint"
+                            : " repos have moved off their checkpoints")
+                    .append(" — see Checkpoint drift\n");
         }
         md.append("- Exit codes: 0 = every repo SUCCEEDED, every rebuild passed, every repo was "
                 + "staged at its checkpoint and restored, and no branch drifted; "
@@ -205,7 +207,7 @@ public final class ReviewReport {
                                     Map<String, EstateRebuild.Result> rebuilds,
                                     List<String> notLocallyVerified,
                                     Map<String, DecisionRecord> decisions, Set<String> unstaged,
-                                    Map<String, String> voidedBy) {
+                                    Map<String, String> voidedBy, Set<String> branchGone) {
         md.append("## Repos\n\n");
         for (String repo : Scheduler.sequence(plan.order())) {
             RepoRun run = byName.get(repo);
@@ -218,6 +220,12 @@ public final class ReviewReport {
             }
             if (run != null && run.checkpointSha() != null) {
                 md.append(", checkpoint ").append(run.checkpointSha());
+            }
+            if (branchGone.contains(repo)) {
+                // The runbook below still names this branch. Say it is gone here rather than let a
+                // human discover it at merge time.
+                md.append(", run branch ").append(run == null ? "?" : run.branch())
+                        .append(" no longer exists");
             }
             RunGit.DiffStat stat = diffStats.get(repo);
             if (stat != null) {

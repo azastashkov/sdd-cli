@@ -44,8 +44,9 @@ public final class InteractiveReview {
      * computed for this same process's report. An interactive session is part of the SAME
      * {@code sdd review} invocation that just ran the estate rebuild (or explicitly skipped it with
      * {@code --no-rebuild}) — unlike a standalone {@code sdd review approve}, which has no better
-     * data to hand — so the loop's own final re-render must carry that data through rather than
-     * quietly overwriting a real rebuild with "skipped".
+     * data to hand — so the loop's own final re-render must carry that data, and the
+     * {@link RebuildScope} describing it, through rather than quietly overwriting a real estate
+     * rebuild with "not re-run". A redo inside the walk then narrows that scope as it goes.
      */
     public record Context(RunContext run, Path workspace, Path planJsonPath,
                           RebuildPass.Outcome baseline, RebuildScope baselineScope) {
