@@ -103,6 +103,14 @@ class OrchestratorTest {
         assertThat(Files.readString(runDir.resolve("state.json"))).contains("SUCCEEDED");
         assertThat(Files.readString(lib.path().resolve("A.java"))).contains("int x;");
         assertThat(Files.exists(runDir.resolve("lib/agent-events.jsonl"))).isTrue();   // events captured
+        // observability: lib's apply_edit + done turns and its one applied edit land on disk too
+        String libTranscript = Files.readString(runDir.resolve("lib/transcript.jsonl"));
+        assertThat(libTranscript).contains("\"turn\":1").contains("\"name\":\"apply_edit\"")
+                .contains("\"turn\":2").contains("\"name\":\"done\"");
+        String libEdits = Files.readString(runDir.resolve("lib/edits.jsonl"));
+        assertThat(libEdits).contains("\"path\":\"A.java\"").contains("\"action\":\"edit\"");
+        assertThat(Files.exists(runDir.resolve("svc/transcript.jsonl"))).isTrue();
+        assertThat(Files.exists(runDir.resolve("svc/edits.jsonl"))).isTrue();
     }
 
     @Test

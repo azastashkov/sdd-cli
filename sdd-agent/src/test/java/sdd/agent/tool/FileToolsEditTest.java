@@ -92,4 +92,46 @@ class FileToolsEditTest {
         assertThatThrownBy(() -> tools.applyEdit("src/A.java", "", "class A {}"))
                 .isInstanceOf(ToolException.class).hasMessageContaining("already exists");
     }
+
+    @Test
+    void successfulEditAndCreationAreRecordedWithCorrectActionAndLineCounts() throws Exception {
+        Files.writeString(root.resolve("src/A.java"), "class A {\n    int x = 1;\n}\n");
+
+        tools.applyEdit("src/A.java", "int x = 1;", "int x = 2;\nint y = 3;");
+        tools.applyEdit("src/New.java", "", "class New {\n    int z;\n}\n");
+
+        assertThat(tools.appliedEdits()).hasSize(2);
+        FileTools.AppliedEdit edit = tools.appliedEdits().get(0);
+        assertThat(edit.path()).isEqualTo("src/A.java");
+        assertThat(edit.action()).isEqualTo("edit");
+        assertThat(edit.searchLines()).isEqualTo(1);
+        assertThat(edit.replaceLines()).isEqualTo(2);
+        FileTools.AppliedEdit created = tools.appliedEdits().get(1);
+        assertThat(created.path()).isEqualTo("src/New.java");
+        assertThat(created.action()).isEqualTo("create");
+        assertThat(created.searchLines()).isEqualTo(0);
+        assertThat(created.replaceLines()).isEqualTo(3);
+    }
+
+    @Test
+    void aSyntaxRevertedJavaEditIsNotRecorded() throws Exception {
+        Files.writeString(root.resolve("src/A.java"), "class A {\n    int x = 1;\n}\n");
+
+        assertThatThrownBy(() -> tools.applyEdit("src/A.java", "int x = 1;", "int x = ;"))
+                .isInstanceOf(ToolException.class);
+
+        assertThat(tools.appliedEdits()).isEmpty();
+    }
+
+    @Test
+    void aFailedAmbiguousOrNotFoundEditIsNotRecorded() throws Exception {
+        Files.writeString(root.resolve("src/A.java"), "class A {\n  int x;\n  int x;\n}\n");
+
+        assertThatThrownBy(() -> tools.applyEdit("src/A.java", "int y;", "int z;"))
+                .isInstanceOf(ToolException.class);
+        assertThatThrownBy(() -> tools.applyEdit("src/A.java", "int x;", "int q;"))
+                .isInstanceOf(ToolException.class);
+
+        assertThat(tools.appliedEdits()).isEmpty();
+    }
 }

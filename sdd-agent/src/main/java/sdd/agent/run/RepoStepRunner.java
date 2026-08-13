@@ -1,5 +1,7 @@
 package sdd.agent.run;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.jdbi.v3.core.Jdbi;
 import sdd.agent.loop.AgentLoop;
 import sdd.agent.loop.AgentOutcome;
@@ -21,6 +23,7 @@ import java.util.List;
  * need run state and git); this returns a typed StepOutcome for 4C to act on.
  */
 public final class RepoStepRunner {
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final int MAX_VERIFY_CYCLES = 2;
 
     private final Jdbi jdbi;
@@ -38,13 +41,18 @@ public final class RepoStepRunner {
         OutputCompactor compactor = new OutputCompactor(step.repoRoot());
         GradleTool gradle = new GradleTool(step.repoRoot(), settings.javaHome(), settings.gradleTimeout(),
                 settings.gradleExtraArgs(), settings.gradlePermits());
-        Toolbox toolbox = new Toolbox(new FileTools(new PathJail(step.repoRoot())), gradle, compactor);
+        // Hoisted (rather than inlined into the Toolbox constructor) so appliedEdits() can be read
+        // after the loop finishes — this one instance is reused across every cycle below, so its
+        // edits accumulate over the whole attempt regardless of how many times loop.run() is called.
+        FileTools fileTools = new FileTools(new PathJail(step.repoRoot()));
+        Toolbox toolbox = new Toolbox(fileTools, gradle, compactor);
         VerificationRunner verifier = new VerificationRunner(gradle, compactor);
         AgentLoop loop = new AgentLoop(model, toolbox, settings.budget(), settings.contextSoftCap(),
                 settings.clock());
 
         String workOrder = WorkOrder.build(jdbi, step) + (priorDigest.isBlank() ? "" : priorDigest);
         List<String> events = new ArrayList<>();
+        List<String> transcript = new ArrayList<>();
         int verifyCycles = 0;
         long tokens = 0;
         boolean restarted = false;
@@ -59,6 +67,7 @@ public final class RepoStepRunner {
                 throw e.withTokens(tokens + e.tokensSoFar());
             }
             events.addAll(outcome.events());
+            transcript.addAll(outcome.transcript());
             tokens += outcome.tokens();
 
             switch (outcome.result()) {
@@ -66,7 +75,7 @@ public final class RepoStepRunner {
                     if (settings.verificationTasks().isEmpty()) {
                         events.add("verify: skipped — not locally verified (all verification tasks excluded)");
                         return outcome(StepResult.SUCCESS, outcome.summary(), events,
-                                "not locally verified", tokens);
+                                "not locally verified", tokens, transcript, fileTools);
                     }
                     VerificationRunner.Verdict verdict = verifyAll(verifier, settings.verificationTasks());
                     if (!verdict.passed() && verdict.infra()) {
@@ -75,37 +84,44 @@ public final class RepoStepRunner {
                         if (!verdict.passed() && verdict.infra()) {
                             lastVerification = verdict.output();
                             return outcome(StepResult.INFRA, "infrastructure failure at the verify gate",
-                                    events, lastVerification, tokens);
+                                    events, lastVerification, tokens, transcript, fileTools);
                         }
                     }
                     lastVerification = verdict.output();
                     if (verdict.passed()) {
-                        return outcome(StepResult.SUCCESS, outcome.summary(), events, lastVerification, tokens);
+                        return outcome(StepResult.SUCCESS, outcome.summary(), events, lastVerification, tokens,
+                                transcript, fileTools);
                     }
                     if (++verifyCycles >= MAX_VERIFY_CYCLES) {
-                        return outcome(StepResult.VERIFY_FAILED, "verification failed", events, lastVerification, tokens);
+                        return outcome(StepResult.VERIFY_FAILED, "verification failed", events, lastVerification,
+                                tokens, transcript, fileTools);
                     }
                     workOrder = WorkOrder.build(jdbi, step)
                             + "\n\n## Verification failed — fix and finish again\n" + verdict.output();
                 }
                 case BLOCKED -> {
-                    return outcome(StepResult.BLOCKED, outcome.summary(), events, lastVerification, tokens);
+                    return outcome(StepResult.BLOCKED, outcome.summary(), events, lastVerification, tokens,
+                            transcript, fileTools);
                 }
                 case CONTEXT_EXHAUSTED -> {
                     if (restarted) {
-                        return outcome(StepResult.EXHAUSTED, "context exhausted", events, lastVerification, tokens);
+                        return outcome(StepResult.EXHAUSTED, "context exhausted", events, lastVerification, tokens,
+                                transcript, fileTools);
                     }
                     restarted = true;
                     workOrder = WorkOrder.build(jdbi, step) + digest(outcome, lastVerification);
                 }
                 case BUDGET_TURNS, BUDGET_TIME, BUDGET_TOKENS -> {
-                    return outcome(StepResult.BUDGET, outcome.summary(), events, lastVerification, tokens);
+                    return outcome(StepResult.BUDGET, outcome.summary(), events, lastVerification, tokens,
+                            transcript, fileTools);
                 }
                 case MALFORMED -> {
-                    return outcome(StepResult.MALFORMED, outcome.summary(), events, lastVerification, tokens);
+                    return outcome(StepResult.MALFORMED, outcome.summary(), events, lastVerification, tokens,
+                            transcript, fileTools);
                 }
                 case WEDGED -> {
-                    return outcome(StepResult.WEDGED, outcome.summary(), events, lastVerification, tokens);
+                    return outcome(StepResult.WEDGED, outcome.summary(), events, lastVerification, tokens,
+                            transcript, fileTools);
                 }
                 default -> throw new IllegalStateException("unhandled AgentResult: " + outcome.result());
             }
@@ -138,7 +154,24 @@ public final class RepoStepRunner {
     }
 
     private static StepOutcome outcome(StepResult result, String summary, List<String> events,
-                                       String verification, long tokens) {
-        return new StepOutcome(result, summary, events, verification, tokens);
+                                       String verification, long tokens, List<String> transcript,
+                                       FileTools fileTools) {
+        List<String> edits = fileTools.appliedEdits().stream().map(RepoStepRunner::editLine).toList();
+        return new StepOutcome(result, summary, events, verification, tokens, transcript, edits);
+    }
+
+    private static String editLine(FileTools.AppliedEdit edit) {
+        ObjectNode node = JSON.createObjectNode();
+        node.put("path", edit.path());
+        node.put("action", edit.action());
+        node.put("searchLines", edit.searchLines());
+        node.put("replaceLines", edit.replaceLines());
+        try {
+            return JSON.writeValueAsString(node);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            // A tree built purely from primitives/strings never actually fails to serialize; this is
+            // defense-in-depth so an edit line is never silently dropped.
+            return "{}";
+        }
     }
 }

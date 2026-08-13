@@ -204,6 +204,50 @@ class AgentLoopTest {
     }
 
     @Test
+    void transcriptRecordsOneLinePerModelCallWithToolCallsAndResults() {
+        Instant t0 = Instant.parse("2026-08-13T00:00:00Z");
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "read_file", "{\"path\":\"A.java\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"ok\"}")));
+
+        AgentOutcome outcome = loop(model, AgentBudget.defaults(), InstantSource.fixed(t0))
+                .run("sys", "wo", "qwen", 4096);
+
+        assertThat(outcome.transcript()).hasSize(2);
+        assertThat(outcome.transcript().get(0))
+                .contains("\"turn\":1")
+                .contains("\"at\":\"2026-08-13T00:00:00Z\"")
+                .contains("\"finish\":\"tool_calls\"")
+                .contains("\"prompt_tokens\":10")
+                .contains("\"completion_tokens\":5")
+                .contains("\"content\":null")
+                .contains("\"name\":\"read_file\"")
+                .contains("\"args\":\"{\\\"path\\\":\\\"A.java\\\"}\"")
+                .contains("\"tool_results\"")
+                .contains("class A {}");
+        assertThat(outcome.transcript().get(1))
+                .contains("\"turn\":2")
+                .contains("\"name\":\"done\"")
+                .contains("\"tool_results\":[]");   // done never produces a tool result on success
+    }
+
+    @Test
+    void longContentArgsAndResultsAreTruncatedInTheTranscript() throws Exception {
+        Files.writeString(root.resolve("Big.txt"), "x".repeat(3000));
+        String longRegex = "a".repeat(2500);
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "read_file", "{\"path\":\"Big.txt\"}"),
+                call("2", "search", "{\"regex\":\"" + longRegex + "\"}"),
+                call("3", "done", "{\"result\":\"success\",\"summary\":\"ok\"}")));
+
+        AgentOutcome outcome = loop(model, AgentBudget.defaults(), InstantSource.system())
+                .run("sys", "wo", "qwen", 4096);
+
+        assertThat(outcome.transcript().get(0)).contains("…(truncated)");   // read_file's huge tool_result
+        assertThat(outcome.transcript().get(1)).contains("…(truncated)");   // search's huge args
+    }
+
+    @Test
     void wallClockBudgetTerminates() {
         ScriptedChatModel model = new ScriptedChatModel(List.of(
                 call("1", "list_files", "{\"dir\":\".\"}"),

@@ -211,6 +211,39 @@ class RepoStepRunnerTest {
     }
 
     @Test
+    void stepOutcomeCarriesATranscriptLinePerModelCallAndAnEditsLineForAnAppliedEdit() throws Exception {
+        gradlew("exit 0");
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "apply_edit", "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int x; }\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"added x\"}")));
+
+        StepOutcome outcome = run(model);
+
+        assertThat(outcome.result()).isEqualTo(StepResult.SUCCESS);
+        assertThat(outcome.transcript()).hasSize(2);
+        assertThat(outcome.transcript().get(0)).contains("\"turn\":1").contains("apply_edit");
+        assertThat(outcome.transcript().get(1)).contains("\"turn\":2").contains("\"name\":\"done\"");
+        assertThat(outcome.edits()).hasSize(1);
+        assertThat(outcome.edits().get(0)).contains("\"path\":\"A.java\"").contains("\"action\":\"edit\"");
+    }
+
+    @Test
+    void transcriptAccumulatesAcrossVerifyRetryCycles() throws Exception {
+        gradlew("echo '/r/A.java:1: error: broken'; exit 1");   // verification always fails
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"try 1\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"try 2\"}")));
+
+        StepOutcome outcome = run(model);
+
+        assertThat(outcome.result()).isEqualTo(StepResult.VERIFY_FAILED);
+        // each verify-fail cycle is its own loop.run() call, and its own AgentLoop starts back at turn 1
+        assertThat(outcome.transcript()).hasSize(2);
+        assertThat(outcome.transcript().get(0)).contains("\"turn\":1");
+        assertThat(outcome.transcript().get(1)).contains("\"turn\":1");
+    }
+
+    @Test
     void partialTokensSurviveAnEndpointFailureMidStep() throws Exception {
         gradlew("exit 1");   // first done fails verify -> loop re-enters -> second call throws
         java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();

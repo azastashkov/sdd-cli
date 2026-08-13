@@ -163,6 +163,8 @@ public final class Orchestrator {
         String branch = "sdd/" + runId + "/" + slug(repo);
         String base = plan.repo(repo).map(PlanModel.PlanRepo::baseSha).orElse("");
         List<String> events = new ArrayList<>();
+        List<String> transcript = new ArrayList<>();
+        List<String> edits = new ArrayList<>();
         StepOutcome outcome;
         boolean escalated = false;
         Path baselineDir = runDir.resolve("contracts").resolve(slug(repo) + "-baseline");
@@ -182,6 +184,8 @@ public final class Orchestrator {
             String contracts = contractDigest(runDir, step);
             outcome = runner.run(step, coder, coderModelName, settingsFor.apply(repo), contracts);
             events.addAll(outcome.events());
+            transcript.addAll(outcome.transcript());
+            edits.addAll(outcome.edits());
             boolean escalationAllowed;
             synchronized (lock) {
                 state.addTokens(outcome.tokens());
@@ -195,6 +199,8 @@ public final class Orchestrator {
                 StepOutcome second = runner.run(step, escalation, escalationModelName,
                         settingsFor.apply(repo), contracts + attemptDigest(outcome));
                 events.addAll(second.events());
+                transcript.addAll(second.transcript());
+                edits.addAll(second.edits());
                 synchronized (lock) {
                     state.addTokens(second.tokens());
                 }
@@ -205,6 +211,8 @@ public final class Orchestrator {
                 state.addTokens(e.tokensSoFar());
                 store.writeState(runDir, state);   // persist the partial spend even on the rethrow path
             }
+            // No StepOutcome exists on this throw path, so there's no transcript/edits to carry —
+            // same tradeoff as the token accounting above losing the in-flight call's partial spend.
             store.writeAgentEvents(runDir, repo, events);
             if (endpointTrouble(e)) {
                 synchronized (lock) {
@@ -217,6 +225,8 @@ public final class Orchestrator {
             throw e;   // 4xx configuration errors: captured by the unit task into fatal
         }
         store.writeAgentEvents(runDir, repo, events);
+        store.writeTranscript(runDir, repo, transcript);
+        store.writeEdits(runDir, repo, edits);
         String attemptTag = escalated ? "attempt 2 (" + escalationModelName + ") " : "";
         if (outcome.result() == StepResult.SUCCESS) {
             String sha = RunGit.commitAll(step.repoRoot(), "sdd: " + runId + " " + repo);
@@ -238,6 +248,8 @@ public final class Orchestrator {
                 }
                 events.add("publish " + prop.publish().version() + ": " + summarize(published.log()));
                 store.writeAgentEvents(runDir, repo, events);
+                store.writeTranscript(runDir, repo, transcript);
+                store.writeEdits(runDir, repo, edits);
                 if (!published.ok()) {
                     if (InfraClassifier.isInfra(published.log())) {
                         synchronized (lock) {
@@ -270,6 +282,8 @@ public final class Orchestrator {
                     String drift = compatDrift(baselineDir, candidate.jars(), events);
                     if (drift != null) {
                         store.writeAgentEvents(runDir, repo, events);
+                        store.writeTranscript(runDir, repo, transcript);
+                        store.writeEdits(runDir, repo, edits);
                         synchronized (lock) {
                             transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
                                     attemptTag + "binary-incompatible drift: " + drift);
@@ -279,6 +293,8 @@ public final class Orchestrator {
                 }
             }
             store.writeAgentEvents(runDir, repo, events);
+            store.writeTranscript(runDir, repo, transcript);
+            store.writeEdits(runDir, repo, edits);
             synchronized (lock) {
                 transitionLocked(runDir, state, repo, RepoState.SUCCEEDED, branch, sha,
                         attemptTag + outcome.summary());

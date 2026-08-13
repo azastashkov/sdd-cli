@@ -64,6 +64,26 @@ class RunStoreTest {
     }
 
     @Test
+    void writesPerRepoTranscript() throws Exception {
+        Path runDir = store.create(ws, "R", "{}");
+        store.writeTranscript(runDir, "lib", List.of("{\"turn\":1}", "{\"turn\":2}"));
+        assertThat(Files.readString(runDir.resolve("lib/transcript.jsonl")))
+                .contains("{\"turn\":1}").contains("{\"turn\":2}");
+        store.writeTranscript(runDir, "grp/lib", List.of("{\"turn\":1}"));
+        assertThat(Files.exists(runDir.resolve("grp-lib/transcript.jsonl"))).isTrue();
+    }
+
+    @Test
+    void writesPerRepoEdits() throws Exception {
+        Path runDir = store.create(ws, "R", "{}");
+        store.writeEdits(runDir, "lib", List.of("{\"path\":\"A.java\",\"action\":\"edit\"}"));
+        assertThat(Files.readString(runDir.resolve("lib/edits.jsonl")))
+                .contains("\"path\":\"A.java\"").contains("\"action\":\"edit\"");
+        store.writeEdits(runDir, "grp/lib", List.of("{\"path\":\"x\"}"));
+        assertThat(Files.exists(runDir.resolve("grp-lib/edits.jsonl"))).isTrue();
+    }
+
+    @Test
     void readStateRoundTripsThePauseFields() {
         RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
         Path runDir = store.create(ws, "S-v1", "{}", "spec body");

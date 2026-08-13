@@ -24,9 +24,20 @@ public final class FileTools {
             "node_modules", "dist", "target");
 
     private final PathJail jail;
+    private final List<AppliedEdit> appliedEdits = new ArrayList<>();
+
+    /** One successfully applied edit — recorded only after the write lands (a syntax-reverted or
+     *  failed edit never reaches this). action is "create" when the search block was empty, else "edit". */
+    public record AppliedEdit(String path, String action, int searchLines, int replaceLines) {
+    }
 
     public FileTools(PathJail jail) {
         this.jail = jail;
+    }
+
+    /** An immutable snapshot of every edit successfully applied so far, in application order. */
+    public List<AppliedEdit> appliedEdits() {
+        return List.copyOf(appliedEdits);
     }
 
     public String readFile(String path) {
@@ -177,7 +188,13 @@ public final class FileTools {
         } catch (IOException e) {
             throw new ToolException("cannot write " + path + ": " + e.getMessage());
         }
+        appliedEdits.add(new AppliedEdit(path, creating ? "create" : "edit",
+                lineCount(searchBlock), lineCount(replaceBlock)));
         return (creating ? "created " : "edited ") + path;
+    }
+
+    private static int lineCount(String text) {
+        return (int) text.lines().count();
     }
 
     private static String readOrEmpty(Path file) {

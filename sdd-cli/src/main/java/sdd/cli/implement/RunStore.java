@@ -167,10 +167,9 @@ public final class RunStore {
     }
 
     /**
-     * Persists the agent loop's notable events for one repo to {@code <repo>/agent-events.jsonl}. NOTE:
-     * this is what 4B's {@code StepOutcome.events()} exposes — NOT the design's full model-turn
-     * {@code transcript.jsonl} or structured {@code edits.jsonl}, which need a 4B change to surface the
-     * ContextWindow turns / applied edits and are deferred to a later phase.
+     * Persists the agent loop's notable events for one repo to {@code <repo>/agent-events.jsonl} — terse
+     * breadcrumbs, not the full record. See {@link #writeTranscript} and {@link #writeEdits} for the
+     * design's per-model-call transcript and applied-edit log.
      */
     public void writeAgentEvents(Path runDir, String repo, List<String> events) {
         try {
@@ -181,6 +180,33 @@ public final class RunStore {
                 lines.append(jsonString(event)).append('\n');
             }
             Files.writeString(repoDir.resolve("agent-events.jsonl"), lines.toString());
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** Persists the per-model-call turn transcript (design line 60's {@code transcript.jsonl}) for one
+     *  repo. Unlike {@link #writeAgentEvents}, each line is already a complete JSON object built by
+     *  {@code AgentLoop}/{@code RepoStepRunner} — it is written as-is, not re-encoded as a JSON string. */
+    public void writeTranscript(Path runDir, String repo, List<String> lines) {
+        writeJsonlAsIs(runDir, repo, "transcript.jsonl", lines);
+    }
+
+    /** Persists the successfully-applied-edit log (design line 60's {@code edits.jsonl}) for one repo.
+     *  Each line is already a complete JSON object; see {@link #writeTranscript}. */
+    public void writeEdits(Path runDir, String repo, List<String> lines) {
+        writeJsonlAsIs(runDir, repo, "edits.jsonl", lines);
+    }
+
+    private void writeJsonlAsIs(Path runDir, String repo, String fileName, List<String> lines) {
+        try {
+            Path repoDir = runDir.resolve(sanitize(repo));
+            Files.createDirectories(repoDir);
+            StringBuilder out = new StringBuilder();
+            for (String line : lines) {
+                out.append(line).append('\n');
+            }
+            Files.writeString(repoDir.resolve(fileName), out.toString());
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
