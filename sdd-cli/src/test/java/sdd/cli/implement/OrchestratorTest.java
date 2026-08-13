@@ -172,7 +172,7 @@ class OrchestratorTest {
 
     @Test
     void infraFailurePausesTheRunAtExit3() throws Exception {
-        FixtureRepo lib = repoWith("lib", "echo 'Could not resolve com.acme:x'; exit 1");
+        FixtureRepo lib = repoWith("lib", "echo 'Could not resolve com.acme:x'; echo 'Connection refused'; exit 1");
         FixtureRepo svc = repoWith("svc", "exit 0");
         Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
         Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()), "svc", step("svc", svc.path()));
@@ -283,7 +283,8 @@ class OrchestratorTest {
     @Test
     void infraClassifiedPublishFailurePausesTheRun() throws Exception {
         FixtureRepo lib = repoWith("lib",
-                "case \"$*\" in *publishToMavenLocal*) echo 'Could not resolve com.acme:x'; exit 1 ;; *) exit 0 ;; esac");
+                "case \"$*\" in *publishToMavenLocal*) echo 'Could not resolve com.acme:x'; "
+                        + "echo 'Connection refused'; exit 1 ;; *) exit 0 ;; esac");
         FixtureRepo svc = repoWith("svc", "exit 0");
         Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
         Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()), "svc", step("svc", svc.path()));
@@ -445,7 +446,8 @@ class OrchestratorTest {
         // Attempt 2: the escalation writes the marker; with it present the stub emits an
         // infra-classified failure — twice (retry-once) -> StepResult.INFRA -> PAUSED_INFRA.
         FixtureRepo lib = repoWith("lib",
-                "if grep -q escalated A.java 2>/dev/null; then echo 'Could not resolve com.acme:x'; exit 1; else exit 1; fi");
+                "if grep -q escalated A.java 2>/dev/null; then echo 'Could not resolve com.acme:x'; "
+                        + "echo 'Connection refused'; exit 1; else exit 1; fi");
         Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
         Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()));
         ScriptedChatModel coderScript = new ScriptedChatModel(List.of(

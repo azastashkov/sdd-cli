@@ -147,7 +147,8 @@ class RepoStepRunnerTest {
 
     @Test
     void transientInfraFailureAtVerifyIsRetriedAndRecovers() throws Exception {
-        gradlew("if [ -f infra-done ]; then exit 0; else touch infra-done; echo 'Could not resolve com.acme:lib:1.0'; exit 1; fi");
+        gradlew("if [ -f infra-done ]; then exit 0; else touch infra-done; "
+                + "echo 'Could not resolve com.acme:lib:1.0'; echo 'Connection refused'; exit 1; fi");
         ScriptedChatModel model = new ScriptedChatModel(List.of(
                 call("1", "done", "{\"result\":\"success\",\"summary\":\"ok\"}")));
 
@@ -158,7 +159,7 @@ class RepoStepRunnerTest {
 
     @Test
     void persistentInfraFailureReturnsInfraWithoutReenteringTheAgent() throws Exception {
-        gradlew("echo 'Could not resolve com.acme:lib:1.0'; exit 1");
+        gradlew("echo 'Could not resolve com.acme:lib:1.0'; echo 'Connection refused'; exit 1");
         ScriptedChatModel model = new ScriptedChatModel(List.of(
                 call("1", "done", "{\"result\":\"success\",\"summary\":\"ok\"}")));
 

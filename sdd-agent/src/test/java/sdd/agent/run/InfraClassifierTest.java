@@ -7,9 +7,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 class InfraClassifierTest {
     @Test
     void matchesEachInfraFamily() {
-        assertThat(InfraClassifier.isInfra("exit 1\n* What went wrong:\nCould not resolve com.acme:lib:1.0.")).isTrue();
-        assertThat(InfraClassifier.isInfra("exit 1\nCould not download guava-33.0.jar")).isTrue();
-        assertThat(InfraClassifier.isInfra("exit 1\nCould not GET 'https://repo.maven.apache.org/...'")).isTrue();
+        // Resolution failures only count as infra when a network cause co-occurs (precision rule).
+        assertThat(InfraClassifier.isInfra(
+                "exit 1\n* What went wrong:\nCould not resolve com.acme:lib:1.0.\nCaused by: java.net.UnknownHostException: repo.maven.apache.org"))
+                .isTrue();
+        assertThat(InfraClassifier.isInfra("exit 1\nCould not download guava-33.0.jar\nConnection refused")).isTrue();
+        assertThat(InfraClassifier.isInfra("exit 1\nCould not GET 'https://repo.maven.apache.org/...'\nConnection reset by peer")).isTrue();
         assertThat(InfraClassifier.isInfra("exit 1\njava.net.UnknownHostException: repo.maven.apache.org")).isTrue();
         assertThat(InfraClassifier.isInfra("exit 1\nConnection refused (Connection refused)")).isTrue();
         assertThat(InfraClassifier.isInfra("exit 1\nConnection reset by peer")).isTrue();
@@ -31,5 +34,25 @@ class InfraClassifierTest {
         assertThat(InfraClassifier.isInfra("exit 0\nBUILD SUCCESSFUL")).isFalse();
         assertThat(InfraClassifier.isInfra("")).isFalse();
         assertThat(InfraClassifier.isInfra("exit 1\nCould not get unknown property 'foo' for root project")).isFalse();
+    }
+
+    @Test
+    void resolutionFailuresWithoutANetworkCauseAreNotInfra() {
+        // Live-smoke false positive: the repository answered and the artifact is absent (agent
+        // bumped to a nonexistent version) — a build/config error, not infrastructure. See the
+        // class javadoc for the incident this precision rule was added for.
+        assertThat(InfraClassifier.isInfra("""
+                FAILURE: Build failed with an exception.
+                Could not determine the dependencies of task ':services:pricing-b:test'.
+                > Could not resolve all dependencies for configuration ':services:pricing-b:testRuntimeClasspath'.
+                   > Could not find com.trading:mock-pricing-venue:0.2.0-SNAPSHOT.
+                """)).isFalse();
+
+        assertThat(InfraClassifier.isInfra(
+                "exit 1\nCould not resolve com.acme:lib\nCaused by: java.net.UnknownHostException: repo.maven.apache.org"))
+                .isTrue();
+        assertThat(InfraClassifier.isInfra(
+                "exit 1\nCould not GET 'https://repo.maven.apache.org/x'\nConnection refused"))
+                .isTrue();
     }
 }
