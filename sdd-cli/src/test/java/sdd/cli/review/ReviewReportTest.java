@@ -48,9 +48,9 @@ class ReviewReportTest {
         PlanModel plan = planWithContracts(2);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "interface",
-                        ContractRecheck.Status.MATCHES, ""),
+                        ContractRecheck.Status.MATCHES, "", "main"),
                 new ContractRecheck.Finding("contract-1", "lib", "interface",
-                        ContractRecheck.Status.MATCHES, ""));
+                        ContractRecheck.Status.MATCHES, "", "main"));
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), findings, "runbook", false);
@@ -67,9 +67,9 @@ class ReviewReportTest {
         PlanModel plan = planWithContracts(2);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "interface",
-                        ContractRecheck.Status.MATCHES, ""),
+                        ContractRecheck.Status.MATCHES, "", "main"),
                 new ContractRecheck.Finding("contract-1", "lib", "interface",
-                        ContractRecheck.Status.DRIFTED, "bodies differ"));
+                        ContractRecheck.Status.DRIFTED, "bodies differ", "main"));
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), findings, "runbook", false);
@@ -86,11 +86,11 @@ class ReviewReportTest {
         PlanModel plan = planWithContracts(3);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "interface",
-                        ContractRecheck.Status.MATCHES, ""),
+                        ContractRecheck.Status.MATCHES, "", "main"),
                 new ContractRecheck.Finding("contract-1", "lib", "interface",
-                        ContractRecheck.Status.DRIFTED, "bodies differ"),
+                        ContractRecheck.Status.DRIFTED, "bodies differ", "main"),
                 new ContractRecheck.Finding("contract-2", "lib", "interface",
-                        ContractRecheck.Status.MISSING_RECORD, "no record"));
+                        ContractRecheck.Status.MISSING_RECORD, "no record", "main"));
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), findings, "runbook", false);

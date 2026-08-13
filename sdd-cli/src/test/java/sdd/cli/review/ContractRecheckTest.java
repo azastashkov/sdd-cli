@@ -8,6 +8,7 @@ import sdd.cli.implement.RepoRun;
 import sdd.cli.implement.RepoState;
 import sdd.cli.implement.RunState;
 import sdd.cli.implement.RunStore;
+import sdd.core.testing.FixtureRepo;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,11 +22,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ContractRecheckTest {
     @TempDir Path ws;
 
+    // check() now reads the provider's current branch (for Finding.extractedFrom), so every
+    // provider root used in these tests must be a real git repo, not a bare directory.
     private Path libWith(String source) throws Exception {
-        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme"));
-        Files.writeString(root.resolve("Api.java"),
-                "package com.acme;\npublic class Api { " + source + " }\n");
-        return ws.resolve("lib");
+        return FixtureRepo.in(ws, "lib")
+                .file("src/main/java/com/acme/Api.java",
+                        "package com.acme;\npublic class Api { " + source + " }\n")
+                .path();
     }
 
     private static PlanModel plan(PlanModel.PlanContract contract) {
@@ -108,9 +111,9 @@ class ContractRecheckTest {
     }
 
     private Path hugeLib(String lastReturnType) throws Exception {
-        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme"));
-        Files.writeString(root.resolve("Huge.java"), hugeSource(lastReturnType));
-        return ws.resolve("lib");
+        return FixtureRepo.in(ws, "lib")
+                .file("src/main/java/com/acme/Huge.java", hugeSource(lastReturnType))
+                .path();
     }
 
     @Test
@@ -136,12 +139,12 @@ class ContractRecheckTest {
     }
 
     private Path libWithTwoTypes() throws Exception {
-        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme"));
-        Files.writeString(root.resolve("Alpha.java"),
-                "package com.acme;\npublic class Alpha { public int a(int x) { return x; } }\n");
-        Files.writeString(root.resolve("Beta.java"),
-                "package com.acme;\npublic class Beta { public int b(int x) { return x; } }\n");
-        return ws.resolve("lib");
+        return FixtureRepo.in(ws, "lib")
+                .file("src/main/java/com/acme/Alpha.java",
+                        "package com.acme;\npublic class Alpha { public int a(int x) { return x; } }\n")
+                .file("src/main/java/com/acme/Beta.java",
+                        "package com.acme;\npublic class Beta { public int b(int x) { return x; } }\n")
+                .path();
     }
 
     @Test

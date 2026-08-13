@@ -3,6 +3,7 @@ package sdd.cli.review;
 import sdd.cli.implement.ContractActualizer;
 import sdd.cli.implement.PlanModel;
 import sdd.cli.implement.RepoState;
+import sdd.cli.implement.RunGit;
 import sdd.cli.implement.RunState;
 import sdd.cli.implement.RunStore;
 
@@ -20,8 +21,15 @@ import java.util.Map;
 public final class ContractRecheck {
     public enum Status { MATCHES, TRUNCATED_MATCH, DRIFTED, MISSING_RECORD, NOT_EXTRACTABLE }
 
+    /**
+     * {@code extractedFrom} is the provider's {@code RunGit.currentBranch} at extraction time
+     * ({@code "detached:<sha>"} when empty). Under a rebuild pass it's the checkpoint branch;
+     * under {@code --no-rebuild} nothing is checked out first, so it's whatever branch the human
+     * was standing on — recording it turns an otherwise-inexplicable DRIFTED into something
+     * adjudicable.
+     */
     public record Finding(String contractId, String provider, String kind, Status status,
-                          String detail) {
+                          String detail, String extractedFrom) {
     }
 
     private ContractRecheck() {
@@ -39,8 +47,11 @@ public final class ContractRecheck {
             }
         }
         Map<String, Map<String, String>> freshByProvider = new LinkedHashMap<>();
-        byProvider.forEach((provider, contracts) -> freshByProvider.put(provider,
-                ContractActualizer.actualize(repoPaths.get(provider), contracts)));
+        Map<String, String> extractedFromByProvider = new LinkedHashMap<>();
+        byProvider.forEach((provider, contracts) -> {
+            freshByProvider.put(provider, ContractActualizer.actualize(repoPaths.get(provider), contracts));
+            extractedFromByProvider.put(provider, currentPosition(repoPaths.get(provider)));
+        });
 
         List<Finding> findings = new ArrayList<>();
         for (PlanModel.PlanContract contract : plan.contracts()) {
@@ -50,19 +61,22 @@ public final class ContractRecheck {
             if (repoPaths.get(contract.provider()) == null) {
                 findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
                         Status.NOT_EXTRACTABLE,
-                        "provider " + contract.provider() + " has no checkout path in the knowledge base"));
+                        "provider " + contract.provider() + " has no checkout path in the knowledge base",
+                        null));
                 continue;
             }
+            String extractedFrom = extractedFromByProvider.get(contract.provider());
             String fresh = freshByProvider.get(contract.provider()).get(contract.id());
             String recorded = store.readContract(runDir, contract.id());
             if (fresh == null || fresh.isBlank()) {
                 findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
                         Status.NOT_EXTRACTABLE,
-                        "nothing extractable for kind " + contract.kind() + " in " + contract.provider()));
+                        "nothing extractable for kind " + contract.kind() + " in " + contract.provider(),
+                        extractedFrom));
             } else if (recorded == null) {
                 findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
                         Status.MISSING_RECORD,
-                        "no actualized contract was recorded for this provider"));
+                        "no actualized contract was recorded for this provider", extractedFrom));
             } else {
                 List<String> freshNorm = normalize(fresh);
                 List<String> recordedNorm = normalize(recorded);
@@ -77,14 +91,22 @@ public final class ContractRecheck {
                             truncated
                                     ? "bodies match up to the 4000-char actualization cap"
                                             + " — drift beyond the cap cannot be detected"
-                                    : ""));
+                                    : "",
+                            extractedFrom));
                 } else {
                     findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
-                            Status.DRIFTED, summarize(recordedNorm, freshNorm)));
+                            Status.DRIFTED, summarize(recordedNorm, freshNorm), extractedFrom));
                 }
             }
         }
         return findings;
+    }
+
+    /** Mirrors the rebuild pass's {@code originalPositions} convention exactly, so a finding's
+     *  {@code extractedFrom} reads the same way a restore target would. */
+    private static String currentPosition(Path root) {
+        String branch = RunGit.currentBranch(root);
+        return branch.isEmpty() ? "detached:" + RunGit.head(root) : branch;
     }
 
     private static boolean endsWithTruncationMarker(List<String> normalized) {
