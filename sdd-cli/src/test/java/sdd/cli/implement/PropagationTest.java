@@ -73,4 +73,18 @@ class PropagationTest {
                         "--include-build", "/w/b",
                         "--include-build", "/w/core");
     }
+
+    @Test
+    void mavenLocalArgsPresentWhenAnyEdgeFellBackToMavenLocal() {
+        Path script = Path.of("/run/maven-local-init.gradle");
+        assertThat(Propagation.mavenLocalArgs(EDGES, script))
+                .containsExactly("--init-script", "/run/maven-local-init.gradle");
+    }
+
+    @Test
+    void mavenLocalArgsEmptyWhenNoMavenLocalEdges() {
+        List<PlanModel.PlanEdge> edges = List.of(
+                new PlanModel.PlanEdge("svc", "lib", "SNAPSHOT", "INCLUDE_BUILD"));
+        assertThat(Propagation.mavenLocalArgs(edges, Path.of("/run/i.gradle"))).isEmpty();
+    }
 }

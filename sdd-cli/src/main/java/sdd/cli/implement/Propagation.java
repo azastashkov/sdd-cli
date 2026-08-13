@@ -18,8 +18,8 @@ import java.util.Set;
  * direct providers: Gradle composite substitution is global across a composite, so if a direct provider
  * itself has an INCLUDE_BUILD provider (a 3-tier chain), that provider's provider must be included too, or
  * the direct provider builds inside the consumer's composite against a stale binary of its own dependency.
- * A MAVEN_LOCAL (or other non-INCLUDE_BUILD) hop breaks the chain at that point. MAVEN_LOCAL / NONE edges
- * and the version-bump path are 4C-2b.
+ * A MAVEN_LOCAL (or other non-INCLUDE_BUILD) hop breaks the chain at that point. NONE edges inject
+ * nothing; BOM declaration-site bumps are deferred until the KB records declaration sites.
  */
 public final class Propagation {
     private Propagation() {
@@ -58,5 +58,19 @@ public final class Propagation {
             args.add(provider.toAbsolutePath().toString());
         }
         return args;
+    }
+
+    /** Invocation-global init-script flag: present when ANY plan edge fell back to MAVEN_LOCAL.
+     *  Applied to every repo's Gradle calls, not just direct consumers — init scripts are the only
+     *  channel that reaches included builds inside a composite (an INCLUDE_BUILD consumer whose
+     *  provider has its own MAVEN_LOCAL provider), and an appended local maven repo is inert for
+     *  builds that never request a planned version. */
+    public static List<String> mavenLocalArgs(List<PlanModel.PlanEdge> edges, Path initScript) {
+        for (PlanModel.PlanEdge edge : edges) {
+            if ("MAVEN_LOCAL".equals(edge.mechanism())) {
+                return List.of("--init-script", initScript.toAbsolutePath().toString());
+            }
+        }
+        return List.of();
     }
 }
