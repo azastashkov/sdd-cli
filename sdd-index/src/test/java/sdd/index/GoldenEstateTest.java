@@ -2,6 +2,7 @@ package sdd.index;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import sdd.core.config.RunSettings;
 import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
 import sdd.core.testing.FixtureRepo;
@@ -115,7 +116,7 @@ class GoldenEstateTest {
                         """)
                 .commit("init");
 
-        SddConfig config = new SddConfig(ws, "fts", Map.of(), Map.of(), List.of(), Map.of(), List.of());
+        SddConfig config = new SddConfig(ws, "fts", Map.of(), Map.of(), List.of(), Map.of(), List.of(), RunSettings.defaults(), Map.of());
         String actual;
         try (Database db = Database.open(ws)) {
             IndexService.Extractor stubExtractor = repoDir -> {

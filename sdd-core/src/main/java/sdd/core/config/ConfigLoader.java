@@ -102,8 +102,43 @@ public final class ConfigLoader {
             throw new ConfigException("manual_edges must be a list, got: " + manualEdgesNode);
         }
 
+        RunSettings run = RunSettings.defaults();
+        Object runNode = root.get("run");
+        if (runNode instanceof Map<?, ?> rm) {
+            // parseInt/parseLong take (String where, String value) — see the max_tokens/timeout_seconds
+            // pattern in this file; wrap raw node values with String.valueOf.
+            int gradleWorkers = rm.get("gradle_workers") != null
+                    ? parseInt("run.gradle_workers", String.valueOf(rm.get("gradle_workers"))) : run.gradleWorkers();
+            int modelConcurrency = rm.get("model_concurrency") != null
+                    ? parseInt("run.model_concurrency", String.valueOf(rm.get("model_concurrency"))) : run.modelConcurrency();
+            long tokenBudget = rm.get("token_budget") != null
+                    ? parseLong("run.token_budget", String.valueOf(rm.get("token_budget"))) : run.tokenBudget();
+            run = new RunSettings(gradleWorkers, modelConcurrency, tokenBudget);
+        } else if (runNode != null) {
+            throw new ConfigException("run must be a mapping, got: " + runNode);
+        }
+
+        Map<String, List<String>> verificationExclusions = new LinkedHashMap<>();
+        Object exclusionsNode = root.get("verification_exclusions");
+        if (exclusionsNode instanceof Map<?, ?> em) {
+            for (Map.Entry<?, ?> entry : em.entrySet()) {
+                if (!(entry.getValue() instanceof List<?> tasks)) {
+                    throw new ConfigException("verification_exclusions." + entry.getKey()
+                            + " must be a list of task names");
+                }
+                List<String> names = new ArrayList<>();
+                for (Object task : tasks) {
+                    names.add(String.valueOf(task));
+                }
+                verificationExclusions.put(String.valueOf(entry.getKey()), List.copyOf(names));
+            }
+        } else if (exclusionsNode != null) {
+            throw new ConfigException("verification_exclusions must be a mapping, got: " + exclusionsNode);
+        }
+
         return new SddConfig(workspace, retrieval, Map.copyOf(models), Map.copyOf(jdkHomes),
-                excludes, Map.copyOf(artifactOverrides), List.copyOf(manualEdges));
+                excludes, Map.copyOf(artifactOverrides), List.copyOf(manualEdges), run,
+                Map.copyOf(verificationExclusions));
     }
 
     @SuppressWarnings("unchecked")

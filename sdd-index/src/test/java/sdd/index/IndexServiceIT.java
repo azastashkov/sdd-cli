@@ -3,6 +3,7 @@ package sdd.index;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import sdd.core.config.RunSettings;
 import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
 import sdd.index.testing.FixtureGradleRepo;
@@ -19,7 +20,7 @@ class IndexServiceIT {
     @TempDir Path ws;
 
     private SddConfig config() {
-        return new SddConfig(ws, "fts", Map.of(), Map.of(), List.of(), Map.of(), List.of());
+        return new SddConfig(ws, "fts", Map.of(), Map.of(), List.of(), Map.of(), List.of(), RunSettings.defaults(), Map.of());
     }
 
     // Real Gradle builds leave untracked build/.gradle output in the fixture working tree;

@@ -11,4 +11,6 @@ public record SddConfig(
         Map<Integer, Path> jdkHomes,
         List<String> excludes,
         Map<String, String> artifactOverrides,
-        List<ManualEdge> manualEdges) {}
+        List<ManualEdge> manualEdges,
+        RunSettings run,
+        Map<String, List<String>> verificationExclusions) {}

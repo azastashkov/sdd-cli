@@ -2,6 +2,7 @@ package sdd.index;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import sdd.core.config.RunSettings;
 import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
 import sdd.core.llm.ChatMessage;
@@ -26,7 +27,7 @@ class IndexServiceTest {
     @TempDir Path ws;
 
     private SddConfig config() {
-        return new SddConfig(ws, "fts", Map.of(), Map.of(), List.of(), Map.of(), List.of());
+        return new SddConfig(ws, "fts", Map.of(), Map.of(), List.of(), Map.of(), List.of(), RunSettings.defaults(), Map.of());
     }
 
     private static GradleModel.Extract oneModule(String name) {

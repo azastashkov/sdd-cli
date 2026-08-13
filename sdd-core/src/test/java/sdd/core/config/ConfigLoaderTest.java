@@ -217,4 +217,74 @@ class ConfigLoaderTest {
         assertThat(c.manualEdges()).containsExactly(
                 new ManualEdge("svc-orders", "POST", "/pay/charge", "billing-service"));
     }
+
+    @Test
+    void parsesTheRunSection() throws Exception {
+        Path ws = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                run:
+                  gradle_workers: 4
+                  model_concurrency: 1
+                  token_budget: 5000000
+                """);
+        SddConfig config = ConfigLoader.load(ws);
+        assertThat(config.run()).isEqualTo(new RunSettings(4, 1, 5_000_000L));
+    }
+
+    @Test
+    void runSectionDefaultsWhenAbsentOrPartial() throws Exception {
+        Path absent = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                """);
+        assertThat(ConfigLoader.load(absent).run()).isEqualTo(RunSettings.defaults());
+        assertThat(RunSettings.defaults()).isEqualTo(new RunSettings(2, 2, 30_000_000L));
+
+        Path partial = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                run:
+                  gradle_workers: 8
+                """);
+        assertThat(ConfigLoader.load(partial).run()).isEqualTo(new RunSettings(8, 2, 30_000_000L));
+    }
+
+    @Test
+    void nonNumericTokenBudgetFails() throws Exception {
+        Path ws = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                run:
+                  token_budget: lots
+                """);
+        assertThatThrownBy(() -> ConfigLoader.load(ws))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("token_budget");
+    }
+
+    @Test
+    void parsesVerificationExclusions() throws Exception {
+        Path ws = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                verification_exclusions:
+                  legacy-service: [test, check]
+                """);
+        SddConfig config = ConfigLoader.load(ws);
+        assertThat(config.verificationExclusions())
+                .containsEntry("legacy-service", java.util.List.of("test", "check"));
+
+        Path absent = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                """);
+        assertThat(ConfigLoader.load(absent).verificationExclusions()).isEmpty();
+    }
 }
