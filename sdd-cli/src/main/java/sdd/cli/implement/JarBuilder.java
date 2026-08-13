@@ -62,7 +62,14 @@ public final class JarBuilder {
                 output = output.substring(0, MAX_LOG);
             }
             boolean ok = process.exitValue() == 0;
-            List<Path> jars = ok ? collectJars(repoRoot, outDir) : List.of();
+            List<Path> jars = List.of();
+            if (ok) {
+                try {
+                    jars = collectJars(repoRoot, outDir);
+                } catch (IOException e) {
+                    return new Result(false, List.of(), "jar collection failed after exit 0: " + e.getMessage());
+                }
+            }
             return new Result(ok, jars, "exit " + process.exitValue() + "\n" + output);
         } catch (IOException e) {
             return new Result(false, List.of(), "build failed: " + e.getMessage());
@@ -80,28 +87,37 @@ public final class JarBuilder {
         }
     }
 
+    /** A {@code build/libs} directory to scan, tagged with its owning module's directory name
+     * ({@code null} for repoRoot itself, which is scanned first and so never needs disambiguation). */
+    private record LibDir(Path path, String moduleDirName) {
+    }
+
     private static List<Path> collectJars(Path repoRoot, Path outDir) throws IOException {
         Files.createDirectories(outDir);
         List<Path> copied = new ArrayList<>();
-        List<Path> libDirs = new ArrayList<>();
-        libDirs.add(repoRoot.resolve("build/libs"));
+        List<LibDir> libDirs = new ArrayList<>();
+        libDirs.add(new LibDir(repoRoot.resolve("build/libs"), null));
         try (var children = Files.list(repoRoot)) {
             children.filter(Files::isDirectory)
-                    .map(child -> child.resolve("build/libs"))
                     .sorted()
-                    .forEach(libDirs::add);
+                    .forEach(child -> libDirs.add(
+                            new LibDir(child.resolve("build/libs"), child.getFileName().toString())));
         }
-        for (Path libDir : libDirs) {
-            if (!Files.isDirectory(libDir)) {
+        for (LibDir libDir : libDirs) {
+            if (!Files.isDirectory(libDir.path())) {
                 continue;
             }
-            try (var jars = Files.list(libDir)) {
+            try (var jars = Files.list(libDir.path())) {
                 for (Path jar : jars.filter(p -> p.getFileName().toString().endsWith(".jar")).sorted().toList()) {
                     String name = jar.getFileName().toString();
                     if (name.endsWith("-sources.jar") || name.endsWith("-javadoc.jar")) {
                         continue;
                     }
-                    copied.add(Files.copy(jar, outDir.resolve(name), StandardCopyOption.REPLACE_EXISTING));
+                    String targetName = name;
+                    if (libDir.moduleDirName() != null && Files.exists(outDir.resolve(targetName))) {
+                        targetName = libDir.moduleDirName() + "-" + name;
+                    }
+                    copied.add(Files.copy(jar, outDir.resolve(targetName), StandardCopyOption.REPLACE_EXISTING));
                 }
             }
         }

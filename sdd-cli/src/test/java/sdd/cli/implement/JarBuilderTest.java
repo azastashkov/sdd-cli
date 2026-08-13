@@ -43,4 +43,40 @@ class JarBuilderTest {
         assertThat(result.ok()).isFalse();
         assertThat(result.log()).startsWith("exit 1");
     }
+
+    @Test
+    void collidingModuleJarsAreDisambiguatedByModuleDirName() throws Exception {
+        Path repo = repoWith("mkdir -p mod-a/build/libs mod-b/build/libs; "
+                + "printf 'from-a' > mod-a/build/libs/foo-1.0.jar; "
+                + "printf 'from-b' > mod-b/build/libs/foo-1.0.jar; exit 0");
+        Path out = ws.resolve("out");
+
+        JarBuilder.Result result = new JarBuilder().build(repo, null, out);
+
+        assertThat(result.ok()).isTrue();
+        assertThat(result.jars()).containsExactlyInAnyOrder(
+                out.resolve("foo-1.0.jar"), out.resolve("mod-b-foo-1.0.jar"));
+        assertThat(Files.readString(out.resolve("foo-1.0.jar"))).isEqualTo("from-a");
+        assertThat(Files.readString(out.resolve("mod-b-foo-1.0.jar"))).isEqualTo("from-b");
+    }
+
+    @Test
+    void jarCollectionFailureAfterSuccessfulBuildDoesNotMaskBuildLog() throws Exception {
+        Path repo = repoWith("mkdir -p build/libs; touch build/libs/lib-1.0.jar; echo done; exit 0");
+        Path out = ws.resolve("blocked-out");
+        Files.writeString(out, "not a directory");
+
+        JarBuilder.Result result = new JarBuilder().build(repo, null, out);
+
+        assertThat(result.ok()).isFalse();
+        assertThat(result.log()).contains("jar collection failed after exit 0");
+    }
+
+    @Test
+    void missingWrapperFailsWithoutRunningAnything() {
+        JarBuilder.Result result = new JarBuilder().build(ws.resolve("nowhere"), null, ws.resolve("out"));
+
+        assertThat(result.ok()).isFalse();
+        assertThat(result.log()).contains("no gradle wrapper");
+    }
 }
