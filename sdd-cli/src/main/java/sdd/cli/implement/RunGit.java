@@ -2,10 +2,19 @@ package sdd.cli.implement;
 
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ResetCommand;
+import org.eclipse.jgit.diff.DiffEntry;
+import org.eclipse.jgit.diff.DiffFormatter;
+import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.eclipse.jgit.lib.Ref;
+import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.revwalk.RevWalk;
+import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.List;
 
 /**
  * The orchestrator's write-capable git facade (design: orchestrator owns git via JGit —
@@ -80,6 +89,81 @@ public final class RunGit {
             git.reset().setMode(ResetCommand.ResetType.HARD).setRef(sha).call();
         } catch (Exception e) {
             throw new IllegalStateException("cannot reset " + repo + " to " + sha + ": " + e.getMessage(), e);
+        }
+    }
+
+    /** Per-file line counts for a commit-to-commit diff (Gate-2 report input). */
+    public record DiffStat(int filesChanged, int insertions, int deletions) {
+    }
+
+    /** Unified diff between two commits; empty when the trees are identical. */
+    public static String diff(Path repo, String fromSha, String toSha) {
+        try (Git git = Git.open(repo.toFile());
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Repository repository = git.getRepository();
+            try (RevWalk walk = new RevWalk(repository);
+                 DiffFormatter formatter = new DiffFormatter(out)) {
+                formatter.setRepository(repository);
+                formatter.format(entries(repository, walk, formatter, fromSha, toSha));
+            }
+            return out.toString(StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            throw new IllegalStateException("cannot diff " + repo + " " + fromSha + ".." + toSha
+                    + ": " + e.getMessage(), e);
+        }
+    }
+
+    public static DiffStat diffStat(Path repo, String fromSha, String toSha) {
+        try (Git git = Git.open(repo.toFile());
+             ByteArrayOutputStream sink = new ByteArrayOutputStream()) {
+            Repository repository = git.getRepository();
+            try (RevWalk walk = new RevWalk(repository);
+                 DiffFormatter formatter = new DiffFormatter(sink)) {
+                formatter.setRepository(repository);
+                List<DiffEntry> entries = entries(repository, walk, formatter, fromSha, toSha);
+                int insertions = 0;
+                int deletions = 0;
+                for (DiffEntry entry : entries) {
+                    for (var edit : formatter.toFileHeader(entry).toEditList()) {
+                        insertions += edit.getEndB() - edit.getBeginB();
+                        deletions += edit.getEndA() - edit.getBeginA();
+                    }
+                }
+                return new DiffStat(entries.size(), insertions, deletions);
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("cannot diffstat " + repo + ": " + e.getMessage(), e);
+        }
+    }
+
+    private static List<DiffEntry> entries(Repository repository, RevWalk walk,
+                                           DiffFormatter formatter, String fromSha, String toSha)
+            throws java.io.IOException {
+        CanonicalTreeParser from = new CanonicalTreeParser();
+        from.reset(walk.getObjectReader(), walk.parseCommit(ObjectId.fromString(fromSha)).getTree());
+        CanonicalTreeParser to = new CanonicalTreeParser();
+        to.reset(walk.getObjectReader(), walk.parseCommit(ObjectId.fromString(toSha)).getTree());
+        return formatter.scan(from, to);
+    }
+
+    /** The checked-out branch, or "" when detached. */
+    public static String currentBranch(Path repo) {
+        try (Git git = Git.open(repo.toFile())) {
+            String branch = git.getRepository().getBranch();
+            return branch == null || ObjectId.isId(branch) ? "" : branch;
+        } catch (Exception e) {
+            throw new IllegalStateException("cannot read branch of " + repo + ": " + e.getMessage(), e);
+        }
+    }
+
+    /** Plain checkout — deliberately NO reset and NO clean (unlike startBranch), so review can
+     *  visit a checkpoint and return the estate exactly as it found it. */
+    public static void checkout(Path repo, String branch) {
+        try (Git git = Git.open(repo.toFile())) {
+            git.checkout().setName(branch).call();
+        } catch (Exception e) {
+            throw new IllegalStateException("cannot checkout " + branch + " in " + repo + ": "
+                    + e.getMessage(), e);
         }
     }
 }

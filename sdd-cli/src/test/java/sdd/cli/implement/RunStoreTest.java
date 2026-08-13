@@ -167,4 +167,17 @@ class RunStoreTest {
         assertThat(store.readContract(runDir, "c1/api")).isEqualTo("actual body");
         assertThat(store.readContract(runDir, "ghost")).isNull();
     }
+
+    @Test
+    void reviewArtifactsLandUnderTheReviewDir() {
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+
+        store.writeReview(runDir, "report.md", "# Report\n");
+        store.writeReview(runDir, "grp/lib.diff", "diff --git\n");
+
+        assertThat(store.reviewDir(runDir)).isEqualTo(runDir.resolve("review"));
+        assertThat(runDir.resolve("review/report.md")).hasContent("# Report\n");
+        assertThat(runDir.resolve("review/grp-lib.diff")).exists();   // sanitized
+    }
 }

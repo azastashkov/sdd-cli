@@ -280,6 +280,20 @@ public final class RunStore {
         }
     }
 
+    public Path reviewDir(Path runDir) {
+        return runDir.resolve("review");
+    }
+
+    /** Gate-2 artifacts (design line 67). File names are sanitized like per-repo directories. */
+    public void writeReview(Path runDir, String fileName, String content) {
+        try {
+            Path dir = Files.createDirectories(reviewDir(runDir));
+            Files.writeString(dir.resolve(sanitize(fileName)), content);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
     private static String sanitize(String name) {
         return name.replaceAll("[^A-Za-z0-9._-]", "-");
     }
