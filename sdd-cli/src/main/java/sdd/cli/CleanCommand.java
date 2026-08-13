@@ -96,9 +96,9 @@ public final class CleanCommand implements Callable<Integer> {
                 }
                 anythingListed |= cleanOne(runDir, store, repoPaths, out, err, failures);
             }
-            if (anyLocked) {
-                return 4;
-            }
+            // Diagnostics for the runs that COULD be processed must reach the human even when
+            // another run was locked — a locked sibling forcing exit 4 must not silently swallow a
+            // genuine per-repo failure (or the "nothing else to report" line) from an unlocked one.
             if (!anythingListed) {
                 out.println("nothing to clean");
             }
@@ -107,9 +107,11 @@ public final class CleanCommand implements Callable<Integer> {
                 for (String failure : failures) {
                     err.println("  " + failure);
                 }
-                return 2;
             }
-            return 0;
+            if (anyLocked) {
+                return 4;
+            }
+            return failures.isEmpty() ? 0 : 2;
         } catch (RuntimeException | IOException e) {
             err.println("error: " + e.getMessage());
             return 4;

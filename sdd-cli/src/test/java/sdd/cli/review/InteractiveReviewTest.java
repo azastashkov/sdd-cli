@@ -178,10 +178,12 @@ class InteractiveReviewTest {
         assertThat(outSw.toString()).contains("review written:");
         assertThat(f.runDir().resolve("review/report.md")).exists();
 
-        // Both decisions reached events.jsonl, not just decisions.json.
+        // Both decisions reached events.jsonl, not just decisions.json — asserted against the
+        // single record (repo + from + to together) so a crossed decision between a and b would
+        // fail this rather than pass on two independently-true substrings.
         String events = Files.readString(f.runDir().resolve("events.jsonl"));
-        assertThat(events).contains("APPROVED").contains("\"repo\":\"a\"");
-        assertThat(events).contains("REJECTED").contains("\"repo\":\"b\"");
+        assertThat(events).contains("\"repo\":\"a\",\"from\":\"PENDING\",\"to\":\"APPROVED\"");
+        assertThat(events).contains("\"repo\":\"b\",\"from\":\"PENDING\",\"to\":\"REJECTED\"");
     }
 
     @Test

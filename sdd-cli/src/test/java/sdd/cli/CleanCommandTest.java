@@ -250,6 +250,71 @@ class CleanCommandTest {
         assertThat(f.runDir()).exists();
     }
 
+    /** A second, independent run (different spec id, different repo) alongside {@link #fixture}'s —
+     *  its one repo is REJECTED with its KB path already broken, so a {@code --force} pass over it
+     *  hits a genuine per-repo failure rather than succeeding. */
+    private Path secondRunWithARealPerRepoFailure() throws Exception {
+        String branch = "sdd/SPEC-10-v1/other";
+        FixtureRepo other = FixtureRepo.in(ws, "other").file("O.java", "class O {}\n").commit("base");
+        String otherBase = other.headSha();
+        RunGit.startBranch(other.path(), branch, otherBase);
+        other.file("O.java", "class O { int x; }\n").commit("sdd: checkpoint");
+        String otherCheckpoint = other.headSha();
+
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute("INSERT INTO repo(name, path, kind) VALUES ('other', ?, 'SERVICE')",
+                    other.path().toString()));
+        }
+        String planJson = """
+                { "spec_id":"SPEC-10","plan_version":1,"spec_sha256":"z","plan_sha256":"z",
+                  "repos":[{"name":"other","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["other"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"other","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["O.java"],"verification":[],"sub_spec":"Add x to O."}] }
+                """.formatted(otherBase);
+        Files.writeString(ws.resolve("s2.plan.json"), planJson);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-10-v1", planJson, "");
+        store.releaseLock(runDir);
+        store.writeState(runDir, new RunState("SPEC-10-v1",
+                List.of(new RepoRun("other", RepoState.SUCCEEDED, branch, otherCheckpoint, "ok")), null, 0L));
+        decide(runDir, Map.of("other", new DecisionRecord(Decision.REJECTED, "")));
+
+        // Broken AFTER decisions are written, so repoPaths() — built once per invocation — simply
+        // never contains 'other', tripping the real "no repo path on record" failure in cleanOne.
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute("DELETE FROM repo WHERE name = 'other'"));
+        }
+        return runDir;
+    }
+
+    @Test
+    void aLockedRunExitsFourButStillReportsAnUnlockedSiblingsRealFailure() throws Exception {
+        Fixture f = fixture();
+        decide(f.runDir(), Map.of(
+                "lib", new DecisionRecord(Decision.APPROVED, ""),
+                "svc", new DecisionRecord(Decision.REJECTED, ""),
+                "aux", new DecisionRecord(Decision.APPROVED, "")));
+        Files.writeString(f.runDir().resolve("lock"), Long.toString(ProcessHandle.current().pid()));
+
+        Path otherRunDir = secondRunWithARealPerRepoFailure();
+
+        Invocation r = exec("--workspace", ws.toString(), "--force");
+
+        // The lock wins the exit code...
+        assertThat(r.exit()).isEqualTo(4);
+        assertThat(r.err()).contains(RUN_ID).contains("in progress (lock held)");
+        // ...but the unlocked sibling's OWN genuine failure must still reach the human, not be
+        // silently discarded just because some other run in the same invocation was locked.
+        assertThat(r.err()).contains("failed:").contains("other");
+        // Neither run was actually mutated: the locked one was never even read, and the unlocked
+        // one's failure blocked its own branch delete and run dir removal.
+        assertThat(RunGit.branchHead(f.svc().path(), SVC_BRANCH)).isNotEmpty();
+        assertThat(f.runDir()).exists();
+        assertThat(otherRunDir).exists();
+    }
+
     @Test
     void perRepoIsolationLetsASiblingCandidateSucceedAndKeepsTheRunDirOnFailure() throws Exception {
         Fixture f = fixture();
