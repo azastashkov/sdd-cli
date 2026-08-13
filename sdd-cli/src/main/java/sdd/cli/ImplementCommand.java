@@ -36,7 +36,8 @@ import java.util.concurrent.Callable;
 import java.util.function.Function;
 
 @Command(name = "implement",
-        description = "Execute an approved plan.json across the estate (single attempt per repo)")
+        description = "Execute an approved plan.json across the estate (single attempt per repo)",
+        exitCodeOnInvalidInput = 4)
 public final class ImplementCommand implements Callable<Integer> {
     private static final long RUN_TOKEN_BUDGET = 30_000_000L;   // design line 59; sdd.yml override is 4C-3b
 
@@ -63,6 +64,7 @@ public final class ImplementCommand implements Callable<Integer> {
             }
             String planText = Files.readString(planJsonPath);
             PlanModel plan = PlanJsonReader.read(planText);
+            PlanJsonReader.validate(plan);
             Path specPath = planJsonPath.resolveSibling(
                     name.substring(0, name.length() - ".plan.json".length()) + ".md");
             String specText = Files.readString(specPath);
@@ -110,7 +112,7 @@ public final class ImplementCommand implements Callable<Integer> {
 
                 String runId = sanitize(plan.specId()) + "-v" + plan.planVersion();
                 RunStore store = RunStore.system();
-                Path runDir = store.create(workspace, runId, planText);
+                Path runDir = store.create(workspace, runId, planText, specText);
                 Orchestrator orchestrator = new Orchestrator(new RepoStepRunner(jdbi), coder, coderName,
                         escalation, escalationName, settingsFor, store, RUN_TOKEN_BUDGET);
                 Orchestrator.RunResult result = orchestrator.run(runDir, plan, steps);

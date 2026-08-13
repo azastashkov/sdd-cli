@@ -2,7 +2,10 @@ package sdd.cli.implement;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PlanJsonReaderTest {
     private static final String PLAN = """
@@ -66,5 +69,44 @@ class PlanJsonReaderTest {
         assertThat(plan.planVersion()).isEqualTo(2);
         assertThat(plan.edges()).isEmpty();
         assertThat(plan.contracts()).isEmpty();
+    }
+
+    @Test
+    void validateRejectsAStepWhoseRepoIsMissingFromOrder() {
+        PlanModel plan = new PlanModel("S", 1, "", "",
+                List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", "a")),
+                List.of(List.of("lib")), List.of(), List.of(),
+                List.of(new PlanModel.PlanStep("ghost", List.of(), "patch", List.of(), List.of(),
+                        List.of(), List.of(), "x")));
+        assertThatThrownBy(() -> PlanJsonReader.validate(plan))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ghost").hasMessageContaining("order");
+    }
+
+    @Test
+    void validateRejectsADuplicateOrderEntry() {
+        PlanModel plan = new PlanModel("S", 1, "", "",
+                List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", "a")),
+                List.of(List.of("lib"), List.of("lib")), List.of(), List.of(), List.of());
+        assertThatThrownBy(() -> PlanJsonReader.validate(plan))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("lib").hasMessageContaining("twice");
+    }
+
+    @Test
+    void validateRejectsAnEdgeNamingAnUnknownRepo() {
+        PlanModel plan = new PlanModel("S", 1, "", "",
+                List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", "a")),
+                List.of(List.of("lib")),
+                List.of(new PlanModel.PlanEdge("lib", "ghost", "SNAPSHOT", "INCLUDE_BUILD")),
+                List.of(), List.of());
+        assertThatThrownBy(() -> PlanJsonReader.validate(plan))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ghost");
+    }
+
+    @Test
+    void validateAcceptsTheCanonicalFixture() {
+        PlanJsonReader.validate(PlanJsonReader.read(PlanJsonReaderTestFixture.PLAN));   // must not throw
     }
 }

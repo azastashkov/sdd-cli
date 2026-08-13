@@ -92,5 +92,12 @@ class ImplementCommandTest {
         assertThat(out.toString()).contains("lib").contains("SUCCEEDED");
         assertThat(Files.exists(ws.resolve(".sdd/runs/SPEC-101-v1/state.json"))).isTrue();
         assertThat(Files.readString(lib.path().resolve("A.java"))).contains("int x;");
+        assertThat(ws.resolve(".sdd/runs/SPEC-101-v1/spec.md")).exists();
+    }
+
+    @Test
+    void unknownOptionAbortsWithExitFour() {
+        int exit = new CommandLine(new ImplementCommand()).execute("--no-such-flag");
+        assertThat(exit).isEqualTo(4);
     }
 }

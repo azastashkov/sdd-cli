@@ -27,6 +27,10 @@ public final class RunStore {
     }
 
     public Path create(Path workspace, String runId, String planJson) {
+        return create(workspace, runId, planJson, "");
+    }
+
+    public Path create(Path workspace, String runId, String planJson, String specText) {
         Path runDir = workspace.resolve(".sdd/runs/" + runId);
         try {
             Files.createDirectories(runDir);
@@ -38,6 +42,7 @@ public final class RunStore {
                         + lock + "); remove the lock to override");
             }
             Files.writeString(runDir.resolve("plan.json"), planJson);
+            Files.writeString(runDir.resolve("spec.md"), specText);
             return runDir;
         } catch (IOException e) {
             throw new UncheckedIOException(e);

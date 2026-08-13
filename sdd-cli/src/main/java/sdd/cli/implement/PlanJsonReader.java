@@ -66,4 +66,36 @@ public final class PlanJsonReader {
         }
         return out;
     }
+
+    /** Cross-field sanity for a (possibly hand-edited) plan.json. Throws IllegalArgumentException
+     *  naming the first defect; PlanJsonReader.read stays parse-only. */
+    public static void validate(PlanModel plan) {
+        java.util.Set<String> known = new java.util.HashSet<>();
+        for (PlanModel.PlanRepo repo : plan.repos()) {
+            known.add(repo.name());
+        }
+        java.util.Set<String> ordered = new java.util.HashSet<>();
+        for (java.util.List<String> level : plan.order()) {
+            for (String repo : level) {
+                if (!ordered.add(repo)) {
+                    throw new IllegalArgumentException("plan.json order lists " + repo + " twice");
+                }
+                if (!known.contains(repo)) {
+                    throw new IllegalArgumentException("plan.json order names unknown repo " + repo);
+                }
+            }
+        }
+        for (PlanModel.PlanStep step : plan.steps()) {
+            if (!ordered.contains(step.repo())) {
+                throw new IllegalArgumentException("plan.json step for " + step.repo()
+                        + " is missing from order — it would be silently skipped");
+            }
+        }
+        for (PlanModel.PlanEdge edge : plan.edges()) {
+            if (!known.contains(edge.fromRepo()) || !known.contains(edge.toRepo())) {
+                throw new IllegalArgumentException("plan.json edge " + edge.fromRepo() + " -> "
+                        + edge.toRepo() + " names a repo missing from repos[]");
+            }
+        }
+    }
 }
