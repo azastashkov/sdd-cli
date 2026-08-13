@@ -13,6 +13,7 @@ tomlj = "1.1.1"
 slf4j-nop = "2.0.13"
 javaparser = "3.26.2"
 jsoup = "1.18.3"
+japicmp = "0.23.1"
 
 [libraries]
 picocli = { module = "info.picocli:picocli", version.ref = "picocli" }
@@ -30,6 +31,7 @@ tomlj = { module = "org.tomlj:tomlj", version.ref = "tomlj" }
 slf4j-nop = { module = "org.slf4j:slf4j-nop", version.ref = "slf4j-nop" }
 javaparser-symbol-solver = { module = "com.github.javaparser:javaparser-symbol-solver-core", version.ref = "javaparser" }
 jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
+japicmp = { module = "com.github.siom79.japicmp:japicmp", version.ref = "japicmp" }
 
 [bundles]
 test = ["junit-jupiter", "assertj"]

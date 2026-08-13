@@ -15,6 +15,7 @@ dependencies {
     // right one, so the class needs to be visible at compile time even though it is unused
     // at runtime.
     compileOnly(libs.javaparser.symbol.solver)
+    implementation(libs.japicmp)
     testImplementation(libs.bundles.test)
     testRuntimeOnly(libs.junit.launcher)
     testImplementation(libs.wiremock)
