@@ -88,7 +88,7 @@ public final class ImplementCommand implements Callable<Integer> {
         while (true) {
             Integer exit = runPlan(out, err);
             if (exit == 3 && waitEndpoint && lastPausedReason != null
-                    && lastPausedReason.contains("endpoint")) {
+                    && lastPausedReason.startsWith("model endpoint unavailable")) {
                 waitForEndpoints(out);
                 resume = true;   // state.json now exists; re-enter through the snapshot path
                 continue;

@@ -79,6 +79,34 @@ class SchedulerTest {
     }
 
     @Test
+    void sameLayerConsumersSharingAnIncludeBuildProviderAreMergedIntoOneUnit() {
+        List<List<String>> order = List.of(List.of("lib"), List.of("svcA"), List.of("svcB"));
+        List<PlanModel.PlanEdge> edges = List.of(
+                new PlanModel.PlanEdge("svcA", "lib", "SNAPSHOT", "INCLUDE_BUILD"),
+                new PlanModel.PlanEdge("svcB", "lib", "SNAPSHOT", "INCLUDE_BUILD"));
+
+        List<List<List<String>>> layers = Scheduler.levels(order, edges);
+
+        assertThat(layers).containsExactly(
+                List.of(List.of("lib")),
+                List.of(List.of("svcA", "svcB")));   // merged: shared include-build closure {lib}
+    }
+
+    @Test
+    void mavenLocalConsumersOfOneProviderStayParallel() {
+        List<List<String>> order = List.of(List.of("lib"), List.of("svcA"), List.of("svcB"));
+        List<PlanModel.PlanEdge> edges = List.of(
+                new PlanModel.PlanEdge("svcA", "lib", "PINNED", "MAVEN_LOCAL"),
+                new PlanModel.PlanEdge("svcB", "lib", "PINNED", "MAVEN_LOCAL"));
+
+        List<List<List<String>>> layers = Scheduler.levels(order, edges);
+
+        assertThat(layers).containsExactly(
+                List.of(List.of("lib")),
+                List.of(List.of("svcA"), List.of("svcB")));   // m2 resolution is read-only: parallel OK
+    }
+
+    @Test
     void levelsWithNoEdgesIsOneLayer() {
         List<List<String>> order = List.of(List.of("a"), List.of("b"));
         assertThat(Scheduler.levels(order, List.of()))

@@ -56,7 +56,12 @@ public final class Scheduler {
      *  plan.order() is a valid but SERIALIZED topo order (one unit per entry except SCC cycles);
      *  true parallelism is recomputed here from the edges: a layer is every unit whose provider
      *  units have all been placed in earlier layers. Units are atomic — a multi-member cycle unit
-     *  is scheduled as one entry and executed internally sequentially by the orchestrator. */
+     *  is scheduled as one entry and executed internally sequentially by the orchestrator.
+     *  Within a layer, units whose INCLUDE_BUILD closures intersect are MERGED into one unit:
+     *  two same-layer consumers composing the same provider checkout via {@code --include-build}
+     *  would otherwise write that provider's build/.gradle state concurrently. Merged units reuse
+     *  the existing unit-atomicity semantics (internally sequential). MAVEN_LOCAL consumers stay
+     *  parallel — m2 resolution is read-only. */
     public static List<List<List<String>>> levels(List<List<String>> order,
                                                   List<PlanModel.PlanEdge> edges) {
         Map<String, Integer> unitOf = new HashMap<>();
@@ -86,12 +91,70 @@ public final class Scheduler {
             if (ready.isEmpty()) {
                 throw new IllegalStateException("execution order units form a cycle — plan is invalid");
             }
-            for (int i : ready) {
-                layer.add(order.get(i));
-            }
+            layer.addAll(mergeSharedIncludeBuilds(ready, order, edges));
             placed.addAll(ready);
             layers.add(layer);
         }
         return layers;
+    }
+
+    /** Union-find merge of same-layer units whose INCLUDE_BUILD closures intersect. Roots are the
+     *  smallest original unit index, and groups are emitted (and concatenated) in original index
+     *  order, so the result is deterministic. Units with no INCLUDE_BUILD edges keep closure =
+     *  {their own members} and only merge when another unit's closure contains them. */
+    private static List<List<String>> mergeSharedIncludeBuilds(List<Integer> ready,
+                                                               List<List<String>> order,
+                                                               List<PlanModel.PlanEdge> edges) {
+        int n = ready.size();
+        List<Set<String>> closures = new ArrayList<>(n);
+        for (int i : ready) {
+            closures.add(includeBuildClosure(order.get(i), edges));
+        }
+        int[] parent = new int[n];
+        for (int i = 0; i < n; i++) {
+            parent[i] = i;
+        }
+        for (int i = 0; i < n; i++) {
+            for (int j = i + 1; j < n; j++) {
+                if (!java.util.Collections.disjoint(closures.get(i), closures.get(j))) {
+                    int ri = find(parent, i);
+                    int rj = find(parent, j);
+                    if (ri != rj) {
+                        parent[Math.max(ri, rj)] = Math.min(ri, rj);   // smallest index wins → determinism
+                    }
+                }
+            }
+        }
+        Map<Integer, List<String>> merged = new java.util.LinkedHashMap<>();
+        for (int k = 0; k < n; k++) {
+            merged.computeIfAbsent(find(parent, k), r -> new ArrayList<>()).addAll(order.get(ready.get(k)));
+        }
+        return new ArrayList<>(merged.values());
+    }
+
+    private static int find(int[] parent, int i) {
+        while (parent[i] != i) {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        return i;
+    }
+
+    /** Repo names transitively reachable from any unit member over INCLUDE_BUILD edges — the same
+     *  walk as {@code Propagation.includeBuildArgs}, but collecting names and INCLUDING the members
+     *  themselves (a provider merges with a same-layer consumer that composes its checkout). */
+    private static Set<String> includeBuildClosure(List<String> unit, List<PlanModel.PlanEdge> edges) {
+        Set<String> closure = new LinkedHashSet<>(unit);
+        Deque<String> queue = new ArrayDeque<>(unit);
+        while (!queue.isEmpty()) {
+            String current = queue.poll();
+            for (PlanModel.PlanEdge edge : edges) {
+                if (edge.fromRepo().equals(current) && "INCLUDE_BUILD".equals(edge.mechanism())
+                        && closure.add(edge.toRepo())) {
+                    queue.add(edge.toRepo());
+                }
+            }
+        }
+        return closure;
     }
 }

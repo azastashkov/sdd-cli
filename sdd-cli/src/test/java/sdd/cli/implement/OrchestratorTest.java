@@ -358,6 +358,50 @@ class OrchestratorTest {
         assertThat(result.state().stateOf("blib")).isEqualTo(RepoState.SUCCEEDED);
     }
 
+    private static PlanModel planSharedIncludeBuildProvider(String libBase, String aBase, String bBase) {
+        return new PlanModel("S", 1, "", "",
+                List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", libBase),
+                        new PlanModel.PlanRepo("svcA", "dependent", "CODE_CHANGE_LIKELY", "patch", aBase),
+                        new PlanModel.PlanRepo("svcB", "dependent", "CODE_CHANGE_LIKELY", "patch", bBase)),
+                List.of(List.of("lib"), List.of("svcA"), List.of("svcB")),
+                List.of(new PlanModel.PlanEdge("svcA", "lib", "SNAPSHOT", "INCLUDE_BUILD"),
+                        new PlanModel.PlanEdge("svcB", "lib", "SNAPSHOT", "INCLUDE_BUILD")),
+                List.of(), List.of());
+    }
+
+    @Test
+    void consumersSharingAnIncludeBuildProviderNeverOverlap() throws Exception {
+        // Inverse of independentReposRunConcurrentlyWithinALayer: svcA/svcB share lib's checkout via
+        // --include-build, so the merged unit must SERIALIZE them. Each verify stub raises its own
+        // "running" flag, sleeps, and records an overlap marker if it ever sees the other's flag.
+        String scriptA = "touch " + ws.resolve("svcA.running") + "; "
+                + "[ -f " + ws.resolve("svcB.running") + " ] && touch " + ws.resolve("overlap") + "; "
+                + "sleep 0.3; "
+                + "[ -f " + ws.resolve("svcB.running") + " ] && touch " + ws.resolve("overlap") + "; "
+                + "rm -f " + ws.resolve("svcA.running") + "; exit 0";
+        String scriptB = "touch " + ws.resolve("svcB.running") + "; "
+                + "[ -f " + ws.resolve("svcA.running") + " ] && touch " + ws.resolve("overlap") + "; "
+                + "sleep 0.3; "
+                + "[ -f " + ws.resolve("svcA.running") + " ] && touch " + ws.resolve("overlap") + "; "
+                + "rm -f " + ws.resolve("svcB.running") + "; exit 0";
+        FixtureRepo lib = repoWith("lib", "exit 0");
+        FixtureRepo svcA = repoWith("svcA", scriptA);
+        FixtureRepo svcB = repoWith("svcB", scriptB);
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()),
+                "svcA", step("svcA", svcA.path()), "svcB", step("svcB", svcB.path()));
+        ChatModel parallelSafe = req -> call("x", "done", "{\"result\":\"success\",\"summary\":\"ok\"}");
+
+        Orchestrator.RunResult result = orchestrator(parallelSafe, parallelSafe)
+                .run(runDir, planSharedIncludeBuildProvider(lib.headSha(), svcA.headSha(), svcB.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(0);
+        assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.SUCCEEDED);
+        assertThat(result.state().stateOf("svcA")).isEqualTo(RepoState.SUCCEEDED);
+        assertThat(result.state().stateOf("svcB")).isEqualTo(RepoState.SUCCEEDED);
+        assertThat(Files.exists(ws.resolve("overlap"))).isFalse();   // serialized by the merged unit
+    }
+
     @Test
     void budgetPauseWritesARunLevelEventLine() throws Exception {
         FixtureRepo lib = repoWith("lib", "exit 0");

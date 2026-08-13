@@ -268,6 +268,20 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void nonPositiveRunValuesFail() throws Exception {
+        Path ws = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                run:
+                  gradle_workers: 0
+                """);
+        assertThatThrownBy(() -> ConfigLoader.load(ws))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("gradle_workers");
+    }
+
+    @Test
     void parsesVerificationExclusions() throws Exception {
         Path ws = write("""
                 models:
