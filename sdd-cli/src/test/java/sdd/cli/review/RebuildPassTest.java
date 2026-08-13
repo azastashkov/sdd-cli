@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RebuildPassTest {
     @TempDir Path ws;
@@ -176,5 +177,73 @@ class RebuildPassTest {
         // "other" was never touched — it stayed on its original branch throughout.
         assertThat(RunGit.currentBranch(other.path())).isEqualTo(otherOriginalBranch);
         assertThat(RunGit.currentBranch(lib.path())).isEqualTo(libOriginalBranch);
+    }
+
+    @Test
+    void whenContractRecheckThrowsEveryRepoIsStillRestored() throws Exception {
+        // ContractRecheck.check now degrades gracefully for a non-git provider path (it can't
+        // throw that way any more), but RunStore.readContract can still throw for a genuinely
+        // broken run dir — e.g. a contract record path that is a directory instead of a file.
+        // That's the one failure inside check() this test forces, to prove the call-site move
+        // didn't weaken the rebuild pass's own estate-safety guarantee: the finally must still run
+        // and restore every repo even when the re-check itself blows up, not just when a checkout
+        // or a rebuild does.
+        FixtureRepo lib = FixtureRepo.in(ws, "lib");
+        gradlewStub(lib);
+        lib.commit("base");
+        String libBase = lib.headSha();
+        String libOriginalBranch = RunGit.currentBranch(lib.path());
+        String libRunBranch = "sdd/SPEC-9-v1/lib";
+        RunGit.startBranch(lib.path(), libRunBranch, libBase);
+        lib.file("src/main/java/com/acme/Api.java",
+                "package com.acme;\npublic class Api { public int f(int x) { return x; } }\n");
+        lib.commit("checkpoint");
+        String libCheckpoint = lib.headSha();
+        RunGit.checkout(lib.path(), libOriginalBranch);
+
+        FixtureRepo other = FixtureRepo.in(ws, "other");
+        gradlewStub(other);
+        other.commit("base");
+        String otherBase = other.headSha();
+        String otherOriginalBranch = RunGit.currentBranch(other.path());
+        String otherRunBranch = "sdd/SPEC-9-v1/other";
+        RunGit.startBranch(other.path(), otherRunBranch, otherBase);
+        other.file("B.java", "class B {}\n");
+        other.commit("checkpoint");
+        String otherCheckpoint = other.headSha();
+        RunGit.checkout(other.path(), otherOriginalBranch);
+
+        writeSddYml(ws);
+        SddConfig config = ConfigLoader.load(ws);
+
+        PlanModel.PlanContract contract = new PlanModel.PlanContract("c1", "java-api", "lib",
+                List.of("other"), "Api.f", null);
+        PlanModel plan = new PlanModel("SPEC-9", 1, "", "",
+                List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", libBase),
+                        new PlanModel.PlanRepo("other", "dependent", "X", "patch", otherBase)),
+                List.of(List.of("lib"), List.of("other")), List.of(), List.of(contract), List.of());
+
+        RunState state = new RunState("SPEC-9-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, libRunBranch, libCheckpoint, "ok"),
+                new RepoRun("other", RepoState.SUCCEEDED, otherRunBranch, otherCheckpoint, "ok")), null, 0L);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
+        // RunStore.readContract does Files.readString(<contracts>/<sanitized-id>.md) — putting a
+        // directory at that exact path makes it throw IOException ("Is a directory"), wrapped as
+        // UncheckedIOException, uncaught anywhere in ContractRecheck.check.
+        Files.createDirectories(runDir.resolve("contracts").resolve("c1.md"));
+
+        Map<String, Path> paths = Map.of("lib", lib.path(), "other", other.path());
+        StringWriter errOut = new StringWriter();
+
+        assertThatThrownBy(() -> RebuildPass.run(Set.of("lib", "other"), plan, state, paths,
+                config, runDir, store, true, new PrintWriter(errOut)))
+                .isInstanceOf(RuntimeException.class);
+
+        // The throw happened at the end of the try block, after both checkouts — the finally must
+        // still have run and put both repos back where it found them.
+        assertThat(RunGit.currentBranch(lib.path())).isEqualTo(libOriginalBranch);
+        assertThat(RunGit.currentBranch(other.path())).isEqualTo(otherOriginalBranch);
     }
 }

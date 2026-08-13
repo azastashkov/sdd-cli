@@ -103,10 +103,18 @@ public final class ContractRecheck {
     }
 
     /** Mirrors the rebuild pass's {@code originalPositions} convention exactly, so a finding's
-     *  {@code extractedFrom} reads the same way a restore target would. */
+     *  {@code extractedFrom} reads the same way a restore target would. Unlike the rebuild pass,
+     *  this runs against arbitrary KB {@code repo.path} entries that were never guaranteed to be a
+     *  live git checkout (a stale/deleted path, a plain directory) — {@code RunGit.currentBranch}
+     *  throws for those, so this must degrade the same way {@code ContractActualizer.actualize}
+     *  already does for an unreadable root: one benign finding, never an aborted review. */
     private static String currentPosition(Path root) {
-        String branch = RunGit.currentBranch(root);
-        return branch.isEmpty() ? "detached:" + RunGit.head(root) : branch;
+        try {
+            String branch = RunGit.currentBranch(root);
+            return branch.isEmpty() ? "detached:" + RunGit.head(root) : branch;
+        } catch (RuntimeException e) {
+            return "unknown";
+        }
     }
 
     private static boolean endsWithTruncationMarker(List<String> normalized) {

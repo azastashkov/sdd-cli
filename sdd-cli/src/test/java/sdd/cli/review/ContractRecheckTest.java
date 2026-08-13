@@ -8,7 +8,6 @@ import sdd.cli.implement.RepoRun;
 import sdd.cli.implement.RepoState;
 import sdd.cli.implement.RunState;
 import sdd.cli.implement.RunStore;
-import sdd.core.testing.FixtureRepo;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,13 +21,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ContractRecheckTest {
     @TempDir Path ws;
 
-    // check() now reads the provider's current branch (for Finding.extractedFrom), so every
-    // provider root used in these tests must be a real git repo, not a bare directory.
+    // These provider roots are deliberately plain directories, not git checkouts — most of a KB
+    // repo.path's callers never require it to be one, and check() must not either (see
+    // nonGitProviderPathDegradesToAFindingInsteadOfThrowing below).
     private Path libWith(String source) throws Exception {
-        return FixtureRepo.in(ws, "lib")
-                .file("src/main/java/com/acme/Api.java",
-                        "package com.acme;\npublic class Api { " + source + " }\n")
-                .path();
+        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme"));
+        Files.writeString(root.resolve("Api.java"),
+                "package com.acme;\npublic class Api { " + source + " }\n");
+        return ws.resolve("lib");
     }
 
     private static PlanModel plan(PlanModel.PlanContract contract) {
@@ -111,9 +111,9 @@ class ContractRecheckTest {
     }
 
     private Path hugeLib(String lastReturnType) throws Exception {
-        return FixtureRepo.in(ws, "lib")
-                .file("src/main/java/com/acme/Huge.java", hugeSource(lastReturnType))
-                .path();
+        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme"));
+        Files.writeString(root.resolve("Huge.java"), hugeSource(lastReturnType));
+        return ws.resolve("lib");
     }
 
     @Test
@@ -139,12 +139,12 @@ class ContractRecheckTest {
     }
 
     private Path libWithTwoTypes() throws Exception {
-        return FixtureRepo.in(ws, "lib")
-                .file("src/main/java/com/acme/Alpha.java",
-                        "package com.acme;\npublic class Alpha { public int a(int x) { return x; } }\n")
-                .file("src/main/java/com/acme/Beta.java",
-                        "package com.acme;\npublic class Beta { public int b(int x) { return x; } }\n")
-                .path();
+        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme"));
+        Files.writeString(root.resolve("Alpha.java"),
+                "package com.acme;\npublic class Alpha { public int a(int x) { return x; } }\n");
+        Files.writeString(root.resolve("Beta.java"),
+                "package com.acme;\npublic class Beta { public int b(int x) { return x; } }\n");
+        return ws.resolve("lib");
     }
 
     @Test
@@ -204,5 +204,23 @@ class ContractRecheckTest {
         assertThat(otherFinding.status()).isEqualTo(ContractRecheck.Status.NOT_EXTRACTABLE);
         assertThat(otherFinding.detail())
                 .isEqualTo("provider other has no checkout path in the knowledge base");
+    }
+
+    @Test
+    void nonGitProviderPathDegradesToAFindingInsteadOfThrowing() throws Exception {
+        // A stale KB repo.path (deleted checkout, or a path that was simply never a git repo in
+        // the first place) must degrade exactly like ContractActualizer's own extraction does for
+        // an unreadable root — one benign finding, not an exception that aborts the whole review.
+        Path lib = libWith("public int f(int x) { return x; }");   // a plain directory, no .git
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "java-api", "lib",
+                List.of("svc"), "Api.f", null);
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).extractedFrom()).isEqualTo("unknown");
     }
 }
