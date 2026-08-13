@@ -234,7 +234,7 @@ class ReviewDecisionsCommandTest {
                 f.planPath().toString());
         assertThat(approvedSvc.exit()).isZero();
         // svc's run branch is a single commit past base — approve applies, the squash is a no-op.
-        assertThat(approvedSvc.out()).contains("already a single commit (");
+        assertThat(approvedSvc.out()).contains("svc is already a single commit past");
 
         Invocation redo = exec("--workspace", ws.toString(), "redo", "lib", f.planPath().toString(),
                 "--reason", "needs rework", "--no-reverify");
@@ -309,7 +309,8 @@ class ReviewDecisionsCommandTest {
         assertThat(rootExit).isZero();
         // Re-approving is idempotent: the branch is already the single squashed commit, so nothing
         // is re-squashed and the recorded checkpoint stays put.
-        assertThat(rootOut.toString()).contains("lib approved").contains("already a single commit (");
+        assertThat(rootOut.toString()).contains("lib approved")
+                .contains("lib is already a single commit past");
         assertThat(commitsOnBranch(f.lib().path(), f.libBase(), LIB_BRANCH)).isEqualTo(1);
     }
 

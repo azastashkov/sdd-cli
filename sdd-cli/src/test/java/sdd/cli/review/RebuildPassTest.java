@@ -170,13 +170,86 @@ class RebuildPassTest {
         RebuildPass.Outcome outcome = RebuildPass.run(Set.of("lib"), plan, state, paths, config,
                 runDir, store, false, new PrintWriter(errOut));
 
-        // (c) only the repo named in the filter was rebuilt.
+        // (c) only the repo named in the filter was REBUILT. "other" is still staged at its
+        // checkpoint during the pass (see stagesEveryRepo… below) — it just gets no verdict.
         assertThat(outcome.rebuilds()).containsOnlyKeys("lib");
         assertThat(outcome.contracts()).isEmpty();
 
-        // "other" was never touched — it stayed on its original branch throughout.
+        // Both repos are back where the pass found them.
         assertThat(RunGit.currentBranch(other.path())).isEqualTo(otherOriginalBranch);
         assertThat(RunGit.currentBranch(lib.path())).isEqualTo(libOriginalBranch);
+    }
+
+    @Test
+    void stagesEveryRepoAtItsCheckpointEvenOutsideTheRebuildSubset() throws Exception {
+        // The bug this pins: a consumer's verification composes its provider through
+        // --include-build, which points at the provider's LIVE WORKING TREE. Staging only the
+        // rebuild subset therefore verified "svc" against whatever pre-run code "lib" happened to
+        // be sitting on — a green verdict that means nothing to the human reading it.
+        FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
+        gradlewStub(lib);
+        lib.commit("base");
+        String libBase = lib.headSha();
+        String libOriginalBranch = RunGit.currentBranch(lib.path());
+        String libRunBranch = "sdd/SPEC-9-v1/lib";
+        RunGit.startBranch(lib.path(), libRunBranch, libBase);
+        lib.file("A.java", "class A { int x; }\n").commit("checkpoint");
+        String libCheckpoint = lib.headSha();
+        RunGit.checkout(lib.path(), libOriginalBranch);
+
+        // svc's stub records what "lib"'s working tree looked like AT THE MOMENT svc was verified —
+        // the only way to observe staging from inside the pass rather than after its finally.
+        FixtureRepo svc = FixtureRepo.in(ws, "svc");
+        Path witness = ws.resolve("observed-upstream.txt");
+        Path svcGradlew = svc.path().resolve("gradlew");
+        Files.writeString(svcGradlew, "#!/bin/sh\ncat " + lib.path().resolve("A.java")
+                + " > " + witness + "\nexit 0\n");
+        Files.setPosixFilePermissions(svcGradlew, PosixFilePermissions.fromString("rwxr-xr-x"));
+        Path svcProps = svc.path().resolve("gradle/wrapper/gradle-wrapper.properties");
+        Files.createDirectories(svcProps.getParent());
+        Files.writeString(svcProps,
+                "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n");
+        svc.commit("base");
+        String svcBase = svc.headSha();
+        String svcOriginalBranch = RunGit.currentBranch(svc.path());
+        String svcRunBranch = "sdd/SPEC-9-v1/svc";
+        RunGit.startBranch(svc.path(), svcRunBranch, svcBase);
+        svc.file("S.java", "class S {}\n").commit("checkpoint");
+        String svcCheckpoint = svc.headSha();
+        RunGit.checkout(svc.path(), svcOriginalBranch);
+
+        writeSddYml(ws);
+        SddConfig config = ConfigLoader.load(ws);
+
+        PlanModel plan = new PlanModel("SPEC-9", 1, "", "",
+                List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", libBase),
+                        new PlanModel.PlanRepo("svc", "dependent", "X", "patch", svcBase)),
+                List.of(List.of("lib"), List.of("svc")),
+                List.of(new PlanModel.PlanEdge("svc", "lib", "SNAPSHOT", "INCLUDE_BUILD")),
+                List.of(), List.of());
+        RunState state = new RunState("SPEC-9-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, libRunBranch, libCheckpoint, "ok"),
+                new RepoRun("svc", RepoState.SUCCEEDED, svcRunBranch, svcCheckpoint, "ok")), null, 0L);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
+        Map<String, Path> paths = Map.of("lib", lib.path(), "svc", svc.path());
+        StringWriter errOut = new StringWriter();
+
+        RebuildPass.Outcome outcome = RebuildPass.run(Set.of("svc"), plan, state, paths, config,
+                runDir, store, false, new PrintWriter(errOut));
+
+        // "lib" is outside the subset, so it gets no verdict — but svc was verified against lib's
+        // CHECKPOINT tree, not the pre-run one it was parked on.
+        assertThat(outcome.rebuilds()).containsOnlyKeys("svc");
+        assertThat(outcome.rebuilds().get("svc").ok()).isTrue();
+        assertThat(Files.readString(witness)).contains("int x;");
+
+        // And the provider staged only as an upstream tree is restored exactly like the rest.
+        assertThat(RunGit.currentBranch(lib.path())).isEqualTo(libOriginalBranch);
+        assertThat(RunGit.currentBranch(svc.path())).isEqualTo(svcOriginalBranch);
+        assertThat(Files.readString(lib.path().resolve("A.java"))).isEqualTo("class A {}\n");
+        assertThat(outcome.restoreFailures()).isEmpty();
     }
 
     @Test

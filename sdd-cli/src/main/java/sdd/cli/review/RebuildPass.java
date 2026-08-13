@@ -22,11 +22,19 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Gate-2 estate rebuild pass (design line 66-67): check every SUCCEEDED repo in scope out to its
- * checkpoint branch, rebuild+verify it, and — while every repo in scope is simultaneously sitting
- * on its checkpoint — re-check actualized contracts against fresh extraction. Every repo checked
+ * Gate-2 estate rebuild pass (design line 66-67): check every SUCCEEDED repo out to its checkpoint
+ * branch, rebuild+verify the ones asked for, and — while the whole estate is simultaneously sitting
+ * on its checkpoints — re-check actualized contracts against fresh extraction. Every repo checked
  * out is restored to its original branch/commit in a single {@code finally}, even when the
  * rebuild, the checkout, or the contract re-check itself fails.
+ *
+ * <p><b>{@code repos} selects what to REBUILD, not what to check out.</b> Staging is always
+ * estate-wide, because a consumer's verification composes its providers through
+ * {@code --include-build}, which points at the provider's live working tree
+ * ({@link #extraArgsFor}) — not at any recorded sha. Staging only the subset would therefore build
+ * it against whatever pre-run code its providers happen to be sitting on and report a green verdict
+ * that means nothing. The two sets coincide for a full {@code sdd review}; they diverge for
+ * {@code sdd review redo}, which re-verifies one downstream subtree.
  */
 public final class RebuildPass {
     public record Outcome(Map<String, EstateRebuild.Result> rebuilds, List<String> notLocallyVerified,
@@ -53,33 +61,55 @@ public final class RebuildPass {
         // detached HEAD (restoring by sha keeps the estate exactly where review found it).
         Map<String, String> originalPositions = new LinkedHashMap<>();
         try {
+            // Topo order matters twice over: a provider is staged before the consumer that
+            // composes its working tree, and rebuilt before it too.
             for (String repo : Scheduler.sequence(plan.order())) {
-                if (!repos.contains(repo) || state.stateOf(repo) != RepoState.SUCCEEDED) {
+                if (state.stateOf(repo) != RepoState.SUCCEEDED) {
                     continue;
                 }
                 Path root = paths.get(repo);
                 RepoRun run = byName.get(repo);
-                if (root == null || run.branch() == null) {
+                if (root == null || run == null || run.branch() == null) {
                     continue;
+                }
+                // A checkout can legitimately fail (uncommitted conflicting changes at review
+                // time). Record it and keep going — the report must still be produced
+                // (ratified (c)/(f)).
+                try {
+                    String branch = RunGit.currentBranch(root);
+                    originalPositions.putIfAbsent(repo,
+                            branch.isEmpty() ? "detached:" + RunGit.head(root) : branch);
+                    RunGit.checkout(root, run.branch());
+                } catch (RuntimeException e) {
+                    if (repos.contains(repo)) {
+                        rebuilds.put(repo, new EstateRebuild.Result(false,
+                                "checkout failed: " + e.getMessage()));
+                    } else {
+                        // Outside the rebuild subset there is no verdict to attach this to, but it
+                        // still degrades every verdict below it: this provider stays on whatever
+                        // pre-run code it was sitting on.
+                        err.println("warn: could not stage " + repo + " at its checkpoint: "
+                                + e.getMessage() + " — verdicts for its consumers may not reflect "
+                                + "this run's upstream code");
+                    }
+                    continue;
+                }
+                if (!repos.contains(repo)) {
+                    continue;   // staged as an upstream tree only; not asked to be verified
                 }
                 List<String> tasks = tasksFor(plan, config, repo);
                 if (tasks.isEmpty()) {
                     notLocallyVerified.add(repo);
                     continue;
                 }
-                // A checkout can legitimately fail (uncommitted conflicting changes at review
-                // time). Record it as a failed rebuild and keep going — the report must still
-                // be produced (ratified (c)/(f)).
                 try {
-                    String branch = RunGit.currentBranch(root);
-                    originalPositions.putIfAbsent(repo,
-                            branch.isEmpty() ? "detached:" + RunGit.head(root) : branch);
-                    RunGit.checkout(root, run.branch());
                     rebuilds.put(repo, rebuild.verify(root, javaHomeFor(config, root), tasks,
                             extraArgsFor(plan, repo, paths, runDir)));
                 } catch (RuntimeException e) {
-                    rebuilds.put(repo, new EstateRebuild.Result(false,
-                            "checkout failed: " + e.getMessage()));
+                    // Same rule as a failed checkout: one repo's blow-up is a verdict, not the end
+                    // of the pass — the remaining repos still get verified and the report still
+                    // gets written.
+                    rebuilds.put(repo, new EstateRebuild.Result(false, "rebuild failed: " + e.getMessage()));
                 }
             }
             // Every SUCCEEDED repo in scope is now simultaneously sitting on its checkpoint

@@ -61,10 +61,10 @@ public abstract class DecisionCommand implements Callable<Integer> {
     }
 
     /** Applies this command's transition to {@code decisions} (which mutates in place). */
-    protected abstract Decisions.Outcome decide(Decisions decisions, ReviewCommand.LoadedRun run);
+    protected abstract Decisions.Outcome decide(Decisions decisions, RunContext run);
 
     /** Work that only makes sense once the decision has been applied and persisted. */
-    protected Followup followUp(ReviewCommand.LoadedRun run, PrintWriter out, PrintWriter err) {
+    protected Followup followUp(RunContext run, PrintWriter out, PrintWriter err) {
         return Followup.none();
     }
 
@@ -77,7 +77,7 @@ public abstract class DecisionCommand implements Callable<Integer> {
                 err.println("error: missing <spec>.plan.json");
                 return 4;
             }
-            ReviewCommand.LoadedRun run = ReviewCommand.load(parent.workspace(), planJsonPath, err);
+            RunContext run = RunContext.load(parent.workspace(), planJsonPath, err);
             if (run == null) {
                 return 4;
             }
@@ -117,8 +117,7 @@ public abstract class DecisionCommand implements Callable<Integer> {
 
             Followup followup = followUp(run, out, err);
             RebuildPass.Outcome rebuild = followup.rebuild();
-            out.println("review written: " + ReviewCommand.writeReport(run,
-                    ReviewCommand.collectDiffs(run),
+            out.println("review written: " + run.writeReport(run.collectDiffs(),
                     rebuild == null ? Map.of() : rebuild.rebuilds(),
                     rebuild == null ? List.of() : rebuild.notLocallyVerified(),
                     rebuild == null ? List.of() : rebuild.restoreFailures(),
@@ -141,18 +140,21 @@ public abstract class DecisionCommand implements Callable<Integer> {
             exitCodeOnInvalidInput = 4)
     public static final class Approve extends DecisionCommand {
         @Override
-        protected Decisions.Outcome decide(Decisions decisions, ReviewCommand.LoadedRun run) {
+        protected Decisions.Outcome decide(Decisions decisions, RunContext run) {
             return decisions.approve(repo, run.plan(), run.state());
         }
 
         @Override
-        protected Followup followUp(ReviewCommand.LoadedRun run, PrintWriter out, PrintWriter err) {
-            RepoRun repoRun = ReviewCommand.byName(run.state()).get(repo);
+        protected Followup followUp(RunContext run, PrintWriter out, PrintWriter err) {
+            // repoRun is non-null in practice — decide() ran first and Decisions.approve refuses a
+            // repo with no run state — but that is an ordering dependency two classes apart, so it
+            // is checked here rather than assumed.
+            RepoRun repoRun = run.byName().get(repo);
             Path root = run.paths().get(repo);
-            if (root == null || repoRun.branch() == null || repoRun.checkpointSha() == null) {
-                // Decisions.approve already proved the repo SUCCEEDED, so this is a stale knowledge
-                // base or a hand-edited state.json — the verdict still stands, there is just no
-                // branch to collapse.
+            if (repoRun == null || root == null || repoRun.branch() == null
+                    || repoRun.checkpointSha() == null) {
+                // A stale knowledge base or a hand-edited state.json — the verdict still stands,
+                // there is just no branch to collapse.
                 err.println("warn: " + repo + " has no repo path or checkpoint on record; "
                         + "approved without squashing");
                 return Followup.none();
@@ -168,8 +170,11 @@ public abstract class DecisionCommand implements Callable<Integer> {
             }
             if (!result.squashed()) {
                 // Either the branch already was one commit or its range was a net no-op — in both
-                // cases the sha did not move, so state.json must NOT be rewritten.
-                out.println("already a single commit (" + shortSha(result.sha()) + ")");
+                // cases the sha did not move, so state.json must NOT be rewritten. The two cases
+                // read very differently to a human ("already a single commit past <base>" vs "had
+                // no net change since <base>"), and SquashApprove already knows which one fired —
+                // so print its message rather than flattening both into one re-derived line.
+                out.println(result.message());
                 return Followup.none();
             }
             // Load-bearing, not bookkeeping: Resume.prepare fails any SUCCEEDED repo whose branch
@@ -192,7 +197,7 @@ public abstract class DecisionCommand implements Callable<Integer> {
         String reason = "";
 
         @Override
-        protected Decisions.Outcome decide(Decisions decisions, ReviewCommand.LoadedRun run) {
+        protected Decisions.Outcome decide(Decisions decisions, RunContext run) {
             return decisions.reject(repo, run.plan(), reason);
         }
     }
@@ -207,12 +212,12 @@ public abstract class DecisionCommand implements Callable<Integer> {
         boolean noReverify;
 
         @Override
-        protected Decisions.Outcome decide(Decisions decisions, ReviewCommand.LoadedRun run) {
+        protected Decisions.Outcome decide(Decisions decisions, RunContext run) {
             return decisions.redo(repo, run.plan(), reason);
         }
 
         @Override
-        protected Followup followUp(ReviewCommand.LoadedRun run, PrintWriter out, PrintWriter err) {
+        protected Followup followUp(RunContext run, PrintWriter out, PrintWriter err) {
             List<String> retry = List.of("then run: sdd implement --workspace " + parent.workspace()
                     + " --retry " + repo + " " + planJsonPath);
             List<String> downstream = Decisions.transitiveDownstream(repo, run.plan());

@@ -1,37 +1,22 @@
 package sdd.cli;
 
-import org.jdbi.v3.core.Jdbi;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Model.CommandSpec;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 import picocli.CommandLine.Spec;
-import sdd.cli.implement.PlanJsonReader;
-import sdd.cli.implement.PlanModel;
-import sdd.cli.implement.RepoRun;
 import sdd.cli.implement.RepoState;
-import sdd.cli.implement.RunGit;
-import sdd.cli.implement.RunState;
-import sdd.cli.implement.RunStore;
 import sdd.cli.implement.Scheduler;
 import sdd.cli.review.ContractRecheck;
 import sdd.cli.review.DecisionCommand;
 import sdd.cli.review.EstateRebuild;
 import sdd.cli.review.RebuildPass;
-import sdd.cli.review.ReleaseRunbook;
-import sdd.cli.review.ReviewReport;
-import sdd.core.config.ConfigLoader;
-import sdd.core.config.SddConfig;
-import sdd.core.db.Database;
+import sdd.cli.review.RunContext;
 
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -44,8 +29,8 @@ import java.util.concurrent.Callable;
  * original branch/commit in a {@code finally}, even when the rebuild or the checkout itself fails.
  *
  * <p>The {@code approve}/{@code reject}/{@code redo} subcommands (design line 68) are the mutating
- * half of the same gate; they share this command's run loading, diff collection and report writing
- * via the static helpers below so a decision leaves behind the same artifacts a plain review does.
+ * half of the same gate; both halves read the run and write their artifacts through
+ * {@link RunContext}, so a decision leaves behind the same artifacts a plain review does.
  */
 @Command(name = "review",
         description = "Rebuild the estate against its checkpoints and render the Gate-2 review report",
@@ -78,103 +63,6 @@ public final class ReviewCommand implements Callable<Integer> {
         return workspace;
     }
 
-    /** Everything a review path needs off disk: the frozen plan, the run's state, the estate's repo
-     *  paths and the config. The knowledge-base handle is opened and closed here — nothing
-     *  downstream of this needs it, and holding it open across a rebuild would pin the db for
-     *  minutes. */
-    public record LoadedRun(String runId, Path runDir, RunStore store, PlanModel plan, RunState state,
-                            SddConfig config, Map<String, Path> paths) {
-    }
-
-    /** Per-repo diffs written to the review dir, plus the repos whose diff could not be produced. */
-    public record Diffs(Map<String, RunGit.DiffStat> stats, List<String> failures) {
-    }
-
-    /** Loads the run named by {@code planJsonPath}, or returns null having already printed the
-     *  reason to {@code err} — every caller turns that into exit 4. */
-    public static LoadedRun load(Path workspace, Path planJsonPath, PrintWriter err) throws IOException {
-        String name = planJsonPath.getFileName().toString();
-        if (!name.endsWith(".plan.json")) {
-            err.println("error: review expects a .plan.json file");
-            return null;
-        }
-        PlanModel cliPlan = PlanJsonReader.read(Files.readString(planJsonPath));
-        String runId = sanitize(cliPlan.specId()) + "-v" + cliPlan.planVersion();
-        Path runDir = workspace.resolve(".sdd/runs/" + runId);
-        if (!Files.exists(runDir.resolve("state.json"))) {
-            err.println("error: no run to review at " + runDir);
-            return null;
-        }
-        if (!Files.exists(workspace.resolve(".sdd/index.db"))) {
-            err.println("error: knowledge base is empty — run sdd index first");
-            return null;
-        }
-
-        RunStore store = RunStore.system();
-        // The frozen copy, not the caller's file: the plan on disk may have been re-approved since.
-        PlanModel plan = PlanJsonReader.read(Files.readString(runDir.resolve("plan.json")));
-        PlanJsonReader.validate(plan);
-        RunState state = store.readState(runDir);
-        SddConfig config = ConfigLoader.load(workspace);
-
-        Map<String, Path> paths = new HashMap<>();
-        try (Database db = Database.open(workspace)) {
-            Jdbi jdbi = db.jdbi();
-            jdbi.useHandle(h -> h.createQuery("SELECT name, path FROM repo").mapToMap()
-                    .forEach(row -> paths.put(String.valueOf(row.get("name")),
-                            Path.of(String.valueOf(row.get("path"))))));
-        }
-        return new LoadedRun(runId, runDir, store, plan, state, config, paths);
-    }
-
-    /** Writes {@code <repo>.diff} for every SUCCEEDED repo with a resolvable checkpoint. */
-    public static Diffs collectDiffs(LoadedRun run) {
-        Map<String, RepoRun> byName = byName(run.state());
-        Map<String, RunGit.DiffStat> diffStats = new LinkedHashMap<>();
-        List<String> diffFailures = new ArrayList<>();
-        for (String repo : Scheduler.sequence(run.plan().order())) {
-            RepoRun repoRun = byName.get(repo);
-            Path root = run.paths().get(repo);
-            if (repoRun == null || repoRun.state() != RepoState.SUCCEEDED
-                    || repoRun.checkpointSha() == null || root == null) {
-                continue;
-            }
-            String baseSha = run.plan().repo(repo).orElseThrow().baseSha();
-            // An unresolvable checkpoint sha (pruned run branch, gc'd object, stale KB repo
-            // path) must not abort the whole review — it's a per-repo reporting gap, not a
-            // verification failure. Record it and keep going so the report still gets out.
-            try {
-                run.store().writeReview(run.runDir(), repo + ".diff",
-                        RunGit.diff(root, baseSha, repoRun.checkpointSha()));
-                diffStats.put(repo, RunGit.diffStat(root, baseSha, repoRun.checkpointSha()));
-            } catch (RuntimeException e) {
-                diffFailures.add(repo + ": " + e.getMessage());
-            }
-        }
-        return new Diffs(diffStats, diffFailures);
-    }
-
-    /** Renders and writes {@code report.md}, returning its path. Decisions re-run this so the
-     *  artifact a human hands to a colleague reflects the run as it stands now, not a pre-decision
-     *  snapshot. */
-    public static Path writeReport(LoadedRun run, Diffs diffs, Map<String, EstateRebuild.Result> rebuilds,
-                                   List<String> notLocallyVerified, List<String> restoreFailures,
-                                   List<ContractRecheck.Finding> contracts, boolean rebuilt) {
-        String runbook = ReleaseRunbook.render(run.plan(), run.state());
-        String report = ReviewReport.render(run.runId(), run.plan(), run.state(), diffs.stats(), rebuilds,
-                notLocallyVerified, restoreFailures, diffs.failures(), contracts, runbook, rebuilt);
-        run.store().writeReview(run.runDir(), "report.md", report);
-        return run.store().reviewDir(run.runDir()).resolve("report.md");
-    }
-
-    public static Map<String, RepoRun> byName(RunState state) {
-        Map<String, RepoRun> byName = new LinkedHashMap<>();
-        for (RepoRun repoRun : state.repos()) {
-            byName.put(repoRun.repo(), repoRun);
-        }
-        return byName;
-    }
-
     @Override
     public Integer call() {
         PrintWriter out = spec.commandLine().getOut();
@@ -184,12 +72,12 @@ public final class ReviewCommand implements Callable<Integer> {
                 err.println("error: missing <spec>.plan.json");
                 return 4;
             }
-            LoadedRun run = load(workspace, planJsonPath, err);
+            RunContext run = RunContext.load(workspace, planJsonPath, err);
             if (run == null) {
                 return 4;
             }
 
-            Diffs diffs = collectDiffs(run);
+            RunContext.Diffs diffs = run.collectDiffs();
 
             Map<String, EstateRebuild.Result> rebuilds;
             List<String> notLocallyVerified;
@@ -213,7 +101,7 @@ public final class ReviewCommand implements Callable<Integer> {
                 contracts = outcome.contracts();
             }
 
-            out.println("review written: " + writeReport(run, diffs, rebuilds, notLocallyVerified,
+            out.println("review written: " + run.writeReport(diffs, rebuilds, notLocallyVerified,
                     restoreFailures, contracts, !noRebuild));
 
             boolean allSucceeded = Scheduler.sequence(run.plan().order()).stream()
@@ -226,10 +114,5 @@ public final class ReviewCommand implements Callable<Integer> {
             err.println("error: " + e.getMessage());
             return 4;
         }
-    }
-
-    private static String sanitize(String id) {
-        String cleaned = id == null ? "" : id.replaceAll("[^A-Za-z0-9._-]", "-");
-        return cleaned.isBlank() ? "run" : cleaned;
     }
 }
