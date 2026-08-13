@@ -9,6 +9,7 @@ import sdd.core.llm.ChatModel;
 import sdd.core.llm.ChatMessage;
 import sdd.core.llm.ChatRequest;
 import sdd.core.llm.ChatResponse;
+import sdd.core.llm.ModelException;
 import sdd.core.llm.ToolCall;
 
 import java.time.Instant;
@@ -66,8 +67,15 @@ public final class AgentLoop {
                 return outcome(AgentResult.BUDGET_TOKENS, "token budget reached", turns, tokens, events);
             }
 
-            ChatResponse response = model.complete(new ChatRequest(modelName, window.messages(),
-                    toolbox.specs(), maxTokensPerCall, 0.0));
+            ChatResponse response;
+            try {
+                response = model.complete(new ChatRequest(modelName, window.messages(),
+                        toolbox.specs(), maxTokensPerCall, 0.0));
+            } catch (ModelException e) {
+                // Partial spend must reach the run-budget accounting. ADD to any tokens the
+                // exception already carries — overwriting would zero an upstream carry.
+                throw e.withTokens(tokens + e.tokensSoFar());
+            }
             turns++;
             tokens += response.usage().promptTokens() + response.usage().completionTokens();
 

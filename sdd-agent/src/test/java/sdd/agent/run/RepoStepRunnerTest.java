@@ -5,7 +5,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import sdd.core.db.Database;
 import sdd.core.llm.ChatMessage;
+import sdd.core.llm.ChatModel;
 import sdd.core.llm.ChatResponse;
+import sdd.core.llm.ModelException;
 import sdd.core.llm.ToolCall;
 import sdd.core.llm.Usage;
 import sdd.core.testing.ScriptedChatModel;
@@ -176,5 +178,54 @@ class RepoStepRunnerTest {
 
         assertThat(model.requests().get(0).messages())
                 .anyMatch(m -> m.content() != null && m.content().contains("## PRIOR ATTEMPT DIGEST"));
+    }
+
+    @Test
+    void anEmptyVerificationListSkipsTheGateAsNotLocallyVerified() throws Exception {
+        gradlew("exit 1");   // would fail the gate if it ran — proves the skip is real
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"ok\"}")));
+
+        StepOutcome outcome = new RepoStepRunner(db.jdbi()).run(step(repoRoot), model, "qwen",
+                RunnerSettings.custom(null, List.of(), List.of(), null), "");
+
+        assertThat(outcome.result()).isEqualTo(StepResult.SUCCESS);
+        assertThat(outcome.verificationOutput()).isEqualTo("not locally verified");
+        assertThat(outcome.events()).anyMatch(e -> e.contains("not locally verified"));
+    }
+
+    @Test
+    void multipleVerificationTasksAllRunAndTheFirstFailureWins() throws Exception {
+        // compileJava passes, test fails: the verdict must be test's failure, after both ran.
+        gradlew("echo \"$1\" >> tasks-run; case \"$1\" in compileJava) exit 0 ;; *) echo 'A.java:1: error: bad'; exit 1 ;; esac");
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"try1\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"try2\"}")));
+
+        StepOutcome outcome = new RepoStepRunner(db.jdbi()).run(step(repoRoot), model, "qwen",
+                RunnerSettings.custom(null, List.of(), List.of("compileJava", "test"), null), "");
+
+        assertThat(outcome.result()).isEqualTo(StepResult.VERIFY_FAILED);
+        assertThat(Files.readString(repoRoot.resolve("tasks-run"))).contains("compileJava").contains("test");
+    }
+
+    @Test
+    void partialTokensSurviveAnEndpointFailureMidStep() throws Exception {
+        gradlew("exit 1");   // first done fails verify -> loop re-enters -> second call throws
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        ChatModel flaky = req -> {
+            if (calls.incrementAndGet() == 1) {
+                return call("1", "done", "{\"result\":\"success\",\"summary\":\"try1\"}");
+            }
+            throw new ModelException("transport error: refused", new java.io.IOException("x"));
+        };
+
+        try {
+            new RepoStepRunner(db.jdbi()).run(step(repoRoot), flaky, "qwen",
+                    RunnerSettings.defaults(null), "");
+            org.junit.jupiter.api.Assertions.fail("expected ModelException");
+        } catch (ModelException e) {
+            assertThat(e.tokensSoFar()).isEqualTo(15L);   // call 1's Usage(10,5) survives the throw
+        }
     }
 }

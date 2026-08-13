@@ -9,6 +9,7 @@ import sdd.agent.tool.GradleTool;
 import sdd.agent.tool.PathJail;
 import sdd.agent.tool.Toolbox;
 import sdd.core.llm.ChatModel;
+import sdd.core.llm.ModelException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -35,7 +36,8 @@ public final class RepoStepRunner {
     public StepOutcome run(RepoStep step, ChatModel model, String modelName, RunnerSettings settings,
                            String priorDigest) {
         OutputCompactor compactor = new OutputCompactor(step.repoRoot());
-        GradleTool gradle = new GradleTool(step.repoRoot(), settings.javaHome(), settings.gradleTimeout(), settings.gradleExtraArgs());
+        GradleTool gradle = new GradleTool(step.repoRoot(), settings.javaHome(), settings.gradleTimeout(),
+                settings.gradleExtraArgs(), settings.gradlePermits());
         Toolbox toolbox = new Toolbox(new FileTools(new PathJail(step.repoRoot())), gradle, compactor);
         VerificationRunner verifier = new VerificationRunner(gradle, compactor);
         AgentLoop loop = new AgentLoop(model, toolbox, settings.budget(), settings.contextSoftCap(),
@@ -49,17 +51,27 @@ public final class RepoStepRunner {
         String lastVerification = "";
 
         while (true) {
-            AgentOutcome outcome = loop.run(settings.systemPrompt(), workOrder, modelName,
-                    settings.maxTokensPerCall());
+            AgentOutcome outcome;
+            try {
+                outcome = loop.run(settings.systemPrompt(), workOrder, modelName,
+                        settings.maxTokensPerCall());
+            } catch (ModelException e) {
+                throw e.withTokens(tokens + e.tokensSoFar());
+            }
             events.addAll(outcome.events());
             tokens += outcome.tokens();
 
             switch (outcome.result()) {
                 case DONE -> {
-                    VerificationRunner.Verdict verdict = verifyOnce(verifier, settings.verificationTask());
+                    if (settings.verificationTasks().isEmpty()) {
+                        events.add("verify: skipped — not locally verified (all verification tasks excluded)");
+                        return outcome(StepResult.SUCCESS, outcome.summary(), events,
+                                "not locally verified", tokens);
+                    }
+                    VerificationRunner.Verdict verdict = verifyAll(verifier, settings.verificationTasks());
                     if (!verdict.passed() && verdict.infra()) {
                         events.add("verify: infra-classified failure — retrying once");
-                        verdict = verifyOnce(verifier, settings.verificationTask());
+                        verdict = verifyAll(verifier, settings.verificationTasks());
                         if (!verdict.passed() && verdict.infra()) {
                             lastVerification = verdict.output();
                             return outcome(StepResult.INFRA, "infrastructure failure at the verify gate",
@@ -106,6 +118,17 @@ public final class RepoStepRunner {
         } catch (RuntimeException e) {
             return new VerificationRunner.Verdict(false, "verification error: " + e.getMessage(), false);
         }
+    }
+
+    private static VerificationRunner.Verdict verifyAll(VerificationRunner verifier, List<String> tasks) {
+        VerificationRunner.Verdict last = null;
+        for (String task : tasks) {
+            last = verifyOnce(verifier, task);
+            if (!last.passed()) {
+                return last;
+            }
+        }
+        return last;
     }
 
     private static String digest(AgentOutcome outcome, String lastVerification) {

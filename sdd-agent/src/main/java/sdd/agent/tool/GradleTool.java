@@ -8,6 +8,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -26,16 +27,23 @@ public final class GradleTool {
     private final Path javaHome;
     private final Duration timeout;
     private final java.util.List<String> extraArgs;
+    private final Semaphore permits;
 
     public GradleTool(Path repoRoot, Path javaHome, Duration timeout) {
-        this(repoRoot, javaHome, timeout, java.util.List.of());
+        this(repoRoot, javaHome, timeout, java.util.List.of(), null);
     }
 
     public GradleTool(Path repoRoot, Path javaHome, Duration timeout, java.util.List<String> extraArgs) {
+        this(repoRoot, javaHome, timeout, extraArgs, null);
+    }
+
+    public GradleTool(Path repoRoot, Path javaHome, Duration timeout, java.util.List<String> extraArgs,
+                      Semaphore permits) {
         this.repoRoot = repoRoot;
         this.javaHome = javaHome;
         this.timeout = timeout;
         this.extraArgs = java.util.List.copyOf(extraArgs);
+        this.permits = permits;
     }
 
     /** Model-facing output, tail-capped at MAX_OUTPUT (the 4A behavior). */
@@ -60,42 +68,51 @@ public final class GradleTool {
         if (!Files.isExecutable(gradlew)) {
             throw new ToolException("no gradle wrapper in " + repoRoot);
         }
-        Path log = null;
+        if (permits != null) {
+            permits.acquireUninterruptibly();
+        }
         try {
-            log = Files.createTempFile("sdd-agent-gradle", ".log");
-            java.util.List<String> command = new java.util.ArrayList<>();
-            command.add("./gradlew");
-            command.add(task);
-            command.addAll(extraArgs);          // orchestrator-appended substitution flags (invisible to the model)
-            command.add("--no-configuration-cache");
-            command.add("--no-daemon");
-            command.add("-q");
-            ProcessBuilder builder = new ProcessBuilder(command);
-            builder.directory(repoRoot.toFile());
-            builder.redirectErrorStream(true);
-            builder.redirectOutput(log.toFile());
-            scrubEnvironment(builder.environment());
-            Process process = builder.start();
-            if (!process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
-                process.descendants().forEach(ProcessHandle::destroyForcibly);
-                process.destroyForcibly();
-                return "timed out after " + timeout.toSeconds() + "s";
-            }
-            String output = Files.readString(log, StandardCharsets.UTF_8);
-            output = headPreserving ? headCap(output) : tailCap(output);
-            return "exit " + process.exitValue() + "\n" + output;
-        } catch (IOException e) {
-            throw new ToolException("gradle run failed: " + e.getMessage());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ToolException("gradle run interrupted");
-        } finally {
-            if (log != null) {
-                try {
-                    Files.deleteIfExists(log);
-                } catch (IOException ignored) {
-                    // best-effort temp cleanup
+            Path log = null;
+            try {
+                log = Files.createTempFile("sdd-agent-gradle", ".log");
+                java.util.List<String> command = new java.util.ArrayList<>();
+                command.add("./gradlew");
+                command.add(task);
+                command.addAll(extraArgs);          // orchestrator-appended substitution flags (invisible to the model)
+                command.add("--no-configuration-cache");
+                command.add("--no-daemon");
+                command.add("-q");
+                ProcessBuilder builder = new ProcessBuilder(command);
+                builder.directory(repoRoot.toFile());
+                builder.redirectErrorStream(true);
+                builder.redirectOutput(log.toFile());
+                scrubEnvironment(builder.environment());
+                Process process = builder.start();
+                if (!process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
+                    process.descendants().forEach(ProcessHandle::destroyForcibly);
+                    process.destroyForcibly();
+                    return "timed out after " + timeout.toSeconds() + "s";
                 }
+                String output = Files.readString(log, StandardCharsets.UTF_8);
+                output = headPreserving ? headCap(output) : tailCap(output);
+                return "exit " + process.exitValue() + "\n" + output;
+            } catch (IOException e) {
+                throw new ToolException("gradle run failed: " + e.getMessage());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ToolException("gradle run interrupted");
+            } finally {
+                if (log != null) {
+                    try {
+                        Files.deleteIfExists(log);
+                    } catch (IOException ignored) {
+                        // best-effort temp cleanup
+                    }
+                }
+            }
+        } finally {
+            if (permits != null) {
+                permits.release();
             }
         }
     }

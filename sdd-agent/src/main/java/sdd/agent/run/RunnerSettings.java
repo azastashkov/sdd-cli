@@ -6,11 +6,13 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.InstantSource;
 import java.util.List;
+import java.util.concurrent.Semaphore;
 
 /** Everything the runner needs beyond the model, KB, and step. */
 public record RunnerSettings(AgentBudget budget, int contextSoftCap, InstantSource clock,
-                             Path javaHome, Duration gradleTimeout, String verificationTask,
-                             int maxTokensPerCall, String systemPrompt, List<String> gradleExtraArgs) {
+                             Path javaHome, Duration gradleTimeout, List<String> verificationTasks,
+                             int maxTokensPerCall, String systemPrompt, List<String> gradleExtraArgs,
+                             Semaphore gradlePermits) {
     public static final String DEFAULT_SYSTEM_PROMPT = """
             You are a careful senior engineer making a focused change to ONE repository. Use the
             tools to read files, make minimal edits, and run Gradle to check your work. Change
@@ -18,6 +20,7 @@ public record RunnerSettings(AgentBudget budget, int contextSoftCap, InstantSour
             done(success). If blocked by a missing decision, call done(blocked) and explain.""";
 
     public RunnerSettings {
+        verificationTasks = List.copyOf(verificationTasks);
         gradleExtraArgs = List.copyOf(gradleExtraArgs);
     }
 
@@ -26,7 +29,13 @@ public record RunnerSettings(AgentBudget budget, int contextSoftCap, InstantSour
     }
 
     public static RunnerSettings defaults(Path javaHome, List<String> gradleExtraArgs) {
+        return custom(javaHome, gradleExtraArgs, List.of("check"), null);
+    }
+
+    public static RunnerSettings custom(Path javaHome, List<String> gradleExtraArgs,
+                                        List<String> verificationTasks, Semaphore gradlePermits) {
         return new RunnerSettings(AgentBudget.defaults(), 80_000, InstantSource.system(), javaHome,
-                Duration.ofMinutes(15), "check", 4096, DEFAULT_SYSTEM_PROMPT, gradleExtraArgs);
+                Duration.ofMinutes(15), verificationTasks, 4096, DEFAULT_SYSTEM_PROMPT,
+                gradleExtraArgs, gradlePermits);
     }
 }
