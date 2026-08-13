@@ -23,7 +23,7 @@ import java.util.List;
 import java.util.Map;
 
 public final class RepoCardGenerator {
-    public record CardResult(int generated, int cached, int failed) {}
+    public record CardResult(int generated, int cached, int failed, List<String> failures) {}
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final int MAX_CONSECUTIVE_MODEL_FAILURES = 3;
@@ -45,6 +45,7 @@ public final class RepoCardGenerator {
         int cached = 0;
         int failed = 0;
         int consecutiveModelFailures = 0;
+        List<String> failures = new ArrayList<>();
         for (Map<String, Object> repo : repos) {
             long repoId = ((Number) repo.get("id")).longValue();
             String name = (String) repo.get("name");
@@ -59,6 +60,8 @@ public final class RepoCardGenerator {
             }
             if (consecutiveModelFailures >= MAX_CONSECUTIVE_MODEL_FAILURES) {
                 failed++;
+                failures.add(name + ": skipped after " + MAX_CONSECUTIVE_MODEL_FAILURES
+                        + " consecutive model failures");
                 continue;
             }
             try {
@@ -68,11 +71,14 @@ public final class RepoCardGenerator {
                 consecutiveModelFailures = 0;
                 if ("length".equals(response.finishReason())) {
                     failed++;
+                    failures.add(name + ": finish_reason=length (thinking model? set extra_body "
+                            + "chat_template_kwargs.enable_thinking=false)");
                     continue;
                 }
                 JsonNode parsed = parseCard(response.message().content());
                 if (parsed == null) {
                     failed++;
+                    failures.add(name + ": unparseable card JSON");
                     continue;
                 }
                 jdbi.useHandle(h -> h.createUpdate("""
@@ -88,9 +94,10 @@ public final class RepoCardGenerator {
             } catch (ModelException e) {
                 consecutiveModelFailures++;
                 failed++;
+                failures.add(name + ": model error: " + e.getMessage());
             }
         }
-        return new CardResult(generated, cached, failed);
+        return new CardResult(generated, cached, failed, List.copyOf(failures));
     }
 
     private static JsonNode parseCard(String content) {

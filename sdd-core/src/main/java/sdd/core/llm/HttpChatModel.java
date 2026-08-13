@@ -13,6 +13,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 
 public final class HttpChatModel implements ChatModel {
@@ -22,6 +24,8 @@ public final class HttpChatModel implements ChatModel {
     private static final long BASE_BACKOFF_MILLIS = 250;
     private static final long MAX_BACKOFF_MILLIS = 60_000;
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final Set<String> PROTECTED_BODY_KEYS =
+            Set.of("model", "messages", "tools", "max_tokens", "temperature");
 
     private final ModelEndpoint endpoint;
     private final int maxAttempts;
@@ -170,6 +174,12 @@ public final class HttpChatModel implements ChatModel {
         }
         if (req.temperature() != null) {
             root.put("temperature", req.temperature());
+        }
+        for (Map.Entry<String, Object> e : endpoint.extraBody().entrySet()) {
+            if (PROTECTED_BODY_KEYS.contains(e.getKey())) {
+                continue;
+            }
+            root.set(e.getKey(), JSON.valueToTree(e.getValue()));
         }
         return root.toString();
     }

@@ -297,6 +297,48 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void parsesNestedExtraBody() throws Exception {
+        SddConfig c = ConfigLoader.load(write("""
+                models:
+                  planner:
+                    base_url: https://api.deepseek.com/v1
+                    model: deepseek-v4-flash
+                    api_key: ${DEEPSEEK_API_KEY}
+                  coder:
+                    base_url: http://127.0.0.1:8080/v1
+                    model: mlx-community/Qwen3.6-35B-A3B-8bit
+                    extra_body:
+                      chat_template_kwargs:
+                        enable_thinking: false
+                """), ENV);
+        assertThat(c.models().get("coder").extraBody()).isEqualTo(
+                Map.of("chat_template_kwargs", Map.of("enable_thinking", false)));
+    }
+
+    @Test
+    void extraBodyDefaultsEmpty() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL), ENV);
+        assertThat(c.models().get("coder").extraBody()).isEmpty();
+    }
+
+    @Test
+    void nonMappingExtraBodyFailsNamingKey() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write("""
+                models:
+                  planner:
+                    base_url: https://api.deepseek.com/v1
+                    model: deepseek-v4-flash
+                    api_key: ${DEEPSEEK_API_KEY}
+                  coder:
+                    base_url: http://127.0.0.1:8080/v1
+                    model: mlx-community/Qwen3.6-35B-A3B-8bit
+                    extra_body: oops
+                """), ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("models.coder.extra_body");
+    }
+
+    @Test
     void parsesVerificationExclusions() throws Exception {
         Path ws = write("""
                 models:

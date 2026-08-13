@@ -9,6 +9,7 @@ import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static org.assertj.core.api.Assertions.*;
@@ -27,7 +28,7 @@ class HttpChatModelTest {
 
     private HttpChatModel model() {
         ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "test-model", "sk-key",
-                256, 0.0, Duration.ofSeconds(5));
+                256, 0.0, Duration.ofSeconds(5), Map.of());
         return new HttpChatModel(ep, HttpClient.newHttpClient(), millis -> { });
     }
 
@@ -89,7 +90,7 @@ class HttpChatModelTest {
     void omitsAuthorizationHeaderWhenNoApiKey() {
         wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
         ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "test-model", null,
-                256, 0.0, Duration.ofSeconds(5));
+                256, 0.0, Duration.ofSeconds(5), Map.of());
         new HttpChatModel(ep, HttpClient.newHttpClient(), millis -> { }).complete(request());
 
         wm.verify(postRequestedFor(urlEqualTo("/v1/chat/completions"))
@@ -130,13 +131,39 @@ class HttpChatModelTest {
 
         List<Long> recordedSleeps = new ArrayList<>();
         ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "test-model", "sk-key",
-                256, 0.0, Duration.ofSeconds(5));
+                256, 0.0, Duration.ofSeconds(5), Map.of());
         HttpChatModel model = new HttpChatModel(ep, HttpClient.newHttpClient(), recordedSleeps::add);
 
         assertThat(model.complete(request()).message().content()).isEqualTo("hello");
 
         assertThat(recordedSleeps).hasSize(1);
         assertThat(recordedSleeps.get(0)).isLessThanOrEqualTo(60_000L);
+    }
+
+    @Test
+    void mergesExtraBodyAsTopLevelFields() {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+        ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "test-model", "sk-key",
+                256, 0.0, Duration.ofSeconds(5),
+                Map.of("chat_template_kwargs", Map.of("enable_thinking", false)));
+        new HttpChatModel(ep, HttpClient.newHttpClient(), millis -> { }).complete(request());
+
+        wm.verify(postRequestedFor(urlEqualTo("/v1/chat/completions"))
+                .withRequestBody(matchingJsonPath(
+                        "$.chat_template_kwargs.enable_thinking", equalTo("false"))));
+    }
+
+    @Test
+    void extraBodyCannotOverrideCoreFields() {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+        ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "test-model", "sk-key",
+                256, 0.0, Duration.ofSeconds(5),
+                Map.of("model", "evil-model", "max_tokens", 99999));
+        new HttpChatModel(ep, HttpClient.newHttpClient(), millis -> { }).complete(request());
+
+        wm.verify(postRequestedFor(urlEqualTo("/v1/chat/completions"))
+                .withRequestBody(matchingJsonPath("$.model", equalTo("test-model")))
+                .withRequestBody(matchingJsonPath("$.max_tokens", equalTo("256"))));
     }
 
     @Test
@@ -161,7 +188,7 @@ class HttpChatModelTest {
     void attemptCapBoundsRetries() {
         wm.stubFor(post("/v1/chat/completions").willReturn(serverError()));
         ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "test-model", "sk-key",
-                256, 0.0, Duration.ofSeconds(5));
+                256, 0.0, Duration.ofSeconds(5), Map.of());
         HttpChatModel capped = new HttpChatModel(ep, 2, HttpClient.newHttpClient(), millis -> { });
 
         assertThatThrownBy(() -> capped.complete(request()))
@@ -195,7 +222,7 @@ class HttpChatModelTest {
                 throw new UnsupportedOperationException();
             }
         };
-        ModelEndpoint ep = new ModelEndpoint("http://127.0.0.1:1/v1", "m", null, 16, 0.0, Duration.ofSeconds(1));
+        ModelEndpoint ep = new ModelEndpoint("http://127.0.0.1:1/v1", "m", null, 16, 0.0, Duration.ofSeconds(1), Map.of());
         HttpChatModel model = new HttpChatModel(ep, 2, refusing, millis -> { });
 
         assertThatThrownBy(() -> model.complete(request()))

@@ -186,7 +186,38 @@ public final class ConfigLoader {
         Duration timeout = m.get("timeout_seconds") == null
                 ? DEFAULT_TIMEOUT
                 : Duration.ofSeconds(parseLong("models." + name + ".timeout_seconds", String.valueOf(m.get("timeout_seconds"))));
-        return new ModelEndpoint(baseUrl, model, apiKey, maxTokens, temperature, timeout);
+        Map<String, Object> extraBody = extraBody(m, name);
+        return new ModelEndpoint(baseUrl, model, apiKey, maxTokens, temperature, timeout, extraBody);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> extraBody(Map<?, ?> m, String name) {
+        Object raw = m.get("extra_body");
+        if (raw == null) {
+            return Map.of();
+        }
+        if (!(raw instanceof Map<?, ?> map)) {
+            throw new ConfigException("models." + name + ".extra_body must be a mapping, got: " + raw);
+        }
+        return (Map<String, Object>) deepCopy(map);
+    }
+
+    private static Object deepCopy(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> copy = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> e : map.entrySet()) {
+                copy.put(String.valueOf(e.getKey()), deepCopy(e.getValue()));
+            }
+            return Map.copyOf(copy);
+        }
+        if (value instanceof List<?> list) {
+            List<Object> copy = new ArrayList<>();
+            for (Object item : list) {
+                copy.add(deepCopy(item));
+            }
+            return List.copyOf(copy);
+        }
+        return value;
     }
 
     private static String required(Map<?, ?> m, String key, String endpointName, Function<String, String> env) {

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import sdd.core.config.ModelEndpoint;
 
 import java.time.Duration;
+import java.util.Map;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -15,7 +16,7 @@ class EndpointProbeTest {
     static WireMockExtension wm = WireMockExtension.newInstance().build();
 
     private ModelEndpoint ep(String key) {
-        return new ModelEndpoint(wm.baseUrl() + "/v1", "m", key, 256, 0.0, Duration.ofSeconds(5));
+        return new ModelEndpoint(wm.baseUrl() + "/v1", "m", key, 256, 0.0, Duration.ofSeconds(5), Map.of());
     }
 
     @Test
@@ -37,7 +38,7 @@ class EndpointProbeTest {
     @Test
     void unreachableHostIsNotOkAndDoesNotThrow() {
         ModelEndpoint dead = new ModelEndpoint("http://127.0.0.1:1/v1", "m", null,
-                256, 0.0, Duration.ofSeconds(1));
+                256, 0.0, Duration.ofSeconds(1), Map.of());
         EndpointProbe.ProbeResult r = EndpointProbe.probe(dead);
         assertThat(r.ok()).isFalse();
         assertThat(r.detail()).isNotBlank();

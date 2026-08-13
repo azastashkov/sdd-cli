@@ -46,6 +46,7 @@ class RepoCardGeneratorTest {
         RepoCardGenerator.CardResult first = RepoCardGenerator.generate(db.jdbi(), ws, model, "qwen");
         assertThat(first.generated()).isEqualTo(1);
         assertThat(first.failed()).isZero();
+        assertThat(first.failures()).isEmpty();
 
         Map<String, Object> card = db.jdbi().withHandle(h ->
                 h.createQuery("SELECT card_line, model, input_hash FROM repo_card").mapToMap().one());
@@ -75,6 +76,36 @@ class RepoCardGeneratorTest {
         RepoCardGenerator.CardResult result = RepoCardGenerator.generate(db.jdbi(), ws, model, "qwen");
         assertThat(result.failed()).isEqualTo(1);
         assertThat(result.generated()).isEqualTo(1);
+        assertThat(result.failures()).containsExactly("svc-orders: unparseable card JSON");
+    }
+
+    @Test
+    void thinkingModelLengthFinishReasonReportsActionableFailure() {
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                new ChatResponse(ChatMessage.assistant(null), "length", new Usage(1, 774))));
+        RepoCardGenerator.CardResult result = RepoCardGenerator.generate(db.jdbi(), ws, model, "qwen");
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(result.failures()).containsExactly(
+                "svc-orders: finish_reason=length (thinking model? set extra_body "
+                        + "chat_template_kwargs.enable_thinking=false)");
+    }
+
+    @Test
+    void modelExceptionReportsErrorMessage() {
+        db.jdbi().useHandle(h -> {
+            for (int i = 2; i <= 4; i++) {
+                h.execute("INSERT INTO repo(name, path, kind) VALUES ('r" + i + "', '/w/r" + i + "', 'LIBRARY')");
+                h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (" + i + ", ':', 'LIBRARY')");
+            }
+        });
+        ChatModelThrowingAlways broken = new ChatModelThrowingAlways();
+        RepoCardGenerator.CardResult result = RepoCardGenerator.generate(db.jdbi(), ws, broken, "qwen");
+        // repos ordered by name: r2, r3, r4, svc-orders — first 3 exhaust the model, 4th is short-circuited
+        assertThat(result.failures()).containsExactly(
+                "r2: model error: connection refused",
+                "r3: model error: connection refused",
+                "r4: model error: connection refused",
+                "svc-orders: skipped after 3 consecutive model failures");
     }
 
     @Test

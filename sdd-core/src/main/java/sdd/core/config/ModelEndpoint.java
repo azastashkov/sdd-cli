@@ -1,6 +1,7 @@
 package sdd.core.config;
 
 import java.time.Duration;
+import java.util.Map;
 
 public record ModelEndpoint(
         String baseUrl,
@@ -8,4 +9,9 @@ public record ModelEndpoint(
         String apiKey,
         int maxTokens,
         double temperature,
-        Duration timeout) {}
+        Duration timeout,
+        Map<String, Object> extraBody) {
+    public ModelEndpoint {
+        extraBody = extraBody == null ? Map.of() : Map.copyOf(extraBody);
+    }
+}
