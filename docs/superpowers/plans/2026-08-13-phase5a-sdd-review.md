@@ -650,7 +650,10 @@ git commit -m "feat: estate rebuild verifier and release runbook"
 - Test: `sdd-cli/src/test/java/sdd/cli/ReviewCommandTest.java`
 
 **Interfaces:**
-- Produces: `ReviewReport.render(...)` taking `(String runId, PlanModel plan, RunState state, Map<String,RunGit.DiffStat> diffStats, Map<String,EstateRebuild.Result> rebuilds, List<ContractRecheck.Finding> contracts, String runbook, boolean rebuilt)` → markdown. Sections, each omitted when empty (CurationReport idiom): title + run id; **Summary** (repo count by state, total tokens, exit-code meaning); **Repos** (one bullet per repo: state, checkpoint sha, diffstat, rebuild verdict, detail); **Rebuild failures** (only failing repos, with the log's first 400 chars); **Contract re-check** (only non-MATCHES findings); **Release runbook**; trailer with `Instant.now()` and a hint naming the diff files' location. `ReviewCommand`: `@Command(name = "review", exitCodeOnInvalidInput = 4)`, options `--workspace` (default `.`), `--no-rebuild`, positional `<plan.json>` (same `.plan.json` validation as `ImplementCommand`). Behavior: derive `runId` the same way `ImplementCommand` does (`sanitize(specId) + "-v" + planVersion`), require `<workspace>/.sdd/runs/<runId>/state.json` (else exit 4 with `"error: no run to review at <runDir>"`), read plan/state/paths (repo paths from the KB `repo` table exactly as `ImplementCommand` does), write `review/<repo>.diff` per SUCCEEDED repo with a checkpoint, run the contract re-check, run the rebuild unless `--no-rebuild` (checking out each SUCCEEDED repo's checkpoint branch in `Scheduler.sequence` order, restoring every touched repo's original branch in a `finally`), render and write `review/report.md`, print its path, and return `0` when every rebuilt repo verified and every repo is SUCCEEDED, else `2`.
+- Produces: `ReviewReport.render(...)` taking `(String runId, PlanModel plan, RunState state, Map<String,RunGit.DiffStat> diffStats, Map<String,EstateRebuild.Result> rebuilds, List<String> notLocallyVerified, List<String> restoreFailures, List<ContractRecheck.Finding> contracts, String runbook, boolean rebuilt)` → markdown. Sections, each omitted when empty (CurationReport idiom): title + run id; **Summary** (repo count by state, total tokens, exit-code meaning); **Repos** (one bullet per repo: state, checkpoint sha, diffstat, rebuild verdict — or `not locally verified (all verification tasks excluded)` for repos in `notLocallyVerified` — and detail); **Rebuild failures** (only failing repos, with the log's first 400 chars); **Contract re-check** (only non-MATCHES findings); **Branch restore failures** (only when non-empty — these leave the estate off its original position and need human action); **Release runbook**; trailer with `Instant.now()` and a hint naming the diff files' location. `ReviewCommand`: `@Command(name = "review", exitCodeOnInvalidInput = 4)`, options `--workspace` (default `.`), `--no-rebuild`, positional `<plan.json>` (same `.plan.json` validation as `ImplementCommand`). Behavior: derive `runId` from the CLI-passed plan file, then **load `runDir/plan.json` — the frozen snapshot — for everything else** (contracts, edges, order, base SHAs), exactly as `ImplementCommand --resume` does; a drifted live plan file must not skew the review. Require `<workspace>/.sdd/runs/<runId>/state.json` (else exit 4, `"error: no run to review at <runDir>"`). Repo paths come from the KB `repo` table as in `ImplementCommand`. Per SUCCEEDED repo with a checkpoint, write `review/<repo>.diff` from **`RunGit.diff(root, plan.repo(name).orElseThrow().baseSha(), run.checkpointSha())`** (never live HEAD). Then the contract re-check, then the rebuild unless `--no-rebuild`, then render/write `review/report.md`, print its path.
+  **Duplication to copy byte-for-byte from `ImplementCommand` (all reachable via public APIs; `sanitize` is private so it must be reproduced exactly, INCLUDING its blank→`"run"` fallback, or runIds diverge):** `sanitize(specId) + "-v" + planVersion`; effective verification tasks = plan step `verification` ∩ `GradleTool.allowedTasks()`, else `List.of("check")`, minus `config.verificationExclusions().getOrDefault(repo, List.of())`; extraArgs = `Propagation.includeBuildArgs(repo, plan.edges(), paths)` then `Propagation.mavenLocalArgs(plan.edges(), MavenLocalInit.scriptPath(runDir))`; javaHome = `config.jdkHomes().get(GradleExtractor.jdkMajorFor(GradleExtractor.wrapperVersion(root)))`.
+  **Empty effective task list** (sdd.yml excluded everything) → do NOT call `verify` (it would return ok on zero tasks and the report would claim a clean verification); record the repo as `"not locally verified (all verification tasks excluded)"` and treat it as neither pass nor fail.
+  **Exit codes:** `0` when every repo is SUCCEEDED and no rebuild failed; `2` when any repo is not SUCCEEDED or any rebuild/checkout failed; `4` only when no report could be produced. The outer catch returns **4** (`ImplementCommand`'s idiom — NOT `GraphCommand`'s `return 1`, which is outside this taxonomy).
 - Consumes: Tasks 1-3.
 
 - [ ] **Step 1: Write the failing e2e test** (`ReviewCommandTest.java`) — build a finished run by hand rather than driving `sdd implement` (faster and hermetic); read `ImplementCommandTest` first for the sdd.yml/spec/plan-json fixture idiom and reuse it:
@@ -690,7 +693,9 @@ Run: `./gradlew :sdd-cli:test --tests 'sdd.cli.ReviewCommandTest'`
 - [ ] **Step 3: Implement** `ReviewReport` (single `StringBuilder`, sections skipped when empty, trailer `"---\n\n_Generated: <Instant>_\n\nPer-repo diffs: <runDir>/review/<repo>.diff\n"`), then `ReviewCommand` following `GraphCommand`'s shape plus `ImplementCommand`'s plan-loading and KB-paths code, then register `ReviewCommand.class` in `SddCli`'s `subcommands` array. The rebuild block must be:
 
 ```java
-            Map<String, String> originalBranches = new LinkedHashMap<>();
+            // Original position per repo: a branch name, or "detached:<sha>" when the user had a
+            // detached HEAD (restoring by sha keeps the estate exactly where review found it).
+            Map<String, String> originalPositions = new LinkedHashMap<>();
             try {
                 for (String repo : Scheduler.sequence(plan.order())) {
                     if (state.stateOf(repo) != RepoState.SUCCEEDED) {
@@ -701,21 +706,43 @@ Run: `./gradlew :sdd-cli:test --tests 'sdd.cli.ReviewCommandTest'`
                     if (root == null || run.branch() == null) {
                         continue;
                     }
-                    originalBranches.putIfAbsent(repo, RunGit.currentBranch(root));
-                    RunGit.checkout(root, run.branch());
-                    rebuilds.put(repo, rebuild.verify(root, javaHomeFor(root), tasksFor(repo),
-                            extraArgsFor(repo)));
+                    List<String> tasks = tasksFor(repo);
+                    if (tasks.isEmpty()) {
+                        notLocallyVerified.add(repo);
+                        continue;
+                    }
+                    // A checkout can legitimately fail (uncommitted conflicting changes at review
+                    // time). Record it as a failed rebuild and keep going — the report must still
+                    // be produced (ratified (c)/(f)).
+                    try {
+                        String branch = RunGit.currentBranch(root);
+                        originalPositions.putIfAbsent(repo,
+                                branch.isEmpty() ? "detached:" + RunGit.head(root) : branch);
+                        RunGit.checkout(root, run.branch());
+                        rebuilds.put(repo, rebuild.verify(root, javaHomeFor(root), tasks,
+                                extraArgsFor(repo)));
+                    } catch (RuntimeException e) {
+                        rebuilds.put(repo, new EstateRebuild.Result(false,
+                                "checkout failed: " + e.getMessage()));
+                    }
                 }
             } finally {
-                originalBranches.forEach((repo, branch) -> {
-                    if (!branch.isEmpty()) {
-                        RunGit.checkout(paths.get(repo), branch);
+                // One failed restore must not strand the remaining repos on checkpoint branches.
+                for (Map.Entry<String, String> entry : originalPositions.entrySet()) {
+                    String target = entry.getValue().startsWith("detached:")
+                            ? entry.getValue().substring("detached:".length()) : entry.getValue();
+                    try {
+                        RunGit.checkout(paths.get(entry.getKey()), target);
+                    } catch (RuntimeException e) {
+                        restoreFailures.add(entry.getKey() + ": " + e.getMessage());
+                        err.println("warn: could not restore " + entry.getKey() + " to " + target
+                                + ": " + e.getMessage());
                     }
-                });
+                }
             }
 ```
 
-with `tasksFor` reproducing `ImplementCommand`'s effective-task resolution (plan step verification ∩ `GradleTool.allowedTasks()`, else `List.of("check")`, minus `config.verificationExclusions()`) and `extraArgsFor` reproducing its `Propagation.includeBuildArgs` + `Propagation.mavenLocalArgs` concatenation.
+`restoreFailures` is rendered as its own report section (omitted when empty), and `notLocallyVerified` repos are shown in the Repos section with that wording rather than a verification verdict. `tasksFor`/`extraArgsFor`/`javaHomeFor` reproduce `ImplementCommand`'s resolutions exactly as listed in the Interfaces block above.
 
 - [ ] **Step 4: Run — expect PASS, then the full build.**
 Run: `./gradlew :sdd-cli:test && ./gradlew build`
