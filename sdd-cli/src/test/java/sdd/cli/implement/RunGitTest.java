@@ -8,6 +8,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RunGitTest {
     @TempDir Path tmp;
@@ -127,5 +129,40 @@ class RunGitTest {
         assertThat(RunGit.isAtCheckpoint(repo.path(), "sdd/S-v1/lib", "0000000")).isFalse();
         assertThat(RunGit.isAtCheckpoint(repo.path(), null, base)).isFalse();
         assertThat(RunGit.isAtCheckpoint(repo.path(), "sdd/S-v1/lib", null)).isFalse();
+    }
+
+    @Test
+    void deleteBranchIsANoOpWhenTheBranchIsAbsent() throws Exception {
+        FixtureRepo repo = FixtureRepo.in(tmp, "lib").file("A.java", "class A {}\n").commit("base");
+
+        assertThatCode(() -> RunGit.deleteBranch(repo.path(), "sdd/never-existed/lib"))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void deleteBranchRemovesANonCurrentBranch() throws Exception {
+        FixtureRepo repo = FixtureRepo.in(tmp, "lib").file("A.java", "class A {}\n").commit("base");
+        String base = repo.headSha();
+        String main = RunGit.currentBranch(repo.path());
+        RunGit.startBranch(repo.path(), "sdd/run/lib", base);
+        RunGit.checkout(repo.path(), main);
+
+        RunGit.deleteBranch(repo.path(), "sdd/run/lib");
+
+        assertThat(RunGit.branchHead(repo.path(), "sdd/run/lib")).isEmpty();
+    }
+
+    @Test
+    void deleteBranchOnTheCurrentlyCheckedOutBranchThrowsEvenWithForce() throws Exception {
+        // Pins the empirically-reproduced JGit 6.10.0 fact the brief calls out: force bypasses only
+        // the merged-ness check, not CannotDeleteCurrentBranchException. Callers must check out
+        // something else first — RunGit.deleteBranch itself does not do that for them.
+        FixtureRepo repo = FixtureRepo.in(tmp, "lib").file("A.java", "class A {}\n").commit("base");
+        String base = repo.headSha();
+        RunGit.startBranch(repo.path(), "sdd/run/lib", base);
+
+        assertThatThrownBy(() -> RunGit.deleteBranch(repo.path(), "sdd/run/lib"))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(RunGit.branchHead(repo.path(), "sdd/run/lib")).isNotEmpty();   // untouched
     }
 }

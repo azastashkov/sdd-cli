@@ -147,49 +147,60 @@ public abstract class DecisionCommand implements Callable<Integer> {
 
         @Override
         protected Followup followUp(RunContext run, PrintWriter out, PrintWriter err) {
-            // repoRun is non-null in practice — decide() ran first and Decisions.approve refuses a
-            // repo with no run state — but that is an ordering dependency two classes apart, so it
-            // is checked here rather than assumed.
-            RepoRun repoRun = run.byName().get(repo);
-            Path root = run.paths().get(repo);
-            if (repoRun == null || root == null || repoRun.branch() == null
-                    || repoRun.checkpointSha() == null) {
-                // A stale knowledge base or a hand-edited state.json — the verdict still stands,
-                // there is just no branch to collapse.
-                err.println("warn: " + repo + " has no repo path or checkpoint on record; "
-                        + "approved without squashing");
-                return Followup.none();
-            }
-            String baseSha = run.plan().repo(repo).orElseThrow().baseSha();
-            SquashApprove.Result result = SquashApprove.approve(root, repo, run.runId(),
-                    run.plan().specId(), repoRun, baseSha);
-            if (!result.applied()) {
-                // The decision stands; only the squash was refused (dirty tree, or the branch moved
-                // off its checkpoint). Exit 2 so a script notices the repo still needs attention.
-                err.println("squash refused: " + result.message());
-                return Followup.exiting(2);
-            }
-            if (!result.squashed()) {
-                // Either the branch already was one commit or its range was a net no-op — in both
-                // cases the sha did not move, so state.json must NOT be rewritten. The two cases
-                // read very differently to a human ("already a single commit past <base>" vs "had
-                // no net change since <base>"), and SquashApprove already knows which one fired —
-                // so print its message rather than flattening both into one re-derived line.
-                out.println(result.message());
-                return Followup.none();
-            }
-            // Load-bearing, not bookkeeping: Resume.prepare fails any SUCCEEDED repo whose branch
-            // head differs from its recorded checkpoint with exit 4, so without this write-back the
-            // very "sdd implement --retry" that redo prints would hard-fail once any sibling had
-            // been approved. Written before the count is printed so nothing can lose it.
-            run.state().set(repo, repoRun.state(), repoRun.branch(), result.sha(), repoRun.detail());
-            run.store().writeState(run.runDir(), run.state());
-            // Counted against the PRE-squash checkpoint, whose objects are still resolvable (the
-            // squash only moved the branch ref); SquashApprove made the identical call moments ago.
-            out.println("squashed " + RunGit.commitsBetween(root, baseSha, repoRun.checkpointSha())
-                    + " commits into " + shortSha(result.sha()));
+            return squashAndRecord(run, repo, out, err);
+        }
+    }
+
+    /**
+     * The squash half of an approve: collapse the repo's run branch into the one reviewed commit
+     * and, on a real squash, write the new checkpoint sha back into {@code state.json}. Shared by
+     * {@link Approve} and {@link InteractiveReview} so a human walking the terminal loop and a
+     * script calling {@code sdd review approve} leave the estate in identical shape — this is the
+     * one piece of approve's behavior that is NOT expressed through {@link Decisions}.
+     */
+    static Followup squashAndRecord(RunContext run, String repo, PrintWriter out, PrintWriter err) {
+        // repoRun is non-null in practice — decide() ran first and Decisions.approve refuses a
+        // repo with no run state — but that is an ordering dependency two classes apart, so it
+        // is checked here rather than assumed.
+        RepoRun repoRun = run.byName().get(repo);
+        Path root = run.paths().get(repo);
+        if (repoRun == null || root == null || repoRun.branch() == null
+                || repoRun.checkpointSha() == null) {
+            // A stale knowledge base or a hand-edited state.json — the verdict still stands,
+            // there is just no branch to collapse.
+            err.println("warn: " + repo + " has no repo path or checkpoint on record; "
+                    + "approved without squashing");
             return Followup.none();
         }
+        String baseSha = run.plan().repo(repo).orElseThrow().baseSha();
+        SquashApprove.Result result = SquashApprove.approve(root, repo, run.runId(),
+                run.plan().specId(), repoRun, baseSha);
+        if (!result.applied()) {
+            // The decision stands; only the squash was refused (dirty tree, or the branch moved
+            // off its checkpoint). Exit 2 so a script notices the repo still needs attention.
+            err.println("squash refused: " + result.message());
+            return Followup.exiting(2);
+        }
+        if (!result.squashed()) {
+            // Either the branch already was one commit or its range was a net no-op — in both
+            // cases the sha did not move, so state.json must NOT be rewritten. The two cases
+            // read very differently to a human ("already a single commit past <base>" vs "had
+            // no net change since <base>"), and SquashApprove already knows which one fired —
+            // so print its message rather than flattening both into one re-derived line.
+            out.println(result.message());
+            return Followup.none();
+        }
+        // Load-bearing, not bookkeeping: Resume.prepare fails any SUCCEEDED repo whose branch
+        // head differs from its recorded checkpoint with exit 4, so without this write-back the
+        // very "sdd implement --retry" that redo prints would hard-fail once any sibling had
+        // been approved. Written before the count is printed so nothing can lose it.
+        run.state().set(repo, repoRun.state(), repoRun.branch(), result.sha(), repoRun.detail());
+        run.store().writeState(run.runDir(), run.state());
+        // Counted against the PRE-squash checkpoint, whose objects are still resolvable (the
+        // squash only moved the branch ref); SquashApprove made the identical call moments ago.
+        out.println("squashed " + RunGit.commitsBetween(root, baseSha, repoRun.checkpointSha())
+                + " commits into " + shortSha(result.sha()));
+        return Followup.none();
     }
 
     @Command(name = "reject", description = "Reject a repo's run branch", exitCodeOnInvalidInput = 4)

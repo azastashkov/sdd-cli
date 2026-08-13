@@ -11,11 +11,15 @@ import sdd.cli.implement.Scheduler;
 import sdd.cli.review.ContractRecheck;
 import sdd.cli.review.DecisionCommand;
 import sdd.cli.review.EstateRebuild;
+import sdd.cli.review.InteractiveReview;
 import sdd.cli.review.RebuildPass;
 import sdd.cli.review.RunContext;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +51,16 @@ public final class ReviewCommand implements Callable<Integer> {
 
     @Option(names = "--no-rebuild", description = "Skip the estate rebuild verification pass")
     boolean noRebuild;
+
+    @Option(names = "--interactive", description = "Walk PENDING repos and prompt approve/reject/"
+            + "redo/view/skip/quit after the report is written")
+    boolean interactive;
+
+    /** Test-only injection point: {@code null} in real use, where {@link #call} falls back to
+     *  {@code System.in}. {@link InteractiveReview} itself never touches {@code System.in} — this is
+     *  the one place the real terminal is wired in, so the interactive loop stays fully testable
+     *  without one. */
+    BufferedReader in;
 
     // arity 0..1, not the default 1: picocli validates a PARENT's required positionals BEFORE it
     // recurses into a subcommand, so a required <planJsonPath> here made every
@@ -106,6 +120,12 @@ public final class ReviewCommand implements Callable<Integer> {
 
             out.println("review written: " + run.writeReport(diffs, rebuilds, notLocallyVerified,
                     stagingFailures, restoreFailures, contracts, !noRebuild));
+
+            if (interactive) {
+                BufferedReader reader = in != null ? in
+                        : new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+                InteractiveReview.run(reader, out, err, run);
+            }
 
             boolean allSucceeded = Scheduler.sequence(run.plan().order()).stream()
                     .allMatch(repo -> run.state().stateOf(repo) == RepoState.SUCCEEDED);

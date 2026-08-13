@@ -216,4 +216,20 @@ public final class RunGit {
                     + e.getMessage(), e);
         }
     }
+
+    /** Deletes {@code branch}; a no-op when it does not exist (JGit's branchDelete returns an empty
+     *  list rather than throwing). Force so an unmerged run branch — the normal case for a rejected
+     *  or redone repo — still deletes; force only bypasses the merged-ness check, NOT the "this is
+     *  the currently checked out branch" guard: JGit throws CannotDeleteCurrentBranchException
+     *  regardless of force, so a caller must check the repo out onto something else first whenever
+     *  {@link #currentBranch} equals {@code branch} (the common case — Orchestrator never restores a
+     *  repo's original branch after {@code sdd implement}). */
+    public static void deleteBranch(Path repo, String branch) {
+        try (Git git = Git.open(repo.toFile())) {
+            git.branchDelete().setBranchNames(branch).setForce(true).call();
+        } catch (Exception e) {
+            throw new IllegalStateException("cannot delete branch " + branch + " in " + repo + ": "
+                    + e.getMessage(), e);
+        }
+    }
 }
