@@ -8,7 +8,8 @@ import java.util.List;
 import java.util.Map;
 
 /** Gates a run before any repo executes: clean trees at the pinned base SHAs, with runnable wrappers.
- *  Full M8 staleness recovery (re-index / auto-advance on drift) is 4C-3; this phase hard-fails on drift. */
+ *  Full M8 staleness recovery (re-index / auto-advance on drift) is 4C-3; this phase hard-fails on drift
+ *  (fresh runs; resume trusts checkpoints instead). */
 public final class PreFlight {
     private PreFlight() {
     }
@@ -24,21 +25,14 @@ public final class PreFlight {
         for (Map.Entry<String, RepoStep> entry : steps.entrySet()) {
             String repo = entry.getKey();
             var root = entry.getValue().repoRoot();
-            if (!Files.isDirectory(root)) {
-                problems.add(repo + ": checkout not found at " + root);
+            if (!environment(repo, entry.getValue(), plan, problems)) {
                 continue;
-            }
-            if (!Files.isExecutable(root.resolve("gradlew"))) {
-                problems.add(repo + ": no executable gradle wrapper at " + root.resolve("gradlew"));
-            }
-            String base = plan.repo(repo).map(PlanModel.PlanRepo::baseSha).orElse("");
-            if (base.isEmpty()) {
-                problems.add(repo + ": plan has no base SHA for this repo");
             }
             try {
                 if (!RunGit.isClean(root)) {
                     problems.add(repo + ": working tree is dirty");
                 }
+                String base = plan.repo(repo).map(PlanModel.PlanRepo::baseSha).orElse("");
                 String head = RunGit.head(root);
                 if (!base.isEmpty() && !head.equals(base)) {
                     problems.add(repo + ": HEAD " + head + " has drifted from the plan base " + base
@@ -49,5 +43,36 @@ public final class PreFlight {
             }
         }
         return new Result(problems.isEmpty(), problems);
+    }
+
+    /** Resume gate: environment-only checks for the repos that will actually run. Tree state is NOT
+     *  checked — startBranch hard-resets to base and cleans untracked debris on entry. */
+    public static Result checkResume(Map<String, RepoStep> steps, PlanModel plan, RunState state) {
+        List<String> problems = new ArrayList<>();
+        for (Map.Entry<String, RepoStep> entry : steps.entrySet()) {
+            if (state.stateOf(entry.getKey()) != RepoState.PENDING) {
+                continue;
+            }
+            environment(entry.getKey(), entry.getValue(), plan, problems);
+        }
+        return new Result(problems.isEmpty(), problems);
+    }
+
+    /** Checkout exists, gradlew is executable, base SHA is present. Returns false (and has already
+     *  recorded a problem) when the checkout itself is missing, since the remaining checks need it. */
+    private static boolean environment(String repo, RepoStep step, PlanModel plan, List<String> problems) {
+        var root = step.repoRoot();
+        if (!Files.isDirectory(root)) {
+            problems.add(repo + ": checkout not found at " + root);
+            return false;
+        }
+        if (!Files.isExecutable(root.resolve("gradlew"))) {
+            problems.add(repo + ": no executable gradle wrapper at " + root.resolve("gradlew"));
+        }
+        String base = plan.repo(repo).map(PlanModel.PlanRepo::baseSha).orElse("");
+        if (base.isEmpty()) {
+            problems.add(repo + ": plan has no base SHA for this repo");
+        }
+        return true;
     }
 }

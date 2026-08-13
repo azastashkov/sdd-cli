@@ -61,4 +61,23 @@ class RunStoreTest {
         store.writeAgentEvents(runDir, "grp/lib", List.of("x"));
         assertThat(Files.exists(runDir.resolve("grp-lib/agent-events.jsonl"))).isTrue();
     }
+
+    @Test
+    void readStateRoundTripsThePauseFields() {
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "spec body");
+        RunState state = new RunState("S-v1", List.of("lib"));
+        state.set("lib", RepoState.PAUSED_ENDPOINT, "sdd/S-v1/lib", null, "outage");
+        state.pause("model endpoint unavailable: x");
+        state.addTokens(42L);
+        store.writeState(runDir, state);
+
+        RunState read = store.readState(runDir);
+
+        assertThat(read.runId()).isEqualTo("S-v1");
+        assertThat(read.stateOf("lib")).isEqualTo(RepoState.PAUSED_ENDPOINT);
+        assertThat(read.pausedReason()).isEqualTo("model endpoint unavailable: x");
+        assertThat(read.tokensSpent()).isEqualTo(42L);
+        assertThat(ws.resolve(".sdd/runs/S-v1/spec.md")).hasContent("spec body");
+    }
 }

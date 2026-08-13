@@ -14,6 +14,8 @@ import sdd.cli.implement.PlanJsonReader;
 import sdd.cli.implement.PlanModel;
 import sdd.cli.implement.PreFlight;
 import sdd.cli.implement.RepoStepResolver;
+import sdd.cli.implement.Resume;
+import sdd.cli.implement.RunState;
 import sdd.cli.implement.RunStore;
 import sdd.core.config.ConfigLoader;
 import sdd.core.config.ModelEndpoint;
@@ -35,6 +37,12 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.function.Function;
 
+/**
+ * Known limitation: a hard-killed process (SIGKILL, power loss) leaves the lock file behind — only
+ * in-process exits reach the orchestrator's {@code finally} release — so {@code --resume} after a hard
+ * crash aborts with the existing "already in progress … remove the lock to override" message. Manual
+ * lock removal is the deliberate escape hatch this phase; lock-staleness detection is 4C-3b territory.
+ */
 @Command(name = "implement",
         description = "Execute an approved plan.json across the estate (single attempt per repo)",
         exitCodeOnInvalidInput = 4)
@@ -43,6 +51,9 @@ public final class ImplementCommand implements Callable<Integer> {
 
     @Option(names = "--workspace", description = "Workspace directory (default: current dir)")
     Path workspace = Path.of(".");
+
+    @Option(names = "--resume", description = "Resume a paused or crashed run of this plan from its checkpoints")
+    boolean resume;
 
     @Parameters(index = "0", description = "The approved <spec>.plan.json")
     Path planJsonPath;
@@ -86,14 +97,51 @@ public final class ImplementCommand implements Callable<Integer> {
                                 Path.of(String.valueOf(row.get("path"))))));
                 Map<String, RepoStep> steps = RepoStepResolver.resolve(plan, parsedSpec, paths);
 
-                PreFlight.Result preflight = PreFlight.check(steps, plan);
-                if (!preflight.ok()) {
-                    for (String problem : preflight.problems()) {
-                        err.println("problem: " + problem);
+                String runId = sanitize(plan.specId()) + "-v" + plan.planVersion();
+                RunStore store = RunStore.system();
+                Path runDir = workspace.resolve(".sdd/runs/" + runId);
+                RunState initialState = null;
+                if (resume) {
+                    if (!Files.exists(runDir.resolve("state.json"))) {
+                        err.println("error: no run to resume at " + runDir);
+                        return 4;
                     }
-                    return 4;
+                    planText = Files.readString(runDir.resolve("plan.json"));   // snapshots, not live files
+                    plan = PlanJsonReader.read(planText);
+                    PlanJsonReader.validate(plan);
+                    specText = Files.readString(runDir.resolve("spec.md"));
+                    parsedSpec = SpecParser.parse(specText);
+                    steps = RepoStepResolver.resolve(plan, parsedSpec, paths);
+                    Resume.Prep prep = Resume.prepare(store.readState(runDir), steps);
+                    if (!prep.problems().isEmpty()) {
+                        prep.problems().forEach(p -> err.println("problem: " + p));
+                        return 4;
+                    }
+                    PreFlight.Result gate = PreFlight.checkResume(steps, plan, prep.state());
+                    if (!gate.ok()) {
+                        gate.problems().forEach(p -> err.println("problem: " + p));
+                        return 4;
+                    }
+                    store.acquireLock(runDir);   // LAST, after every gate: everything above is read-only,
+                                                 // so no abort path between acquire and the orchestrator's
+                                                 // finally-release can leak the lock and wedge future resumes
+                    initialState = prep.state();
+                } else {
+                    if (Files.exists(runDir.resolve("state.json"))) {
+                        err.println("error: run " + runId + " already exists — resume with --resume, "
+                                + "or delete " + runDir + " to start over");
+                        return 4;
+                    }
+                    PreFlight.Result preflight = PreFlight.check(steps, plan);
+                    if (!preflight.ok()) {
+                        preflight.problems().forEach(p -> err.println("problem: " + p));
+                        return 4;
+                    }
+                    runDir = store.create(workspace, runId, planText, specText);
                 }
 
+                final PlanModel activePlan = plan;
+                final Map<String, RepoStep> activeSteps = steps;
                 ModelEndpoint coderEndpoint = config.models().get("coder");
                 ModelEndpoint plannerEndpoint = config.models().get("planner");
                 ChatModel coder = coderForTest != null ? coderForTest : new HttpChatModel(coderEndpoint);
@@ -102,20 +150,19 @@ public final class ImplementCommand implements Callable<Integer> {
                 String coderName = coderEndpoint.model();
                 String escalationName = plannerEndpoint.model();
                 Function<String, RunnerSettings> settingsFor = repo -> {
-                    Path root = steps.get(repo).repoRoot();
+                    Path root = activeSteps.get(repo).repoRoot();
                     Path javaHome = config.jdkHomes()
                             .get(GradleExtractor.jdkMajorFor(GradleExtractor.wrapperVersion(root)));
                     List<String> extraArgs = sdd.cli.implement.Propagation.includeBuildArgs(
-                            repo, plan.edges(), paths);
+                            repo, activePlan.edges(), paths);
                     return RunnerSettings.defaults(javaHome, extraArgs);
                 };
 
-                String runId = sanitize(plan.specId()) + "-v" + plan.planVersion();
-                RunStore store = RunStore.system();
-                Path runDir = store.create(workspace, runId, planText, specText);
                 Orchestrator orchestrator = new Orchestrator(new RepoStepRunner(jdbi), coder, coderName,
                         escalation, escalationName, settingsFor, store, RUN_TOKEN_BUDGET);
-                Orchestrator.RunResult result = orchestrator.run(runDir, plan, steps);
+                Orchestrator.RunResult result = initialState == null
+                        ? orchestrator.run(runDir, activePlan, activeSteps)
+                        : orchestrator.run(runDir, activePlan, activeSteps, initialState);
 
                 for (var repo : result.state().repos()) {
                     out.println(repo.repo() + ": " + repo.state()

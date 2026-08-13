@@ -34,16 +34,43 @@ public final class RunStore {
         Path runDir = workspace.resolve(".sdd/runs/" + runId);
         try {
             Files.createDirectories(runDir);
-            Path lock = runDir.resolve("lock");
-            try {
-                Files.createFile(lock);
-            } catch (java.nio.file.FileAlreadyExistsException e) {
-                throw new IllegalStateException("run " + runId + " is already in progress (lock held at "
-                        + lock + "); remove the lock to override");
-            }
+            acquireLock(runDir);
             Files.writeString(runDir.resolve("plan.json"), planJson);
             Files.writeString(runDir.resolve("spec.md"), specText);
             return runDir;
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    public void acquireLock(Path runDir) {
+        Path lock = runDir.resolve("lock");
+        try {
+            Files.createFile(lock);
+        } catch (java.nio.file.FileAlreadyExistsException e) {
+            throw new IllegalStateException("run " + runDir.getFileName() + " is already in progress "
+                    + "(lock held at " + lock + "); remove the lock to override");
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    public RunState readState(Path runDir) {
+        try {
+            com.fasterxml.jackson.databind.JsonNode root =
+                    JSON.readTree(Files.readString(runDir.resolve("state.json")));
+            List<RepoRun> repos = new java.util.ArrayList<>();
+            for (com.fasterxml.jackson.databind.JsonNode node : root.path("repos")) {
+                repos.add(new RepoRun(node.path("repo").asText(),
+                        RepoState.valueOf(node.path("state").asText()),
+                        node.path("branch").isNull() ? null : node.path("branch").asText(),
+                        node.path("checkpointSha").isNull() ? null : node.path("checkpointSha").asText(),
+                        node.path("detail").asText("")));
+            }
+            com.fasterxml.jackson.databind.JsonNode paused = root.path("pausedReason");
+            return new RunState(root.path("runId").asText(), repos,
+                    paused.isMissingNode() || paused.isNull() ? null : paused.asText(),
+                    root.path("tokensSpent").asLong(0));
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

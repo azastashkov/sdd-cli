@@ -64,6 +64,17 @@ public final class RunGit {
         }
     }
 
+    /** HEAD of refs/heads/<branch>, or "" if the branch does not exist. */
+    public static String branchHead(Path repo, String branch) {
+        try (Git git = Git.open(repo.toFile())) {
+            var id = git.getRepository().resolve("refs/heads/" + branch);
+            return id == null ? "" : id.name();
+        } catch (Exception e) {
+            throw new IllegalStateException("cannot read branch " + branch + " of " + repo + ": "
+                    + e.getMessage(), e);
+        }
+    }
+
     public static void resetHard(Path repo, String sha) {
         try (Git git = Git.open(repo.toFile())) {
             git.reset().setMode(ResetCommand.ResetType.HARD).setRef(sha).call();
