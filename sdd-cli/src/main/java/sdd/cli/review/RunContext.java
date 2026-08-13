@@ -110,11 +110,13 @@ public record RunContext(String runId, Path runDir, RunStore store, PlanModel pl
      *  artifact a human hands to a colleague reflects the run as it stands now, not a pre-decision
      *  snapshot. */
     public Path writeReport(Diffs diffs, Map<String, EstateRebuild.Result> rebuilds,
-                            List<String> notLocallyVerified, List<String> restoreFailures,
-                            List<ContractRecheck.Finding> contracts, boolean rebuilt) {
+                            List<String> notLocallyVerified, List<String> stagingFailures,
+                            List<String> restoreFailures, List<ContractRecheck.Finding> contracts,
+                            boolean rebuilt) {
         String runbook = ReleaseRunbook.render(plan, state);
         String report = ReviewReport.render(runId, plan, state, diffs.stats(), rebuilds,
-                notLocallyVerified, restoreFailures, diffs.failures(), contracts, runbook, rebuilt);
+                notLocallyVerified, stagingFailures, restoreFailures, diffs.failures(), contracts,
+                runbook, rebuilt);
         store.writeReview(runDir, "report.md", report);
         return store.reviewDir(runDir).resolve("report.md");
     }

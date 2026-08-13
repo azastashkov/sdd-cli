@@ -81,6 +81,7 @@ public final class ReviewCommand implements Callable<Integer> {
 
             Map<String, EstateRebuild.Result> rebuilds;
             List<String> notLocallyVerified;
+            List<String> stagingFailures;
             List<String> restoreFailures;
             List<ContractRecheck.Finding> contracts;
             if (noRebuild) {
@@ -88,6 +89,7 @@ public final class ReviewCommand implements Callable<Integer> {
                 // be standing on — the caller (report) still needs the findings either way.
                 rebuilds = Map.of();
                 notLocallyVerified = List.of();
+                stagingFailures = List.of();
                 restoreFailures = List.of();
                 contracts = ContractRecheck.check(run.plan(), run.state(), run.paths(),
                         run.store(), run.runDir());
@@ -97,19 +99,23 @@ public final class ReviewCommand implements Callable<Integer> {
                         true, err);
                 rebuilds = outcome.rebuilds();
                 notLocallyVerified = outcome.notLocallyVerified();
+                stagingFailures = outcome.stagingFailures();
                 restoreFailures = outcome.restoreFailures();
                 contracts = outcome.contracts();
             }
 
             out.println("review written: " + run.writeReport(diffs, rebuilds, notLocallyVerified,
-                    restoreFailures, contracts, !noRebuild));
+                    stagingFailures, restoreFailures, contracts, !noRebuild));
 
             boolean allSucceeded = Scheduler.sequence(run.plan().order()).stream()
                     .allMatch(repo -> run.state().stateOf(repo) == RepoState.SUCCEEDED);
             boolean anyRebuildFailed = rebuilds.values().stream().anyMatch(r -> !r.ok());
             // A failed restore leaves a repo stranded off its original branch — the report's own
-            // legend calls that a failed checkout, so it must fail the review too.
-            return allSucceeded && !anyRebuildFailed && restoreFailures.isEmpty() ? 0 : 2;
+            // legend calls that a failed checkout, so it must fail the review too. A staging
+            // failure is a failed checkout by another name, and worse: it silently invalidates
+            // every verdict downstream of it, so it can never be reported as a clean pass.
+            return allSucceeded && !anyRebuildFailed && restoreFailures.isEmpty()
+                    && stagingFailures.isEmpty() ? 0 : 2;
         } catch (RuntimeException | IOException e) {
             err.println("error: " + e.getMessage());
             return 4;

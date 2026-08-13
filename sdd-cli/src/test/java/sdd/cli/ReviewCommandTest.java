@@ -257,6 +257,88 @@ class ReviewCommandTest {
     }
 
     @Test
+    void aRepoThatCannotBeStagedFailsTheReviewEvenWithNothingToVerify() throws Exception {
+        // Pins a deliberate behaviour change: a repo whose verification tasks are ALL excluded used
+        // to short-circuit before the checkout, so it was never staged and a plain review exited 0.
+        // It is still a provider whose working tree its consumers compose, and ContractRecheck
+        // assumes every repo sits on its checkpoint — so it is staged now, and a staging failure
+        // fails the review instead of passing silently.
+        FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
+        Path g = lib.path().resolve("gradlew");
+        Files.writeString(g, "#!/bin/sh\nexit 0\n");
+        Files.setPosixFilePermissions(g, PosixFilePermissions.fromString("rwxr-xr-x"));
+        Path props = lib.path().resolve("gradle/wrapper/gradle-wrapper.properties");
+        Files.createDirectories(props.getParent());
+        Files.writeString(props, "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n");
+        lib.commit("base");
+        String baseSha = lib.headSha();
+        String originalBranch = RunGit.currentBranch(lib.path());
+
+        String runBranch = "sdd/SPEC-9-v1/lib";
+        RunGit.startBranch(lib.path(), runBranch, baseSha);
+        lib.file("A.java", "class A { int x; }\n");
+        lib.commit("checkpoint");
+        String checkpointSha = lib.headSha();
+        RunGit.checkout(lib.path(), originalBranch);
+        // An uncommitted edit to the one file that differs between the two branches: jgit refuses
+        // the checkout rather than clobbering it, which is the realistic way staging fails.
+        Files.writeString(lib.path().resolve("A.java"), "class A { int mine; }\n");
+
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                verification_exclusions:
+                  lib: [check]
+                """);
+        Files.writeString(ws.resolve("s.md"), """
+                ---
+                id: SPEC-9
+                title: Tiers
+                owner: me
+                status: approved
+                ---
+
+                ## Goal
+                g
+
+                ## Requirements
+                - R1: Expose tierFor.
+
+                ## Acceptance Criteria
+                - A1: tierFor returns a tier.
+                """);
+        String specSha = sdd.plan.approve.Hashes.sha256(Files.readString(ws.resolve("s.md")));
+        String planJson = """
+                { "spec_id":"SPEC-9","plan_version":1,"spec_sha256":"%s","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x to A."}] }
+                """.formatted(specSha, baseSha);
+        Files.writeString(ws.resolve("s.plan.json"), planJson);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", planJson, Files.readString(ws.resolve("s.md")));
+        store.releaseLock(runDir);
+        store.writeState(runDir, new RunState("SPEC-9-v1",
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok")), null, 3L));
+
+        int exit = new CommandLine(new ReviewCommand())
+                .execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
+
+        assertThat(exit).isEqualTo(2);
+        String report = Files.readString(ws.resolve(".sdd/runs/SPEC-9-v1/review/report.md"));
+        assertThat(report).contains("Staging failures").contains("lib");
+        // The human's uncommitted work is exactly where they left it.
+        assertThat(Files.readString(lib.path().resolve("A.java"))).isEqualTo("class A { int mine; }\n");
+    }
+
+    @Test
     void aFailedBranchRestoreForcesExitTwoEvenWhenEverythingElsePasses() throws Exception {
         FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
         String originalBranch = RunGit.currentBranch(lib.path());   // "main" — jgit's default init branch,

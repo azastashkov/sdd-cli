@@ -252,6 +252,32 @@ class ReviewDecisionsCommandTest {
     }
 
     @Test
+    void aRedoWhoseOwnRepoCannotBeStagedRefusesToReportACleanPass() throws Exception {
+        Fixture f = fixture();
+        // The repo being redone is always staged-but-outside-the-rebuild-subset (it is excluded
+        // from its own downstream closure) and is the single most load-bearing provider of the
+        // verdicts being printed. A human who was just reading its diff plausibly has uncommitted
+        // edits in it — which is exactly what makes its checkout fail here.
+        Files.writeString(f.lib().path().resolve("A.java"), "class A { int mine; }\n");
+
+        Invocation redo = exec("--workspace", ws.toString(), "redo", "lib", f.planPath().toString());
+
+        // Without this, svc builds against pre-run lib and prints a green "re-verify svc: OK" with
+        // exit 0 and a report.md recording a clean pass — the very bug estate-wide staging fixed.
+        assertThat(redo.exit()).isEqualTo(2);
+        assertThat(redo.err()).contains("could not stage").contains("lib");
+        assertThat(redo.out()).contains("re-verify svc:").contains("UNRELIABLE — upstream not staged");
+
+        String report = Files.readString(f.runDir().resolve("review/report.md"));
+        assertThat(report).contains("Staging failures").contains("lib").contains("cannot be trusted");
+
+        // The decision itself still stuck, and the human's uncommitted edit is untouched.
+        assertThat(RunStore.system().readDecisions(f.runDir()).get("lib").decision())
+                .isEqualTo(Decision.REDO);
+        assertThat(Files.readString(f.lib().path().resolve("A.java"))).isEqualTo("class A { int mine; }\n");
+    }
+
+    @Test
     void aLiveLockRefusesTheDecisionWithExitFourAndChangesNothing() throws Exception {
         Fixture f = fixture();
         // Our own pid is provably alive, so RunStore.isLockHeld sees a live lock rather than a stale one.

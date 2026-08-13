@@ -24,8 +24,8 @@ public final class ReviewReport {
     public static String render(String runId, PlanModel plan, RunState state,
                                 Map<String, RunGit.DiffStat> diffStats,
                                 Map<String, EstateRebuild.Result> rebuilds,
-                                List<String> notLocallyVerified, List<String> restoreFailures,
-                                List<String> diffFailures,
+                                List<String> notLocallyVerified, List<String> stagingFailures,
+                                List<String> restoreFailures, List<String> diffFailures,
                                 List<ContractRecheck.Finding> contracts, String runbook, boolean rebuilt) {
         Map<String, RepoRun> byName = new LinkedHashMap<>();
         for (RepoRun run : state.repos()) {
@@ -40,6 +40,7 @@ public final class ReviewReport {
         appendRepos(md, plan, byName, diffStats, rebuilds, notLocallyVerified);
         appendRebuildFailures(md, rebuilds);
         appendContracts(md, contracts);
+        appendStagingFailures(md, stagingFailures);
         appendRestoreFailures(md, restoreFailures);
         appendDiffFailures(md, diffFailures);
 
@@ -149,6 +150,23 @@ public final class ReviewReport {
                 md.append(" — ").append(finding.detail());
             }
             md.append('\n');
+        }
+        md.append('\n');
+    }
+
+    /** Louder than the other failure sections because it invalidates OTHER repos' verdicts: a repo
+     *  that could not be put on its checkpoint was composed into its consumers' builds as whatever
+     *  pre-run code it was sitting on, so a rebuild "OK" above it proves nothing. */
+    private static void appendStagingFailures(StringBuilder md, List<String> stagingFailures) {
+        if (stagingFailures.isEmpty()) {
+            return;
+        }
+        md.append("## Staging failures\n\n");
+        md.append("These repos could not be checked out at their checkpoint, so every rebuild "
+                + "verdict for a repo that consumes them was computed against pre-run code and "
+                + "cannot be trusted:\n\n");
+        for (String failure : stagingFailures) {
+            md.append("- ").append(failure).append('\n');
         }
         md.append('\n');
     }

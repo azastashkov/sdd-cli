@@ -37,8 +37,13 @@ import java.util.Map;
  * {@code sdd review redo}, which re-verifies one downstream subtree.
  */
 public final class RebuildPass {
+    /** {@code stagingFailures} is the repos that could not be put on their checkpoint at all. It is
+     *  separate from a failed rebuild because it invalidates OTHER repos' verdicts, not its own:
+     *  everything downstream of an unstaged repo was verified against pre-run code. Callers must
+     *  surface it and must not report a pass while it is non-empty. */
     public record Outcome(Map<String, EstateRebuild.Result> rebuilds, List<String> notLocallyVerified,
-                          List<String> restoreFailures, List<ContractRecheck.Finding> contracts) {
+                          List<String> stagingFailures, List<String> restoreFailures,
+                          List<ContractRecheck.Finding> contracts) {
     }
 
     private RebuildPass() {
@@ -55,6 +60,7 @@ public final class RebuildPass {
         EstateRebuild rebuild = new EstateRebuild();
         Map<String, EstateRebuild.Result> rebuilds = new LinkedHashMap<>();
         List<String> notLocallyVerified = new ArrayList<>();
+        List<String> stagingFailures = new ArrayList<>();
         List<String> restoreFailures = new ArrayList<>();
         List<ContractRecheck.Finding> contracts = new ArrayList<>();
         // Original position per repo: a branch name, or "detached:<sha>" when the user had a
@@ -81,16 +87,17 @@ public final class RebuildPass {
                             branch.isEmpty() ? "detached:" + RunGit.head(root) : branch);
                     RunGit.checkout(root, run.branch());
                 } catch (RuntimeException e) {
+                    // Recorded whether or not this repo was going to be verified: it is now sitting
+                    // on pre-run code that every downstream verdict composes, so the finding has to
+                    // reach the report and the exit code, not just this warn line. Inside the
+                    // subset it is ALSO its own failed verdict.
+                    stagingFailures.add(repo + ": " + e.getMessage());
+                    err.println("warn: could not stage " + repo + " at its checkpoint: "
+                            + e.getMessage() + " — verdicts for its consumers do not reflect "
+                            + "this run's upstream code");
                     if (repos.contains(repo)) {
                         rebuilds.put(repo, new EstateRebuild.Result(false,
                                 "checkout failed: " + e.getMessage()));
-                    } else {
-                        // Outside the rebuild subset there is no verdict to attach this to, but it
-                        // still degrades every verdict below it: this provider stays on whatever
-                        // pre-run code it was sitting on.
-                        err.println("warn: could not stage " + repo + " at its checkpoint: "
-                                + e.getMessage() + " — verdicts for its consumers may not reflect "
-                                + "this run's upstream code");
                     }
                     continue;
                 }
@@ -109,7 +116,8 @@ public final class RebuildPass {
                     // Same rule as a failed checkout: one repo's blow-up is a verdict, not the end
                     // of the pass — the remaining repos still get verified and the report still
                     // gets written.
-                    rebuilds.put(repo, new EstateRebuild.Result(false, "rebuild failed: " + e.getMessage()));
+                    rebuilds.put(repo, new EstateRebuild.Result(false,
+                            "verification threw: " + e.getMessage()));
                 }
             }
             // Every SUCCEEDED repo in scope is now simultaneously sitting on its checkpoint
@@ -132,7 +140,7 @@ public final class RebuildPass {
                 }
             }
         }
-        return new Outcome(rebuilds, notLocallyVerified, restoreFailures, contracts);
+        return new Outcome(rebuilds, notLocallyVerified, stagingFailures, restoreFailures, contracts);
     }
 
     /** Mirrors {@code ImplementCommand}'s settingsFor verification-task resolution exactly. */

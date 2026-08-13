@@ -253,6 +253,78 @@ class RebuildPassTest {
     }
 
     @Test
+    void aRepoWithEveryVerificationTaskExcludedIsStillStagedAsAnUpstreamTree() throws Exception {
+        // The "not locally verified" guard used to short-circuit BEFORE the checkout, so such a
+        // repo was never staged. It is a provider like any other — its consumers compose its
+        // working tree through --include-build, and ContractRecheck assumes every repo is sitting
+        // on its checkpoint — so it must be staged even though it will never be verified itself.
+        FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
+        gradlewStub(lib);
+        lib.commit("base");
+        String libBase = lib.headSha();
+        String libOriginalBranch = RunGit.currentBranch(lib.path());
+        String libRunBranch = "sdd/SPEC-9-v1/lib";
+        RunGit.startBranch(lib.path(), libRunBranch, libBase);
+        lib.file("A.java", "class A { int x; }\n").commit("checkpoint");
+        String libCheckpoint = lib.headSha();
+        RunGit.checkout(lib.path(), libOriginalBranch);
+
+        FixtureRepo svc = FixtureRepo.in(ws, "svc");
+        Path witness = ws.resolve("observed-upstream.txt");
+        Path svcGradlew = svc.path().resolve("gradlew");
+        Files.writeString(svcGradlew, "#!/bin/sh\ncat " + lib.path().resolve("A.java")
+                + " > " + witness + "\nexit 0\n");
+        Files.setPosixFilePermissions(svcGradlew, PosixFilePermissions.fromString("rwxr-xr-x"));
+        Path svcProps = svc.path().resolve("gradle/wrapper/gradle-wrapper.properties");
+        Files.createDirectories(svcProps.getParent());
+        Files.writeString(svcProps,
+                "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n");
+        svc.commit("base");
+        String svcBase = svc.headSha();
+        String svcOriginalBranch = RunGit.currentBranch(svc.path());
+        String svcRunBranch = "sdd/SPEC-9-v1/svc";
+        RunGit.startBranch(svc.path(), svcRunBranch, svcBase);
+        svc.file("S.java", "class S {}\n").commit("checkpoint");
+        String svcCheckpoint = svc.headSha();
+        RunGit.checkout(svc.path(), svcOriginalBranch);
+
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                verification_exclusions:
+                  lib: [check]
+                """);
+        SddConfig config = ConfigLoader.load(ws);
+
+        PlanModel plan = new PlanModel("SPEC-9", 1, "", "",
+                List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", libBase),
+                        new PlanModel.PlanRepo("svc", "dependent", "X", "patch", svcBase)),
+                List.of(List.of("lib"), List.of("svc")),
+                List.of(new PlanModel.PlanEdge("svc", "lib", "SNAPSHOT", "INCLUDE_BUILD")),
+                List.of(), List.of());
+        RunState state = new RunState("SPEC-9-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, libRunBranch, libCheckpoint, "ok"),
+                new RepoRun("svc", RepoState.SUCCEEDED, svcRunBranch, svcCheckpoint, "ok")), null, 0L);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
+        StringWriter errOut = new StringWriter();
+
+        // The FULL-review shape: every repo is in scope, lib simply has nothing runnable.
+        RebuildPass.Outcome outcome = RebuildPass.run(Set.of("lib", "svc"), plan, state,
+                Map.of("lib", lib.path(), "svc", svc.path()), config, runDir, store, false,
+                new PrintWriter(errOut));
+
+        assertThat(outcome.notLocallyVerified()).containsExactly("lib");
+        assertThat(outcome.rebuilds()).containsOnlyKeys("svc");
+        assertThat(Files.readString(witness)).contains("int x;");   // staged despite being unverifiable
+        assertThat(outcome.stagingFailures()).isEmpty();
+        assertThat(RunGit.currentBranch(lib.path())).isEqualTo(libOriginalBranch);
+        assertThat(Files.readString(lib.path().resolve("A.java"))).isEqualTo("class A {}\n");
+    }
+
+    @Test
     void whenContractRecheckThrowsEveryRepoIsStillRestored() throws Exception {
         // ContractRecheck.check now degrades gracefully for a non-git provider path (it can't
         // throw that way any more), but RunStore.readContract can still throw for a genuinely

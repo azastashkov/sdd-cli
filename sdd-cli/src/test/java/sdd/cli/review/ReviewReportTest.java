@@ -36,7 +36,7 @@ class ReviewReportTest {
         PlanModel plan = planNoContracts();
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
-                List.of(), List.of(), List.of(), List.of(), "runbook", false);
+                List.of(), List.of(), List.of(), List.of(), List.of(), "runbook", false);
 
         assertThat(report).contains("- Contract re-check: no contracts in this plan");
     }
@@ -53,7 +53,7 @@ class ReviewReportTest {
                         ContractRecheck.Status.MATCHES, "", "main"));
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
-                List.of(), List.of(), List.of(), findings, "runbook", false);
+                List.of(), List.of(), List.of(), List.of(), findings, "runbook", false);
 
         assertThat(report).contains("- Contract re-check: 2 checked, 0 mismatches");
         // When all match, no detail section should be present
@@ -72,7 +72,7 @@ class ReviewReportTest {
                         ContractRecheck.Status.DRIFTED, "bodies differ", "main"));
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
-                List.of(), List.of(), List.of(), findings, "runbook", false);
+                List.of(), List.of(), List.of(), List.of(), findings, "runbook", false);
 
         assertThat(report).contains("- Contract re-check: 2 checked, 1 mismatch");
         // Detail section should be present when there are mismatches
@@ -93,7 +93,7 @@ class ReviewReportTest {
                         ContractRecheck.Status.MISSING_RECORD, "no record", "main"));
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
-                List.of(), List.of(), List.of(), findings, "runbook", false);
+                List.of(), List.of(), List.of(), List.of(), findings, "runbook", false);
 
         assertThat(report).contains("- Contract re-check: 3 checked, 2 mismatches");
         // Detail section should be present
