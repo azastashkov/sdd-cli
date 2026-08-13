@@ -30,5 +30,6 @@ class InfraClassifierTest {
         assertThat(InfraClassifier.isInfra("exit 1\n> Task :test FAILED\n3 tests completed, 1 failed")).isFalse();
         assertThat(InfraClassifier.isInfra("exit 0\nBUILD SUCCESSFUL")).isFalse();
         assertThat(InfraClassifier.isInfra("")).isFalse();
+        assertThat(InfraClassifier.isInfra("exit 1\nCould not get unknown property 'foo' for root project")).isFalse();
     }
 }

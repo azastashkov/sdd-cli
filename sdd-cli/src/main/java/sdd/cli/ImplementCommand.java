@@ -44,7 +44,7 @@ import java.util.function.Function;
  * lock removal is the deliberate escape hatch this phase; lock-staleness detection is 4C-3b territory.
  */
 @Command(name = "implement",
-        description = "Execute an approved plan.json across the estate (single attempt per repo)",
+        description = "Execute an approved plan.json across the estate",
         exitCodeOnInvalidInput = 4)
 public final class ImplementCommand implements Callable<Integer> {
     private static final long RUN_TOKEN_BUDGET = 30_000_000L;   // design line 59; sdd.yml override is 4C-3b

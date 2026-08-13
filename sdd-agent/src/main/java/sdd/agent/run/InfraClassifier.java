@@ -12,7 +12,7 @@ import java.util.Locale;
 public final class InfraClassifier {
     private static final List<String> PATTERNS = List.of(
             // dependency resolution / repository access
-            "could not resolve", "could not download", "could not get", "could not head",
+            "could not resolve", "could not download", "could not get 'http", "could not head",
             // network
             "unknownhostexception", "connection refused", "connection reset",
             "connect timed out", "read timed out", "no route to host",
