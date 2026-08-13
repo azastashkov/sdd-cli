@@ -140,7 +140,9 @@ public final class ReviewCommand implements Callable<Integer> {
                 boolean allSucceeded = Scheduler.sequence(plan.order()).stream()
                         .allMatch(repo -> state.stateOf(repo) == RepoState.SUCCEEDED);
                 boolean anyRebuildFailed = rebuilds.values().stream().anyMatch(r -> !r.ok());
-                return allSucceeded && !anyRebuildFailed ? 0 : 2;
+                // A failed restore leaves a repo stranded off its original branch — the report's own
+                // legend calls that a failed checkout, so it must fail the review too.
+                return allSucceeded && !anyRebuildFailed && restoreFailures.isEmpty() ? 0 : 2;
             }
         } catch (RuntimeException | java.io.IOException e) {
             err.println("error: " + e.getMessage());

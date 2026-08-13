@@ -32,6 +32,10 @@ class EstateRebuildTest {
         String calls = Files.readString(repo.resolve("calls"));
         assertThat(calls).contains("compileJava --include-build /w/lib").contains("check --include-build");
         assertThat(calls.lines()).hasSize(2);
+        // Pin the full argv contract — task, then extraArgs, then the three fixed flags in that
+        // order — since InfraClassifier and the log-shape conventions depend on it.
+        assertThat(calls.lines()).allSatisfy(line ->
+                assertThat(line).endsWith("--include-build /w/lib --no-configuration-cache --no-daemon -q"));
     }
 
     @Test

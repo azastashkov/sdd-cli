@@ -255,4 +255,87 @@ class ReviewCommandTest {
         // diff failure alone must not change it.
         assertThat(exit).isEqualTo(0);
     }
+
+    @Test
+    void aFailedBranchRestoreForcesExitTwoEvenWhenEverythingElsePasses() throws Exception {
+        FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
+        String originalBranch = RunGit.currentBranch(lib.path());   // "main" — jgit's default init branch,
+                                                                     // readable even pre-commit (unborn HEAD)
+        Path props = lib.path().resolve("gradle/wrapper/gradle-wrapper.properties");
+        Files.createDirectories(props.getParent());
+        Files.writeString(props, "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n");
+        // The stub gradlew is the rebuild's only foothold in the repo while it's checked out to the
+        // checkpoint branch: it deletes the original branch out from under the review, so restoring
+        // to it afterward genuinely fails (verified standalone: RunGit.checkout on a deleted branch
+        // throws IllegalStateException). It must be committed into "base" (not written after) so
+        // startBranch's git-clean of the checkpoint branch doesn't wipe it as an untracked file.
+        Path g = lib.path().resolve("gradlew");
+        Files.writeString(g, "#!/bin/sh\ngit branch -D " + originalBranch + "\nexit 0\n");
+        Files.setPosixFilePermissions(g, PosixFilePermissions.fromString("rwxr-xr-x"));
+        lib.commit("base");
+        String baseSha = lib.headSha();
+
+        String runBranch = "sdd/SPEC-9-v1/lib";
+        RunGit.startBranch(lib.path(), runBranch, baseSha);
+        lib.file("A.java", "class A { int x; }\n");
+        lib.commit("checkpoint");
+        String checkpointSha = lib.headSha();
+        RunGit.checkout(lib.path(), originalBranch);   // as if the user returned it there after implement
+
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+        Files.writeString(ws.resolve("s.md"), """
+                ---
+                id: SPEC-9
+                title: Tiers
+                owner: me
+                status: approved
+                ---
+
+                ## Goal
+                g
+
+                ## Requirements
+                - R1: Expose tierFor.
+
+                ## Acceptance Criteria
+                - A1: tierFor returns a tier.
+                """);
+        String specSha = sdd.plan.approve.Hashes.sha256(Files.readString(ws.resolve("s.md")));
+        String planJson = """
+                { "spec_id":"SPEC-9","plan_version":1,"spec_sha256":"%s","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x to A."}] }
+                """.formatted(specSha, baseSha);
+        Files.writeString(ws.resolve("s.plan.json"), planJson);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", planJson, Files.readString(ws.resolve("s.md")));
+        store.releaseLock(runDir);
+        RunState state = new RunState("SPEC-9-v1",
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok")), null, 15L);
+        store.writeState(runDir, state);
+
+        ReviewCommand cmd = new ReviewCommand();
+        int exit = new CommandLine(cmd).execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
+
+        // Every rebuild passed (the stub exits 0) and every repo is SUCCEEDED — the restore failure
+        // is the ONLY thing wrong here, and it must still force exit 2: a repo stranded off its
+        // original branch demands human action, matching the report's own exit-code legend ("2 = a
+        // repo is not SUCCEEDED or a rebuild/checkout failed" — a failed restore IS a failed checkout).
+        assertThat(exit).isEqualTo(2);
+        Path review = ws.resolve(".sdd/runs/SPEC-9-v1/review");
+        assertThat(review.resolve("report.md")).exists();
+        String report = Files.readString(review.resolve("report.md"));
+        assertThat(report).contains("Branch restore failures").contains("lib");
+    }
 }
