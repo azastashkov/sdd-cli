@@ -9,6 +9,7 @@ import picocli.CommandLine.Spec;
 import sdd.agent.run.RepoStep;
 import sdd.agent.run.RepoStepRunner;
 import sdd.agent.run.RunnerSettings;
+import sdd.agent.tool.GradleTool;
 import sdd.cli.implement.JarBuilder;
 import sdd.cli.implement.MavenLocalInit;
 import sdd.cli.implement.MavenLocalPublisher;
@@ -167,15 +168,7 @@ public final class ImplementCommand implements Callable<Integer> {
                     specText = Files.readString(runDir.resolve("spec.md"));
                     parsedSpec = SpecParser.parse(specText);
                     steps = RepoStepResolver.resolve(plan, parsedSpec, paths);
-                    for (String repo : steps.keySet()) {
-                        List<String> planned = plan.step(repo).map(PlanModel.PlanStep::verification)
-                                .filter(v -> !v.isEmpty()).orElse(List.of("check"));
-                        List<String> excluded = config.verificationExclusions().getOrDefault(repo, List.of());
-                        if (!excluded.isEmpty() && excluded.containsAll(planned)) {
-                            out.println("warn: " + repo + ": all verification tasks excluded by sdd.yml — "
-                                    + "will be marked not locally verified");
-                        }
-                    }
+                    warnAboutVerification(out, plan, steps, config);
                     Resume.Prep prep = Resume.prepare(store.readState(runDir), steps);
                     if (!prep.problems().isEmpty()) {
                         prep.problems().forEach(p -> err.println("problem: " + p));
@@ -204,15 +197,7 @@ public final class ImplementCommand implements Callable<Integer> {
                                                  // finally-release can leak the lock and wedge future resumes
                     initialState = prep.state();
                 } else {
-                    for (String repo : steps.keySet()) {
-                        List<String> planned = plan.step(repo).map(PlanModel.PlanStep::verification)
-                                .filter(v -> !v.isEmpty()).orElse(List.of("check"));
-                        List<String> excluded = config.verificationExclusions().getOrDefault(repo, List.of());
-                        if (!excluded.isEmpty() && excluded.containsAll(planned)) {
-                            out.println("warn: " + repo + ": all verification tasks excluded by sdd.yml — "
-                                    + "will be marked not locally verified");
-                        }
-                    }
+                    warnAboutVerification(out, plan, steps, config);
                     if (Files.exists(runDir.resolve("state.json"))) {
                         err.println("error: run " + runId + " already exists — resume with --resume, "
                                 + "or delete " + runDir + " to start over");
@@ -279,10 +264,17 @@ public final class ImplementCommand implements Callable<Integer> {
                             repo, activePlan.edges(), paths));
                     extraArgs.addAll(Propagation.mavenLocalArgs(
                             activePlan.edges(), MavenLocalInit.scriptPath(activeRunDir)));
-                    List<String> tasks = new ArrayList<>(activePlan.step(repo)
+                    List<String> rawVerification = activePlan.step(repo)
                             .map(PlanModel.PlanStep::verification)
-                            .filter(v -> !v.isEmpty())
-                            .orElse(List.of("check")));
+                            .orElse(List.of());
+                    List<String> tasks = new ArrayList<>(rawVerification.isEmpty()
+                            ? List.of("check") : rawVerification);
+                    tasks.retainAll(GradleTool.allowedTasks());   // prose verification entries are
+                                                                   // acceptance-only, not runnable tasks
+                    if (!rawVerification.isEmpty() && tasks.isEmpty()) {
+                        tasks = new ArrayList<>(List.of("check"));   // prose-only list still means
+                                                                      // "verify normally", not "skip"
+                    }
                     tasks.removeAll(config.verificationExclusions().getOrDefault(repo, List.of()));
                     return RunnerSettings.custom(javaHome, extraArgs, tasks, gradlePermits);
                 };
@@ -317,6 +309,30 @@ public final class ImplementCommand implements Callable<Integer> {
         } catch (RuntimeException | java.io.IOException e) {
             err.println("error: " + e.getMessage());
             return 4;
+        }
+    }
+
+    /**
+     * Planning-time heads-up: the plan's per-step verification list is dual-natured (4B feeds the
+     * same list into RepoStep.acceptanceChecks as prose) so entries that aren't runnable gradle
+     * tasks are expected, not an error — but the gate silently swallowing them would be confusing.
+     */
+    private static void warnAboutVerification(PrintWriter out, PlanModel plan, Map<String, RepoStep> steps,
+                                               SddConfig config) {
+        for (String repo : steps.keySet()) {
+            List<String> planned = plan.step(repo).map(PlanModel.PlanStep::verification)
+                    .filter(v -> !v.isEmpty()).orElse(List.of("check"));
+            List<String> excluded = config.verificationExclusions().getOrDefault(repo, List.of());
+            if (!excluded.isEmpty() && excluded.containsAll(planned)) {
+                out.println("warn: " + repo + ": all verification tasks excluded by sdd.yml — "
+                        + "will be marked not locally verified");
+            }
+            List<String> nonAllowlisted = new ArrayList<>(planned);
+            nonAllowlisted.removeAll(GradleTool.allowedTasks());
+            if (!nonAllowlisted.isEmpty()) {
+                out.println("warn: " + repo + ": verification entries not runnable as gradle tasks "
+                        + "(kept as acceptance prose): " + nonAllowlisted);
+            }
         }
     }
 

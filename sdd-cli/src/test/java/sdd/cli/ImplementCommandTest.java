@@ -35,6 +35,18 @@ class ImplementCommandTest {
         return repo.commit("base");
     }
 
+    /** Same as {@link #repo(String)}, but the gradlew stub records every task it was invoked with. */
+    private FixtureRepo repoWithTaskRecordingGradlew(String name) throws Exception {
+        FixtureRepo repo = FixtureRepo.in(ws, name).file("A.java", "class A {}\n");
+        Path g = repo.path().resolve("gradlew");
+        Files.writeString(g, "#!/bin/sh\necho \"$1\" >> tasks-run\nexit 0\n");
+        Files.setPosixFilePermissions(g, PosixFilePermissions.fromString("rwxr-xr-x"));
+        Path props = repo.path().resolve("gradle/wrapper/gradle-wrapper.properties");
+        Files.createDirectories(props.getParent());
+        Files.writeString(props, "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n");
+        return repo.commit("base");
+    }
+
     @Test
     void runsASingleRepoPlanToCompletion() throws Exception {
         FixtureRepo lib = repo("lib");
@@ -167,6 +179,130 @@ class ImplementCommandTest {
     void unknownOptionAbortsWithExitFour() {
         int exit = new CommandLine(new ImplementCommand()).execute("--no-such-flag");
         assertThat(exit).isEqualTo(4);
+    }
+
+    @Test
+    void proseVerificationEntriesAreFilteredOutAndOnlyAllowlistedTasksRun() throws Exception {
+        // The approved plan's verification list is dual-natured: 4B reads it as acceptance prose,
+        // but the verify gate must run only entries that are actual gradle tasks. A prose entry mixed
+        // in with a real task ("check") must be dropped from the gate, not passed to ./gradlew.
+        FixtureRepo lib = repoWithTaskRecordingGradlew("lib");
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+        Files.writeString(ws.resolve("s.md"), """
+                ---
+                id: SPEC-101
+                title: Tiers
+                owner: me
+                status: approved
+                ---
+
+                ## Goal
+                g
+
+                ## Requirements
+                - R1: Expose tierFor.
+
+                ## Acceptance Criteria
+                - A1: tierFor returns a tier.
+                """);
+        String specSha = sdd.plan.approve.Hashes.sha256(Files.readString(ws.resolve("s.md")));
+        Files.writeString(ws.resolve("s.plan.json"), """
+                { "spec_id":"SPEC-101","plan_version":1,"spec_sha256":"%s","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":["Run the tests properly","check"],"sub_spec":"Add x to A."}] }
+                """.formatted(specSha, lib.headSha()));
+
+        ImplementCommand cmd = new ImplementCommand();
+        cmd.coderForTest = new ScriptedChatModel(List.of(
+                new ChatResponse(new ChatMessage("assistant", null,
+                        List.of(new ToolCall("1", "apply_edit",
+                                "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int x; }\"}")),
+                        null), "tool_calls", new Usage(10, 5)),
+                new ChatResponse(new ChatMessage("assistant", null,
+                        List.of(new ToolCall("2", "done", "{\"result\":\"success\",\"summary\":\"done\"}")),
+                        null), "tool_calls", new Usage(10, 5))));
+
+        StringWriter out = new StringWriter();
+        CommandLine cli = new CommandLine(cmd);
+        cli.setOut(new PrintWriter(out));
+        int exit = cli.execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
+
+        assertThat(exit).isEqualTo(0);
+        String tasksRun = Files.readString(lib.path().resolve("tasks-run"));
+        assertThat(tasksRun).contains("check").doesNotContain("Run the tests");
+        assertThat(out.toString()).contains(
+                "verification entries not runnable as gradle tasks (kept as acceptance prose)")
+                .contains("Run the tests properly");
+    }
+
+    @Test
+    void allProseVerificationFallsBackToCheck() throws Exception {
+        // A plan step whose verification list is entirely prose ("Do it well") still means "verify
+        // normally" — the gate must fall back to `check`, not skip verification.
+        FixtureRepo lib = repoWithTaskRecordingGradlew("lib");
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+        Files.writeString(ws.resolve("s.md"), """
+                ---
+                id: SPEC-101
+                title: Tiers
+                owner: me
+                status: approved
+                ---
+
+                ## Goal
+                g
+
+                ## Requirements
+                - R1: Expose tierFor.
+
+                ## Acceptance Criteria
+                - A1: tierFor returns a tier.
+                """);
+        String specSha = sdd.plan.approve.Hashes.sha256(Files.readString(ws.resolve("s.md")));
+        Files.writeString(ws.resolve("s.plan.json"), """
+                { "spec_id":"SPEC-101","plan_version":1,"spec_sha256":"%s","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":["Do it well"],"sub_spec":"Add x to A."}] }
+                """.formatted(specSha, lib.headSha()));
+
+        ImplementCommand cmd = new ImplementCommand();
+        cmd.coderForTest = new ScriptedChatModel(List.of(
+                new ChatResponse(new ChatMessage("assistant", null,
+                        List.of(new ToolCall("1", "apply_edit",
+                                "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int x; }\"}")),
+                        null), "tool_calls", new Usage(10, 5)),
+                new ChatResponse(new ChatMessage("assistant", null,
+                        List.of(new ToolCall("2", "done", "{\"result\":\"success\",\"summary\":\"done\"}")),
+                        null), "tool_calls", new Usage(10, 5))));
+
+        StringWriter out = new StringWriter();
+        CommandLine cli = new CommandLine(cmd);
+        cli.setOut(new PrintWriter(out));
+        int exit = cli.execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
+
+        assertThat(exit).isEqualTo(0);
+        String tasksRun = Files.readString(lib.path().resolve("tasks-run"));
+        assertThat(tasksRun).contains("check");
     }
 
     @Test
