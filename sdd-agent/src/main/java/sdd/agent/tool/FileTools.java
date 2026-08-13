@@ -18,7 +18,10 @@ public final class FileTools {
     static final int MAX_READ_BYTES = 16384;
     static final int MAX_SEARCH_HITS = 100;
     static final int MAX_SEARCHED_FILE_BYTES = 1_000_000;
-    private static final Set<String> SKIP_DIRS = Set.of(".git", "build", ".gradle", ".sdd", ".idea");
+    static final int MAX_HIT_CHARS = 300;
+    static final int MAX_SEARCH_BYTES = 16384;
+    private static final Set<String> SKIP_DIRS = Set.of(".git", "build", ".gradle", ".sdd", ".idea",
+            "node_modules", "dist", "target");
 
     private final PathJail jail;
 
@@ -99,6 +102,10 @@ public final class FileTools {
         }
         StringBuilder out = new StringBuilder();
         for (String hit : hits) {
+            if (out.length() + hit.length() + 1 > MAX_SEARCH_BYTES) {
+                truncated[0] = true;
+                break;
+            }
             out.append(hit).append('\n');
         }
         if (truncated[0]) {
@@ -130,7 +137,11 @@ public final class FileTools {
                     return;
                 }
                 if (pattern.matcher(lines.get(i)).find()) {
-                    hits.add(rel + ":" + (i + 1) + ": " + lines.get(i));
+                    String line = lines.get(i);
+                    String shown = line.length() > MAX_HIT_CHARS
+                            ? line.substring(0, MAX_HIT_CHARS) + "…"
+                            : line;
+                    hits.add(rel + ":" + (i + 1) + ": " + shown);
                 }
             }
         } catch (IOException e) {

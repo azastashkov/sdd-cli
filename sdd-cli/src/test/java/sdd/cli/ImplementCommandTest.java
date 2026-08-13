@@ -170,8 +170,13 @@ class ImplementCommandTest {
     }
 
     @Test
-    void aFourHundredFromTheModelAbortsWithExitFourAndReleasesTheLock() throws Exception {
-        // Same fixture as runsASingleRepoPlanToCompletion, but the coder throws a 400.
+    void aPersistentFourHundredFromTheModelExhaustsBothAttemptsAndReleasesTheLock() throws Exception {
+        // Same fixture as runsASingleRepoPlanToCompletion, but the coder always throws a 400.
+        // Smoke-fix hotfix (design line 71): AgentLoop now treats HTTP 400 as "endpoint rejected an
+        // oversized request" — it evicts and retries once, and a second 400 becomes CONTEXT_EXHAUSTED
+        // instead of a thrown ModelException. A coder that always 400s therefore no longer aborts the
+        // whole run as a fatal config error (exit 4); it exhausts attempt 1, escalates, exhausts
+        // attempt 2 too, and the run finishes PARTIAL (exit 2) — still releasing the lock.
         FixtureRepo lib = repo("lib");
         try (Database db = Database.open(ws)) {
             db.jdbi().useHandle(h -> h.execute(
@@ -215,7 +220,7 @@ class ImplementCommandTest {
 
         int exit = cli(cmd).execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
 
-        assertThat(exit).isEqualTo(4);
+        assertThat(exit).isEqualTo(2);
         assertThat(ws.resolve(".sdd/runs/SPEC-101-v1/lock")).doesNotExist();   // finally released it
     }
 

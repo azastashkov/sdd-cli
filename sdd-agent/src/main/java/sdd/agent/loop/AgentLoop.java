@@ -55,6 +55,7 @@ public final class AgentLoop {
         String lastSignature = null;
         int sameSignature = 0;
         String lastGradleOutput = null;
+        boolean evictedOnFourHundred = false;
 
         while (true) {
             if (turns >= budget.maxTurns()) {
@@ -74,7 +75,24 @@ public final class AgentLoop {
             } catch (ModelException e) {
                 // Partial spend must reach the run-budget accounting. ADD to any tokens the
                 // exception already carries — overwriting would zero an upstream carry.
-                throw e.withTokens(tokens + e.tokensSoFar());
+                tokens += e.tokensSoFar();
+                if (e.statusCode() == 400) {
+                    // Design line 71: HTTP 400 → one eviction retry → CONTEXT_EXHAUSTED. The first
+                    // 400 in this run forces a full eviction and retries the SAME request (the window
+                    // rebuilds it on the next loop iteration); any later 400 — immediately on retry or
+                    // further into the run — means eviction didn't help, so give up cleanly instead of
+                    // throwing and aborting the whole run.
+                    if (!evictedOnFourHundred) {
+                        evictedOnFourHundred = true;
+                        window.evictAll();
+                        events.add("turn " + (turns + 1)
+                                + ": endpoint rejected oversized request — evicted and retried");
+                        continue;
+                    }
+                    return outcome(AgentResult.CONTEXT_EXHAUSTED,
+                            "context exhausted (endpoint rejected oversized request)", turns, tokens, events);
+                }
+                throw e.withTokens(tokens);
             }
             turns++;
             tokens += response.usage().promptTokens() + response.usage().completionTokens();

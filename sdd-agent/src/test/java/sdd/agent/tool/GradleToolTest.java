@@ -21,6 +21,11 @@ class GradleToolTest {
     }
 
     @Test
+    void allowedTasksExposesTheAllowlistReadOnly() {
+        assertThat(GradleTool.allowedTasks()).contains("check").doesNotContain("publishToMavenLocal");
+    }
+
+    @Test
     void disallowedTaskNeverRuns() {
         assertThatThrownBy(() -> new GradleTool(repo, null, Duration.ofSeconds(5)).run("publishToMavenLocal"))
                 .isInstanceOf(ToolException.class).hasMessageContaining("not allowed");

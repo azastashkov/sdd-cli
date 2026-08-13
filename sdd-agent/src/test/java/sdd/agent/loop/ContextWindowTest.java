@@ -53,4 +53,26 @@ class ContextWindowTest {
         // second pass: nothing left evictable
         assertThat(cw.evictIfOverCap(90_000)).isZero();
     }
+
+    @Test
+    void evictAllStubsEveryToolResultUnconditionallyIgnoringThePreserveRules() {
+        ContextWindow cw = new ContextWindow(80_000);
+        cw.addSystem("sys");
+        cw.addWorkOrder("wo");
+        cw.addAssistant(assistantCall("r1", "read_file")); cw.addToolResult("r1", "read_file", "READ1");
+        cw.addAssistant(assistantCall("e1", "apply_edit")); cw.addToolResult("e1", "apply_edit", "EDIT1");
+        cw.addAssistant(assistantCall("g1", "run_gradle")); cw.addToolResult("g1", "run_gradle", "GRADLE1");
+
+        int evicted = cw.evictAll();
+
+        // unlike evictIfOverCap, apply_edit and the last run_gradle are NOT preserved
+        assertThat(evicted).isEqualTo(3);
+        List<String> toolContents = cw.messages().stream()
+                .filter(m -> m.role().equals("tool")).map(ChatMessage::content).toList();
+        assertThat(toolContents).containsExactly("[evicted: read_file result]",
+                "[evicted: apply_edit result]", "[evicted: run_gradle result]");
+
+        // idempotent: nothing left to evict on a second pass
+        assertThat(cw.evictAll()).isZero();
+    }
 }

@@ -78,6 +78,25 @@ public final class ContextWindow {
         return evicted;
     }
 
+    /**
+     * Force-evicts every not-yet-stubbed tool result, ignoring evictIfOverCap's preserve rules
+     * (apply_edit, last build, latest reads). Used once per HTTP 400 (design line 71): the endpoint
+     * has already rejected the request as oversized, so a partial, rule-respecting eviction is not
+     * enough — every evictable tool result must go.
+     */
+    public int evictAll() {
+        int evicted = 0;
+        for (Entry e : entries) {
+            if (e.toolName == null || e.stubbed) {
+                continue;
+            }
+            e.message = ChatMessage.tool(e.message.toolCallId(), "[evicted: " + e.toolName + " result]");
+            e.stubbed = true;
+            evicted++;
+        }
+        return evicted;
+    }
+
     private int lastIndexOfTool(String toolName) {
         for (int i = entries.size() - 1; i >= 0; i--) {
             if (toolName.equals(entries.get(i).toolName)) {

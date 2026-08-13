@@ -8,7 +8,9 @@ import sdd.agent.tool.GradleTool;
 import sdd.agent.tool.PathJail;
 import sdd.agent.tool.Toolbox;
 import sdd.core.llm.ChatMessage;
+import sdd.core.llm.ChatModel;
 import sdd.core.llm.ChatResponse;
+import sdd.core.llm.ModelException;
 import sdd.core.llm.ToolCall;
 import sdd.core.llm.Usage;
 import sdd.core.testing.ScriptedChatModel;
@@ -152,6 +154,53 @@ class AgentLoopTest {
 
         assertThat(outcome.result()).isEqualTo(AgentResult.DONE);
         assertThat(outcome.summary()).isEqualTo("ok now");
+    }
+
+    @Test
+    void http400EvictsAndRetriesOnceThenSucceeds() {
+        int[] calls = {0};
+        ChatModel model = req -> {
+            calls[0]++;
+            if (calls[0] == 1) {
+                throw new ModelException("too long", 400);
+            }
+            return new ChatResponse(new ChatMessage("assistant", null,
+                    List.of(new ToolCall("1", "done", "{\"result\":\"success\",\"summary\":\"ok\"}")), null),
+                    "tool_calls", new Usage(10, 5));
+        };
+
+        AgentOutcome outcome = new AgentLoop(model, toolbox, AgentBudget.defaults(), 80_000,
+                InstantSource.system()).run("sys", "wo", "qwen", 4096);
+
+        assertThat(outcome.result()).isEqualTo(AgentResult.DONE);
+        assertThat(outcome.events()).anySatisfy(e ->
+                assertThat(e).contains("endpoint rejected oversized request").contains("evicted and retried"));
+    }
+
+    @Test
+    void repeatedHttp400EndsInContextExhaustedWithoutThrowing() {
+        ChatModel model = req -> {
+            throw new ModelException("too long", 400);
+        };
+
+        AgentOutcome outcome = new AgentLoop(model, toolbox, AgentBudget.defaults(), 80_000,
+                InstantSource.system()).run("sys", "wo", "qwen", 4096);
+
+        assertThat(outcome.result()).isEqualTo(AgentResult.CONTEXT_EXHAUSTED);
+        assertThat(outcome.events()).anySatisfy(e ->
+                assertThat(e).contains("endpoint rejected oversized request").contains("evicted and retried"));
+    }
+
+    @Test
+    void non400ModelExceptionStillPropagates() {
+        ChatModel model = req -> {
+            throw new ModelException("HTTP 401: x", 401);
+        };
+        AgentLoop loop = new AgentLoop(model, toolbox, AgentBudget.defaults(), 80_000, InstantSource.system());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> loop.run("sys", "wo", "qwen", 4096))
+                .isInstanceOf(ModelException.class)
+                .satisfies(e -> assertThat(((ModelException) e).statusCode()).isEqualTo(401));
     }
 
     @Test

@@ -19,6 +19,11 @@ import java.util.concurrent.TimeUnit;
 public final class GradleTool {
     static final Set<String> ALLOWED = Set.of("help", "compileJava", "classes", "testClasses",
             "assemble", "check", "test", "build");
+
+    /** The allowlist, exposed read-only so callers (e.g. the orchestrator) can validate/report without duplicating it. */
+    public static Set<String> allowedTasks() {
+        return ALLOWED;
+    }
     static final int MAX_OUTPUT = 8000;
     static final int MAX_FULL_OUTPUT = 200_000;
     private static final List<String> KEEP_ENV = List.of("PATH", "HOME", "LANG", "TMPDIR");

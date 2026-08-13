@@ -64,6 +64,50 @@ class FileToolsReadTest {
     }
 
     @Test
+    void searchSkipsNodeModulesDistAndTargetAsWalkNoise() throws Exception {
+        Files.createDirectories(root.resolve("frontend/node_modules"));
+        Files.writeString(root.resolve("frontend/node_modules/x.js"), "loyaltyTier\n");
+        Files.createDirectories(root.resolve("frontend/dist"));
+        Files.writeString(root.resolve("frontend/dist/x.js"), "loyaltyTier\n");
+        Files.createDirectories(root.resolve("svc/target"));
+        Files.writeString(root.resolve("svc/target/x.txt"), "loyaltyTier\n");
+
+        String hits = tools.search("loyaltyTier");
+
+        assertThat(hits).doesNotContain("node_modules").doesNotContain("dist/").doesNotContain("target/");
+    }
+
+    @Test
+    void searchCapsAnOverlongMatchingLineAtMaxHitChars() throws Exception {
+        String longLine = "x".repeat(5000) + "loyaltyTier" + "y".repeat(100);
+        Files.writeString(root.resolve("long.txt"), longLine + "\n");
+
+        String hits = tools.search("loyaltyTier");
+
+        String hitLine = hits.lines().filter(l -> l.startsWith("long.txt:")).findFirst().orElseThrow();
+        // "long.txt:1: " prefix + MAX_HIT_CHARS(300) chars of the line + the ellipsis marker
+        assertThat(hitLine.length()).isLessThanOrEqualTo("long.txt:1: ".length() + 300 + 1 + 10);
+        assertThat(hitLine).endsWith("…");
+    }
+
+    @Test
+    void searchCapsTheTotalResultAtMaxSearchBytes() throws Exception {
+        Files.createDirectories(root.resolve("many"));
+        for (int f = 0; f < 5; f++) {
+            StringBuilder content = new StringBuilder();
+            for (int i = 0; i < 20; i++) {
+                content.append("loyaltyTier ").append("z".repeat(400)).append('\n');
+            }
+            Files.writeString(root.resolve("many/f" + f + ".txt"), content.toString());
+        }
+
+        String hits = tools.search("loyaltyTier");
+
+        assertThat(hits.length()).isLessThanOrEqualTo(16384 + "... (more matches omitted)\n".length());
+        assertThat(hits).contains("... (more matches omitted)\n");
+    }
+
+    @Test
     void listFilesOnAnUnreadableDirectoryThrowsToolExceptionNotUncheckedIOException() throws Exception {
         Path locked = root.resolve("locked");
         Files.createDirectory(locked);
