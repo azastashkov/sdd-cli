@@ -322,4 +322,75 @@ class OrchestratorTest {
                 .contains("publish failed");
         assertThat(result.state().stateOf("svc")).isEqualTo(RepoState.SKIPPED_UPSTREAM_FAILED);
     }
+
+    private static PlanModel planTwoIndependent(String aBase, String bBase) {
+        return new PlanModel("S", 1, "", "",
+                List.of(new PlanModel.PlanRepo("alib", "seed", "SEED", "minor", aBase),
+                        new PlanModel.PlanRepo("blib", "seed", "SEED", "minor", bBase)),
+                List.of(List.of("alib"), List.of("blib")),
+                List.of(),   // no edges: both units land in one layer
+                List.of(), List.of());
+    }
+
+    @Test
+    void independentReposRunConcurrentlyWithinALayer() throws Exception {
+        // Each verify stub writes its start marker then waits (max ~8s) for the OTHER repo's
+        // marker. Sequential execution can never satisfy the first repo; parallel satisfies both.
+        String scriptA = "touch " + ws.resolve("a-started") + "; i=0; "
+                + "while [ ! -f " + ws.resolve("b-started") + " ] && [ $i -lt 80 ]; do sleep 0.1; i=$((i+1)); done; "
+                + "[ -f " + ws.resolve("b-started") + " ]";
+        String scriptB = "touch " + ws.resolve("b-started") + "; i=0; "
+                + "while [ ! -f " + ws.resolve("a-started") + " ] && [ $i -lt 80 ]; do sleep 0.1; i=$((i+1)); done; "
+                + "[ -f " + ws.resolve("a-started") + " ]";
+        FixtureRepo alib = repoWith("alib", scriptA);
+        FixtureRepo blib = repoWith("blib", scriptB);
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("alib", step("alib", alib.path()),
+                "blib", step("blib", blib.path()));
+        // Thread-safe model double: every call is an identical done() — safe under concurrency.
+        ChatModel parallelSafe = req -> call("x", "done", "{\"result\":\"success\",\"summary\":\"ok\"}");
+
+        Orchestrator.RunResult result = orchestrator(parallelSafe, parallelSafe)
+                .run(runDir, planTwoIndependent(alib.headSha(), blib.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(0);
+        assertThat(result.state().stateOf("alib")).isEqualTo(RepoState.SUCCEEDED);
+        assertThat(result.state().stateOf("blib")).isEqualTo(RepoState.SUCCEEDED);
+    }
+
+    @Test
+    void budgetPauseWritesARunLevelEventLine() throws Exception {
+        FixtureRepo lib = repoWith("lib", "exit 0");
+        FixtureRepo svc = repoWith("svc", "exit 0");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()), "svc", step("svc", svc.path()));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"lib ok\"}")));
+        Orchestrator tight = new Orchestrator(new RepoStepRunner(db.jdbi()), model, "qwen", model,
+                "deepseek", repo -> RunnerSettings.defaults(null),
+                new RunStore(InstantSource.fixed(Instant.EPOCH)), 10L, Map.of(), new MavenLocalPublisher());
+
+        Orchestrator.RunResult result = tight.run(runDir, plan(lib.headSha(), svc.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(3);
+        assertThat(Files.readString(runDir.resolve("events.jsonl")))
+                .contains("\"run\":\"pause\"").contains("token budget");
+    }
+
+    @Test
+    void partialTokensFromAnEndpointFailureCountAgainstTheBudget() throws Exception {
+        FixtureRepo lib = repoWith("lib", "exit 0");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()));
+        ChatModel dead = req -> {
+            throw new ModelException("transport error: refused", new java.io.IOException("x"))
+                    .withTokens(12345L);
+        };
+
+        Orchestrator.RunResult result = orchestrator(dead, dead)
+                .run(runDir, planFor("lib", lib.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(3);
+        assertThat(result.state().tokensSpent()).isEqualTo(12345L);
+    }
 }

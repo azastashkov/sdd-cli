@@ -14,6 +14,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 /**
@@ -21,7 +24,8 @@ import java.util.function.Function;
  * base, run the 4B agent, escalate a failed attempt to the planner-tier model from a hard-reset tree,
  * checkpoint-commit on success, cascade failures to downstream skips, and pause the run (exit 3) on
  * endpoint outage, infrastructure failure, or run-budget exhaustion.
- * Concurrency and M8 staleness recovery are 4C-3b.
+ * Repos run parallel-within-layer on virtual threads (M8 staleness recovery is 4C-3c); all shared
+ * state is guarded by a single lock, and the first pause wins.
  * MAVEN_LOCAL propagation (4C-2b): bump edits re-applied after every branch reset; providers
  * publish to the run-scoped m2 after their checkpoint commit.
  */
@@ -69,105 +73,185 @@ public final class Orchestrator {
         return run(runDir, plan, steps, new RunState(runId, runnable));
     }
 
+    private final Object lock = new Object();
+
     /** Resume entry: repos already SUCCEEDED or FAILED in the passed state are not re-run. */
     public RunResult run(Path runDir, PlanModel plan, Map<String, RepoStep> steps, RunState state) {
         String runId = runDir.getFileName().toString();
+        AtomicReference<RuntimeException> fatal = new AtomicReference<>();
         try {
-            store.writeState(runDir, state);   // inside the try so an IO failure still releases the lock
-            for (String repo : Scheduler.sequence(plan.order())) {
-                if (!steps.containsKey(repo)) {
-                    continue;
-                }
-                RepoState already = state.stateOf(repo);
-                if (already == RepoState.SUCCEEDED || already == RepoState.FAILED) {
-                    continue;   // settled in a prior (resumed) walk
-                }
-                if (state.tokensSpent() >= runTokenBudget) {
-                    state.pause("run token budget exhausted (" + state.tokensSpent() + " tokens)");
-                    store.writeState(runDir, state);
-                    break;
-                }
-                if (Scheduler.blockedByUpstream(repo, plan.edges(), state)) {
-                    transition(runDir, state, repo, RepoState.SKIPPED_UPSTREAM_FAILED, null, null,
-                            "upstream failed");
-                    continue;
-                }
-                RepoStep step = steps.get(repo);
-                transition(runDir, state, repo, RepoState.IN_PROGRESS, null, null, "");
-                String branch = "sdd/" + runId + "/" + slug(repo);
-                String base = plan.repo(repo).map(PlanModel.PlanRepo::baseSha).orElse("");
-                List<String> events = new ArrayList<>();
-                StepOutcome outcome;
-                boolean escalated = false;
-                try {
-                    RunGit.startBranch(step.repoRoot(), branch, base);
-                    applyBumps(repo, step, events);
-                    outcome = runner.run(step, coder, coderModelName, settingsFor.apply(repo), "");
-                    events.addAll(outcome.events());
-                    state.addTokens(outcome.tokens());
-                    if (ESCALATE.contains(outcome.result()) && state.tokensSpent() < runTokenBudget) {
-                        escalated = true;
-                        events.add("attempt 2: hard reset to base, escalating to " + escalationModelName);
-                        RunGit.startBranch(step.repoRoot(), branch, base);
-                        applyBumps(repo, step, events);
-                        StepOutcome second = runner.run(step, escalation, escalationModelName,
-                                settingsFor.apply(repo), attemptDigest(outcome));
-                        events.addAll(second.events());
-                        state.addTokens(second.tokens());
-                        outcome = second;
-                    }
-                } catch (ModelException e) {
-                    store.writeAgentEvents(runDir, repo, events);
-                    if (endpointTrouble(e)) {
-                        state.pause("model endpoint unavailable: " + e.getMessage());
-                        transition(runDir, state, repo, RepoState.PAUSED_ENDPOINT, branch, null,
-                                e.getMessage());
+            synchronized (lock) {
+                store.writeState(runDir, state);
+            }
+            for (List<List<String>> layer : Scheduler.levels(plan.order(), plan.edges())) {
+                synchronized (lock) {
+                    if (state.pausedReason() != null) {
                         break;
                     }
-                    throw e;   // 4xx configuration errors abort the run (exit 4 upstream)
                 }
-                store.writeAgentEvents(runDir, repo, events);
-                String attemptTag = escalated ? "attempt 2 (" + escalationModelName + ") " : "";
-                if (outcome.result() == StepResult.SUCCESS) {
-                    String sha = RunGit.commitAll(step.repoRoot(), "sdd: " + runId + " " + repo);
-                    RepoPropagation prop = propagation.getOrDefault(repo, RepoPropagation.none());
-                    if (prop.publish() != null) {
-                        MavenLocalPublisher.Result published = publisher.publish(step.repoRoot(),
-                                settingsFor.apply(repo).javaHome(), prop.publish().version(),
-                                prop.publish().m2Dir());
-                        events.add("publish " + prop.publish().version() + ": " + summarize(published.log()));
-                        store.writeAgentEvents(runDir, repo, events);   // overwrite now includes publish events
-                        if (!published.ok()) {
-                            if (InfraClassifier.isInfra(published.log())) {
-                                state.pause("infrastructure failure publishing " + repo
-                                        + " — fix the environment and resume");
-                                transition(runDir, state, repo, RepoState.PAUSED_INFRA, branch, null,
-                                        attemptTag + "publish: " + summarize(published.log()));
-                                break;
-                            }
-                            transition(runDir, state, repo, RepoState.FAILED, branch, null,
-                                    attemptTag + "publish failed: " + summarize(published.log()));
-                            continue;
-                        }
-                    }
-                    transition(runDir, state, repo, RepoState.SUCCEEDED, branch, sha,
-                            attemptTag + outcome.summary());
-                } else if (outcome.result() == StepResult.INFRA) {
-                    state.pause("infrastructure failure in " + repo + " — fix the environment and resume");
-                    transition(runDir, state, repo, RepoState.PAUSED_INFRA, branch, null,
-                            attemptTag + outcome.summary());
+                if (fatal.get() != null) {
                     break;
-                } else {
-                    transition(runDir, state, repo, RepoState.FAILED, branch, null,
-                            attemptTag + outcome.result() + ": " + outcome.summary());
                 }
+                List<List<String>> units = layer.stream()
+                        .map(unit -> unit.stream().filter(steps::containsKey).toList())
+                        .filter(unit -> !unit.isEmpty())
+                        .toList();
+                if (units.isEmpty()) {
+                    continue;
+                }
+                try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                    for (List<String> unit : units) {
+                        pool.submit(() -> {
+                            try {
+                                for (String repo : unit) {   // cycle units stay internally sequential
+                                    if (fatal.get() != null
+                                            || !runRepo(runDir, runId, plan, steps, state, repo)) {
+                                        break;
+                                    }
+                                }
+                            } catch (RuntimeException e) {
+                                fatal.compareAndSet(null, e);   // 4xx config errors et al: stop + rethrow
+                            }
+                        });
+                    }
+                }   // ExecutorService.close() waits for every submitted unit to finish
             }
         } finally {
             store.releaseLock(runDir);
         }
+        if (fatal.get() != null) {
+            throw fatal.get();
+        }
         boolean paused = state.pausedReason() != null;
         boolean allSucceeded = state.repos().stream().allMatch(r -> r.state() == RepoState.SUCCEEDED);
         return new RunResult(paused ? 3 : allSucceeded ? 0 : 2, state);
+    }
+
+    /** One repo, both attempts. Returns false when the walk must stop (a pause landed). */
+    private boolean runRepo(Path runDir, String runId, PlanModel plan, Map<String, RepoStep> steps,
+                            RunState state, String repo) {
+        synchronized (lock) {
+            if (state.pausedReason() != null) {
+                return false;
+            }
+            RepoState already = state.stateOf(repo);
+            if (already == RepoState.SUCCEEDED || already == RepoState.FAILED) {
+                return true;
+            }
+            if (state.tokensSpent() >= runTokenBudget) {
+                pauseLocked(runDir, state,
+                        "run token budget exhausted (" + state.tokensSpent() + " tokens)");
+                return false;
+            }
+            if (Scheduler.blockedByUpstream(repo, plan.edges(), state)) {
+                transitionLocked(runDir, state, repo, RepoState.SKIPPED_UPSTREAM_FAILED, null, null,
+                        "upstream failed");
+                return true;
+            }
+            transitionLocked(runDir, state, repo, RepoState.IN_PROGRESS, null, null, "");
+        }
+        RepoStep step = steps.get(repo);
+        String branch = "sdd/" + runId + "/" + slug(repo);
+        String base = plan.repo(repo).map(PlanModel.PlanRepo::baseSha).orElse("");
+        List<String> events = new ArrayList<>();
+        StepOutcome outcome;
+        boolean escalated = false;
+        try {
+            RunGit.startBranch(step.repoRoot(), branch, base);
+            applyBumps(repo, step, events);
+            outcome = runner.run(step, coder, coderModelName, settingsFor.apply(repo), "");
+            events.addAll(outcome.events());
+            boolean escalationAllowed;
+            synchronized (lock) {
+                state.addTokens(outcome.tokens());
+                escalationAllowed = state.tokensSpent() < runTokenBudget;
+            }
+            if (ESCALATE.contains(outcome.result()) && escalationAllowed) {
+                escalated = true;
+                events.add("attempt 2: hard reset to base, escalating to " + escalationModelName);
+                RunGit.startBranch(step.repoRoot(), branch, base);
+                applyBumps(repo, step, events);
+                StepOutcome second = runner.run(step, escalation, escalationModelName,
+                        settingsFor.apply(repo), attemptDigest(outcome));
+                events.addAll(second.events());
+                synchronized (lock) {
+                    state.addTokens(second.tokens());
+                }
+                outcome = second;
+            }
+        } catch (ModelException e) {
+            synchronized (lock) {
+                state.addTokens(e.tokensSoFar());
+            }
+            store.writeAgentEvents(runDir, repo, events);
+            if (endpointTrouble(e)) {
+                synchronized (lock) {
+                    pauseLocked(runDir, state, "model endpoint unavailable: " + e.getMessage());
+                    transitionLocked(runDir, state, repo, RepoState.PAUSED_ENDPOINT, branch, null,
+                            e.getMessage());
+                }
+                return false;
+            }
+            throw e;   // 4xx configuration errors: captured by the unit task into fatal
+        }
+        store.writeAgentEvents(runDir, repo, events);
+        String attemptTag = escalated ? "attempt 2 (" + escalationModelName + ") " : "";
+        if (outcome.result() == StepResult.SUCCESS) {
+            String sha = RunGit.commitAll(step.repoRoot(), "sdd: " + runId + " " + repo);
+            RepoPropagation prop = propagation.getOrDefault(repo, RepoPropagation.none());
+            if (prop.publish() != null) {
+                RunnerSettings settings = settingsFor.apply(repo);
+                java.util.concurrent.Semaphore permits = settings.gradlePermits();
+                if (permits != null) {
+                    permits.acquireUninterruptibly();
+                }
+                MavenLocalPublisher.Result published;
+                try {
+                    published = publisher.publish(step.repoRoot(), settings.javaHome(),
+                            prop.publish().version(), prop.publish().m2Dir());
+                } finally {
+                    if (permits != null) {
+                        permits.release();
+                    }
+                }
+                events.add("publish " + prop.publish().version() + ": " + summarize(published.log()));
+                store.writeAgentEvents(runDir, repo, events);
+                if (!published.ok()) {
+                    if (InfraClassifier.isInfra(published.log())) {
+                        synchronized (lock) {
+                            pauseLocked(runDir, state, "infrastructure failure publishing " + repo
+                                    + " — fix the environment and resume");
+                            transitionLocked(runDir, state, repo, RepoState.PAUSED_INFRA, branch, null,
+                                    attemptTag + "publish: " + summarize(published.log()));
+                        }
+                        return false;
+                    }
+                    synchronized (lock) {
+                        transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
+                                attemptTag + "publish failed: " + summarize(published.log()));
+                    }
+                    return true;
+                }
+            }
+            synchronized (lock) {
+                transitionLocked(runDir, state, repo, RepoState.SUCCEEDED, branch, sha,
+                        attemptTag + outcome.summary());
+            }
+        } else if (outcome.result() == StepResult.INFRA) {
+            synchronized (lock) {
+                pauseLocked(runDir, state, "infrastructure failure in " + repo
+                        + " — fix the environment and resume");
+                transitionLocked(runDir, state, repo, RepoState.PAUSED_INFRA, branch, null,
+                        attemptTag + outcome.summary());
+            }
+            return false;
+        } else {
+            synchronized (lock) {
+                transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
+                        attemptTag + outcome.result() + ": " + outcome.summary());
+            }
+        }
+        return true;
     }
 
     private void applyBumps(String repo, RepoStep step, List<String> events) {
@@ -207,8 +291,18 @@ public final class Orchestrator {
         return repo.replaceAll("[^A-Za-z0-9._-]", "-");
     }
 
-    private void transition(Path runDir, RunState state, String repo, RepoState to, String branch,
-                            String sha, String detail) {
+    /** Caller must hold lock. First pause wins; every pause is also a run-level event line. */
+    private void pauseLocked(Path runDir, RunState state, String reason) {
+        if (state.pausedReason() == null) {
+            state.pause(reason);
+            store.appendRunEvent(runDir, reason);
+            store.writeState(runDir, state);
+        }
+    }
+
+    /** Caller must hold lock. */
+    private void transitionLocked(Path runDir, RunState state, String repo, RepoState to,
+                                  String branch, String sha, String detail) {
         RepoState from = state.stateOf(repo);
         state.set(repo, to, branch, sha, detail);
         store.appendEvent(runDir, repo, from, to, detail);
