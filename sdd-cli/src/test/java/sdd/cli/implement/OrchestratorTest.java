@@ -665,4 +665,36 @@ class OrchestratorTest {
                 .reduce("", String::concat);
         assertThat(svcWorkOrder).contains("Actualized contracts").contains("com.acme.Api");
     }
+
+    @Test
+    void escalationEndpointFailurePersistsTheCompletedAttempt1Transcript() throws Exception {
+        // Attempt 1: verify fails (exit 1 while marker absent) twice -> VERIFY_FAILED -> escalation triggered.
+        // Attempt 2 (escalation): the escalation model throws an endpoint-trouble ModelException.
+        // Result: run pauses (exit 3), and attempt 1's transcript is persisted (not lost).
+        FixtureRepo lib = repoWith("lib", "exit 1");   // verify always fails
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()));
+        // Attempt 1: two verify-fail cycles before VERIFY_FAILED
+        ScriptedChatModel coderScript = new ScriptedChatModel(List.of(
+                call("1", "apply_edit", "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int attempt1; }\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"try1\"}"),
+                call("3", "done", "{\"result\":\"success\",\"summary\":\"try2\"}")));
+        // Attempt 2 (escalation): endpoint throws during the model call
+        ChatModel escalationDead = req -> {
+            throw new ModelException("transport error: refused", new java.io.IOException("x"));
+        };
+
+        Orchestrator.RunResult result = orchestrator(coderScript, escalationDead)
+                .run(runDir, planFor("lib", lib.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(3);
+        assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.PAUSED_ENDPOINT);
+        // CRITICAL: attempt 1's transcript must exist and be non-empty (not lost due to attempt 2's failure)
+        Path transcript = runDir.resolve("lib/transcript.jsonl");
+        assertThat(Files.exists(transcript)).isTrue();
+        String transcriptContent = Files.readString(transcript);
+        assertThat(transcriptContent).isNotEmpty()
+                .contains("\"turn\":1").contains("\"name\":\"apply_edit\"")
+                .contains("\"turn\":2").contains("\"name\":\"done\"");
+    }
 }

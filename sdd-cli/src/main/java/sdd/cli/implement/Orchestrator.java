@@ -211,9 +211,11 @@ public final class Orchestrator {
                 state.addTokens(e.tokensSoFar());
                 store.writeState(runDir, state);   // persist the partial spend even on the rethrow path
             }
-            // No StepOutcome exists on this throw path, so there's no transcript/edits to carry —
-            // same tradeoff as the token accounting above losing the in-flight call's partial spend.
+            // The in-flight call (attempt 2 during escalation, or attempt 1 if no escalation) is lost,
+            // but any completed attempt (attempt 1's transcript/edits) must be persisted.
             store.writeAgentEvents(runDir, repo, events);
+            store.writeTranscript(runDir, repo, transcript);
+            store.writeEdits(runDir, repo, edits);
             if (endpointTrouble(e)) {
                 synchronized (lock) {
                     pauseLocked(runDir, state, "model endpoint unavailable: " + e.getMessage());
