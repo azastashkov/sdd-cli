@@ -34,7 +34,13 @@ public record RunnerSettings(AgentBudget budget, int contextSoftCap, InstantSour
 
     public static RunnerSettings custom(Path javaHome, List<String> gradleExtraArgs,
                                         List<String> verificationTasks, Semaphore gradlePermits) {
-        return new RunnerSettings(AgentBudget.defaults(), 80_000, InstantSource.system(), javaHome,
+        return custom(javaHome, gradleExtraArgs, verificationTasks, gradlePermits, AgentBudget.defaults());
+    }
+
+    public static RunnerSettings custom(Path javaHome, List<String> gradleExtraArgs,
+                                        List<String> verificationTasks, Semaphore gradlePermits,
+                                        AgentBudget budget) {
+        return new RunnerSettings(budget, 80_000, InstantSource.system(), javaHome,
                 Duration.ofMinutes(15), verificationTasks, 4096, DEFAULT_SYSTEM_PROMPT,
                 gradleExtraArgs, gradlePermits);
     }

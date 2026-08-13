@@ -113,6 +113,8 @@ public final class ConfigLoader {
                     ? parseInt("run.model_concurrency", String.valueOf(rm.get("model_concurrency"))) : run.modelConcurrency();
             long tokenBudget = rm.get("token_budget") != null
                     ? parseLong("run.token_budget", String.valueOf(rm.get("token_budget"))) : run.tokenBudget();
+            int agentTurns = rm.get("agent_turns") != null
+                    ? parseInt("run.agent_turns", String.valueOf(rm.get("agent_turns"))) : run.agentTurns();
             if (gradleWorkers < 1) {
                 throw new ConfigException("run.gradle_workers must be at least 1, got '" + gradleWorkers + "'");
             }
@@ -122,7 +124,10 @@ public final class ConfigLoader {
             if (tokenBudget < 1) {
                 throw new ConfigException("run.token_budget must be at least 1, got '" + tokenBudget + "'");
             }
-            run = new RunSettings(gradleWorkers, modelConcurrency, tokenBudget);
+            if (agentTurns < 1) {
+                throw new ConfigException("run.agent_turns must be at least 1, got '" + agentTurns + "'");
+            }
+            run = new RunSettings(gradleWorkers, modelConcurrency, tokenBudget, agentTurns);
         } else if (runNode != null) {
             throw new ConfigException("run must be a mapping, got: " + runNode);
         }

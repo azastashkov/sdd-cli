@@ -228,9 +228,10 @@ class ConfigLoaderTest {
                   gradle_workers: 4
                   model_concurrency: 1
                   token_budget: 5000000
+                  agent_turns: 20
                 """);
         SddConfig config = ConfigLoader.load(ws);
-        assertThat(config.run()).isEqualTo(new RunSettings(4, 1, 5_000_000L));
+        assertThat(config.run()).isEqualTo(new RunSettings(4, 1, 5_000_000L, 20));
     }
 
     @Test
@@ -241,7 +242,7 @@ class ConfigLoaderTest {
                   coder: { base_url: http://y/v1, model: c }
                 """);
         assertThat(ConfigLoader.load(absent).run()).isEqualTo(RunSettings.defaults());
-        assertThat(RunSettings.defaults()).isEqualTo(new RunSettings(2, 2, 30_000_000L));
+        assertThat(RunSettings.defaults()).isEqualTo(new RunSettings(2, 2, 30_000_000L, 40));
 
         Path partial = write("""
                 models:
@@ -250,7 +251,7 @@ class ConfigLoaderTest {
                 run:
                   gradle_workers: 8
                 """);
-        assertThat(ConfigLoader.load(partial).run()).isEqualTo(new RunSettings(8, 2, 30_000_000L));
+        assertThat(ConfigLoader.load(partial).run()).isEqualTo(new RunSettings(8, 2, 30_000_000L, 40));
     }
 
     @Test
@@ -279,6 +280,20 @@ class ConfigLoaderTest {
         assertThatThrownBy(() -> ConfigLoader.load(ws))
                 .isInstanceOf(ConfigException.class)
                 .hasMessageContaining("gradle_workers");
+    }
+
+    @Test
+    void nonPositiveAgentTurnsFails() throws Exception {
+        Path ws = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                run:
+                  agent_turns: 0
+                """);
+        assertThatThrownBy(() -> ConfigLoader.load(ws))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("agent_turns");
     }
 
     @Test

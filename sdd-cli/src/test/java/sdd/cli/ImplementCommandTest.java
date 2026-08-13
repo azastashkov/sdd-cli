@@ -176,6 +176,73 @@ class ImplementCommandTest {
     }
 
     @Test
+    void sddYmlAgentTurnsCapsTheAttemptAndTheRunFailsWithBudget() throws Exception {
+        // run.agent_turns: 3 means the AgentLoop must stop after 3 model calls — the coder script
+        // below scripts a would-be 4th response (done) that must never be reached.
+        FixtureRepo lib = repo("lib");
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                run:
+                  agent_turns: 3
+                  token_budget: 1
+                """);
+        Files.writeString(ws.resolve("s.md"), """
+                ---
+                id: SPEC-101
+                title: Tiers
+                owner: me
+                status: approved
+                ---
+
+                ## Goal
+                g
+
+                ## Requirements
+                - R1: Expose tierFor.
+
+                ## Acceptance Criteria
+                - A1: tierFor returns a tier.
+                """);
+        String specSha = sdd.plan.approve.Hashes.sha256(Files.readString(ws.resolve("s.md")));
+        Files.writeString(ws.resolve("s.plan.json"), """
+                { "spec_id":"SPEC-101","plan_version":1,"spec_sha256":"%s","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x to A."}] }
+                """.formatted(specSha, lib.headSha()));
+
+        ImplementCommand cmd = new ImplementCommand();
+        cmd.coderForTest = new ScriptedChatModel(List.of(
+                new ChatResponse(new ChatMessage("assistant", null,
+                        List.of(new ToolCall("1", "read_file", "{\"path\":\"A.java\"}")),
+                        null), "tool_calls", new Usage(10, 5)),
+                new ChatResponse(new ChatMessage("assistant", null,
+                        List.of(new ToolCall("2", "read_file", "{\"path\":\"B.java\"}")),
+                        null), "tool_calls", new Usage(10, 5)),
+                new ChatResponse(new ChatMessage("assistant", null,
+                        List.of(new ToolCall("3", "read_file", "{\"path\":\"C.java\"}")),
+                        null), "tool_calls", new Usage(10, 5)),
+                new ChatResponse(new ChatMessage("assistant", null,
+                        List.of(new ToolCall("4", "done", "{\"result\":\"success\",\"summary\":\"done\"}")),
+                        null), "tool_calls", new Usage(10, 5))));
+
+        StringWriter out = new StringWriter();
+        CommandLine cli = new CommandLine(cmd);
+        cli.setOut(new PrintWriter(out));
+        int exit = cli.execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
+
+        assertThat(exit).isEqualTo(2);
+        assertThat(out.toString()).contains("BUDGET");
+    }
+
+    @Test
     void unknownOptionAbortsWithExitFour() {
         int exit = new CommandLine(new ImplementCommand()).execute("--no-such-flag");
         assertThat(exit).isEqualTo(4);

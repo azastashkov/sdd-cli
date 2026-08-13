@@ -6,6 +6,7 @@ import picocli.CommandLine.Model.CommandSpec;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 import picocli.CommandLine.Spec;
+import sdd.agent.loop.AgentBudget;
 import sdd.agent.run.RepoStep;
 import sdd.agent.run.RepoStepRunner;
 import sdd.agent.run.RunnerSettings;
@@ -276,7 +277,9 @@ public final class ImplementCommand implements Callable<Integer> {
                                                                       // "verify normally", not "skip"
                     }
                     tasks.removeAll(config.verificationExclusions().getOrDefault(repo, List.of()));
-                    return RunnerSettings.custom(javaHome, extraArgs, tasks, gradlePermits);
+                    AgentBudget budget = new AgentBudget(config.run().agentTurns(),
+                            AgentBudget.defaults().maxWall(), AgentBudget.defaults().maxTokens());
+                    return RunnerSettings.custom(javaHome, extraArgs, tasks, gradlePermits, budget);
                 };
 
                 Orchestrator orchestrator = new Orchestrator(new RepoStepRunner(jdbi), coder, coderName,
