@@ -29,6 +29,11 @@ public final class RepoStepRunner {
     }
 
     public StepOutcome run(RepoStep step, ChatModel model, String modelName, RunnerSettings settings) {
+        return run(step, model, modelName, settings, "");
+    }
+
+    public StepOutcome run(RepoStep step, ChatModel model, String modelName, RunnerSettings settings,
+                           String priorDigest) {
         OutputCompactor compactor = new OutputCompactor(step.repoRoot());
         GradleTool gradle = new GradleTool(step.repoRoot(), settings.javaHome(), settings.gradleTimeout(), settings.gradleExtraArgs());
         Toolbox toolbox = new Toolbox(new FileTools(new PathJail(step.repoRoot())), gradle, compactor);
@@ -36,9 +41,10 @@ public final class RepoStepRunner {
         AgentLoop loop = new AgentLoop(model, toolbox, settings.budget(), settings.contextSoftCap(),
                 settings.clock());
 
-        String workOrder = WorkOrder.build(jdbi, step);
+        String workOrder = WorkOrder.build(jdbi, step) + (priorDigest.isBlank() ? "" : priorDigest);
         List<String> events = new ArrayList<>();
         int verifyCycles = 0;
+        long tokens = 0;
         boolean restarted = false;
         String lastVerification = "";
 
@@ -46,6 +52,7 @@ public final class RepoStepRunner {
             AgentOutcome outcome = loop.run(settings.systemPrompt(), workOrder, modelName,
                     settings.maxTokensPerCall());
             events.addAll(outcome.events());
+            tokens += outcome.tokens();
 
             switch (outcome.result()) {
                 case DONE -> {
@@ -57,32 +64,32 @@ public final class RepoStepRunner {
                     }
                     lastVerification = verdict.output();
                     if (verdict.passed()) {
-                        return outcome(StepResult.SUCCESS, outcome.summary(), events, lastVerification);
+                        return outcome(StepResult.SUCCESS, outcome.summary(), events, lastVerification, tokens);
                     }
                     if (++verifyCycles >= MAX_VERIFY_CYCLES) {
-                        return outcome(StepResult.VERIFY_FAILED, "verification failed", events, lastVerification);
+                        return outcome(StepResult.VERIFY_FAILED, "verification failed", events, lastVerification, tokens);
                     }
                     workOrder = WorkOrder.build(jdbi, step)
                             + "\n\n## Verification failed — fix and finish again\n" + verdict.output();
                 }
                 case BLOCKED -> {
-                    return outcome(StepResult.BLOCKED, outcome.summary(), events, lastVerification);
+                    return outcome(StepResult.BLOCKED, outcome.summary(), events, lastVerification, tokens);
                 }
                 case CONTEXT_EXHAUSTED -> {
                     if (restarted) {
-                        return outcome(StepResult.EXHAUSTED, "context exhausted", events, lastVerification);
+                        return outcome(StepResult.EXHAUSTED, "context exhausted", events, lastVerification, tokens);
                     }
                     restarted = true;
                     workOrder = WorkOrder.build(jdbi, step) + digest(outcome, lastVerification);
                 }
                 case BUDGET_TURNS, BUDGET_TIME, BUDGET_TOKENS -> {
-                    return outcome(StepResult.BUDGET, outcome.summary(), events, lastVerification);
+                    return outcome(StepResult.BUDGET, outcome.summary(), events, lastVerification, tokens);
                 }
                 case MALFORMED -> {
-                    return outcome(StepResult.MALFORMED, outcome.summary(), events, lastVerification);
+                    return outcome(StepResult.MALFORMED, outcome.summary(), events, lastVerification, tokens);
                 }
                 case WEDGED -> {
-                    return outcome(StepResult.WEDGED, outcome.summary(), events, lastVerification);
+                    return outcome(StepResult.WEDGED, outcome.summary(), events, lastVerification, tokens);
                 }
                 default -> throw new IllegalStateException("unhandled AgentResult: " + outcome.result());
             }
@@ -96,7 +103,7 @@ public final class RepoStepRunner {
     }
 
     private static StepOutcome outcome(StepResult result, String summary, List<String> events,
-                                       String verification) {
-        return new StepOutcome(result, summary, events, verification);
+                                       String verification, long tokens) {
+        return new StepOutcome(result, summary, events, verification, tokens);
     }
 }

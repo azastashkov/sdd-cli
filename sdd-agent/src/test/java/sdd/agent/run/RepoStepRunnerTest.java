@@ -129,4 +129,30 @@ class RepoStepRunnerTest {
         assertThat(outcome.result()).isEqualTo(StepResult.BLOCKED);
         assertThat(outcome.summary()).isEqualTo("need a decision");
     }
+
+    @Test
+    void accumulatesTokensAcrossTheAttempt() throws Exception {
+        gradlew("exit 0");
+        // Each scripted response carries Usage(10, 5) = 15 tokens; 2 calls = 30.
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "apply_edit", "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int x; }\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"added x\"}")));
+
+        StepOutcome outcome = run(model);
+
+        assertThat(outcome.tokens()).isEqualTo(30L);
+    }
+
+    @Test
+    void appendsThePriorDigestToTheInitialWorkOrder() throws Exception {
+        gradlew("exit 0");
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"ok\"}")));
+
+        new RepoStepRunner(db.jdbi()).run(step(repoRoot), model, "qwen",
+                RunnerSettings.defaults(null), "\n\n## PRIOR ATTEMPT DIGEST\nattempt 1 sank");
+
+        assertThat(model.requests().get(0).messages())
+                .anyMatch(m -> m.content() != null && m.content().contains("## PRIOR ATTEMPT DIGEST"));
+    }
 }
