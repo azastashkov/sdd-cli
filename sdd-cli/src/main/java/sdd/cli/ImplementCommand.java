@@ -278,7 +278,7 @@ public final class ImplementCommand implements Callable<Integer> {
                     }
                     tasks.removeAll(config.verificationExclusions().getOrDefault(repo, List.of()));
                     AgentBudget budget = new AgentBudget(config.run().agentTurns(),
-                            AgentBudget.defaults().maxWall(), AgentBudget.defaults().maxTokens());
+                            AgentBudget.defaults().maxWall(), config.run().agentTokens());
                     return RunnerSettings.custom(javaHome, extraArgs, tasks, gradlePermits, budget);
                 };
 
