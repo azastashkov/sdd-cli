@@ -230,46 +230,58 @@ public abstract class DecisionCommand implements Callable<Integer> {
 
         @Override
         protected Followup followUp(RunContext run, PrintWriter out, PrintWriter err) {
-            List<String> retry = List.of("then run: sdd implement --workspace " + parent.workspace()
-                    + " --retry " + repo + " " + planJsonPath);
-            List<String> downstream = Decisions.transitiveDownstream(repo, run.plan());
-            if (noReverify || downstream.isEmpty()) {
-                return new Followup(0, null, false, retry);
-            }
-            // recheckContracts = false on purpose: contract drift is a whole-estate finding that
-            // belongs to a full sdd review pass. A subset run would compare the checkpoint trees of
-            // these repos against the working trees of every repo outside the subset.
-            RebuildPass.Outcome rebuild = RebuildPass.run(downstream, run.plan(), run.state(),
-                    run.paths(), run.config(), run.runDir(), run.store(), false, err);
-            // The repo being redone is itself always staged-but-outside-the-subset (it is excluded
-            // from its own downstream closure) and is the most load-bearing provider of every
-            // verdict below — and a human who was just reading its diff plausibly has uncommitted
-            // edits in it. So a staging failure here is the common case, not the exotic one, and a
-            // verdict computed over it must never read as a clean pass.
-            boolean staged = rebuild.stagingFailures().isEmpty();
-            if (!staged) {
-                err.println("error: could not stage " + String.join("; ", rebuild.stagingFailures())
-                        + " — the verdicts below were computed against pre-run upstream code");
-            }
-            for (String down : downstream) {
-                EstateRebuild.Result result = rebuild.rebuilds().get(down);
-                out.println("re-verify " + down + ": " + verdict(down, result, rebuild)
-                        + (staged ? "" : " (UNRELIABLE — upstream not staged)"));
-            }
-            // A repo left stranded off its original branch demands human action — the same rule
-            // ReviewCommand applies to its own rebuild pass.
-            return new Followup(staged && rebuild.restoreFailures().isEmpty() ? 0 : 2,
-                    rebuild, true, retry);
+            return redoFollowUp(run, repo, noReverify, parent.workspace(), planJsonPath, out, err);
         }
+    }
 
-        private static String verdict(String repo, EstateRebuild.Result result,
-                                      RebuildPass.Outcome rebuild) {
-            if (result != null) {
-                return result.ok() ? "OK" : "FAILED";
-            }
-            return rebuild.notLocallyVerified().contains(repo)
-                    ? "not locally verified (all verification tasks excluded)"
-                    : "skipped (not SUCCEEDED in this run)";
+    /**
+     * The re-verify half of a redo: run {@link RebuildPass} over the repo's transitive downstream
+     * closure, print a verdict per downstream repo, and escalate to exit 2 on a staging or restore
+     * failure. Shared by {@link Redo} and {@link InteractiveReview} — design line 67 makes this pass
+     * part of what "redo" MEANS, not optional diagnostics, so a human redoing a repo from the
+     * terminal loop must get the identical re-verify a script calling {@code sdd review redo} gets,
+     * not just the bare {@link Decisions#redo} state transition.
+     */
+    static Followup redoFollowUp(RunContext run, String repo, boolean noReverify, Path workspace,
+                                 Path planJsonPath, PrintWriter out, PrintWriter err) {
+        List<String> retry = List.of("then run: sdd implement --workspace " + workspace
+                + " --retry " + repo + " " + planJsonPath);
+        List<String> downstream = Decisions.transitiveDownstream(repo, run.plan());
+        if (noReverify || downstream.isEmpty()) {
+            return new Followup(0, null, false, retry);
         }
+        // recheckContracts = false on purpose: contract drift is a whole-estate finding that
+        // belongs to a full sdd review pass. A subset run would compare the checkpoint trees of
+        // these repos against the working trees of every repo outside the subset.
+        RebuildPass.Outcome rebuild = RebuildPass.run(downstream, run.plan(), run.state(),
+                run.paths(), run.config(), run.runDir(), run.store(), false, err);
+        // The repo being redone is itself always staged-but-outside-the-subset (it is excluded
+        // from its own downstream closure) and is the most load-bearing provider of every
+        // verdict below — and a human who was just reading its diff plausibly has uncommitted
+        // edits in it. So a staging failure here is the common case, not the exotic one, and a
+        // verdict computed over it must never read as a clean pass.
+        boolean staged = rebuild.stagingFailures().isEmpty();
+        if (!staged) {
+            err.println("error: could not stage " + String.join("; ", rebuild.stagingFailures())
+                    + " — the verdicts below were computed against pre-run upstream code");
+        }
+        for (String down : downstream) {
+            EstateRebuild.Result result = rebuild.rebuilds().get(down);
+            out.println("re-verify " + down + ": " + verdict(down, result, rebuild)
+                    + (staged ? "" : " (UNRELIABLE — upstream not staged)"));
+        }
+        // A repo left stranded off its original branch demands human action — the same rule
+        // ReviewCommand applies to its own rebuild pass.
+        return new Followup(staged && rebuild.restoreFailures().isEmpty() ? 0 : 2,
+                rebuild, true, retry);
+    }
+
+    private static String verdict(String repo, EstateRebuild.Result result, RebuildPass.Outcome rebuild) {
+        if (result != null) {
+            return result.ok() ? "OK" : "FAILED";
+        }
+        return rebuild.notLocallyVerified().contains(repo)
+                ? "not locally verified (all verification tasks excluded)"
+                : "skipped (not SUCCEEDED in this run)";
     }
 }

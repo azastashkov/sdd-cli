@@ -9,6 +9,8 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -17,22 +19,55 @@ import java.util.Map;
  * The human terminal half of Gate 2 (design line 67): walk every repo in {@link Scheduler#sequence}
  * order whose decision is still PENDING, print its report line, and prompt approve/reject/redo/view
  * diff/skip/quit — dispatching to the SAME {@link Decisions} methods {@link DecisionCommand}'s
- * subcommands use (and, for approve, the same {@link DecisionCommand#squashAndRecord squash
- * follow-up}), so a human walking this loop and a script calling {@code sdd review approve} leave
- * the estate in identical shape. Persists after EVERY decision, not batched at the end — a crash or
- * an early {@code q} must lose nothing already decided — and re-renders {@code report.md} once the
- * walk ends, however it ended. Driven entirely by the injected reader/writer; never touches
- * {@code System.in} itself, which is what makes it testable without a terminal.
+ * subcommands use, and reusing (not duplicating) the same follow-up work: approve's
+ * {@link DecisionCommand#squashAndRecord squash}, redo's
+ * {@link DecisionCommand#redoFollowUp downstream re-verify}. A human walking this loop and a script
+ * calling {@code sdd review approve}/{@code redo} leave the estate — and the report, and the exit
+ * code — in identical shape. Persists after EVERY decision, not batched at the end — a crash or an
+ * early {@code q} must lose nothing already decided — and re-renders {@code report.md} once the walk
+ * ends, but only when at least one decision was actually recorded (a walk that only viewed diffs and
+ * quit changes nothing and must not touch the report). Driven entirely by the injected
+ * reader/writer; never touches {@code System.in} itself, which is what makes it testable without a
+ * terminal.
  */
 public final class InteractiveReview {
     static final String PROMPT = "[a]pprove / [r]eject / [d]edo / [v]iew diff / [s]kip / [q]uit: ";
+    private static final String REASON_PROMPT = "reason (optional, press enter to skip): ";
 
     private InteractiveReview() {
     }
 
-    public static void run(BufferedReader in, PrintWriter out, PrintWriter err, RunContext run)
+    /**
+     * Everything the loop needs beyond the reader/writer: the run itself; the raw workspace and
+     * plan path redo's {@code --retry} line needs ({@link RunContext} doesn't carry them — it is
+     * built from an already-resolved runId); and the rebuild/contract data the CALLER already
+     * computed for this same process's report. An interactive session is part of the SAME
+     * {@code sdd review} invocation that just ran the estate rebuild (or explicitly skipped it with
+     * {@code --no-rebuild}) — unlike a standalone {@code sdd review approve}, which has no better
+     * data to hand — so the loop's own final re-render must carry that data through rather than
+     * quietly overwriting a real rebuild with "skipped".
+     */
+    public record Context(RunContext run, Path workspace, Path planJsonPath,
+                          RebuildPass.Outcome baseline, boolean baselineRebuilt) {
+    }
+
+    /** Returns the worst exit code any follow-up demanded (0 if the walk found nothing to complain
+     *  about) — a squash refusal or a failed downstream re-verify must not be silently swallowed by
+     *  {@code sdd review --interactive}'s own exit code. Callers are expected to have already
+     *  refused (exit 4) while the run's lock is held; this method does not check it itself. */
+    public static int run(BufferedReader in, PrintWriter out, PrintWriter err, Context ctx)
             throws IOException {
+        RunContext run = ctx.run();
         Decisions decisions = new Decisions(run.store().readDecisions(run.runDir()));
+
+        Map<String, EstateRebuild.Result> rebuilds = new LinkedHashMap<>(ctx.baseline().rebuilds());
+        List<String> notLocallyVerified = new ArrayList<>(ctx.baseline().notLocallyVerified());
+        List<String> stagingFailures = new ArrayList<>(ctx.baseline().stagingFailures());
+        List<String> restoreFailures = new ArrayList<>(ctx.baseline().restoreFailures());
+
+        boolean anyDecision = false;
+        int worst = 0;
+
         walk:
         for (String repo : Scheduler.sequence(run.plan().order())) {
             if (decisions.of(repo) != Decision.PENDING) {
@@ -48,18 +83,44 @@ public final class InteractiveReview {
                 }
                 switch (line.strip().toLowerCase(Locale.ROOT)) {
                     case "a" -> {
-                        if (approve(out, err, run, decisions, repo)) {
-                            continue walk;
+                        Decisions.Outcome outcome = decisions.approve(repo, run.plan(), run.state());
+                        if (!outcome.applied()) {
+                            out.println("refused: " + outcome.message());
+                            continue;   // reprompt the SAME repo — nothing changed
                         }
-                        // refused (e.g. a blocked upstream) — reprompt the SAME repo rather than
-                        // silently moving on with it left undecided.
+                        record(out, run, decisions, repo, outcome);
+                        anyDecision = true;
+                        DecisionCommand.Followup followup =
+                                DecisionCommand.squashAndRecord(run, repo, out, err);
+                        followup.trailer().forEach(out::println);
+                        worst = Math.max(worst, followup.exitCode());
+                        continue walk;
                     }
                     case "r" -> {
-                        record(out, run, decisions, repo, decisions.reject(repo, run.plan(), ""));
+                        String reason = promptReason(in, out);
+                        Decisions.Outcome outcome = decisions.reject(repo, run.plan(), reason);
+                        record(out, run, decisions, repo, outcome);
+                        anyDecision = true;
                         continue walk;
                     }
                     case "d" -> {
-                        record(out, run, decisions, repo, decisions.redo(repo, run.plan(), ""));
+                        String reason = promptReason(in, out);
+                        Decisions.Outcome outcome = decisions.redo(repo, run.plan(), reason);
+                        record(out, run, decisions, repo, outcome);
+                        anyDecision = true;
+                        DecisionCommand.Followup followup = DecisionCommand.redoFollowUp(run, repo,
+                                false, ctx.workspace(), ctx.planJsonPath(), out, err);
+                        followup.trailer().forEach(out::println);
+                        worst = Math.max(worst, followup.exitCode());
+                        RebuildPass.Outcome subset = followup.rebuild();
+                        if (subset != null) {
+                            List<String> downstream = Decisions.transitiveDownstream(repo, run.plan());
+                            rebuilds.putAll(subset.rebuilds());
+                            notLocallyVerified.removeAll(downstream);
+                            notLocallyVerified.addAll(subset.notLocallyVerified());
+                            replaceForRepos(stagingFailures, downstream, subset.stagingFailures());
+                            replaceForRepos(restoreFailures, downstream, subset.restoreFailures());
+                        }
                         continue walk;
                     }
                     case "v" -> printDiff(out, run, repo);
@@ -73,24 +134,28 @@ public final class InteractiveReview {
                 }
             }
         }
-        out.println("review written: " + run.writeReport(run.collectDiffs(), Map.of(),
-                List.of(), List.of(), List.of(), List.of(), false));
+
+        if (anyDecision) {
+            out.println("review written: " + run.writeReport(run.collectDiffs(), rebuilds,
+                    notLocallyVerified, stagingFailures, restoreFailures, ctx.baseline().contracts(),
+                    ctx.baselineRebuilt()));
+        }
+        return worst;
     }
 
-    /** Returns whether the approve applied. On success it also runs the same squash follow-up
-     *  {@code sdd review approve} runs — the one piece of approve's behavior that lives outside
-     *  {@link Decisions}. */
-    private static boolean approve(PrintWriter out, PrintWriter err, RunContext run,
-                                   Decisions decisions, String repo) {
-        Decisions.Outcome outcome = decisions.approve(repo, run.plan(), run.state());
-        if (!outcome.applied()) {
-            out.println("refused: " + outcome.message());
-            return false;
-        }
-        record(out, run, decisions, repo, outcome);
-        DecisionCommand.Followup followup = DecisionCommand.squashAndRecord(run, repo, out, err);
-        followup.trailer().forEach(out::println);
-        return true;
+    /** Drops every {@code "<repo>: ..."} line whose repo is in {@code repos}, then appends the
+     *  fresh ones — a redo's re-verify replaces its downstream subset's stale staging/restore
+     *  findings rather than accumulating duplicates across a session with more than one redo. */
+    private static void replaceForRepos(List<String> lines, List<String> repos, List<String> fresh) {
+        lines.removeIf(line -> repos.stream().anyMatch(r -> line.startsWith(r + ":")));
+        lines.addAll(fresh);
+    }
+
+    private static String promptReason(BufferedReader in, PrintWriter out) throws IOException {
+        out.print(REASON_PROMPT);
+        out.flush();
+        String line = in.readLine();
+        return line == null ? "" : line.strip();
     }
 
     /** Persists the decision (before anything else observable happens — a crash right after this

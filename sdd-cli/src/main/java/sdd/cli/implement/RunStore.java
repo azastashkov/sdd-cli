@@ -333,6 +333,30 @@ public final class RunStore {
         }
     }
 
+    /** Raw {@code decision} tokens exactly as recorded in {@code decisions.json}, keyed by repo —
+     *  unlike {@link #readDecisions}, an unrecognized token comes back AS WRITTEN rather than
+     *  silently degraded to PENDING. {@code sdd clean} needs this distinction: {@link #readDecisions}
+     *  degrading an unrecognized token to PENDING is the safe default for {@code review} (PENDING
+     *  just means "ask the human again"), but the identical default is unsafe for {@code clean},
+     *  where PENDING means "eligible for deletion" — a hand-edited or future-versioned file must
+     *  never silently convert possibly-APPROVED work into garbage. Empty (not null) when the run has
+     *  no decisions file yet. */
+    public Map<String, String> readDecisionTokens(Path runDir) {
+        Path file = reviewDir(runDir).resolve("decisions.json");
+        if (!Files.exists(file)) {
+            return Map.of();
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode root = JSON.readTree(Files.readString(file));
+            Map<String, String> result = new java.util.LinkedHashMap<>();
+            root.properties().forEach(entry ->
+                    result.put(entry.getKey(), entry.getValue().path("decision").asText("")));
+            return result;
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
     /** A hand-edited or future-versioned file must not crash the command with "No enum constant …" —
      *  an unrecognized token degrades to PENDING, the safe default (re-decide, don't misread). */
     private static Decision parseDecision(String token) {

@@ -90,6 +90,15 @@ public final class ReviewCommand implements Callable<Integer> {
             if (run == null) {
                 return 4;
             }
+            // --interactive mutates: approve squashes and rewrites branches, redo re-verifies and
+            // can rewrite state.json's checkpoint too. Racing sdd implement over either is exactly
+            // what DecisionCommand's identical check already refuses for the scripted path — a
+            // plain read-only review is unaffected and stays ungated, as before.
+            if (interactive && run.store().isLockHeld(run.runDir())) {
+                err.println("error: run " + run.runId() + " is in progress (lock held) — wait for "
+                        + "sdd implement to finish");
+                return 4;
+            }
 
             RunContext.Diffs diffs = run.collectDiffs();
 
@@ -121,10 +130,14 @@ public final class ReviewCommand implements Callable<Integer> {
             out.println("review written: " + run.writeReport(diffs, rebuilds, notLocallyVerified,
                     stagingFailures, restoreFailures, contracts, !noRebuild));
 
+            int interactiveExit = 0;
             if (interactive) {
                 BufferedReader reader = in != null ? in
                         : new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
-                InteractiveReview.run(reader, out, err, run);
+                RebuildPass.Outcome baseline = new RebuildPass.Outcome(rebuilds, notLocallyVerified,
+                        stagingFailures, restoreFailures, contracts);
+                interactiveExit = InteractiveReview.run(reader, out, err,
+                        new InteractiveReview.Context(run, workspace, planJsonPath, baseline, !noRebuild));
             }
 
             boolean allSucceeded = Scheduler.sequence(run.plan().order()).stream()
@@ -134,8 +147,11 @@ public final class ReviewCommand implements Callable<Integer> {
             // legend calls that a failed checkout, so it must fail the review too. A staging
             // failure is a failed checkout by another name, and worse: it silently invalidates
             // every verdict downstream of it, so it can never be reported as a clean pass.
-            return allSucceeded && !anyRebuildFailed && restoreFailures.isEmpty()
+            int baseExit = allSucceeded && !anyRebuildFailed && restoreFailures.isEmpty()
                     && stagingFailures.isEmpty() ? 0 : 2;
+            // Worse wins: a squash refusal or a failed downstream re-verify inside the interactive
+            // walk must not be masked by an otherwise-clean base review, or vice versa.
+            return Math.max(baseExit, interactiveExit);
         } catch (RuntimeException | IOException e) {
             err.println("error: " + e.getMessage());
             return 4;

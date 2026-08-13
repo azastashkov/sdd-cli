@@ -50,9 +50,11 @@ class InteractiveReviewTest {
                 "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n");
     }
 
-    /** Three independent (no edges) repos, all SUCCEEDED, all PENDING going in. {@code a} carries
-     *  TWO checkpoint commits so an interactive approve has something real to squash — proving the
-     *  loop reuses DecisionCommand's squash follow-up rather than just flipping the decision. */
+    /** Three repos, all SUCCEEDED, all PENDING going in. {@code b} consumes {@code a} (one edge) so
+     *  a redo on {@code a} has a real downstream subtree to re-verify and downgrade. {@code a}
+     *  carries TWO checkpoint commits so an interactive approve has something real to squash —
+     *  proving the loop reuses DecisionCommand's squash follow-up rather than just flipping the
+     *  decision. */
     private Fixture fixture() throws Exception {
         FixtureRepo a = FixtureRepo.in(ws, "a").file("A.java", "class A {}\n");
         gradlewStub(a);
@@ -101,7 +103,7 @@ class InteractiveReviewTest {
                            {"name":"b","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"},
                            {"name":"c","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
                   "order":[["a"],["b"],["c"]],
-                  "edges":[],
+                  "edges":[{"from_repo":"b","to_repo":"a","mode":"SNAPSHOT","mechanism":"INCLUDE_BUILD"}],
                   "contracts":[],
                   "steps":[{"repo":"a","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
                     "files":["A.java"],"verification":[],"sub_spec":"Add x to A."},
@@ -136,22 +138,35 @@ class InteractiveReviewTest {
         }
     }
 
-    @Test
-    void walksInScheduleOrderApprovingRejectingAndQuittingPersistsAfterEachStep() throws Exception {
-        Fixture f = fixture();
+    private InteractiveReview.Context context(Fixture f) throws Exception {
+        return context(f, new RebuildPass.Outcome(Map.of(), List.of(), List.of(), List.of(), List.of()), false);
+    }
+
+    private InteractiveReview.Context context(Fixture f, RebuildPass.Outcome baseline,
+                                              boolean baselineRebuilt) throws Exception {
         RunContext run = RunContext.load(ws, f.planPath(), new PrintWriter(new StringWriter()));
         assertThat(run).isNotNull();
         run.collectDiffs();
+        return new InteractiveReview.Context(run, ws, f.planPath(), baseline, baselineRebuilt);
+    }
 
-        BufferedReader in = new BufferedReader(new StringReader("a\nr\nq\n"));
+    @Test
+    void walksInScheduleOrderApprovingRejectingAndQuittingPersistsAfterEachStep() throws Exception {
+        Fixture f = fixture();
+        InteractiveReview.Context ctx = context(f);
+
+        // a: approve. b: reject, with a reason (the reason prompt is a second line). c: quit.
+        BufferedReader in = new BufferedReader(new StringReader("a\nr\nwrong API\nq\n"));
         StringWriter outSw = new StringWriter();
         StringWriter errSw = new StringWriter();
 
-        InteractiveReview.run(in, new PrintWriter(outSw), new PrintWriter(errSw), run);
+        int exit = InteractiveReview.run(in, new PrintWriter(outSw), new PrintWriter(errSw), ctx);
 
+        assertThat(exit).isZero();
         Map<String, DecisionRecord> persisted = RunStore.system().readDecisions(f.runDir());
         assertThat(persisted.get("a").decision()).isEqualTo(Decision.APPROVED);
         assertThat(persisted.get("b").decision()).isEqualTo(Decision.REJECTED);
+        assertThat(persisted.get("b").reason()).isEqualTo("wrong API");
         assertThat(persisted).doesNotContainKey("c");   // 'q' left it implicitly PENDING
 
         // The run branch actually got squashed — proof the loop reused DecisionCommand's follow-up
@@ -162,13 +177,17 @@ class InteractiveReviewTest {
         // report.md was re-rendered when the loop ended (even though it ended via 'q').
         assertThat(outSw.toString()).contains("review written:");
         assertThat(f.runDir().resolve("review/report.md")).exists();
+
+        // Both decisions reached events.jsonl, not just decisions.json.
+        String events = Files.readString(f.runDir().resolve("events.jsonl"));
+        assertThat(events).contains("APPROVED").contains("\"repo\":\"a\"");
+        assertThat(events).contains("REJECTED").contains("\"repo\":\"b\"");
     }
 
     @Test
     void persistsAfterEveryDecisionNotOnlyAtTheEndOfTheScript() throws Exception {
         Fixture f = fixture();
-        RunContext run = RunContext.load(ws, f.planPath(), new PrintWriter(new StringWriter()));
-        run.collectDiffs();
+        InteractiveReview.Context ctx = context(f);
 
         // A reader that yields exactly one line ("a") and then blows up on the NEXT read — standing
         // in for a crash immediately after the first decision, before the loop ever reaches 'b'.
@@ -186,7 +205,7 @@ class InteractiveReviewTest {
         };
 
         assertThatThrownBy(() -> InteractiveReview.run(crashing, new PrintWriter(new StringWriter()),
-                new PrintWriter(new StringWriter()), run))
+                new PrintWriter(new StringWriter()), ctx))
                 .isInstanceOf(IOException.class);
 
         // Despite the crash, repo a's decision already made it to disk — a FRESH store proves it,
@@ -196,36 +215,103 @@ class InteractiveReviewTest {
     }
 
     @Test
-    void viewPrintsTheDiffAndSkipLeavesTheRepoPending() throws Exception {
+    void viewPrintsTheDiffAndSkipLeavesTheRepoPendingWithNoReRender() throws Exception {
         Fixture f = fixture();
-        RunContext run = RunContext.load(ws, f.planPath(), new PrintWriter(new StringWriter()));
-        run.collectDiffs();
+        InteractiveReview.Context ctx = context(f);
 
-        // a: view then skip; b: skip; c: skip -> quit via EOF.
+        // a: view then skip; b: skip; c: skip.
         BufferedReader in = new BufferedReader(new StringReader("v\ns\ns\ns\n"));
         StringWriter outSw = new StringWriter();
 
-        InteractiveReview.run(in, new PrintWriter(outSw), new PrintWriter(new StringWriter()), run);
+        int exit = InteractiveReview.run(in, new PrintWriter(outSw), new PrintWriter(new StringWriter()), ctx);
 
+        assertThat(exit).isZero();
         assertThat(outSw.toString()).contains("A.java");   // the diff content for repo a
         Map<String, DecisionRecord> persisted = RunStore.system().readDecisions(f.runDir());
         assertThat(persisted).isEmpty();   // every repo skipped, all still implicitly PENDING
+        // Nothing was decided, so the report must not have been touched at all.
+        assertThat(f.runDir().resolve("review/report.md")).doesNotExist();
+        assertThat(outSw.toString()).doesNotContain("review written:");
     }
 
     @Test
-    void redoDowngradesAndAnUnrecognizedOptionReprompts() throws Exception {
+    void redoReVerifiesTheDownstreamSubtreeAndDowngradesAnEarlierApproval() throws Exception {
         Fixture f = fixture();
-        RunContext run = RunContext.load(ws, f.planPath(), new PrintWriter(new StringWriter()));
-        run.collectDiffs();
-        // Pre-approve b via the same machinery the script commands use, so redo on a has something
-        // downstream — no: a/b/c share no edges in this fixture, so redo just records REDO cleanly.
-        BufferedReader in = new BufferedReader(new StringReader("zzz\nd\ns\ns\n"));
+
+        // Session 1: leave a PENDING (skip), approve b (allowed — a is only PENDING, not
+        // REJECTED/REDO), skip c.
+        InteractiveReview.run(new BufferedReader(new StringReader("s\na\ns\n")),
+                new PrintWriter(new StringWriter()), new PrintWriter(new StringWriter()), context(f));
+        assertThat(RunStore.system().readDecisions(f.runDir()).get("b").decision())
+                .isEqualTo(Decision.APPROVED);
+
+        // Session 2 (a fresh walk, as a human re-running --interactive would do): a is still
+        // PENDING, so it's visited again. Redo it, with a reason. b, downstream of a, gets
+        // downgraded back to PENDING mid-walk and is re-prompted (skip); c stays skipped too.
         StringWriter outSw = new StringWriter();
+        int exit = InteractiveReview.run(
+                new BufferedReader(new StringReader("d\nneeds rework\ns\ns\n")),
+                new PrintWriter(outSw), new PrintWriter(new StringWriter()), context(f));
 
-        InteractiveReview.run(in, new PrintWriter(outSw), new PrintWriter(new StringWriter()), run);
-
-        assertThat(outSw.toString()).contains("unrecognized");
+        assertThat(exit).isZero();   // b's re-verify passes (the gradlew stub exits 0)
         Map<String, DecisionRecord> persisted = RunStore.system().readDecisions(f.runDir());
         assertThat(persisted.get("a").decision()).isEqualTo(Decision.REDO);
+        assertThat(persisted.get("a").reason()).isEqualTo("needs rework");
+        assertThat(persisted.get("b").decision()).isEqualTo(Decision.PENDING);   // downgraded, re-decide
+
+        // The SAME downstream re-verify DecisionCommand.Redo runs — not just the bare Decisions
+        // state transition — reused via DecisionCommand.redoFollowUp.
+        assertThat(outSw.toString()).contains("downgraded to PENDING (re-decide): b")
+                .contains("re-verify b: OK")
+                .contains("then run: sdd implement --workspace " + ws + " --retry a " + f.planPath());
+    }
+
+    @Test
+    void anUnrecognizedOptionRepromptsTheSameRepo() throws Exception {
+        Fixture f = fixture();
+        InteractiveReview.Context ctx = context(f);
+        BufferedReader in = new BufferedReader(new StringReader("zzz\ns\ns\ns\n"));
+        StringWriter outSw = new StringWriter();
+
+        InteractiveReview.run(in, new PrintWriter(outSw), new PrintWriter(new StringWriter()), ctx);
+
+        assertThat(outSw.toString()).contains("unrecognized");
+    }
+
+    @Test
+    void aDirtyTreeRefusesTheSquashAndPropagatesExitTwoWithoutLosingTheDecision() throws Exception {
+        Fixture f = fixture();
+        InteractiveReview.Context ctx = context(f);
+        // Dirty a's working tree (it's currently on its ORIGINAL branch, restored by fixture()) so
+        // SquashApprove.approve refuses — the load-bearing case DecisionCommand.Approve's follow-up
+        // exists for, which the interactive loop must not silently swallow.
+        Files.writeString(f.a().path().resolve("A.java"), "class A { int mine; }\n");
+
+        int exit = InteractiveReview.run(new BufferedReader(new StringReader("a\n")),
+                new PrintWriter(new StringWriter()), new PrintWriter(new StringWriter()), ctx);
+
+        assertThat(exit).isEqualTo(2);
+        // The decision itself still stands — only the squash was refused.
+        assertThat(RunStore.system().readDecisions(f.runDir()).get("a").decision())
+                .isEqualTo(Decision.APPROVED);
+        assertThat(Files.readString(f.a().path().resolve("A.java"))).isEqualTo("class A { int mine; }\n");
+    }
+
+    @Test
+    void theFinalReRenderCarriesTheCallersBaselineRebuildDataThrough() throws Exception {
+        Fixture f = fixture();
+        RebuildPass.Outcome baseline = new RebuildPass.Outcome(
+                Map.of("a", new EstateRebuild.Result(true, "ok log")), List.of(), List.of(), List.of(),
+                List.of());
+        InteractiveReview.Context ctx = context(f, baseline, true);
+
+        // One real decision (reject a, empty reason) triggers the re-render; b and c are skipped.
+        InteractiveReview.run(new BufferedReader(new StringReader("r\n\ns\ns\n")),
+                new PrintWriter(new StringWriter()), new PrintWriter(new StringWriter()), ctx);
+
+        String report = Files.readString(f.runDir().resolve("review/report.md"));
+        // Not "skipped (--no-rebuild)" — the caller's real rebuild pass ran seconds earlier in the
+        // same process, and the loop must not overwrite that with nothing.
+        assertThat(report).contains("Estate rebuild: 1 passed, 0 failed");
     }
 }

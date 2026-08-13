@@ -8,6 +8,7 @@ import sdd.cli.implement.RepoState;
 import sdd.cli.implement.RunGit;
 import sdd.cli.implement.RunState;
 import sdd.cli.implement.RunStore;
+import sdd.cli.review.Decision;
 import sdd.core.db.Database;
 import sdd.core.testing.FixtureRepo;
 
@@ -419,5 +420,115 @@ class ReviewCommandTest {
         assertThat(review.resolve("report.md")).exists();
         String report = Files.readString(review.resolve("report.md"));
         assertThat(report).contains("Branch restore failures").contains("lib");
+    }
+
+    /** Both new tests below exercise the package-private {@code in} field: the injection point that
+     *  lets {@code --interactive} run without a real terminal. */
+
+    @Test
+    void interactiveRefusesEntirelyWhileTheRunIsLockedAndWritesNoReport() throws Exception {
+        FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
+        lib.commit("base");
+        String baseSha = lib.headSha();
+
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+        String planJson = """
+                { "spec_id":"SPEC-9","plan_version":1,"spec_sha256":"z","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x to A."}] }
+                """.formatted(baseSha);
+        Files.writeString(ws.resolve("s.plan.json"), planJson);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", planJson, "");
+        store.releaseLock(runDir);
+        store.writeState(runDir, new RunState("SPEC-9-v1",
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/lib", baseSha, "ok")), null, 0L));
+        // Our own pid is provably alive, so RunStore.isLockHeld sees a live lock, not a stale one.
+        Files.writeString(runDir.resolve("lock"), Long.toString(ProcessHandle.current().pid()));
+
+        ReviewCommand cmd = new ReviewCommand();
+        cmd.interactive = true;
+        cmd.in = new java.io.BufferedReader(new java.io.StringReader("a\n"));
+        StringWriter err = new StringWriter();
+        CommandLine cli = new CommandLine(cmd);
+        cli.setErr(new PrintWriter(err));
+        int exit = cli.execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
+
+        assertThat(exit).isEqualTo(4);
+        assertThat(err.toString()).contains("SPEC-9-v1").contains("in progress (lock held)");
+        // Refused before doing ANY work — not even the read-only report got written.
+        assertThat(runDir.resolve("review/report.md")).doesNotExist();
+        assertThat(runDir.resolve("review/decisions.json")).doesNotExist();
+    }
+
+    @Test
+    void interactivePropagatesAFollowUpExitCodeEvenWhenTheBaseReviewWouldHavePassed() throws Exception {
+        FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
+        lib.commit("base");
+        String baseSha = lib.headSha();
+        String originalBranch = RunGit.currentBranch(lib.path());
+
+        String runBranch = "sdd/SPEC-9-v1/lib";
+        RunGit.startBranch(lib.path(), runBranch, baseSha);
+        lib.file("A.java", "class A { int x; }\n").commit("checkpoint");
+        String checkpointSha = lib.headSha();
+        RunGit.checkout(lib.path(), originalBranch);
+        // Dirty the working tree so approve's squash follow-up refuses — the load-bearing case
+        // DecisionCommand.Approve's follow-up exists for, which --interactive must not swallow.
+        Files.writeString(lib.path().resolve("A.java"), "class A { int mine; }\n");
+
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+        String planJson = """
+                { "spec_id":"SPEC-9","plan_version":1,"spec_sha256":"z","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x to A."}] }
+                """.formatted(baseSha);
+        Files.writeString(ws.resolve("s.plan.json"), planJson);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", planJson, "");
+        store.releaseLock(runDir);
+        store.writeState(runDir, new RunState("SPEC-9-v1",
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok")), null, 0L));
+
+        ReviewCommand cmd = new ReviewCommand();
+        cmd.interactive = true;
+        cmd.noRebuild = true;   // isolates this test to the interactive follow-up, not the rebuild pass
+        cmd.in = new java.io.BufferedReader(new java.io.StringReader("a\n"));
+        StringWriter out = new StringWriter();
+        StringWriter err = new StringWriter();
+        CommandLine cli = new CommandLine(cmd);
+        cli.setOut(new PrintWriter(out));
+        cli.setErr(new PrintWriter(err));
+        int exit = cli.execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
+
+        // The base (non-interactive) review alone would have exited 0 here — SUCCEEDED, no rebuild
+        // run, nothing stranded. The squash refusal inside --interactive must still win.
+        assertThat(exit).isEqualTo(2);
+        assertThat(err.toString()).contains("squash refused");
+        assertThat(RunStore.system().readDecisions(runDir).get("lib").decision())
+                .isEqualTo(Decision.APPROVED);   // the decision stands; only the squash was refused
+        assertThat(Files.readString(lib.path().resolve("A.java"))).isEqualTo("class A { int mine; }\n");
     }
 }
