@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
 final class Sections {
     private static final Pattern ORDER_LINE = Pattern.compile("(\\d+)\\. (.+?)( \\(co-scheduled\\))?");
     private static final Pattern CONTRACT_HEAD =
-            Pattern.compile("### (.+?) \\((java-api|rest|kafka)\\) — (\\S+)(?: -> (.+))?");
+            Pattern.compile("### (.+?) \\((java-api|rest|kafka)(?:, (binary-compatible))?\\) — (\\S+)(?: -> (.+))?");
     private static final Pattern STEP_SCALAR = Pattern.compile("- (covers|version_action|provides|consumes): (.+)");
 
     private Sections() {
@@ -90,7 +90,7 @@ final class Sections {
             Matcher head = CONTRACT_HEAD.matcher(line);
             if (!head.matches()) {
                 throw new PlanParseException(lineNo, "contract headings must look like "
-                        + "'### <id> (<kind>) — <provider> -> <consumers>'");
+                        + "'### <id> (<kind>[, binary-compatible]) — <provider> -> <consumers>'");
             }
             i++;
             if (i >= body.size() || !body.get(i).equals("```yaml")) {
@@ -107,8 +107,8 @@ final class Sections {
             }
             i++;
             b.contracts.add(new PlanDocument.PlanContract(head.group(1), head.group(2),
-                    head.group(3), head.group(4) == null ? List.of() : csv(head.group(4)),
-                    String.join("\n", bodyLines)));
+                    head.group(4), head.group(5) == null ? List.of() : csv(head.group(5)),
+                    String.join("\n", bodyLines), head.group(3)));
         }
     }
 

@@ -22,7 +22,8 @@ public record PlanModel(String specId, int planVersion, String specSha256, Strin
     public record PlanEdge(String fromRepo, String toRepo, String mode, String mechanism) {
     }
 
-    public record PlanContract(String id, String kind, String provider, List<String> consumers, String body) {
+    public record PlanContract(String id, String kind, String provider, List<String> consumers, String body,
+                               String compat) {
         public PlanContract {
             consumers = List.copyOf(consumers);
         }

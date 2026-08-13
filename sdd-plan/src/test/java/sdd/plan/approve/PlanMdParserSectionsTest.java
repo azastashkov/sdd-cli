@@ -34,7 +34,7 @@ class PlanMdParserSectionsTest {
                         List.of("src/A.java"), List.of("C-1"), List.of(), "minor",
                         List.of("./gradlew test"))),
                 List.of(new PlanDrafter.DraftContract("C-1", "java-api", "lib-core",
-                        List.of("svc-a"), "method: Tier tierFor(String)")),
+                        List.of("svc-a"), "method: Tier tierFor(String)", null)),
                 List.of(new Question("Drafted?", false)), List.of("note1"), false);
         return PlanMdRenderer.render(spec, impact,
                 List.of(new ExecutionOrder.Unit(List.of("lib-core", "svc-a")),
@@ -60,7 +60,7 @@ class PlanMdParserSectionsTest {
                 new PlanDocument.PlanExcluded("svc-x", "R1 hit: Y — not selected"));
         assertThat(doc.order()).containsExactly(List.of("lib-core", "svc-a"), List.of("svc-x"));
         assertThat(doc.contracts()).containsExactly(new PlanDocument.PlanContract(
-                "C-1", "java-api", "lib-core", List.of("svc-a"), "method: Tier tierFor(String)"));
+                "C-1", "java-api", "lib-core", List.of("svc-a"), "method: Tier tierFor(String)", null));
         assertThat(doc.steps()).containsExactly(new PlanDocument.PlanStep(
                 "lib-core", List.of("R1"), "minor", List.of("C-1"), List.of(),
                 List.of("src/A.java"), List.of("./gradlew test"), "Do it.\nCarefully."));
@@ -98,7 +98,7 @@ class PlanMdParserSectionsTest {
                         List.of("src/A.java"), List.of("C-1"), List.of(), "minor",
                         List.of("./gradlew test"))),
                 List.of(new PlanDrafter.DraftContract("C-1", "java-api", "lib-core", List.of(),
-                        "## response shape\nmethod: x")),
+                        "## response shape\nmethod: x", null)),
                 List.of(), List.of(), false);
 
         String md = PlanMdRenderer.render(spec, impact,
@@ -106,8 +106,64 @@ class PlanMdParserSectionsTest {
         PlanDocument doc = PlanMdParser.parse(md);
 
         assertThat(doc.contracts()).containsExactly(new PlanDocument.PlanContract(
-                "C-1", "java-api", "lib-core", List.of(), "## response shape\nmethod: x"));
+                "C-1", "java-api", "lib-core", List.of(), "## response shape\nmethod: x", null));
         assertThat(doc.summary()).isEqualTo("Sneaky summary");
+    }
+
+    @Test
+    void parsesACompatMarkedContractHeading() {
+        String plan = """
+                ---
+                spec: SPEC-9
+                plan_version: 1
+                ---
+
+                ## Summary
+                S.
+
+                ## Open Questions
+                - none
+
+                ## Affected Repos
+                - lib — seed/SEED — covers: - — why: w
+
+                ## Excluded Candidates
+                - none
+
+                ## Execution Order
+                1. lib
+
+                ## Interface Contracts
+
+                ### c1 (java-api, binary-compatible) — lib -> svc
+                ```yaml
+                body
+                ```
+
+                ### c2 (rest) — lib -> svc
+                ```yaml
+                body
+                ```
+
+                ## Repo Steps
+                - none
+
+                ## Generation Notes
+                - none
+                """;
+
+        PlanDocument doc = PlanMdParser.parse(plan);
+
+        assertThat(doc.contracts()).extracting(PlanDocument.PlanContract::id, PlanDocument.PlanContract::compat)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple("c1", "binary-compatible"),
+                        org.assertj.core.groups.Tuple.tuple("c2", null));
+
+        assertThatThrownBy(() -> PlanMdParser.parse(plan.replace(
+                        "### c1 (java-api, binary-compatible) — lib -> svc",
+                        "### c3 (java-api, source-compatible) — lib")))
+                .isInstanceOf(PlanParseException.class)
+                .hasMessageContaining("contract headings must look like");
     }
 
     @Test

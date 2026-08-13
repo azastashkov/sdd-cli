@@ -40,7 +40,9 @@ public final class PlanDrafter {
             {"summary": string,
              "questions": [{"text": string, "blocking": boolean}, ...],
              "contracts": [{"id": string, "kind": "java-api"|"rest"|"kafka", "provider": string,
-                            "consumers": [string, ...], "body": string}, ...],
+                            "consumers": [string, ...], "body": string,
+                            "compat": "binary-compatible" (OPTIONAL, java-api only — declare it \
+            when consumers must keep binary compatibility)}, ...],
              "repo_steps": [{"repo": string, "covers": [requirement ids], "sub_spec": string,
                              "files": [string, ...], "provides_contracts": [contract ids],
                              "consumes_contracts": [contract ids],
@@ -67,7 +69,7 @@ public final class PlanDrafter {
     }
 
     public record DraftContract(String id, String kind, String provider, List<String> consumers,
-                                String body) {
+                                String body, String compat) {
         public DraftContract {
             consumers = List.copyOf(consumers);
         }
@@ -169,8 +171,13 @@ public final class PlanDrafter {
                     notes.add("drafter contract '" + id + "' names unknown consumer '" + name + "' — dropped");
                 }
             }
+            String compat = node.path("compat").asText(null);
+            if (compat != null && !"binary-compatible".equals(compat)) {
+                notes.add("drafter contract '" + id + "' compat '" + compat + "' dropped");
+                compat = null;
+            }
             contracts.add(new DraftContract(id, kind, provider, consumers,
-                    node.path("body").asText()));
+                    node.path("body").asText(), compat));
             contractIds.add(id);
         }
 

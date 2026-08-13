@@ -63,6 +63,26 @@ class PlanJsonReaderTest {
     }
 
     @Test
+    void readsCompatFromPlanJson() {
+        String withCompat = """
+                {
+                  "spec_id" : "S", "plan_version" : 1, "repos" : [], "order" : [], "steps" : [],
+                  "contracts" : [
+                    { "id" : "c1", "kind" : "java-api", "provider" : "lib", "consumers" : [ ], "body" : "b", "compat" : "binary-compatible" },
+                    { "id" : "c2", "kind" : "rest", "provider" : "lib", "consumers" : [ ], "body" : "b" }
+                  ]
+                }
+                """;
+
+        PlanModel plan = PlanJsonReader.read(withCompat);
+
+        assertThat(plan.contracts()).extracting(PlanModel.PlanContract::id, PlanModel.PlanContract::compat)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple("c1", "binary-compatible"),
+                        org.assertj.core.groups.Tuple.tuple("c2", null));
+    }
+
+    @Test
     void toleratesMissingOptionalArrays() {
         PlanModel plan = PlanJsonReader.read(
                 "{\"spec_id\":\"S\",\"plan_version\":2,\"repos\":[],\"order\":[],\"steps\":[]}");

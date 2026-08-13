@@ -52,7 +52,7 @@ public record PlanDocument(String specId, int planVersion, String summary,
     }
 
     public record PlanContract(String id, String kind, String provider, List<String> consumers,
-                               String body) {
+                               String body, String compat) {
         public PlanContract {
             Objects.requireNonNull(id);
             Objects.requireNonNull(kind);

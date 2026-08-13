@@ -41,7 +41,8 @@ public final class PlanJsonReader {
         List<PlanModel.PlanContract> contracts = new ArrayList<>();
         for (JsonNode c : root.path("contracts")) {
             contracts.add(new PlanModel.PlanContract(text(c, "id"), text(c, "kind"), text(c, "provider"),
-                    strings(c.path("consumers")), text(c, "body")));
+                    strings(c.path("consumers")), text(c, "body"),
+                    c.hasNonNull("compat") ? c.get("compat").asText() : null));
         }
         List<PlanModel.PlanStep> steps = new ArrayList<>();
         for (JsonNode s : root.path("steps")) {

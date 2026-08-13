@@ -36,7 +36,7 @@ class PlanMdRendererTest {
                         List.of("src/main/java/A.java"), List.of("C-1"), List.of(), "minor",
                         List.of("./gradlew test"))),
                 List.of(new PlanDrafter.DraftContract("C-1", "java-api", "lib-core",
-                        List.of("svc-pricing"), "method: Tier tierFor(String)\n```evil```")),
+                        List.of("svc-pricing"), "method: Tier tierFor(String)\n```evil```", null)),
                 List.of(new Question("From the model?", false)),
                 List.of("drafter note"), false);
         List<Question> detectors = List.of(new Question("no repo covers R1", true));
@@ -131,7 +131,7 @@ class PlanMdRendererTest {
     void contractWithNoConsumersRendersHeadingWithoutArrow() {
         PlanDrafter.Draft draft = new PlanDrafter.Draft("S.",
                 List.of(),
-                List.of(new PlanDrafter.DraftContract("C-1", "java-api", "lib-core", List.of(), "body")),
+                List.of(new PlanDrafter.DraftContract("C-1", "java-api", "lib-core", List.of(), "body", null)),
                 List.of(), List.of(), false);
 
         String md = PlanMdRenderer.render(spec(), impact(),
@@ -139,5 +139,22 @@ class PlanMdRendererTest {
 
         assertThat(md).contains("### C-1 (java-api) — lib-core\n```yaml");
         assertThat(md).doesNotContain("-> \n");
+    }
+
+    @Test
+    void rendersTheCompatMarkerInsideTheKindParens() {
+        PlanDrafter.Draft draft = new PlanDrafter.Draft("S.",
+                List.of(),
+                List.of(new PlanDrafter.DraftContract("c1", "java-api", "lib", List.of("svc"),
+                                "body", "binary-compatible"),
+                        new PlanDrafter.DraftContract("c2", "java-api", "lib", List.of("svc"),
+                                "body", null)),
+                List.of(), List.of(), false);
+
+        String md = PlanMdRenderer.render(spec(), impact(),
+                List.of(new ExecutionOrder.Unit(List.of("lib-core"))), List.of(), draft);
+
+        assertThat(md).contains("### c1 (java-api, binary-compatible) — lib -> svc")
+                .contains("### c2 (java-api) — lib -> svc");
     }
 }

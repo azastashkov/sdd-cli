@@ -31,7 +31,8 @@ public final class PlanJson {
     record Edge(String from_repo, String to_repo, String mode, String mechanism) {
     }
 
-    record Contract(String id, String kind, String provider, List<String> consumers, String body) {
+    record Contract(String id, String kind, String provider, List<String> consumers, String body,
+                    String compat) {
     }
 
     record Step(String repo, List<String> covers, String version_action, List<String> provides,
@@ -107,7 +108,7 @@ public final class PlanJson {
         List<Contract> contracts = new ArrayList<>();
         for (PlanDocument.PlanContract contract : plan.contracts()) {
             contracts.add(new Contract(contract.id(), contract.kind(), contract.provider(),
-                    contract.consumers(), contract.body()));
+                    contract.consumers(), contract.body(), contract.compat()));
         }
         List<Step> steps = new ArrayList<>();
         for (PlanDocument.PlanStep step : plan.steps()) {

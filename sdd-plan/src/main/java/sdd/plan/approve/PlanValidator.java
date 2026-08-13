@@ -61,6 +61,9 @@ public final class PlanValidator {
             if (!contractIds.add(contract.id())) {
                 problems.add("duplicate contract id '" + contract.id() + "'");
             }
+            if (contract.compat() != null && !"java-api".equals(contract.kind())) {
+                problems.add("contract '" + contract.id() + "': compat is only valid on java-api contracts");
+            }
         }
         Map<String, PlanDocument.PlanStep> stepByRepo = new HashMap<>();
         for (PlanDocument.PlanStep step : plan.steps()) {

@@ -47,7 +47,7 @@ class PlanValidatorTest {
                         new PlanDocument.PlanRepo("svc-a", "dependent", "CODE_CHANGE_LIKELY", List.of(), "w")),
                 List.of(), order,
                 List.of(new PlanDocument.PlanContract("C-1", "java-api", "lib-core",
-                        List.of("svc-a"), "GET /price/{} returns TierPrice")),
+                        List.of("svc-a"), "GET /price/{} returns TierPrice", null)),
                 List.of(new PlanDocument.PlanStep("lib-core", List.of("R1", "R2"), "minor",
                                 List.of("C-1"), List.of(), List.of(), List.of(), "s"),
                         new PlanDocument.PlanStep("svc-a", List.of(), "none",
@@ -108,8 +108,8 @@ class PlanValidatorTest {
                 List.of(),
                 List.of(new PlanDocument.PlanRepo("lib-core", "seed", "SEED", List.of(), "w")),
                 List.of(), List.of(List.of("lib-core"), List.of("ghost")),
-                List.of(new PlanDocument.PlanContract("C-1", "java-api", "lib-core", List.of(), "b"),
-                        new PlanDocument.PlanContract("C-1", "rest", "lib-core", List.of(), "b")),
+                List.of(new PlanDocument.PlanContract("C-1", "java-api", "lib-core", List.of(), "b", null),
+                        new PlanDocument.PlanContract("C-1", "rest", "lib-core", List.of(), "b", null)),
                 List.of(new PlanDocument.PlanStep("ghost", List.of("R1", "R2"), "none",
                                 List.of("C-9"), List.of(), List.of(), List.of(), "s"),
                         new PlanDocument.PlanStep("ghost", List.of(), "none",
@@ -140,7 +140,7 @@ class PlanValidatorTest {
                         new PlanDocument.PlanRepo("svc-a", "dependent", "BUMP_REBUILD_ONLY", List.of(), "w")),
                 List.of(), List.of(List.of("lib-core"), List.of("svc-a")),
                 List.of(new PlanDocument.PlanContract("C-1", "java-api", "lib-core",
-                        List.of("svc-a", "nobody"), "b")),
+                        List.of("svc-a", "nobody"), "b", null)),
                 List.of(new PlanDocument.PlanStep("lib-core", List.of("R1", "R2"), "minor",
                         List.of("C-1"), List.of(), List.of(), List.of(), "s")),
                 List.of());
@@ -161,6 +161,26 @@ class PlanValidatorTest {
 
         assertThat(verdict.problems()).anySatisfy(p -> assertThat(p).isEqualTo(
                 "repo 'lib-core' appears more than once in Execution Order"));
+    }
+
+    @Test
+    void compatOnANonJavaApiContractIsAProblem() {
+        PlanDocument doc = new PlanDocument("SPEC-9", 1, "S.", List.of(),
+                List.of(new PlanDocument.PlanRepo("lib-core", "seed", "SEED", List.of(), "w"),
+                        new PlanDocument.PlanRepo("svc-a", "dependent", "CODE_CHANGE_LIKELY", List.of(), "w")),
+                List.of(), List.of(List.of("lib-core"), List.of("svc-a")),
+                List.of(new PlanDocument.PlanContract("C-1", "rest", "lib-core",
+                        List.of("svc-a"), "b", "binary-compatible")),
+                List.of(new PlanDocument.PlanStep("lib-core", List.of("R1", "R2"), "minor",
+                        List.of("C-1"), List.of(), List.of(), List.of(), "s"),
+                        new PlanDocument.PlanStep("svc-a", List.of(), "none",
+                                List.of(), List.of("C-1"), List.of(), List.of(), "s")),
+                List.of());
+
+        PlanValidator.Verdict verdict = PlanValidator.validate(db.jdbi(), doc, spec(), freshStates());
+
+        assertThat(verdict.problems()).anySatisfy(p -> assertThat(p).isEqualTo(
+                "contract 'C-1': compat is only valid on java-api contracts"));
     }
 
     @Test

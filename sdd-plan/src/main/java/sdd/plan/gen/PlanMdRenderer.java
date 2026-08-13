@@ -82,8 +82,11 @@ public final class PlanMdRenderer {
             md.append(draft.unavailable() ? "- none (drafting unavailable)\n" : "- none\n");
         } else {
             for (PlanDrafter.DraftContract contract : draft.contracts()) {
-                md.append("\n### ").append(inline(contract.id())).append(" (").append(contract.kind())
-                        .append(") — ").append(contract.provider());
+                md.append("\n### ").append(inline(contract.id())).append(" (").append(contract.kind());
+                if (contract.compat() != null) {
+                    md.append(", ").append(contract.compat());
+                }
+                md.append(") — ").append(contract.provider());
                 if (!contract.consumers().isEmpty()) {
                     md.append(" -> ").append(String.join(", ", contract.consumers()));
                 }
