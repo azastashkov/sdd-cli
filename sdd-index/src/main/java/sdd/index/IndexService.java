@@ -69,6 +69,19 @@ public final class IndexService {
     }
 
     public List<RepoResult> run(SddConfig config, Database db) {
+        return run(config, db, false);
+    }
+
+    /**
+     * @param force bypasses only the fingerprint short-circuit in {@link #indexRepo}, so every
+     *              scanned repo is re-extracted and re-persisted even when its head/dirty
+     *              fingerprint matches the stored row. Everything downstream — per-repo
+     *              transactional replace, keep-last-good/STALE_OK fallback, link passes, cards —
+     *              is unaffected: cards in particular remain gated by {@link RepoCardGenerator}'s
+     *              own content-hash cache, so a forced re-index that reproduces byte-identical
+     *              module/endpoint/dep data will not regenerate cards.
+     */
+    public List<RepoResult> run(SddConfig config, Database db, boolean force) {
         List<String> scanFailures = new ArrayList<>();
         List<RepoScan> scans = WorkspaceScanner.scan(config.workspace(), config.excludes(), scanFailures);
         Extractor extractor = injectedExtractor != null
@@ -76,7 +89,7 @@ public final class IndexService {
                 : new GradleExtractor(config.jdkHomes())::extract;
         List<RepoResult> results = new ArrayList<>();
         for (RepoScan scan : scans) {
-            results.add(indexRepo(db.jdbi(), extractor, scan));
+            results.add(indexRepo(db.jdbi(), extractor, scan, force));
         }
         for (String failure : scanFailures) {
             results.add(scanFailureResult(db.jdbi(), config.workspace(), failure));
@@ -150,6 +163,11 @@ public final class IndexService {
     }
 
     RepoResult indexRepo(Jdbi jdbi, Extractor extractor, RepoScan scan) {
+        return indexRepo(jdbi, extractor, scan, false);
+    }
+
+    /** @param force bypasses only the fingerprint short-circuit below; see {@link #run(SddConfig, Database, boolean)}. */
+    RepoResult indexRepo(Jdbi jdbi, Extractor extractor, RepoScan scan, boolean force) {
         // A FAILED parse_status must not be treated as "unchanged, skip": with repo-atomic source
         // writes, a failed extraction leaves the previous (pre-failure) data intact, so retrying
         // on the next run is coherent and cheap — unlike a gradle-status skip, nothing was lost.
@@ -160,7 +178,7 @@ public final class IndexService {
                         WHERE name=:n AND gradle_status='OK'
                           AND parse_status IS NOT NULL AND parse_status != 'FAILED'""")
                 .bind("n", scan.name()).mapTo(String.class).findOne());
-        if (stored.isPresent() && stored.get().equals(scan.fingerprint())) {
+        if (!force && stored.isPresent() && stored.get().equals(scan.fingerprint())) {
             return new RepoResult(scan.name(), "OK", null, 0, 0, true, null);
         }
         try {

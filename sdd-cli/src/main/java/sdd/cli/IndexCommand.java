@@ -31,6 +31,13 @@ public final class IndexCommand implements Callable<Integer> {
     @Option(names = "--no-cards", description = "Skip model-generated repo card summaries")
     boolean noCards;
 
+    @Option(names = "--force", description = "Re-index every repo even when its fingerprint is "
+            + "unchanged, instead of skipping it as (unchanged, skipped). Composable with "
+            + "--no-cards. Repo cards are still cached independently by content hash "
+            + "(RepoCardGenerator): --force does not itself force card regeneration unless the "
+            + "card input actually changed.")
+    boolean force;
+
     @Spec CommandSpec spec;
 
     @Override
@@ -51,7 +58,7 @@ public final class IndexCommand implements Callable<Integer> {
                 ModelEndpoint coder = config.models().get("coder");
                 service = new IndexService(null, new HttpChatModel(coder, CARD_MAX_ATTEMPTS), coder.model());
             }
-            List<IndexService.RepoResult> results = service.run(config, db);
+            List<IndexService.RepoResult> results = service.run(config, db, force);
             for (IndexService.RepoResult r : results) {
                 out.printf(Locale.ROOT, "%-28s %-9s parse=%-8s modules=%-3d internal-deps=%-3d%s%s%n",
                         r.repo(), r.status(), r.parseStatus() == null ? "-" : r.parseStatus(),

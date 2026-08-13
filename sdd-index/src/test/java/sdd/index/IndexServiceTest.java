@@ -245,6 +245,59 @@ class IndexServiceTest {
     }
 
     @Test
+    void secondRunWithoutForceSkipsUnchangedRepo() throws Exception {
+        FixtureRepo.in(ws, "has-source").file("src/main/java/P.java", "public class P {}\n").commit("init");
+        try (Database db = Database.open(ws)) {
+            IndexService service = new IndexService(repoDir -> oneModuleAt("has-source", repoDir));
+            service.run(config(), db);
+
+            List<IndexService.RepoResult> second = service.run(config(), db);
+
+            assertThat(second).filteredOn(r -> r.repo().equals("has-source")).first()
+                    .satisfies(r -> {
+                        assertThat(r.skipped()).isTrue();
+                        assertThat(r.status()).isEqualTo("OK");
+                    });
+        }
+    }
+
+    @Test
+    void forceReindexesUnchangedRepoWithoutDuplicatingRows() throws Exception {
+        FixtureRepo.in(ws, "has-source").file("src/main/java/P.java", "public class P {}\n").commit("init");
+        try (Database db = Database.open(ws)) {
+            IndexService service = new IndexService(repoDir -> oneModuleAt("has-source", repoDir));
+            service.run(config(), db);
+
+            List<IndexService.RepoResult> second = service.run(config(), db, true);
+
+            assertThat(second).filteredOn(r -> r.repo().equals("has-source")).first()
+                    .satisfies(r -> {
+                        assertThat(r.skipped()).isFalse();
+                        assertThat(r.status()).isEqualTo("OK");
+                    });
+            // per-repo persistence replaces (deletes then reinserts) module rows keyed by repo_id,
+            // so a forced re-index of an unchanged repo must not leave duplicate rows behind.
+            assertThat(moduleCount(db, "has-source")).isEqualTo(1);
+            assertThat(typeCount(db, "has-source")).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void forceComposesWithNoCardsSoNoCardGenerationIsAttempted() throws Exception {
+        FixtureRepo.in(ws, "has-source").file("src/main/java/P.java", "public class P {}\n").commit("init");
+        try (Database db = Database.open(ws)) {
+            // no cardModel injected == the CLI's --no-cards path
+            IndexService service = new IndexService(repoDir -> oneModuleAt("has-source", repoDir));
+            service.run(config(), db);
+
+            service.run(config(), db, true);
+
+            assertThat(service.lastCardResult()).isNull();
+            assertThat(service.lastCardError()).isNull();
+        }
+    }
+
+    @Test
     void emptyStaticFallbackWithNoStoredRowsStillPersistsDegraded() throws Exception {
         Path dir = Files.createDirectories(ws.resolve("fresh-broken"));
         try (Database db = Database.open(ws)) {

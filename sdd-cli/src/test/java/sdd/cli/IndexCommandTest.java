@@ -59,6 +59,16 @@ class IndexCommandTest {
     }
 
     @Test
+    void forceFlagComposesWithNoCardsAndRunsCleanlyOnAnEmptyWorkspace() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+
+        Run run = index(ws, "--force", "--no-cards");
+
+        assertThat(run.out()).contains("cards: skipped");
+        assertThat(run.exitCode()).isEqualTo(0); // empty workspace: no repos, nothing to fail
+    }
+
+    @Test
     void cardsEnabledByDefaultPrintsCountsLineEvenWithNoRepos() throws Exception {
         // yaml()'s coder base_url (127.0.0.1:1) is unreachable — proves the default path
         // constructs an HttpChatModel without --no-cards, yet with zero scanned repos
