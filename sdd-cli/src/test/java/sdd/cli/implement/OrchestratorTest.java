@@ -592,6 +592,42 @@ class OrchestratorTest {
     }
 
     @Test
+    void vanishedBaselineJarIsEventedNotSilentlySkipped() throws Exception {
+        // Baseline build plants two module jars (lib + gone); the candidate build (post-"success")
+        // plants only lib — gone's module/artifact was deleted, the maximal breaking change. The
+        // ratified interpretation (e) requires an event even though nothing failed the gate.
+        Path jars = Files.createDirectories(ws.resolve("prebuilt"));
+        Path baselineJar = TestJars.jar(jars, "base.jar", "Api",
+                "public class Api { public int f(int x) { return x; } }");
+        Path goneJar = TestJars.jar(jars, "gone.jar", "Gone",
+                "public class Gone { public int f(int x) { return x; } }");
+        // NOTE: escalation would re-run startBranch+clean, deleting .baseline-done — these scripts stay
+        // on attempt 1 (done -> verify exit 0)
+        FixtureRepo lib = repoWith("lib",
+                "case \"$*\" in *assemble*) mkdir -p build/libs; "
+                        + "if [ -f .baseline-done ]; then rm -f build/libs/gone-1.0.jar; "
+                        + "cp " + baselineJar + " build/libs/lib-1.0.jar; "
+                        + "else cp " + baselineJar + " build/libs/lib-1.0.jar; "
+                        + "cp " + goneJar + " build/libs/gone-1.0.jar; touch .baseline-done; fi; exit 0 ;; "
+                        + "*) exit 0 ;; esac");
+        FixtureRepo svc = repoWith("svc", "exit 0");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of(
+                "lib", new RepoStep("lib", lib.path(), "x", List.of(), List.of(), List.of(), List.of(), List.of()),
+                "svc", new RepoStep("svc", svc.path(), "x", List.of(), List.of(), List.of(), List.of(), List.of()));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"lib ok\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"svc ok\"}")));
+
+        Orchestrator.RunResult result = orchestrator(model)
+                .run(runDir, planWithContract(lib.headSha(), svc.headSha(), "binary-compatible"), steps);
+
+        assertThat(result.exitCode()).isEqualTo(0);
+        assertThat(Files.readString(runDir.resolve("lib/agent-events.jsonl")))
+                .contains("japicmp skipped for gone-1.0.jar: no matching candidate jar");
+    }
+
+    @Test
     void consumersReceiveActualizedContractsInTheirWorkOrder() throws Exception {
         FixtureRepo lib = repoWith("lib", "exit 0");
         lib.file("src/main/java/com/acme/Api.java",

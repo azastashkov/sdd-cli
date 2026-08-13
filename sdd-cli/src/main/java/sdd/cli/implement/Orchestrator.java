@@ -12,6 +12,7 @@ import sdd.core.llm.ModelException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -343,7 +344,7 @@ public final class Orchestrator {
             permits.acquireUninterruptibly();
         }
         try {
-            return jarBuilder.build(step.repoRoot(), settings.javaHome(), outDir);
+            return jarBuilder.build(step.repoRoot(), settings.javaHome(), outDir, settings.gradleExtraArgs());
         } finally {
             if (permits != null) {
                 permits.release();
@@ -391,27 +392,39 @@ public final class Orchestrator {
         store.writeState(runDir, state);
     }
 
-    /** Compares matched baseline/candidate jars; returns a short drift report or null when clean. */
+    /** Compares matched baseline/candidate jars; returns a short drift report or null when clean.
+     * Also sweeps baselineDir once for orphans — a baseline jar with no candidate counterpart means
+     * its module/artifact was deleted (the maximal breaking change) and must still be evented, per
+     * ratified interpretation (e): unmatched jars are skipped with an event, not silently dropped. */
     private static String compatDrift(Path baselineDir, List<Path> candidates, List<String> events) {
+        List<Path> baselineJars;
+        try (var jars = Files.list(baselineDir)) {
+            baselineJars = jars.sorted().toList();
+        } catch (java.io.IOException e) {
+            baselineJars = List.of();
+        }
+        Set<String> matchedBaselineKeys = new HashSet<>();
         StringBuilder drift = new StringBuilder();
         for (Path candidate : candidates) {
             String key = versionless(candidate.getFileName().toString());
-            Path baseline;
-            try (var jars = Files.list(baselineDir)) {
-                baseline = jars.filter(p -> versionless(p.getFileName().toString()).equals(key))
-                        .findFirst().orElse(null);
-            } catch (java.io.IOException e) {
-                baseline = null;
-            }
+            Path baseline = baselineJars.stream()
+                    .filter(p -> versionless(p.getFileName().toString()).equals(key))
+                    .findFirst().orElse(null);
             if (baseline == null) {
                 events.add("japicmp skipped for " + candidate.getFileName() + ": no matching baseline jar");
                 continue;
             }
+            matchedBaselineKeys.add(key);
             JapicmpCheck.Verdict verdict = JapicmpCheck.compare(baseline, candidate);
             events.add("japicmp " + candidate.getFileName() + ": "
                     + (verdict.binaryCompatible() ? "binary-compatible" : "BREAKING"));
             if (!verdict.binaryCompatible()) {
                 drift.append(verdict.report());
+            }
+        }
+        for (Path baseline : baselineJars) {
+            if (!matchedBaselineKeys.contains(versionless(baseline.getFileName().toString()))) {
+                events.add("japicmp skipped for " + baseline.getFileName() + ": no matching candidate jar");
             }
         }
         if (drift.isEmpty()) {

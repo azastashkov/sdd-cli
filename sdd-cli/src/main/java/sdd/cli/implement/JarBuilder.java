@@ -13,8 +13,11 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Orchestrator-owned, run-scoped jar assembly: {@code ./gradlew assemble --no-configuration-cache
- * --no-daemon -q}, then collects every {@code *.jar} under {@code build/libs} (repo root and its
+ * Orchestrator-owned, run-scoped jar assembly: {@code ./gradlew assemble <extraArgs...>
+ * --no-configuration-cache --no-daemon -q} — {@code extraArgs} is the caller's INCLUDE_BUILD/init-script
+ * substitution flags (same slot as {@link sdd.agent.tool.GradleTool}), so mid-chain providers that also
+ * consume an upstream build against the right substituted tree instead of a stale published one. Then
+ * collects every {@code *.jar} under {@code build/libs} (repo root and its
  * depth-1 modules), excluding {@code -sources}/{@code -javadoc} jars, into a caller-supplied
  * directory. Mirrors {@link MavenLocalPublisher}: env-scrubbed (PATH/HOME/LANG/TMPDIR + JAVA_HOME),
  * never model-reachable, same log shape ("exit N\n…" / "timed out after Ns") so InfraClassifier
@@ -37,7 +40,7 @@ public final class JarBuilder {
     public record Result(boolean ok, List<Path> jars, String log) {
     }
 
-    public Result build(Path repoRoot, Path javaHome, Path outDir) {
+    public Result build(Path repoRoot, Path javaHome, Path outDir, List<String> extraArgs) {
         Path gradlew = repoRoot.resolve("gradlew");
         if (!Files.isExecutable(gradlew)) {
             return new Result(false, List.of(), "no gradle wrapper in " + repoRoot);
@@ -45,8 +48,14 @@ public final class JarBuilder {
         Path log = null;
         try {
             log = Files.createTempFile("sdd-jarbuild", ".log");
-            ProcessBuilder builder = new ProcessBuilder(List.of("./gradlew", "assemble",
-                    "--no-configuration-cache", "--no-daemon", "-q"));
+            List<String> command = new ArrayList<>();
+            command.add("./gradlew");
+            command.add("assemble");
+            command.addAll(extraArgs);   // orchestrator-appended substitution flags (same slot as GradleTool)
+            command.add("--no-configuration-cache");
+            command.add("--no-daemon");
+            command.add("-q");
+            ProcessBuilder builder = new ProcessBuilder(command);
             builder.directory(repoRoot.toFile());
             builder.redirectErrorStream(true);
             builder.redirectOutput(log.toFile());

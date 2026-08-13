@@ -27,7 +27,7 @@ class JarBuilderTest {
                 + "build/libs/lib-1.0-sources.jar build/libs/lib-1.0-javadoc.jar; echo \"$*\" > args; exit 0");
         Path out = ws.resolve("baseline");
 
-        JarBuilder.Result result = new JarBuilder().build(repo, null, out);
+        JarBuilder.Result result = new JarBuilder().build(repo, null, out, List.of());
 
         assertThat(result.ok()).isTrue();
         assertThat(result.jars()).containsExactly(out.resolve("lib-1.0.jar"));
@@ -38,10 +38,24 @@ class JarBuilderTest {
     void aFailedAssembleReportsNotOk() throws Exception {
         Path repo = repoWith("echo 'boom'; exit 1");
 
-        JarBuilder.Result result = new JarBuilder().build(repo, null, ws.resolve("out"));
+        JarBuilder.Result result = new JarBuilder().build(repo, null, ws.resolve("out"), List.of());
 
         assertThat(result.ok()).isFalse();
         assertThat(result.log()).startsWith("exit 1");
+    }
+
+    @Test
+    void extraArgsLandBetweenAssembleAndTheFixedFlags() throws Exception {
+        Path repo = repoWith("mkdir -p build/libs; touch build/libs/lib-1.0.jar; echo \"$*\" > args; exit 0");
+        Path out = ws.resolve("out");
+
+        JarBuilder.Result result = new JarBuilder().build(repo, null, out,
+                List.of("--include-build", "../other", "--init-script", "/tmp/init.gradle"));
+
+        assertThat(result.ok()).isTrue();
+        assertThat(Files.readString(repo.resolve("args")))
+                .contains("assemble --include-build ../other --init-script /tmp/init.gradle "
+                        + "--no-configuration-cache --no-daemon -q");
     }
 
     @Test
@@ -51,7 +65,7 @@ class JarBuilderTest {
                 + "printf 'from-b' > mod-b/build/libs/foo-1.0.jar; exit 0");
         Path out = ws.resolve("out");
 
-        JarBuilder.Result result = new JarBuilder().build(repo, null, out);
+        JarBuilder.Result result = new JarBuilder().build(repo, null, out, List.of());
 
         assertThat(result.ok()).isTrue();
         assertThat(result.jars()).containsExactlyInAnyOrder(
@@ -66,7 +80,7 @@ class JarBuilderTest {
         Path out = ws.resolve("blocked-out");
         Files.writeString(out, "not a directory");
 
-        JarBuilder.Result result = new JarBuilder().build(repo, null, out);
+        JarBuilder.Result result = new JarBuilder().build(repo, null, out, List.of());
 
         assertThat(result.ok()).isFalse();
         assertThat(result.log()).contains("jar collection failed after exit 0");
@@ -74,7 +88,8 @@ class JarBuilderTest {
 
     @Test
     void missingWrapperFailsWithoutRunningAnything() {
-        JarBuilder.Result result = new JarBuilder().build(ws.resolve("nowhere"), null, ws.resolve("out"));
+        JarBuilder.Result result = new JarBuilder().build(ws.resolve("nowhere"), null, ws.resolve("out"),
+                List.of());
 
         assertThat(result.ok()).isFalse();
         assertThat(result.log()).contains("no gradle wrapper");
