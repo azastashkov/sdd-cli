@@ -154,6 +154,16 @@ public final class RunStore {
     }
 
     public void appendEvent(Path runDir, String repo, RepoState from, RepoState to, String detail) {
+        appendTransition(runDir, repo, from, to, detail);
+    }
+
+    /** Gate-2 decision transitions (design line 71) share the events log with the run's own state
+     *  transitions: same repo-scoped from/to shape, a different enum on the wire. */
+    public void appendEvent(Path runDir, String repo, Decision from, Decision to, String detail) {
+        appendTransition(runDir, repo, from, to, detail);
+    }
+
+    private void appendTransition(Path runDir, String repo, Enum<?> from, Enum<?> to, String detail) {
         String line = "{\"at\":\"" + clock.instant() + "\",\"repo\":" + jsonString(repo)
                 + ",\"from\":\"" + from + "\",\"to\":\"" + to + "\",\"detail\":" + jsonString(detail) + "}\n";
         try {

@@ -1,6 +1,5 @@
 package sdd.cli.review;
 
-import org.eclipse.jgit.api.Git;
 import sdd.cli.implement.RepoRun;
 import sdd.cli.implement.RunGit;
 
@@ -49,7 +48,7 @@ public final class SquashApprove {
             // Idempotence lives here, not in squashOnto: a second squash of a real delta would
             // legitimately mint a fresh sha, so "already squashed" must be caught by the commit
             // count rather than by asking squashOnto to be a no-op on repeat calls.
-            int commits = commitsBetween(repoRoot, baseSha, run.checkpointSha());
+            int commits = RunGit.commitsBetween(repoRoot, baseSha, run.checkpointSha());
             if (commits <= 1) {
                 return new Result(true, false, run.checkpointSha(), repo + " is already "
                         + (commits == 0 ? "at " : "a single commit past ") + shortSha(baseSha)
@@ -74,21 +73,6 @@ public final class SquashApprove {
             String target = original.startsWith("detached:")
                     ? original.substring("detached:".length()) : original;
             RunGit.checkout(repoRoot, target);
-        }
-    }
-
-    private static int commitsBetween(Path repo, String fromSha, String toSha) {
-        try (Git git = Git.open(repo.toFile())) {
-            var repository = git.getRepository();
-            var from = repository.resolve(fromSha);
-            var to = repository.resolve(toSha);
-            int n = 0;
-            for (var ignored : git.log().addRange(from, to).call()) {
-                n++;
-            }
-            return n;
-        } catch (Exception e) {
-            throw new IllegalStateException("cannot count commits in " + repo + ": " + e.getMessage(), e);
         }
     }
 

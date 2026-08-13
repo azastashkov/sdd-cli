@@ -111,27 +111,39 @@ public final class Decisions {
         return null;
     }
 
-    /** Walks the transitive consumer closure downgrading every APPROVED repo found back to
-     *  PENDING (clearing its reason). There is no Scheduler helper for this direction — upstreams()
-     *  only walks providers — so this reads plan.edges() directly: fromRepo is the consumer,
-     *  toRepo the provider (PlanModel.PlanEdge), so a repo's direct downstream is every edge's
-     *  fromRepo where toRepo equals it. */
-    private List<String> downgradeDownstream(String repo, PlanModel plan) {
+    /**
+     * The transitive consumer closure of {@code repo}, sorted and excluding {@code repo} itself.
+     * There is no Scheduler helper for this direction — upstreams() only walks providers — so this
+     * reads plan.edges() directly: fromRepo is the consumer, toRepo the provider
+     * ({@link PlanModel.PlanEdge}), so a repo's direct downstream is every edge's fromRepo where
+     * toRepo equals it. Public because {@code redo} re-verifies exactly this set (design line 67).
+     */
+    public static List<String> transitiveDownstream(String repo, PlanModel plan) {
         Set<String> visited = new HashSet<>();
-        List<String> downgraded = new ArrayList<>();
+        List<String> closure = new ArrayList<>();
         Deque<String> queue = new ArrayDeque<>(directDownstream(repo, plan));
         while (!queue.isEmpty()) {
             String down = queue.poll();
-            if (!visited.add(down)) {
+            if (!visited.add(down) || down.equals(repo)) {   // a cycle must not re-list the origin
                 continue;
             }
+            closure.add(down);
+            queue.addAll(directDownstream(down, plan));
+        }
+        closure.sort(String::compareTo);
+        return closure;
+    }
+
+    /** Downgrades every APPROVED repo in the consumer closure back to PENDING (clearing its
+     *  reason), returning the ones actually downgraded. */
+    private List<String> downgradeDownstream(String repo, PlanModel plan) {
+        List<String> downgraded = new ArrayList<>();
+        for (String down : transitiveDownstream(repo, plan)) {
             if (of(down) == Decision.APPROVED) {
                 records.put(down, new DecisionRecord(Decision.PENDING, ""));
                 downgraded.add(down);
             }
-            queue.addAll(directDownstream(down, plan));
         }
-        downgraded.sort(String::compareTo);
         return downgraded;
     }
 

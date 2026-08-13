@@ -93,6 +93,23 @@ public final class RunGit {
         return branchHead(repo, branch).equals(checkpointSha);
     }
 
+    /** How many commits {@code toSha} is ahead of {@code fromSha} — the number of checkpoint
+     *  commits an approve collapses, and the idempotence check that tells "already squashed" apart
+     *  from "has a real range to squash". */
+    public static int commitsBetween(Path repo, String fromSha, String toSha) {
+        try (Git git = Git.open(repo.toFile())) {
+            Repository repository = git.getRepository();
+            int n = 0;
+            for (var ignored : git.log().addRange(repository.resolve(fromSha),
+                    repository.resolve(toSha)).call()) {
+                n++;
+            }
+            return n;
+        } catch (Exception e) {
+            throw new IllegalStateException("cannot count commits in " + repo + ": " + e.getMessage(), e);
+        }
+    }
+
     public static void resetHard(Path repo, String sha) {
         try (Git git = Git.open(repo.toFile())) {
             git.reset().setMode(ResetCommand.ResetType.HARD).setRef(sha).call();
