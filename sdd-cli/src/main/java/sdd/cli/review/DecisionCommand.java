@@ -49,14 +49,14 @@ public abstract class DecisionCommand implements Callable<Integer> {
      * decision itself is already applied and persisted by the time this is built — a non-zero
      * {@code exitCode} says the follow-up work failed, never that the decision did not stick.
      */
-    protected record Followup(int exitCode, RebuildPass.Outcome rebuild, boolean rebuilt,
+    protected record Followup(int exitCode, RebuildPass.Outcome rebuild, RebuildScope scope,
                               List<String> trailer) {
         static Followup none() {
-            return new Followup(0, null, false, List.of());
+            return new Followup(0, null, RebuildScope.none(), List.of());
         }
 
         static Followup exiting(int exitCode) {
-            return new Followup(exitCode, null, false, List.of());
+            return new Followup(exitCode, null, RebuildScope.none(), List.of());
         }
     }
 
@@ -123,7 +123,7 @@ public abstract class DecisionCommand implements Callable<Integer> {
                     rebuild == null ? List.of() : rebuild.stagingFailures(),
                     rebuild == null ? List.of() : rebuild.restoreFailures(),
                     rebuild == null ? List.of() : rebuild.contracts(),
-                    followup.rebuilt()));
+                    followup.scope()));
             followup.trailer().forEach(out::println);
             return followup.exitCode();
         } catch (RuntimeException | IOException e) {
@@ -248,7 +248,7 @@ public abstract class DecisionCommand implements Callable<Integer> {
                 + " --retry " + repo + " " + planJsonPath);
         List<String> downstream = Decisions.transitiveDownstream(repo, run.plan());
         if (noReverify || downstream.isEmpty()) {
-            return new Followup(0, null, false, retry);
+            return new Followup(0, null, RebuildScope.none(), retry);
         }
         // recheckContracts = false on purpose: contract drift is a whole-estate finding that
         // belongs to a full sdd review pass. A subset run would compare the checkpoint trees of
@@ -271,9 +271,11 @@ public abstract class DecisionCommand implements Callable<Integer> {
                     + (staged ? "" : " (UNRELIABLE — upstream not staged)"));
         }
         // A repo left stranded off its original branch demands human action — the same rule
-        // ReviewCommand applies to its own rebuild pass.
+        // ReviewCommand applies to its own rebuild pass. The scope is deliberately NOT "estate":
+        // these verdicts cover one downstream subtree, and the report must never total them as if
+        // they covered the whole estate.
         return new Followup(staged && rebuild.restoreFailures().isEmpty() ? 0 : 2,
-                rebuild, true, retry);
+                rebuild, RebuildScope.none().withReverifiedSubtreeOf(repo), retry);
     }
 
     private static String verdict(String repo, EstateRebuild.Result result, RebuildPass.Outcome rebuild) {

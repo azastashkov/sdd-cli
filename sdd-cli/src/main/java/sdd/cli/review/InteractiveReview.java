@@ -48,7 +48,7 @@ public final class InteractiveReview {
      * quietly overwriting a real rebuild with "skipped".
      */
     public record Context(RunContext run, Path workspace, Path planJsonPath,
-                          RebuildPass.Outcome baseline, boolean baselineRebuilt) {
+                          RebuildPass.Outcome baseline, RebuildScope baselineScope) {
     }
 
     /** Returns the worst exit code any follow-up demanded (0 if the walk found nothing to complain
@@ -64,6 +64,9 @@ public final class InteractiveReview {
         List<String> notLocallyVerified = new ArrayList<>(ctx.baseline().notLocallyVerified());
         List<String> stagingFailures = new ArrayList<>(ctx.baseline().stagingFailures());
         List<String> restoreFailures = new ArrayList<>(ctx.baseline().restoreFailures());
+        // Grows with every redo: the merged rebuilds map below stops being purely whatever the
+        // caller's pass produced, and the report has to say which parts are newer than the rest.
+        RebuildScope scope = ctx.baselineScope();
 
         boolean anyDecision = false;
         int worst = 0;
@@ -115,6 +118,7 @@ public final class InteractiveReview {
                         RebuildPass.Outcome subset = followup.rebuild();
                         if (subset != null) {
                             List<String> downstream = Decisions.transitiveDownstream(repo, run.plan());
+                            scope = scope.withReverifiedSubtreeOf(repo);
                             rebuilds.putAll(subset.rebuilds());
                             notLocallyVerified.removeAll(downstream);
                             notLocallyVerified.addAll(subset.notLocallyVerified());
@@ -138,7 +142,7 @@ public final class InteractiveReview {
         if (anyDecision) {
             out.println("review written: " + run.writeReport(run.collectDiffs(), rebuilds,
                     notLocallyVerified, stagingFailures, restoreFailures, ctx.baseline().contracts(),
-                    ctx.baselineRebuilt()));
+                    scope));
         }
         return worst;
     }

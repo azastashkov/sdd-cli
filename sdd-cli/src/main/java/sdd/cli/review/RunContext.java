@@ -108,17 +108,67 @@ public record RunContext(String runId, Path runDir, RunStore store, PlanModel pl
 
     /** Renders and writes {@code report.md}, returning its path. Decisions re-run this so the
      *  artifact a human hands to a colleague reflects the run as it stands now, not a pre-decision
-     *  snapshot. */
+     *  snapshot — which is also why the decisions it renders are re-read from disk here rather than
+     *  threaded in: every caller has just persisted them, and disk is the one shared truth two
+     *  concurrently-deciding humans both see. */
     public Path writeReport(Diffs diffs, Map<String, EstateRebuild.Result> rebuilds,
                             List<String> notLocallyVerified, List<String> stagingFailures,
                             List<String> restoreFailures, List<ContractRecheck.Finding> contracts,
-                            boolean rebuilt) {
+                            RebuildScope rebuild) {
+        Map<String, DecisionRecord> decisions = store.readDecisions(runDir);
         String runbook = ReleaseRunbook.render(plan, state);
         String report = ReviewReport.render(runId, plan, state, diffs.stats(), rebuilds,
                 notLocallyVerified, stagingFailures, restoreFailures, diffs.failures(), contracts,
-                runbook, rebuilt);
+                decisions, checkpointDrift(decisions), runbook, rebuild);
         store.writeReview(runDir, "report.md", report);
         return store.reviewDir(runDir).resolve("report.md");
+    }
+
+    /**
+     * SUCCEEDED repos whose run branch no longer points at the checkpoint recorded in
+     * {@code state.json} — the diffs, diffstats and runbook all describe that checkpoint, so a
+     * moved branch means the report describes a tree the branch no longer carries. Formatted here
+     * rather than in {@link ReviewReport} because it is the one report input that must be READ off
+     * the estate's git; the renderer stays a pure function of what it is handed.
+     *
+     * <p>Two exclusions, both load-bearing:
+     * <ul>
+     *   <li><b>APPROVED repos.</b> {@code sdd review approve} deliberately squashes the run branch
+     *       and rewrites the checkpoint. Flagging that would mean the tool accusing its own approve
+     *       of tampering, and no run could exit 0 again after a single approval.</li>
+     *   <li><b>An unresolvable branch</b> ({@code branchHead} is {@code ""}, or the repo cannot be
+     *       read at all). That is already reported as a diff failure, and "the branch moved" is not
+     *       something the code knows — only that it could not look.</li>
+     * </ul>
+     */
+    public List<String> checkpointDrift(Map<String, DecisionRecord> decisions) {
+        Map<String, RepoRun> byName = byName();
+        List<String> drift = new ArrayList<>();
+        for (String repo : Scheduler.sequence(plan.order())) {
+            RepoRun repoRun = byName.get(repo);
+            Path root = paths.get(repo);
+            if (repoRun == null || repoRun.state() != RepoState.SUCCEEDED || root == null
+                    || repoRun.branch() == null || repoRun.checkpointSha() == null) {
+                continue;
+            }
+            DecisionRecord record = decisions.get(repo);
+            if (record != null && record.decision() == Decision.APPROVED) {
+                continue;
+            }
+            String head;
+            try {
+                head = RunGit.branchHead(root, repoRun.branch());
+            } catch (RuntimeException e) {
+                continue;
+            }
+            if (head.isEmpty() || head.equals(repoRun.checkpointSha())) {
+                continue;
+            }
+            drift.add(repo + ": branch " + repoRun.branch() + " is at " + DecisionCommand.shortSha(head)
+                    + ", checkpoint was " + DecisionCommand.shortSha(repoRun.checkpointSha())
+                    + " — diffs and runbook describe the checkpoint");
+        }
+        return drift;
     }
 
     public Map<String, RepoRun> byName() {

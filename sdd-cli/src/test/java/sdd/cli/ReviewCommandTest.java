@@ -9,6 +9,7 @@ import sdd.cli.implement.RunGit;
 import sdd.cli.implement.RunState;
 import sdd.cli.implement.RunStore;
 import sdd.cli.review.Decision;
+import sdd.cli.review.DecisionRecord;
 import sdd.core.db.Database;
 import sdd.core.testing.FixtureRepo;
 
@@ -18,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -530,5 +532,141 @@ class ReviewCommandTest {
         assertThat(RunStore.system().readDecisions(runDir).get("lib").decision())
                 .isEqualTo(Decision.APPROVED);   // the decision stands; only the squash was refused
         assertThat(Files.readString(lib.path().resolve("A.java"))).isEqualTo("class A { int mine; }\n");
+    }
+
+    /** A one-repo estate whose run branch carries one checkpoint commit and is left restored to the
+     *  branch the human was on — the shape every remaining test starts from. */
+    private record Fixture(FixtureRepo lib, String runBranch, String checkpointSha,
+                           String originalBranch, Path planPath, Path runDir) {
+    }
+
+    private Fixture fixture() throws Exception {
+        FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
+        lib.commit("base");
+        String baseSha = lib.headSha();
+        String originalBranch = RunGit.currentBranch(lib.path());
+
+        String runBranch = "sdd/SPEC-9-v1/lib";
+        RunGit.startBranch(lib.path(), runBranch, baseSha);
+        lib.file("A.java", "class A { int x; }\n").commit("sdd: checkpoint");
+        String checkpointSha = lib.headSha();
+        RunGit.checkout(lib.path(), originalBranch);
+
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')",
+                    lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+        String planJson = """
+                { "spec_id":"SPEC-9","plan_version":1,"spec_sha256":"z","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x to A."}] }
+                """.formatted(baseSha);
+        Path planPath = ws.resolve("s.plan.json");
+        Files.writeString(planPath, planJson);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", planJson, "");
+        store.releaseLock(runDir);
+        store.writeState(runDir, new RunState("SPEC-9-v1",
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok")), null, 5L));
+
+        return new Fixture(lib, runBranch, checkpointSha, originalBranch, planPath, runDir);
+    }
+
+    /** Moves the run branch one commit past the recorded checkpoint, as a human poking at the
+     *  branch after the run would, and returns the new head. */
+    private static String moveBranchPastCheckpoint(Fixture f) throws Exception {
+        RunGit.checkout(f.lib().path(), f.runBranch());
+        f.lib().file("A.java", "class A { int mine; }\n").commit("a human's own commit");
+        String moved = f.lib().headSha();
+        RunGit.checkout(f.lib().path(), f.originalBranch());
+        return moved;
+    }
+
+    private int review(StringWriter out, StringWriter err, String... extraArgs) {
+        CommandLine cli = new CommandLine(new ReviewCommand());
+        cli.setOut(new PrintWriter(out));
+        cli.setErr(new PrintWriter(err));
+        String[] args = new String[extraArgs.length + 2];
+        args[0] = "--workspace";
+        args[1] = ws.toString();
+        System.arraycopy(extraArgs, 0, args, 2, extraArgs.length);
+        return cli.execute(args);
+    }
+
+    @Test
+    void aLiveLockRefusesEvenAPlainNonInteractiveReviewWithExitFour() throws Exception {
+        Fixture f = fixture();
+        // Our own pid is provably alive, so RunStore.isLockHeld sees a live lock, not a stale one.
+        Files.writeString(f.runDir().resolve("lock"), Long.toString(ProcessHandle.current().pid()));
+
+        StringWriter err = new StringWriter();
+        int exit = review(new StringWriter(), err, "--no-rebuild", f.planPath().toString());
+
+        assertThat(exit).isEqualTo(4);
+        assertThat(err.toString()).contains("SPEC-9-v1").contains("in progress (lock held)");
+        // A review that races sdd implement would read a half-written state.json and check repos
+        // out from under it — nothing at all may be produced.
+        assertThat(f.runDir().resolve("review/report.md")).doesNotExist();
+    }
+
+    @Test
+    void aStaleLockWarnsAndTheReviewStillRuns() throws Exception {
+        Fixture f = fixture();
+        // A pid no process could hold: the run whose sdd implement crashed is exactly the run a
+        // human most needs to review, so a stale lock must never block it.
+        Files.writeString(f.runDir().resolve("lock"), "999999999");
+
+        StringWriter err = new StringWriter();
+        int exit = review(new StringWriter(), err, "--no-rebuild", f.planPath().toString());
+
+        assertThat(exit).isZero();
+        assertThat(err.toString()).contains("stale lock");
+        assertThat(f.runDir().resolve("review/report.md")).exists();
+    }
+
+    @Test
+    void aRunBranchMovedOffItsCheckpointIsReportedAsDriftAndForcesExitTwo() throws Exception {
+        Fixture f = fixture();
+        String moved = moveBranchPastCheckpoint(f);
+
+        int exit = review(new StringWriter(), new StringWriter(), "--no-rebuild",
+                f.planPath().toString());
+
+        // Nothing failed and nothing is unstaged — the drift alone must fail the review, because
+        // the diffs and runbook below describe a checkpoint the branch no longer carries.
+        assertThat(exit).isEqualTo(2);
+        String report = Files.readString(f.runDir().resolve("review/report.md"));
+        assertThat(report).contains("## Checkpoint drift");
+        assertThat(report).contains("lib: branch " + f.runBranch() + " is at " + moved.substring(0, 7)
+                + ", checkpoint was " + f.checkpointSha().substring(0, 7)
+                + " — diffs and runbook describe the checkpoint");
+    }
+
+    @Test
+    void anApprovedRepoWhoseCheckpointWasRewrittenIsNotDrift() throws Exception {
+        Fixture f = fixture();
+        moveBranchPastCheckpoint(f);
+        // sdd review approve DELIBERATELY squashes the run branch and rewrites state.json's
+        // checkpoint. Flagging that as drift would mean the tool accusing its own approve of
+        // tampering, and no run could ever exit 0 again after a single approval.
+        RunStore.system().writeDecisions(f.runDir(),
+                Map.of("lib", new DecisionRecord(Decision.APPROVED, "")));
+
+        int exit = review(new StringWriter(), new StringWriter(), "--no-rebuild",
+                f.planPath().toString());
+
+        assertThat(exit).isZero();
+        String report = Files.readString(f.runDir().resolve("review/report.md"));
+        assertThat(report).doesNotContain("## Checkpoint drift");
+        assertThat(report).contains("- **lib**: SUCCEEDED, decision: APPROVED");
     }
 }

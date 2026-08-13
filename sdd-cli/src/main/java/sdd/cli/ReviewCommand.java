@@ -13,6 +13,7 @@ import sdd.cli.review.DecisionCommand;
 import sdd.cli.review.EstateRebuild;
 import sdd.cli.review.InteractiveReview;
 import sdd.cli.review.RebuildPass;
+import sdd.cli.review.RebuildScope;
 import sdd.cli.review.RunContext;
 
 import java.io.BufferedReader;
@@ -28,9 +29,14 @@ import java.util.concurrent.Callable;
 /**
  * Gate-2 review (design line 66-67): rebuild the estate in topo order against its checkpoints,
  * re-check actualized contracts against fresh extraction, render the release runbook, and write
- * the report + per-repo diffs — all read-only with respect to the run itself (no lock is taken;
- * {@code implement} already released it). Every repo the rebuild checks out is restored to its
- * original branch/commit in a {@code finally}, even when the rebuild or the checkout itself fails.
+ * the report + per-repo diffs. Every repo the rebuild checks out is restored to its original
+ * branch/commit in a {@code finally}, even when the rebuild or the checkout itself fails.
+ *
+ * <p>No lock is taken, but a LIVE one refuses the command (exit 4) on every path, not just the
+ * mutating ones: even a plain review checks the whole estate out to its checkpoints and reads a
+ * {@code state.json} that {@code sdd implement} is still rewriting, so racing it produces a report
+ * about an estate that no longer exists. A STALE lock only warns — the run whose {@code implement}
+ * crashed is exactly the run a human most needs to see.
  *
  * <p>The {@code approve}/{@code reject}/{@code redo} subcommands (design line 68) are the mutating
  * half of the same gate; both halves read the run and write their artifacts through
@@ -90,14 +96,21 @@ public final class ReviewCommand implements Callable<Integer> {
             if (run == null) {
                 return 4;
             }
-            // --interactive mutates: approve squashes and rewrites branches, redo re-verifies and
-            // can rewrite state.json's checkpoint too. Racing sdd implement over either is exactly
-            // what DecisionCommand's identical check already refuses for the scripted path — a
-            // plain read-only review is unaffected and stays ungated, as before.
-            if (interactive && run.store().isLockHeld(run.runDir())) {
+            // Every path, not just --interactive: the rebuild pass checks the whole estate out to
+            // its checkpoints and back, which would fight sdd implement over the same working
+            // trees, and the state.json a concurrent run is rewriting cannot be reported on
+            // truthfully. Same refusal DecisionCommand already applies to the scripted decisions.
+            if (run.store().isLockHeld(run.runDir())) {
                 err.println("error: run " + run.runId() + " is in progress (lock held) — wait for "
                         + "sdd implement to finish");
                 return 4;
+            }
+            if (run.store().isLockStale(run.runDir())) {
+                // Never a refusal: a crashed implement leaves this behind, and that run is the one
+                // a human most needs to review. But the report is about a run that did not finish
+                // cleanly, so the reader is told.
+                err.println("warn: run " + run.runId() + " has a stale lock (the process that held "
+                        + "it is gone) — reviewing anyway; sdd implement may have crashed");
             }
 
             RunContext.Diffs diffs = run.collectDiffs();
@@ -127,8 +140,9 @@ public final class ReviewCommand implements Callable<Integer> {
                 contracts = outcome.contracts();
             }
 
+            RebuildScope scope = noRebuild ? RebuildScope.skipped() : RebuildScope.estate();
             out.println("review written: " + run.writeReport(diffs, rebuilds, notLocallyVerified,
-                    stagingFailures, restoreFailures, contracts, !noRebuild));
+                    stagingFailures, restoreFailures, contracts, scope));
 
             int interactiveExit = 0;
             if (interactive) {
@@ -137,18 +151,24 @@ public final class ReviewCommand implements Callable<Integer> {
                 RebuildPass.Outcome baseline = new RebuildPass.Outcome(rebuilds, notLocallyVerified,
                         stagingFailures, restoreFailures, contracts);
                 interactiveExit = InteractiveReview.run(reader, out, err,
-                        new InteractiveReview.Context(run, workspace, planJsonPath, baseline, !noRebuild));
+                        new InteractiveReview.Context(run, workspace, planJsonPath, baseline, scope));
             }
 
             boolean allSucceeded = Scheduler.sequence(run.plan().order()).stream()
                     .allMatch(repo -> run.state().stateOf(repo) == RepoState.SUCCEEDED);
             boolean anyRebuildFailed = rebuilds.values().stream().anyMatch(r -> !r.ok());
+            // Read AFTER the interactive walk, not before: an approve squashes the branch and
+            // rewrites the checkpoint, so drift computed earlier would describe a run that has
+            // since been decided.
+            List<String> drift = run.checkpointDrift(run.store().readDecisions(run.runDir()));
             // A failed restore leaves a repo stranded off its original branch — the report's own
             // legend calls that a failed checkout, so it must fail the review too. A staging
             // failure is a failed checkout by another name, and worse: it silently invalidates
-            // every verdict downstream of it, so it can never be reported as a clean pass.
+            // every verdict downstream of it, so it can never be reported as a clean pass. Drift
+            // is the third: every diff and runbook line below describes a checkpoint the branch no
+            // longer carries, so a human acting on this report would act on the wrong tree.
             int baseExit = allSucceeded && !anyRebuildFailed && restoreFailures.isEmpty()
-                    && stagingFailures.isEmpty() ? 0 : 2;
+                    && stagingFailures.isEmpty() && drift.isEmpty() ? 0 : 2;
             // Worse wins: a squash refusal or a failed downstream re-verify inside the interactive
             // walk must not be masked by an otherwise-clean base review, or vice versa.
             return Math.max(baseExit, interactiveExit);

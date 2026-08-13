@@ -139,15 +139,16 @@ class InteractiveReviewTest {
     }
 
     private InteractiveReview.Context context(Fixture f) throws Exception {
-        return context(f, new RebuildPass.Outcome(Map.of(), List.of(), List.of(), List.of(), List.of()), false);
+        return context(f, new RebuildPass.Outcome(Map.of(), List.of(), List.of(), List.of(), List.of()),
+                RebuildScope.none());
     }
 
     private InteractiveReview.Context context(Fixture f, RebuildPass.Outcome baseline,
-                                              boolean baselineRebuilt) throws Exception {
+                                              RebuildScope baselineScope) throws Exception {
         RunContext run = RunContext.load(ws, f.planPath(), new PrintWriter(new StringWriter()));
         assertThat(run).isNotNull();
         run.collectDiffs();
-        return new InteractiveReview.Context(run, ws, f.planPath(), baseline, baselineRebuilt);
+        return new InteractiveReview.Context(run, ws, f.planPath(), baseline, baselineScope);
     }
 
     @Test
@@ -305,7 +306,7 @@ class InteractiveReviewTest {
         RebuildPass.Outcome baseline = new RebuildPass.Outcome(
                 Map.of("a", new EstateRebuild.Result(true, "ok log")), List.of(), List.of(), List.of(),
                 List.of());
-        InteractiveReview.Context ctx = context(f, baseline, true);
+        InteractiveReview.Context ctx = context(f, baseline, RebuildScope.estate());
 
         // One real decision (reject a, empty reason) triggers the re-render; b and c are skipped.
         InteractiveReview.run(new BufferedReader(new StringReader("r\n\ns\ns\n")),

@@ -121,6 +121,14 @@ public final class RunStore {
         return Files.exists(lock) && !lockIsStale(lock);
     }
 
+    /** A lock file that exists but names a PID that is provably gone — the leftover of a crashed
+     *  {@code sdd implement}. Read-mostly commands proceed anyway (that run is exactly the one a
+     *  human needs to look at) but must be able to SAY so, which is what this is for. */
+    public boolean isLockStale(Path runDir) {
+        Path lock = runDir.resolve("lock");
+        return Files.exists(lock) && lockIsStale(lock);
+    }
+
     public void releaseLock(Path runDir) {
         try {
             Files.deleteIfExists(runDir.resolve("lock"));
