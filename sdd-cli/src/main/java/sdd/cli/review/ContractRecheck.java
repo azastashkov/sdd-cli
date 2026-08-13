@@ -8,6 +8,7 @@ import sdd.cli.implement.RunStore;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -17,7 +18,7 @@ import java.util.Map;
  * never fail the review. Providers that did not go green are skipped: nothing was checkpointed.
  */
 public final class ContractRecheck {
-    public enum Status { MATCHES, DRIFTED, MISSING_RECORD, NOT_EXTRACTABLE }
+    public enum Status { MATCHES, TRUNCATED_MATCH, DRIFTED, MISSING_RECORD, NOT_EXTRACTABLE }
 
     public record Finding(String contractId, String provider, String kind, Status status,
                           String detail) {
@@ -28,16 +29,31 @@ public final class ContractRecheck {
 
     public static List<Finding> check(PlanModel plan, RunState state, Map<String, Path> repoPaths,
                                       RunStore store, Path runDir) {
+        // Group by provider first so a provider with N contracts gets ONE actualize() call
+        // (one tree walk/parse) instead of N — actualize() already loops the provided list.
+        Map<String, List<PlanModel.PlanContract>> byProvider = new LinkedHashMap<>();
+        for (PlanModel.PlanContract contract : plan.contracts()) {
+            if (state.stateOf(contract.provider()) == RepoState.SUCCEEDED
+                    && repoPaths.get(contract.provider()) != null) {
+                byProvider.computeIfAbsent(contract.provider(), p -> new ArrayList<>()).add(contract);
+            }
+        }
+        Map<String, Map<String, String>> freshByProvider = new LinkedHashMap<>();
+        byProvider.forEach((provider, contracts) -> freshByProvider.put(provider,
+                ContractActualizer.actualize(repoPaths.get(provider), contracts)));
+
         List<Finding> findings = new ArrayList<>();
         for (PlanModel.PlanContract contract : plan.contracts()) {
             if (state.stateOf(contract.provider()) != RepoState.SUCCEEDED) {
                 continue;
             }
-            Path root = repoPaths.get(contract.provider());
-            if (root == null) {
+            if (repoPaths.get(contract.provider()) == null) {
+                findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
+                        Status.NOT_EXTRACTABLE,
+                        "provider " + contract.provider() + " has no checkout path in the knowledge base"));
                 continue;
             }
-            String fresh = ContractActualizer.actualize(root, List.of(contract)).get(contract.id());
+            String fresh = freshByProvider.get(contract.provider()).get(contract.id());
             String recorded = store.readContract(runDir, contract.id());
             if (fresh == null || fresh.isBlank()) {
                 findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
@@ -47,15 +63,33 @@ public final class ContractRecheck {
                 findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
                         Status.MISSING_RECORD,
                         "no actualized contract was recorded for this provider"));
-            } else if (normalize(fresh).equals(normalize(recorded))) {
-                findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
-                        Status.MATCHES, ""));
             } else {
-                findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
-                        Status.DRIFTED, summarize(normalize(recorded), normalize(fresh))));
+                List<String> freshNorm = normalize(fresh);
+                List<String> recordedNorm = normalize(recorded);
+                if (freshNorm.equals(recordedNorm)) {
+                    // Both sides pass through ContractActualizer's shared 4000-char cap. Equal
+                    // truncated bodies don't prove the real interfaces match — a real change
+                    // landing past the cut is invisible to this comparison.
+                    boolean truncated = endsWithTruncationMarker(freshNorm)
+                            && endsWithTruncationMarker(recordedNorm);
+                    findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
+                            truncated ? Status.TRUNCATED_MATCH : Status.MATCHES,
+                            truncated
+                                    ? "bodies match up to the 4000-char actualization cap"
+                                            + " — drift beyond the cap cannot be detected"
+                                    : ""));
+                } else {
+                    findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
+                            Status.DRIFTED, summarize(recordedNorm, freshNorm)));
+                }
             }
         }
         return findings;
+    }
+
+    private static boolean endsWithTruncationMarker(List<String> normalized) {
+        return !normalized.isEmpty()
+                && normalized.get(normalized.size() - 1).equals(ContractActualizer.TRUNCATION_MARKER);
     }
 
     /** Header line and blank/trailing whitespace are formatting, not interface content. */

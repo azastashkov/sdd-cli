@@ -25,6 +25,9 @@ import java.util.Map;
  */
 public final class ContractActualizer {
     static final int MAX_BODY = 4000;
+    /** Marks a body cut off at MAX_BODY; shared with ContractRecheck so it can spot a match that
+     *  is only a match because both sides were truncated at the same cap. */
+    public static final String TRUNCATION_MARKER = "…(truncated)";
 
     private ContractActualizer() {
     }
@@ -142,6 +145,6 @@ public final class ContractActualizer {
     }
 
     private static String cap(String body) {
-        return body.length() <= MAX_BODY ? body : body.substring(0, MAX_BODY) + "\n…(truncated)";
+        return body.length() <= MAX_BODY ? body : body.substring(0, MAX_BODY) + "\n" + TRUNCATION_MARKER;
     }
 }
