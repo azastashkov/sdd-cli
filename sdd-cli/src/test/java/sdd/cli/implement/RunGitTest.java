@@ -93,6 +93,31 @@ class RunGitTest {
     }
 
     @Test
+    void squashOntoNeverAddsFromTheWorkingTreeEvenWhenItIsDirty() throws Exception {
+        FixtureRepo repo = FixtureRepo.in(tmp, "lib").file("A.java", "class A {}\n").commit("base");
+        String base = repo.headSha();
+        RunGit.startBranch(repo.path(), "sdd/S-v1/lib", base);
+        Files.writeString(repo.path().resolve("A.java"), "class A { int x; }\n");
+        RunGit.commitAll(repo.path(), "sdd: first");
+        Files.writeString(repo.path().resolve("B.java"), "class B {}\n");
+        RunGit.commitAll(repo.path(), "sdd: second");
+        String checkpoint = RunGit.head(repo.path());
+
+        // Dirty the working tree AFTER the checkpoint: a modified tracked file plus an untracked
+        // one. squashOnto is called directly here, bypassing SquashApprove's isClean gate, so a
+        // regression to git.add(".") would sweep both into the "squashed" commit's tree.
+        Files.writeString(repo.path().resolve("A.java"), "class A { int x; int rogue; }\n");
+        Files.writeString(repo.path().resolve("Scratch.java"), "class Scratch {}\n");
+
+        String sha = RunGit.squashOnto(repo.path(), "sdd/S-v1/lib", base, "sdd: lib for SPEC-9");
+
+        assertThat(sha).isNotEqualTo(checkpoint);
+        // The squashed commit's tree must equal the checkpoint tree exactly — an empty diff proves
+        // neither the working-tree edit to A.java nor the untracked Scratch.java made it in.
+        assertThat(RunGit.diff(repo.path(), checkpoint, sha)).isEmpty();
+    }
+
+    @Test
     void isAtCheckpointComparesBranchHeadAndToleratesNulls() throws Exception {
         FixtureRepo repo = FixtureRepo.in(tmp, "lib").file("A.java", "class A {}\n").commit("base");
         String base = repo.headSha();

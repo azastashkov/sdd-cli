@@ -84,6 +84,8 @@ class SquashApproveTest {
                 runOn(repo.path(), "sdd/S-v1/lib"), base);
 
         assertThat(result.sha()).isEqualTo(head);                                 // not base
+        assertThat(result.squashed()).isFalse();                                 // no commit was created
+        assertThat(result.message()).doesNotContain("Squashed");
         assertThat(RunGit.branchHead(repo.path(), "sdd/S-v1/lib")).isEqualTo(head);
         assertThat(commitsSince(repo.path(), base)).isEqualTo(2);                 // history intact
     }

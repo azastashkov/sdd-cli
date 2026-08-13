@@ -21,10 +21,11 @@ public final class SquashApprove {
     }
 
     /** {@code applied=false} means the repo was refused and left completely untouched — {@code
-     *  message} carries the reason. {@code squashed=false} with {@code applied=true} means the
-     *  branch already was (or already collapsed to) a single commit since {@code baseSha}, so
-     *  {@code sha} is simply the existing head — re-approving an already-squashed branch is a
-     *  no-op, not an error. */
+     *  message} carries the reason. {@code squashed=false} with {@code applied=true} means no new
+     *  commit was created — either the branch already was a single commit since {@code baseSha},
+     *  or its net delta over {@code baseSha} was empty (a revert, or bump-then-unbump) — so {@code
+     *  sha} is simply the existing head. The approval itself is still legitimate in both cases;
+     *  only the squash was a no-op. */
     public record Result(boolean applied, boolean squashed, String sha, String message) {
         private static Result refused(String message) {
             return new Result(false, false, null, message);
@@ -50,13 +51,24 @@ public final class SquashApprove {
             // count rather than by asking squashOnto to be a no-op on repeat calls.
             int commits = commitsBetween(repoRoot, baseSha, run.checkpointSha());
             if (commits <= 1) {
-                return new Result(true, false, run.checkpointSha(),
-                        repo + " is already a single commit since " + shortSha(baseSha) + "; nothing to squash");
+                return new Result(true, false, run.checkpointSha(), repo + " is already "
+                        + (commits == 0 ? "at " : "a single commit past ") + shortSha(baseSha)
+                        + "; nothing to squash");
             }
             String message = "sdd: " + repo + " for " + specId + "\n\n"
                     + "Squashed " + commits + " checkpoint commit(s) from run " + runId + ".\n\n"
                     + "Sdd-Run: " + runId + "\n";
+            String headBefore = run.checkpointSha();   // isAtCheckpoint above proved this == the branch head
             String sha = RunGit.squashOnto(repoRoot, run.branch(), baseSha, message);
+            if (sha.equals(headBefore)) {
+                // squashOnto's own net-zero short-circuit fired: the checkpoint tree equals base,
+                // so it left the branch exactly where it was and minted no commit. Reporting
+                // squashed=true here would tell the human (and Task 4's state.json rewrite) that a
+                // squash happened when it did not — the existing head's message is still the last
+                // checkpoint's, not this one.
+                return new Result(true, false, sha, repo + " had no net change since " + shortSha(baseSha)
+                        + "; branch left at its existing head " + shortSha(sha));
+            }
             return new Result(true, true, sha, message);
         } finally {
             String target = original.startsWith("detached:")
