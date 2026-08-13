@@ -11,7 +11,7 @@ public final class VerificationRunner {
     private final GradleTool gradle;
     private final OutputCompactor compactor;
 
-    public record Verdict(boolean passed, String output) {
+    public record Verdict(boolean passed, String output, boolean infra) {
     }
 
     public VerificationRunner(GradleTool gradle, OutputCompactor compactor) {
@@ -20,7 +20,9 @@ public final class VerificationRunner {
     }
 
     public Verdict verify(String task) {
-        String compacted = compactor.compact(gradle.runFull(task), task);
-        return new Verdict(compacted.startsWith("exit 0"), compacted);
+        String raw = gradle.runFull(task);
+        String compacted = compactor.compact(raw, task);
+        boolean passed = compacted.startsWith("exit 0");
+        return new Verdict(passed, compacted, !passed && InfraClassifier.isInfra(raw));
     }
 }

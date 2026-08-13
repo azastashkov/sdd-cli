@@ -144,6 +144,28 @@ class RepoStepRunnerTest {
     }
 
     @Test
+    void transientInfraFailureAtVerifyIsRetriedAndRecovers() throws Exception {
+        gradlew("if [ -f infra-done ]; then exit 0; else touch infra-done; echo 'Could not resolve com.acme:lib:1.0'; exit 1; fi");
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"ok\"}")));
+
+        StepOutcome outcome = run(model);
+
+        assertThat(outcome.result()).isEqualTo(StepResult.SUCCESS);   // one done() sufficed: agent never saw the flake
+    }
+
+    @Test
+    void persistentInfraFailureReturnsInfraWithoutReenteringTheAgent() throws Exception {
+        gradlew("echo 'Could not resolve com.acme:lib:1.0'; exit 1");
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"ok\"}")));
+
+        StepOutcome outcome = run(model);
+
+        assertThat(outcome.result()).isEqualTo(StepResult.INFRA);   // NOT VERIFY_FAILED: the agent got no retry prompt
+    }
+
+    @Test
     void appendsThePriorDigestToTheInitialWorkOrder() throws Exception {
         gradlew("exit 0");
         ScriptedChatModel model = new ScriptedChatModel(List.of(

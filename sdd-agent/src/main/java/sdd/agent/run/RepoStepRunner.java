@@ -56,11 +56,15 @@ public final class RepoStepRunner {
 
             switch (outcome.result()) {
                 case DONE -> {
-                    VerificationRunner.Verdict verdict;
-                    try {
-                        verdict = verifier.verify(settings.verificationTask());
-                    } catch (RuntimeException e) {
-                        verdict = new VerificationRunner.Verdict(false, "verification error: " + e.getMessage());
+                    VerificationRunner.Verdict verdict = verifyOnce(verifier, settings.verificationTask());
+                    if (!verdict.passed() && verdict.infra()) {
+                        events.add("verify: infra-classified failure — retrying once");
+                        verdict = verifyOnce(verifier, settings.verificationTask());
+                        if (!verdict.passed() && verdict.infra()) {
+                            lastVerification = verdict.output();
+                            return outcome(StepResult.INFRA, "infrastructure failure at the verify gate",
+                                    events, lastVerification, tokens);
+                        }
                     }
                     lastVerification = verdict.output();
                     if (verdict.passed()) {
@@ -93,6 +97,14 @@ public final class RepoStepRunner {
                 }
                 default -> throw new IllegalStateException("unhandled AgentResult: " + outcome.result());
             }
+        }
+    }
+
+    private static VerificationRunner.Verdict verifyOnce(VerificationRunner verifier, String task) {
+        try {
+            return verifier.verify(task);
+        } catch (RuntimeException e) {
+            return new VerificationRunner.Verdict(false, "verification error: " + e.getMessage(), false);
         }
     }
 
