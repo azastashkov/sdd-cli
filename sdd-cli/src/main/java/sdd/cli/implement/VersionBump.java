@@ -70,11 +70,18 @@ public final class VersionBump {
             }
             // Table form spreads module = "g:n" and version.ref/version across separate lines
             // (e.g. under a [libraries.foo] header); scan forward to the next section header.
-            int windowEnd = lines.length;
-            for (int k = i + 1; k < lines.length; k++) {
-                if (lines[k].strip().startsWith("[")) {
-                    windowEnd = k;
-                    break;
+            // An inline-table entry (module = "g:n", ...) is single-line by definition (it
+            // contains '{'), so its window must not widen past its own line — otherwise a
+            // version-less inline entry (e.g. BOM-managed) would open a window over sibling
+            // entries in a flat [libraries] section and leak the bump into them.
+            int windowEnd = i + 1;
+            if (!lines[i].contains("{")) {
+                windowEnd = lines.length;
+                for (int k = i + 1; k < lines.length; k++) {
+                    if (lines[k].strip().startsWith("[")) {
+                        windowEnd = k;
+                        break;
+                    }
                 }
             }
             for (int w = i; w < windowEnd; w++) {

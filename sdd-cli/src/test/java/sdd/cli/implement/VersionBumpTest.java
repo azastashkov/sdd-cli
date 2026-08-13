@@ -111,6 +111,20 @@ class VersionBumpTest {
     }
 
     @Test
+    void versionLessInlineEntryDoesNotLeakTheBumpToSiblings() throws Exception {
+        Files.createDirectories(repo.resolve("gradle"));
+        Files.writeString(repo.resolve("gradle/libs.versions.toml"), """
+                [libraries]
+                acme-lib = { module = "com.acme:lib" }
+                other-lib = { module = "org.ext:thing", version = "1.2.3" }
+                """);
+
+        assertThat(VersionBump.apply(repo, "com.acme", "lib", "1.2.3", "1.3.0")).isEmpty();
+        assertThat(Files.readString(repo.resolve("gradle/libs.versions.toml")))
+                .contains("version = \"1.2.3\"");   // other-lib untouched
+    }
+
+    @Test
     void unmatchedDeclarationEditsNothing() throws Exception {
         Files.writeString(repo.resolve("build.gradle"),
                 "dependencies { implementation \"com.acme:lib:9.9.9\" }\n");
