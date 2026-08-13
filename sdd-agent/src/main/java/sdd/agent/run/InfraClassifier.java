@@ -23,7 +23,7 @@ import java.util.stream.Stream;
 public final class InfraClassifier {
     private static final List<String> NETWORK_PATTERNS = List.of(
             "unknownhostexception", "connection refused", "connection reset",
-            "connect timed out", "read timed out", "no route to host");
+            "connect timed out", "read timed out", "no route to host", "received status code 5");
 
     private static final List<String> RESOLUTION_PATTERNS = List.of(
             "could not resolve", "could not download", "could not get 'http", "could not head");

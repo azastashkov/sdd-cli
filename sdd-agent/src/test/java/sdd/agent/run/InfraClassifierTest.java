@@ -25,6 +25,7 @@ class InfraClassifierTest {
         assertThat(InfraClassifier.isInfra("exit 1\nCannot connect to the Docker daemon at unix:///var/run/docker.sock")).isTrue();
         assertThat(InfraClassifier.isInfra("exit 1\nNo space left on device")).isTrue();
         assertThat(InfraClassifier.isInfra("timed out after 900s")).isTrue();   // GradleTool's timeout string
+        assertThat(InfraClassifier.isInfra("exit 1\nCould not GET 'https://repo.maven.apache.org/...'\nReceived status code 500 from server: Internal Server Error")).isTrue();
     }
 
     @Test
@@ -34,6 +35,7 @@ class InfraClassifierTest {
         assertThat(InfraClassifier.isInfra("exit 0\nBUILD SUCCESSFUL")).isFalse();
         assertThat(InfraClassifier.isInfra("")).isFalse();
         assertThat(InfraClassifier.isInfra("exit 1\nCould not get unknown property 'foo' for root project")).isFalse();
+        assertThat(InfraClassifier.isInfra("exit 1\nCould not GET 'https://repo.maven.apache.org/...'\nReceived status code 404 from server: Not Found")).isFalse();
     }
 
     @Test
