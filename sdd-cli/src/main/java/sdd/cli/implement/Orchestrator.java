@@ -110,7 +110,9 @@ public final class Orchestrator {
                                     }
                                 }
                             } catch (RuntimeException e) {
-                                fatal.compareAndSet(null, e);   // 4xx config errors et al: stop + rethrow
+                                if (!fatal.compareAndSet(null, e)) {   // 4xx config errors et al: stop + rethrow
+                                    fatal.get().addSuppressed(e);   // keep secondary failures visible, don't drop them
+                                }
                             }
                         });
                     }
@@ -182,6 +184,7 @@ public final class Orchestrator {
         } catch (ModelException e) {
             synchronized (lock) {
                 state.addTokens(e.tokensSoFar());
+                store.writeState(runDir, state);   // persist the partial spend even on the rethrow path
             }
             store.writeAgentEvents(runDir, repo, events);
             if (endpointTrouble(e)) {

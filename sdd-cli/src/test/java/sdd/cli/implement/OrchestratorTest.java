@@ -393,4 +393,70 @@ class OrchestratorTest {
         assertThat(result.exitCode()).isEqualTo(3);
         assertThat(result.state().tokensSpent()).isEqualTo(12345L);
     }
+
+    @Test
+    void anInfraFailureOnTheEscalatedAttemptStillPausesTheRun() throws Exception {
+        // Attempt 1: two verify-fail cycles (plain exit 1 while the marker is absent) -> VERIFY_FAILED.
+        // Attempt 2: the escalation writes the marker; with it present the stub emits an
+        // infra-classified failure — twice (retry-once) -> StepResult.INFRA -> PAUSED_INFRA.
+        FixtureRepo lib = repoWith("lib",
+                "if grep -q escalated A.java 2>/dev/null; then echo 'Could not resolve com.acme:x'; exit 1; else exit 1; fi");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()));
+        ScriptedChatModel coderScript = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"try1\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"try2\"}")));
+        ScriptedChatModel escalationScript = new ScriptedChatModel(List.of(
+                call("3", "apply_edit", "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int escalated; }\"}"),
+                call("4", "done", "{\"result\":\"success\",\"summary\":\"escalated\"}")));
+
+        Orchestrator.RunResult result = orchestrator(coderScript, escalationScript)
+                .run(runDir, planFor("lib", lib.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(3);
+        assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.PAUSED_INFRA);
+    }
+
+    @Test
+    void escalationIsDeniedWhenTheBudgetIsAlreadySpent() throws Exception {
+        FixtureRepo lib = repoWith("lib", "exit 1");   // verify always fails
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()));
+        ScriptedChatModel coderScript = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"try1\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"try2\"}")));
+        ScriptedChatModel escalationScript = new ScriptedChatModel(List.of());   // must never be consumed
+        Orchestrator tight = new Orchestrator(new RepoStepRunner(db.jdbi()), coderScript, "qwen",
+                escalationScript, "deepseek", repo -> RunnerSettings.defaults(null),
+                new RunStore(InstantSource.fixed(Instant.EPOCH)), 20L, Map.of(), new MavenLocalPublisher());
+        // attempt 1 spends 2 calls x 15 tokens = 30 > 20: the escalation gate must refuse.
+
+        Orchestrator.RunResult result = tight.run(runDir, planFor("lib", lib.headSha()), steps);
+
+        assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.FAILED);   // no attempt 2
+        assertThat(escalationScript.requests()).isEmpty();
+        // Single-repo plan: no later start-gate fires after the FAILED transition, so the run ends
+        // PARTIAL — the denied escalation, not a pause, is what this test pins.
+        assertThat(result.exitCode()).isEqualTo(2);
+    }
+
+    @Test
+    void aResumedWalkReskipsDownstreamOfAPersistedFailure() throws Exception {
+        FixtureRepo lib = repoWith("lib", "exit 0");
+        FixtureRepo svc = repoWith("svc", "exit 0");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()), "svc", step("svc", svc.path()));
+        RunState persisted = new RunState("S-v1", List.of(
+                new RepoRun("lib", RepoState.FAILED, "sdd/S-v1/lib", null, "VERIFY_FAILED: x"),
+                new RepoRun("svc", RepoState.PENDING, null, null, "")), null, 0L);
+        ScriptedChatModel model = new ScriptedChatModel(List.of());   // nothing may run
+
+        Orchestrator.RunResult result = orchestrator(model)
+                .run(runDir, plan(lib.headSha(), svc.headSha()), steps, persisted);
+
+        assertThat(result.exitCode()).isEqualTo(2);
+        assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.FAILED);
+        assertThat(result.state().stateOf("svc")).isEqualTo(RepoState.SKIPPED_UPSTREAM_FAILED);
+        assertThat(model.requests()).isEmpty();
+    }
 }

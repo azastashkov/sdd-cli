@@ -132,4 +132,21 @@ class VersionBumpTest {
         assertThat(VersionBump.apply(repo, "com.acme", "lib", "1.2.3", "1.3.0")).isEmpty();
         assertThat(Files.readString(repo.resolve("build.gradle"))).contains("9.9.9");
     }
+
+    @Test
+    void aLongerVersionSharingThePrefixIsNotCorrupted() throws Exception {
+        Files.writeString(repo.resolve("build.gradle"), """
+                dependencies {
+                    implementation "com.acme:lib:1.2.3"
+                    implementation "com.acme:lib:1.2.30"
+                }
+                """);
+
+        VersionBump.apply(repo, "com.acme", "lib", "1.2.3", "1.3.0");
+
+        String content = Files.readString(repo.resolve("build.gradle"));
+        assertThat(content).contains("com.acme:lib:1.3.0");
+        assertThat(content).contains("com.acme:lib:1.2.30");   // untouched
+        assertThat(content).doesNotContain("1.3.00");
+    }
 }

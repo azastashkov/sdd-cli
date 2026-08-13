@@ -21,6 +21,9 @@ public final class MavenLocalInit {
     }
 
     public static Path write(Path runDir) {
+        String m2 = runDir.resolve("m2").toAbsolutePath().toString()
+                .replace("\\", "\\\\")
+                .replace("'", "\\'");
         String script = """
                 // sdd: run-scoped mavenLocal injection (design line 61). Appended repository, so it
                 // only serves artifacts other repositories cannot — the planned versions published
@@ -30,7 +33,7 @@ public final class MavenLocalInit {
                         maven { url = uri('%s') }
                     }
                 }
-                """.formatted(runDir.resolve("m2").toAbsolutePath());
+                """.formatted(m2);
         try {
             Files.writeString(scriptPath(runDir), script);
             return scriptPath(runDir);

@@ -43,9 +43,14 @@ public final class VersionBump {
                     .toList();
             for (Path file : buildFiles) {
                 String content = Files.readString(file);
-                String updated = file.getFileName().toString().equals("libs.versions.toml")
-                        ? bumpCatalog(content, coordinate, oldVersion, newVersion)
-                        : content.replace(coordinate + ":" + oldVersion, coordinate + ":" + newVersion);
+                String updated;
+                if (file.getFileName().toString().equals("libs.versions.toml")) {
+                    updated = bumpCatalog(content, coordinate, oldVersion, newVersion);
+                } else {
+                    updated = content.replaceAll(
+                            Pattern.quote(coordinate + ":" + oldVersion) + "(?![\\d.])",
+                            Matcher.quoteReplacement(coordinate + ":" + newVersion));
+                }
                 if (!updated.equals(content)) {
                     Files.writeString(file, updated);
                     edited.add(file);

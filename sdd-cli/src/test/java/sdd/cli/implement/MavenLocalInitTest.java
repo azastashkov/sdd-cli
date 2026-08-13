@@ -22,4 +22,15 @@ class MavenLocalInitTest {
                 .contains("allprojects")
                 .contains("maven { url = uri('" + runDir.resolve("m2").toAbsolutePath() + "') }");
     }
+
+    @Test
+    void escapesQuotesInTheWorkspacePath() throws Exception {
+        Path runDir = Files.createDirectories(ws.resolve("o'brien"));
+
+        Path script = MavenLocalInit.write(runDir);
+
+        String content = Files.readString(script);
+        assertThat(content).contains("o\\'brien");
+        assertThat(content).doesNotContain("uri('" + runDir.resolve("m2").toAbsolutePath() + "')");
+    }
 }

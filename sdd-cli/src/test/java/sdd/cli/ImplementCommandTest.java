@@ -168,4 +168,61 @@ class ImplementCommandTest {
         int exit = new CommandLine(new ImplementCommand()).execute("--no-such-flag");
         assertThat(exit).isEqualTo(4);
     }
+
+    @Test
+    void aFourHundredFromTheModelAbortsWithExitFourAndReleasesTheLock() throws Exception {
+        // Same fixture as runsASingleRepoPlanToCompletion, but the coder throws a 400.
+        FixtureRepo lib = repo("lib");
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+        Files.writeString(ws.resolve("s.md"), """
+                ---
+                id: SPEC-101
+                title: Tiers
+                owner: me
+                status: approved
+                ---
+
+                ## Goal
+                g
+
+                ## Requirements
+                - R1: Expose tierFor.
+
+                ## Acceptance Criteria
+                - A1: tierFor returns a tier.
+                """);
+        String specSha = sdd.plan.approve.Hashes.sha256(Files.readString(ws.resolve("s.md")));
+        Files.writeString(ws.resolve("s.plan.json"), """
+                { "spec_id":"SPEC-101","plan_version":1,"spec_sha256":"%s","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x to A."}] }
+                """.formatted(specSha, lib.headSha()));
+
+        ImplementCommand cmd = new ImplementCommand();
+        cmd.coderForTest = req -> {
+            throw new sdd.core.llm.ModelException("HTTP 400: bad request", 400);
+        };
+
+        int exit = cli(cmd).execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
+
+        assertThat(exit).isEqualTo(4);
+        assertThat(ws.resolve(".sdd/runs/SPEC-101-v1/lock")).doesNotExist();   // finally released it
+    }
+
+    private static CommandLine cli(ImplementCommand cmd) {
+        StringWriter out = new StringWriter();
+        CommandLine cli = new CommandLine(cmd);
+        cli.setOut(new PrintWriter(out));
+        return cli;
+    }
 }

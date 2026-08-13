@@ -104,15 +104,15 @@ public final class ImplementCommand implements Callable<Integer> {
         List<ModelEndpoint> endpoints = List.of(lastConfig.models().get("coder"),
                 lastConfig.models().get("planner"));
         while (true) {
-            boolean allUp = endpoints.stream().allMatch(endpoint -> probe.apply(endpoint).ok());
-            if (allUp) {
-                out.println("endpoints answering — resuming");
-                return;
-            }
             try {
                 Thread.sleep(waitPollMillis);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                return;
+            }
+            boolean allUp = endpoints.stream().allMatch(endpoint -> probe.apply(endpoint).ok());
+            if (allUp) {
+                out.println("endpoints answering — resuming");
                 return;
             }
         }
@@ -230,14 +230,19 @@ public final class ImplementCommand implements Callable<Integer> {
                         return 4;
                     }
                     runDir = store.create(workspace, runId, planText, specText);
-                    store.writePropagation(runDir, propagation);
-                    for (Map.Entry<String, RepoPropagation> entry : propagation.entrySet()) {
-                        RepoPropagation.PublishSpec publish = entry.getValue().publish();
-                        if (publish != null
-                                && publish.version().equals(PlannedVersions.current(jdbi, entry.getKey()))) {
-                            out.println("warn: " + entry.getKey() + " republishes its current version "
-                                    + publish.version() + " — consumers may resolve a stale released artifact");
+                    try {
+                        store.writePropagation(runDir, propagation);
+                        for (Map.Entry<String, RepoPropagation> entry : propagation.entrySet()) {
+                            RepoPropagation.PublishSpec publish = entry.getValue().publish();
+                            if (publish != null
+                                    && publish.version().equals(PlannedVersions.current(jdbi, entry.getKey()))) {
+                                out.println("warn: " + entry.getKey() + " republishes its current version "
+                                        + publish.version() + " — consumers may resolve a stale released artifact");
+                            }
                         }
+                    } catch (RuntimeException e) {
+                        store.releaseLock(runDir);
+                        throw e;
                     }
                 }
 
