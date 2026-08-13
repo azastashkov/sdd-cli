@@ -278,17 +278,21 @@ public final class ImplementCommand implements Callable<Integer> {
                         throw e;
                     }
                 }
-                ModelEndpoint coderEndpoint = config.models().get("coder");
-                ModelEndpoint plannerEndpoint = config.models().get("planner");
                 Semaphore gradlePermits = new Semaphore(config.run().gradleWorkers());
                 Semaphore modelPermits = new Semaphore(config.run().modelConcurrency());
-                ChatModel coder = coderForTest != null ? coderForTest : new HttpChatModel(coderEndpoint);
-                ChatModel escalation = escalationForTest != null ? escalationForTest
-                        : coderForTest != null ? coderForTest : new HttpChatModel(plannerEndpoint);
-                coder = new ThrottledChatModel(coder, modelPermits);
-                escalation = new ThrottledChatModel(escalation, modelPermits);
-                String coderName = coderEndpoint.model();
-                String escalationName = plannerEndpoint.model();
+                List<Orchestrator.ModelTier> ladder = new ArrayList<>();
+                List<String> ladderKeys = config.run().escalationLadder();
+                for (int i = 0; i < ladderKeys.size(); i++) {
+                    ModelEndpoint endpoint = config.models().get(ladderKeys.get(i));
+                    // Test seams: coderForTest supplies tier 1 (and every tier when escalationForTest is
+                    // unset — today's fallback); escalationForTest, when set, supplies tiers 2..N.
+                    ChatModel raw = i == 0
+                            ? (coderForTest != null ? coderForTest : new HttpChatModel(endpoint))
+                            : (escalationForTest != null ? escalationForTest
+                                    : coderForTest != null ? coderForTest : new HttpChatModel(endpoint));
+                    ladder.add(new Orchestrator.ModelTier(new ThrottledChatModel(raw, modelPermits),
+                            endpoint.model()));
+                }
                 Function<String, RunnerSettings> settingsFor = repo -> {
                     Path root = activeSteps.get(repo).repoRoot();
                     Path javaHome = config.jdkHomes()
@@ -314,8 +318,8 @@ public final class ImplementCommand implements Callable<Integer> {
                     return RunnerSettings.custom(javaHome, extraArgs, tasks, gradlePermits, budget);
                 };
 
-                Orchestrator orchestrator = new Orchestrator(new RepoStepRunner(jdbi), coder, coderName,
-                        escalation, escalationName, settingsFor, store, config.run().tokenBudget(),
+                Orchestrator orchestrator = new Orchestrator(new RepoStepRunner(jdbi), ladder,
+                        settingsFor, store, config.run().tokenBudget(),
                         activePropagation, new MavenLocalPublisher(), new JarBuilder());
                 Orchestrator.RunResult result = initialState == null
                         ? orchestrator.run(runDir, activePlan, activeSteps)

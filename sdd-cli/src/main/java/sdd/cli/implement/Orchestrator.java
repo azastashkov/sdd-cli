@@ -22,10 +22,12 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 /**
- * Drives up to two attempts per repo across the plan's execution order (design Component 3): branch off
- * base, run the 4B agent, escalate a failed attempt to the planner-tier model from a hard-reset tree,
- * checkpoint-commit on success, cascade failures to downstream skips, and pause the run (exit 3) on
- * endpoint outage, infrastructure failure, or run-budget exhaustion.
+ * Drives an N-tier escalation ladder per repo across the plan's execution order (design Component 3,
+ * generalized by the 2026-08-13 amendment): branch off base, run the 4B agent with the ladder's first
+ * tier, and on a failed attempt escalate to the next tier from a hard-reset tree (as long as the run
+ * token budget allows and a next tier exists) — defaulting to the original two-tier coder/planner
+ * shape — checkpoint-commit on success, cascade failures to downstream skips, and pause the run
+ * (exit 3) on endpoint outage, infrastructure failure, or run-budget exhaustion.
  * Repos run parallel-within-layer on virtual threads (M8 staleness recovery is 4C-3c); all shared
  * state is guarded by a single lock, and the first pause wins.
  * MAVEN_LOCAL propagation (4C-2b): bump edits re-applied after every branch reset; providers
@@ -34,15 +36,17 @@ import java.util.function.Function;
  * candidates after green, breaking drift fails the provider before consumers start.
  */
 public final class Orchestrator {
-    /** Attempt-2 triggers. BLOCKED asked for a human; INFRA pauses; SUCCESS needs nothing. */
+    /** Escalation triggers. BLOCKED asked for a human; INFRA pauses; SUCCESS needs nothing. */
     private static final Set<StepResult> ESCALATE = Set.of(StepResult.VERIFY_FAILED,
             StepResult.EXHAUSTED, StepResult.BUDGET, StepResult.MALFORMED, StepResult.WEDGED);
 
+    /** One rung of the escalation ladder: the model to call and the name it's referred to by in
+     *  events/details (design line 59's "escalation to DeepSeek", generalized). */
+    public record ModelTier(ChatModel model, String modelName) {
+    }
+
     private final RepoStepRunner runner;
-    private final ChatModel coder;
-    private final String coderModelName;
-    private final ChatModel escalation;
-    private final String escalationModelName;
+    private final List<ModelTier> ladder;
     private final Function<String, RunnerSettings> settingsFor;
     private final RunStore store;
     private final long runTokenBudget;
@@ -53,16 +57,15 @@ public final class Orchestrator {
     public record RunResult(int exitCode, RunState state) {
     }
 
-    public Orchestrator(RepoStepRunner runner, ChatModel coder, String coderModelName,
-                        ChatModel escalation, String escalationModelName,
+    public Orchestrator(RepoStepRunner runner, List<ModelTier> ladder,
                         Function<String, RunnerSettings> settingsFor, RunStore store, long runTokenBudget,
                         Map<String, RepoPropagation> propagation, MavenLocalPublisher publisher,
                         JarBuilder jarBuilder) {
+        if (ladder.isEmpty()) {
+            throw new IllegalArgumentException("escalation ladder must not be empty");
+        }
         this.runner = runner;
-        this.coder = coder;
-        this.coderModelName = coderModelName;
-        this.escalation = escalation;
-        this.escalationModelName = escalationModelName;
+        this.ladder = List.copyOf(ladder);
         this.settingsFor = settingsFor;
         this.store = store;
         this.runTokenBudget = runTokenBudget;
@@ -136,7 +139,7 @@ public final class Orchestrator {
         return new RunResult(paused ? 3 : allSucceeded ? 0 : 2, state);
     }
 
-    /** One repo, both attempts. Returns false when the walk must stop (a pause landed). */
+    /** One repo, walking the escalation ladder. Returns false when the walk must stop (a pause landed). */
     private boolean runRepo(Path runDir, String runId, PlanModel plan, Map<String, RepoStep> steps,
                             RunState state, String repo) {
         synchronized (lock) {
@@ -165,8 +168,9 @@ public final class Orchestrator {
         List<String> events = new ArrayList<>();
         List<String> transcript = new ArrayList<>();
         List<String> edits = new ArrayList<>();
+        List<StepOutcome> history = new ArrayList<>();
         StepOutcome outcome;
-        boolean escalated = false;
+        int usedTier = 0;
         Path baselineDir = runDir.resolve("contracts").resolve(slug(repo) + "-baseline");
         boolean compatGate = false;
         try {
@@ -182,30 +186,33 @@ public final class Orchestrator {
                 }
             }
             String contracts = contractDigest(runDir, step);
-            outcome = runner.run(step, coder, coderModelName, settingsFor.apply(repo), contracts);
-            events.addAll(outcome.events());
-            transcript.addAll(outcome.transcript());
-            edits.addAll(outcome.edits());
-            boolean escalationAllowed;
-            synchronized (lock) {
-                state.addTokens(outcome.tokens());
-                escalationAllowed = state.tokensSpent() < runTokenBudget;
-            }
-            if (ESCALATE.contains(outcome.result()) && escalationAllowed) {
-                escalated = true;
-                events.add("attempt 2: hard reset to base, escalating to " + escalationModelName);
-                RunGit.startBranch(step.repoRoot(), branch, base);
-                applyBumps(repo, step, events);
-                StepOutcome second = runner.run(step, escalation, escalationModelName,
-                        settingsFor.apply(repo), contracts + attemptDigest(outcome));
-                events.addAll(second.events());
-                transcript.addAll(second.transcript());
-                edits.addAll(second.edits());
-                synchronized (lock) {
-                    state.addTokens(second.tokens());
+            for (int i = 0; i < ladder.size(); i++) {
+                ModelTier tier = ladder.get(i);
+                String priorDigest = contracts;
+                if (i > 0) {
+                    events.add("attempt " + (i + 1) + ": hard reset to base, escalating to " + tier.modelName());
+                    RunGit.startBranch(step.repoRoot(), branch, base);
+                    applyBumps(repo, step, events);
+                    priorDigest = contracts + attemptDigest(history);
                 }
-                outcome = second;
+                StepOutcome attempt = runner.run(step, tier.model(), tier.modelName(),
+                        settingsFor.apply(repo), priorDigest);
+                events.addAll(attempt.events());
+                transcript.addAll(attempt.transcript());
+                edits.addAll(attempt.edits());
+                boolean escalationAllowed;
+                synchronized (lock) {
+                    state.addTokens(attempt.tokens());
+                    escalationAllowed = state.tokensSpent() < runTokenBudget;
+                }
+                history.add(attempt);
+                usedTier = i;
+                boolean hasNextTier = i + 1 < ladder.size();
+                if (!ESCALATE.contains(attempt.result()) || !hasNextTier || !escalationAllowed) {
+                    break;
+                }
             }
+            outcome = history.get(history.size() - 1);
         } catch (ModelException e) {
             synchronized (lock) {
                 state.addTokens(e.tokensSoFar());
@@ -229,7 +236,8 @@ public final class Orchestrator {
         store.writeAgentEvents(runDir, repo, events);
         store.writeTranscript(runDir, repo, transcript);
         store.writeEdits(runDir, repo, edits);
-        String attemptTag = escalated ? "attempt 2 (" + escalationModelName + ") " : "";
+        String attemptTag = usedTier > 0
+                ? "attempt " + (usedTier + 1) + " (" + ladder.get(usedTier).modelName() + ") " : "";
         if (outcome.result() == StepResult.SUCCESS) {
             String sha = RunGit.commitAll(step.repoRoot(), "sdd: " + runId + " " + repo);
             RepoPropagation prop = propagation.getOrDefault(repo, RepoPropagation.none());
@@ -380,12 +388,22 @@ public final class Orchestrator {
         return status == 0 || status == 429 || status >= 500;
     }
 
-    private static String attemptDigest(StepOutcome first) {
-        String verification = first.verificationOutput().isEmpty() ? "none" : first.verificationOutput();
-        return "\n\n## A previous attempt by a smaller model failed — you are the escalation\n"
-                + "It ended " + first.result() + ": " + first.summary() + "\n"
-                + "The tree has been hard-reset to base, so its edits are gone. Do not repeat its "
-                + "mistakes. Its last verification output:\n" + verification;
+    /** Digest handed to the next tier: a one-line summary of EVERY prior attempt (so a tier deep in a
+     *  3+-tier ladder knows what already failed), plus the full verification output of the most recent
+     *  one. Capped at 4000 chars overall. */
+    private String attemptDigest(List<StepOutcome> priorAttempts) {
+        StringBuilder digest = new StringBuilder("\n\n## Previous attempts (all failed)\n");
+        for (int i = 0; i < priorAttempts.size(); i++) {
+            StepOutcome prior = priorAttempts.get(i);
+            digest.append("- attempt ").append(i + 1).append(" (").append(ladder.get(i).modelName())
+                    .append("): ").append(prior.result()).append(": ").append(prior.summary()).append('\n');
+        }
+        StepOutcome last = priorAttempts.get(priorAttempts.size() - 1);
+        String verification = last.verificationOutput().isEmpty() ? "none" : last.verificationOutput();
+        digest.append("The tree has been hard-reset to base, so its edits are gone. Do not repeat its ")
+                .append("mistakes. Its last verification output:\n").append(verification);
+        String result = digest.toString();
+        return result.length() > 4000 ? result.substring(0, 4000) : result;
     }
 
     private static String slug(String repo) {

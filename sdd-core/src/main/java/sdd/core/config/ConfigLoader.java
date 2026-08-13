@@ -132,7 +132,30 @@ public final class ConfigLoader {
             if (agentTokens < 1) {
                 throw new ConfigException("run.agent_tokens must be at least 1, got '" + agentTokens + "'");
             }
-            run = new RunSettings(gradleWorkers, modelConcurrency, tokenBudget, agentTurns, agentTokens);
+            List<String> escalationLadder;
+            Object ladderNode = rm.get("escalation_ladder");
+            if (ladderNode == null) {
+                escalationLadder = run.escalationLadder();
+            } else if (ladderNode instanceof List<?> l) {
+                escalationLadder = l.stream().map(String::valueOf).toList();
+            } else {
+                throw new ConfigException("run.escalation_ladder must be a list, got: " + ladderNode);
+            }
+            if (escalationLadder.isEmpty()) {
+                throw new ConfigException("run.escalation_ladder must not be empty");
+            }
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (String key : escalationLadder) {
+                if (!models.containsKey(key)) {
+                    throw new ConfigException("run.escalation_ladder: unknown model '" + key
+                            + "' — not declared under models:");
+                }
+                if (!seen.add(key)) {
+                    throw new ConfigException("run.escalation_ladder: duplicate model '" + key + "'");
+                }
+            }
+            run = new RunSettings(gradleWorkers, modelConcurrency, tokenBudget, agentTurns, agentTokens,
+                    escalationLadder);
         } else if (runNode != null) {
             throw new ConfigException("run must be a mapping, got: " + runNode);
         }

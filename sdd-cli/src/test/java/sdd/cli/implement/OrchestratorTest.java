@@ -73,13 +73,19 @@ class OrchestratorTest {
 
     private Orchestrator orchestrator(ChatModel coder, ChatModel escalation,
                                       Map<String, RepoPropagation> propagation) {
-        return new Orchestrator(new RepoStepRunner(db.jdbi()), coder, "qwen", escalation, "deepseek",
-                repo -> RunnerSettings.defaults(null), new RunStore(InstantSource.fixed(Instant.EPOCH)),
-                30_000_000L, propagation, new MavenLocalPublisher(), new JarBuilder());
+        return orchestrator(List.of(new Orchestrator.ModelTier(coder, "qwen"),
+                new Orchestrator.ModelTier(escalation, "deepseek")), propagation, 30_000_000L);
     }
 
     private Orchestrator orchestrator(ScriptedChatModel model) {
         return orchestrator(model, model);   // legacy tests: same script serves both attempts
+    }
+
+    private Orchestrator orchestrator(List<Orchestrator.ModelTier> ladder,
+                                      Map<String, RepoPropagation> propagation, long runTokenBudget) {
+        return new Orchestrator(new RepoStepRunner(db.jdbi()), ladder,
+                repo -> RunnerSettings.defaults(null), new RunStore(InstantSource.fixed(Instant.EPOCH)),
+                runTokenBudget, propagation, new MavenLocalPublisher(), new JarBuilder());
     }
 
     @Test
@@ -156,7 +162,7 @@ class OrchestratorTest {
         String a = Files.readString(lib.path().resolve("A.java"));
         assertThat(a).contains("escalated").doesNotContain("attempt1");   // attempt 1's edit was hard-reset away
         assertThat(escalation.requests().get(0).messages())
-                .anyMatch(m -> m.content() != null && m.content().contains("previous attempt"));   // digest delivered
+                .anyMatch(m -> m.content() != null && m.content().contains("Previous attempts"));   // digest delivered
     }
 
     @Test
@@ -202,9 +208,9 @@ class OrchestratorTest {
         Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()), "svc", step("svc", svc.path()));
         ScriptedChatModel model = new ScriptedChatModel(List.of(
                 call("1", "done", "{\"result\":\"success\",\"summary\":\"lib ok\"}")));
-        Orchestrator tight = new Orchestrator(new RepoStepRunner(db.jdbi()), model, "qwen", model, "deepseek",
-                repo -> RunnerSettings.defaults(null), new RunStore(InstantSource.fixed(Instant.EPOCH)),
-                10L, Map.of(), new MavenLocalPublisher(), new JarBuilder());   // lib's single call spends 15 tokens > 10
+        Orchestrator tight = orchestrator(List.of(new Orchestrator.ModelTier(model, "qwen"),
+                new Orchestrator.ModelTier(model, "deepseek")), Map.of(),
+                10L);   // lib's single call spends 15 tokens > 10
 
         Orchestrator.RunResult result = tight.run(runDir, plan(lib.headSha(), svc.headSha()), steps);
 
@@ -419,10 +425,8 @@ class OrchestratorTest {
         Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()), "svc", step("svc", svc.path()));
         ScriptedChatModel model = new ScriptedChatModel(List.of(
                 call("1", "done", "{\"result\":\"success\",\"summary\":\"lib ok\"}")));
-        Orchestrator tight = new Orchestrator(new RepoStepRunner(db.jdbi()), model, "qwen", model,
-                "deepseek", repo -> RunnerSettings.defaults(null),
-                new RunStore(InstantSource.fixed(Instant.EPOCH)), 10L, Map.of(), new MavenLocalPublisher(),
-                new JarBuilder());
+        Orchestrator tight = orchestrator(List.of(new Orchestrator.ModelTier(model, "qwen"),
+                new Orchestrator.ModelTier(model, "deepseek")), Map.of(), 10L);
 
         Orchestrator.RunResult result = tight.run(runDir, plan(lib.headSha(), svc.headSha()), steps);
 
@@ -481,10 +485,8 @@ class OrchestratorTest {
                 call("1", "done", "{\"result\":\"success\",\"summary\":\"try1\"}"),
                 call("2", "done", "{\"result\":\"success\",\"summary\":\"try2\"}")));
         ScriptedChatModel escalationScript = new ScriptedChatModel(List.of());   // must never be consumed
-        Orchestrator tight = new Orchestrator(new RepoStepRunner(db.jdbi()), coderScript, "qwen",
-                escalationScript, "deepseek", repo -> RunnerSettings.defaults(null),
-                new RunStore(InstantSource.fixed(Instant.EPOCH)), 20L, Map.of(), new MavenLocalPublisher(),
-                new JarBuilder());
+        Orchestrator tight = orchestrator(List.of(new Orchestrator.ModelTier(coderScript, "qwen"),
+                new Orchestrator.ModelTier(escalationScript, "deepseek")), Map.of(), 20L);
         // attempt 1 spends 2 calls x 15 tokens = 30 > 20: the escalation gate must refuse.
 
         Orchestrator.RunResult result = tight.run(runDir, planFor("lib", lib.headSha()), steps);
@@ -494,6 +496,61 @@ class OrchestratorTest {
         // Single-repo plan: no later start-gate fires after the FAILED transition, so the run ends
         // PARTIAL — the denied escalation, not a pause, is what this test pins.
         assertThat(result.exitCode()).isEqualTo(2);
+    }
+
+    @Test
+    void threeTierLadderEscalatesTwiceAndSucceedsOnTheThirdTierWithAFullDigest() throws Exception {
+        // Verification passes only once A.java carries tier 3's marker; tiers 1 and 2 each burn two
+        // done->verify-fail cycles (VERIFY_FAILED) before the ladder moves on.
+        FixtureRepo lib = repoWith("lib", "grep -q tier3marker A.java && exit 0 || exit 1");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()));
+        ScriptedChatModel tier1 = new ScriptedChatModel(List.of(
+                call("1", "apply_edit", "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int t1; }\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"try1a\"}"),
+                call("3", "done", "{\"result\":\"success\",\"summary\":\"try1b\"}")));
+        ScriptedChatModel tier2 = new ScriptedChatModel(List.of(
+                call("4", "apply_edit", "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int t2; }\"}"),
+                call("5", "done", "{\"result\":\"success\",\"summary\":\"try2a\"}"),
+                call("6", "done", "{\"result\":\"success\",\"summary\":\"try2b\"}")));
+        ScriptedChatModel tier3 = new ScriptedChatModel(List.of(
+                call("7", "apply_edit", "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int tier3marker; }\"}"),
+                call("8", "done", "{\"result\":\"success\",\"summary\":\"tier3 fix\"}")));
+        Orchestrator orchestrator = orchestrator(List.of(
+                new Orchestrator.ModelTier(tier1, "model-one"),
+                new Orchestrator.ModelTier(tier2, "model-two"),
+                new Orchestrator.ModelTier(tier3, "model-three")), Map.of(), 30_000_000L);
+
+        Orchestrator.RunResult result = orchestrator.run(runDir, planFor("lib", lib.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(0);
+        assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.SUCCEEDED);
+        String detail = result.state().repos().stream()
+                .filter(r -> r.repo().equals("lib")).findFirst().orElseThrow().detail();
+        assertThat(detail).contains("attempt 3 (");
+        String tier3WorkOrder = tier3.requests().get(0).messages().stream()
+                .map(m -> m.content() == null ? "" : m.content())
+                .reduce("", String::concat);
+        assertThat(tier3WorkOrder).contains("Previous attempts")
+                .contains("attempt 1 (model-one)").contains("attempt 2 (model-two)");
+    }
+
+    @Test
+    void oneTierLadderNeverEscalates() throws Exception {
+        FixtureRepo lib = repoWith("lib", "exit 1");   // verify always fails
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"try1\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"try2\"}")));
+        Orchestrator single = orchestrator(List.of(new Orchestrator.ModelTier(model, "qwen")), Map.of(), 30_000_000L);
+
+        Orchestrator.RunResult result = single.run(runDir, planFor("lib", lib.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(2);
+        assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.FAILED);
+        assertThat(Files.readString(runDir.resolve("lib/agent-events.jsonl")))
+                .doesNotContain("hard reset").doesNotContain("escalating");
     }
 
     @Test

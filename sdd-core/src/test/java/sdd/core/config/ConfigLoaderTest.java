@@ -232,7 +232,8 @@ class ConfigLoaderTest {
                   agent_tokens: 750000
                 """);
         SddConfig config = ConfigLoader.load(ws);
-        assertThat(config.run()).isEqualTo(new RunSettings(4, 1, 5_000_000L, 20, 750_000L));
+        assertThat(config.run()).isEqualTo(
+                new RunSettings(4, 1, 5_000_000L, 20, 750_000L, java.util.List.of("coder", "planner")));
     }
 
     @Test
@@ -243,7 +244,8 @@ class ConfigLoaderTest {
                   coder: { base_url: http://y/v1, model: c }
                 """);
         assertThat(ConfigLoader.load(absent).run()).isEqualTo(RunSettings.defaults());
-        assertThat(RunSettings.defaults()).isEqualTo(new RunSettings(2, 2, 30_000_000L, 40, 1_500_000L));
+        assertThat(RunSettings.defaults()).isEqualTo(
+                new RunSettings(2, 2, 30_000_000L, 40, 1_500_000L, java.util.List.of("coder", "planner")));
 
         Path partial = write("""
                 models:
@@ -252,7 +254,76 @@ class ConfigLoaderTest {
                 run:
                   gradle_workers: 8
                 """);
-        assertThat(ConfigLoader.load(partial).run()).isEqualTo(new RunSettings(8, 2, 30_000_000L, 40, 1_500_000L));
+        assertThat(ConfigLoader.load(partial).run()).isEqualTo(
+                new RunSettings(8, 2, 30_000_000L, 40, 1_500_000L, java.util.List.of("coder", "planner")));
+    }
+
+    @Test
+    void parsesTheEscalationLadder() throws Exception {
+        Path ws = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                  reviewer: { base_url: http://z/v1, model: r }
+                run:
+                  escalation_ladder: [coder, reviewer, planner]
+                """);
+        SddConfig config = ConfigLoader.load(ws);
+        assertThat(config.run().escalationLadder()).containsExactly("coder", "reviewer", "planner");
+    }
+
+    @Test
+    void escalationLadderDefaultsToCoderThenPlannerWhenAbsent() throws Exception {
+        Path ws = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                """);
+        assertThat(ConfigLoader.load(ws).run().escalationLadder()).containsExactly("coder", "planner");
+    }
+
+    @Test
+    void escalationLadderNamingUnknownModelFails() throws Exception {
+        Path ws = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                run:
+                  escalation_ladder: [coder, ghost]
+                """);
+        assertThatThrownBy(() -> ConfigLoader.load(ws))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("escalation_ladder")
+                .hasMessageContaining("ghost");
+    }
+
+    @Test
+    void emptyEscalationLadderFails() throws Exception {
+        Path ws = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                run:
+                  escalation_ladder: []
+                """);
+        assertThatThrownBy(() -> ConfigLoader.load(ws))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("escalation_ladder");
+    }
+
+    @Test
+    void duplicateEscalationLadderEntryFails() throws Exception {
+        Path ws = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                run:
+                  escalation_ladder: [coder, coder]
+                """);
+        assertThatThrownBy(() -> ConfigLoader.load(ws))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("escalation_ladder")
+                .hasMessageContaining("coder");
     }
 
     @Test
