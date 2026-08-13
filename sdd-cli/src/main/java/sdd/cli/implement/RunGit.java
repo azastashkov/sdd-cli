@@ -165,6 +165,30 @@ public final class RunGit {
         }
     }
 
+    /** Collapse everything on {@code branch} since {@code baseSha} into ONE commit. A soft reset
+     *  leaves the checkpoint tree staged, so committing without any {@code add} reproduces that
+     *  tree exactly — deletions included. Adding from the working tree would sweep in whatever the
+     *  human happens to have lying around, so we deliberately do not. Never touches another branch
+     *  and never pushes (design line 58). */
+    public static String squashOnto(Path repo, String branch, String baseSha, String message) {
+        try (Git git = Git.open(repo.toFile())) {
+            String head = branchHead(repo, branch);   // BEFORE the reset — see the net-zero case
+            git.checkout().setName(branch).call();
+            var repository = git.getRepository();
+            var headTree = repository.parseCommit(repository.resolve(head)).getTree();
+            var baseTree = repository.parseCommit(repository.resolve(baseSha)).getTree();
+            if (headTree.equals(baseTree)) {
+                return head;   // nothing to squash; leave the branch exactly where it is
+            }
+            git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(baseSha).call();
+            return git.commit().setMessage(message).setAuthor(IDENT).setCommitter(IDENT)
+                    .call().getName();
+        } catch (Exception e) {
+            throw new IllegalStateException("cannot squash " + branch + " in " + repo + ": "
+                    + e.getMessage(), e);
+        }
+    }
+
     /** Plain checkout — deliberately NO reset and NO clean (unlike startBranch), so review can
      *  visit a checkpoint and return the estate exactly as it found it. */
     public static void checkout(Path repo, String branch) {
