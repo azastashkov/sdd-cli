@@ -36,7 +36,7 @@ public final class ReviewReport {
         md.append("# Review report\n\n");
         md.append("Run: ").append(runId).append("\n\n");
 
-        appendSummary(md, plan, state, rebuilds, rebuilt);
+        appendSummary(md, plan, state, rebuilds, rebuilt, contracts);
         appendRepos(md, plan, byName, diffStats, rebuilds, notLocallyVerified);
         appendRebuildFailures(md, rebuilds);
         appendContracts(md, contracts);
@@ -56,7 +56,8 @@ public final class ReviewReport {
     }
 
     private static void appendSummary(StringBuilder md, PlanModel plan, RunState state,
-                                      Map<String, EstateRebuild.Result> rebuilds, boolean rebuilt) {
+                                      Map<String, EstateRebuild.Result> rebuilds, boolean rebuilt,
+                                      List<ContractRecheck.Finding> contracts) {
         md.append("## Summary\n\n");
         Map<RepoState, Integer> counts = new LinkedHashMap<>();
         for (String repo : Scheduler.sequence(plan.order())) {
@@ -74,6 +75,14 @@ public final class ReviewReport {
                     .append(failed).append(" failed\n");
         } else {
             md.append("- Estate rebuild: skipped (--no-rebuild)\n");
+        }
+        if (contracts.isEmpty()) {
+            md.append("- Contract re-check: no contracts in this plan\n");
+        } else {
+            long nonMatches = contracts.stream()
+                    .filter(f -> f.status() != ContractRecheck.Status.MATCHES).count();
+            md.append("- Contract re-check: ").append(contracts.size()).append(" checked, ")
+                    .append(nonMatches).append(" mismatch").append(nonMatches == 1 ? "" : "es").append('\n');
         }
         md.append("- Exit codes: 0 = every repo SUCCEEDED and no rebuild failed; "
                 + "2 = a repo is not SUCCEEDED or a rebuild/checkout failed; "
