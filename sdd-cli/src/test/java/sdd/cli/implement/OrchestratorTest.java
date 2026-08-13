@@ -536,6 +536,46 @@ class OrchestratorTest {
     }
 
     @Test
+    void overCapDigestDropsTheOldestAttemptFirstSoTheNewestSurvives() throws Exception {
+        // A giant tier-1 model name alone pushes the digest over the 4000-char cap. A flat tail
+        // truncation would keep the front (attempt 1's giant line) and cut off attempt 2's summary
+        // and its verification output — exactly backwards from what a fresh tier needs. The
+        // recency-aware cap must instead drop attempt 1's line first and keep attempt 2 intact.
+        String giantModelName = "model-one-" + "x".repeat(4500);
+        FixtureRepo lib = repoWith("lib",
+                "if grep -q tier3marker A.java; then exit 0; fi; "
+                        + "if grep -q tier2marker A.java; then echo TIER2_VERIFY_MARKER; fi; exit 1");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()));
+        ScriptedChatModel tier1 = new ScriptedChatModel(List.of(
+                call("1", "apply_edit", "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int tier1marker; }\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"try1a\"}"),
+                call("3", "done", "{\"result\":\"success\",\"summary\":\"try1b\"}")));
+        ScriptedChatModel tier2 = new ScriptedChatModel(List.of(
+                call("4", "apply_edit", "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int tier2marker; }\"}"),
+                call("5", "done", "{\"result\":\"success\",\"summary\":\"try2a\"}"),
+                call("6", "done", "{\"result\":\"success\",\"summary\":\"try2b\"}")));
+        ScriptedChatModel tier3 = new ScriptedChatModel(List.of(
+                call("7", "apply_edit", "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int tier3marker; }\"}"),
+                call("8", "done", "{\"result\":\"success\",\"summary\":\"tier3 fix\"}")));
+        Orchestrator orchestrator = orchestrator(List.of(
+                new Orchestrator.ModelTier(tier1, giantModelName),
+                new Orchestrator.ModelTier(tier2, "model-two"),
+                new Orchestrator.ModelTier(tier3, "model-three")), Map.of(), 30_000_000L);
+
+        Orchestrator.RunResult result = orchestrator.run(runDir, planFor("lib", lib.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(0);
+        assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.SUCCEEDED);
+        String tier3WorkOrder = tier3.requests().get(0).messages().stream()
+                .map(m -> m.content() == null ? "" : m.content())
+                .reduce("", String::concat);
+        assertThat(tier3WorkOrder).doesNotContain(giantModelName)   // oldest line dropped
+                .contains("attempt 2 (model-two)")                  // newest attempt's line survives
+                .contains("TIER2_VERIFY_MARKER");                   // latest verification output survives
+    }
+
+    @Test
     void oneTierLadderNeverEscalates() throws Exception {
         FixtureRepo lib = repoWith("lib", "exit 1");   // verify always fails
         Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");

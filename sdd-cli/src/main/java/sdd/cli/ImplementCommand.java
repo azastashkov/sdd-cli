@@ -114,8 +114,7 @@ public final class ImplementCommand implements Callable<Integer> {
         out.println("waiting for model endpoints to answer (--wait-endpoint)...");
         Function<ModelEndpoint, EndpointProbe.ProbeResult> probe =
                 probeForTest != null ? probeForTest : EndpointProbe::probe;
-        List<ModelEndpoint> endpoints = List.of(lastConfig.models().get("coder"),
-                lastConfig.models().get("planner"));
+        List<ModelEndpoint> endpoints = ladderEndpoints(lastConfig);
         while (true) {
             try {
                 Thread.sleep(waitPollMillis);
@@ -129,6 +128,22 @@ public final class ImplementCommand implements Callable<Integer> {
                 return;
             }
         }
+    }
+
+    /** Resolves the run's configured escalation ladder (any model keys, not just coder/planner) to the
+     *  endpoints it actually touches, deduplicated by base_url + model — a ladder can point two tiers at
+     *  the same physical endpoint — while preserving ladder order, so --wait-endpoint polls exactly what
+     *  the paused run needs and nothing it doesn't. */
+    private static List<ModelEndpoint> ladderEndpoints(SddConfig config) {
+        List<ModelEndpoint> endpoints = new ArrayList<>();
+        Set<String> seen = new java.util.HashSet<>();
+        for (String key : config.run().escalationLadder()) {
+            ModelEndpoint endpoint = config.models().get(key);
+            if (seen.add(endpoint.baseUrl() + "|" + endpoint.model())) {
+                endpoints.add(endpoint);
+            }
+        }
+        return endpoints;
     }
 
     private Integer runPlan(PrintWriter out, PrintWriter err) {

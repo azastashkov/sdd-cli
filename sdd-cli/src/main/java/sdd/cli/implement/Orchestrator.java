@@ -218,8 +218,9 @@ public final class Orchestrator {
                 state.addTokens(e.tokensSoFar());
                 store.writeState(runDir, state);   // persist the partial spend even on the rethrow path
             }
-            // The in-flight call (attempt 2 during escalation, or attempt 1 if no escalation) is lost,
-            // but any completed attempt (attempt 1's transcript/edits) must be persisted.
+            // The in-flight call (whichever tier was underway when the model call failed) is lost,
+            // but every earlier attempt's completed transcript/edits — already accumulated in
+            // events/transcript/edits across prior tiers — must still be persisted.
             store.writeAgentEvents(runDir, repo, events);
             store.writeTranscript(runDir, repo, transcript);
             store.writeEdits(runDir, repo, edits);
@@ -390,20 +391,32 @@ public final class Orchestrator {
 
     /** Digest handed to the next tier: a one-line summary of EVERY prior attempt (so a tier deep in a
      *  3+-tier ladder knows what already failed), plus the full verification output of the most recent
-     *  one. Capped at 4000 chars overall. */
+     *  one. Capped at 4000 chars overall, recency-aware: when over budget, the OLDEST per-attempt lines
+     *  are dropped first (one at a time) so the newest attempt's line and the latest verification output
+     *  — the two things a fresh tier most needs — always survive, rather than a flat tail truncation
+     *  silently amputating exactly that. */
     private String attemptDigest(List<StepOutcome> priorAttempts) {
-        StringBuilder digest = new StringBuilder("\n\n## Previous attempts (all failed)\n");
+        String header = "\n\n## Previous attempts (all failed)\n";
+        List<String> attemptLines = new ArrayList<>();
         for (int i = 0; i < priorAttempts.size(); i++) {
             StepOutcome prior = priorAttempts.get(i);
-            digest.append("- attempt ").append(i + 1).append(" (").append(ladder.get(i).modelName())
-                    .append("): ").append(prior.result()).append(": ").append(prior.summary()).append('\n');
+            attemptLines.add("- attempt " + (i + 1) + " (" + ladder.get(i).modelName() + "): "
+                    + prior.result() + ": " + prior.summary() + '\n');
         }
         StepOutcome last = priorAttempts.get(priorAttempts.size() - 1);
         String verification = last.verificationOutput().isEmpty() ? "none" : last.verificationOutput();
-        digest.append("The tree has been hard-reset to base, so its edits are gone. Do not repeat its ")
-                .append("mistakes. Its last verification output:\n").append(verification);
-        String result = digest.toString();
+        String footer = "The tree has been hard-reset to base, so its edits are gone. Do not repeat its "
+                + "mistakes. Its last verification output:\n" + verification;
+        while (attemptLines.size() > 1
+                && header.length() + linesLength(attemptLines) + footer.length() > 4000) {
+            attemptLines.remove(0);   // oldest first — the newest (last) line is never dropped
+        }
+        String result = header + String.join("", attemptLines) + footer;
         return result.length() > 4000 ? result.substring(0, 4000) : result;
+    }
+
+    private static int linesLength(List<String> lines) {
+        return lines.stream().mapToInt(String::length).sum();
     }
 
     private static String slug(String repo) {

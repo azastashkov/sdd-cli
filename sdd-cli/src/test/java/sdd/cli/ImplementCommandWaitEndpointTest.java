@@ -42,17 +42,21 @@ class ImplementCommandWaitEndpointTest {
     }
 
     private void writeFixture(FixtureRepo lib, FixtureRepo svc) throws Exception {
+        writeFixture(lib, svc, """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+    }
+
+    private void writeFixture(FixtureRepo lib, FixtureRepo svc, String sddYml) throws Exception {
         try (Database db = Database.open(ws)) {
             db.jdbi().useHandle(h -> {
                 h.execute("INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString());
                 h.execute("INSERT INTO repo(name, path, kind) VALUES ('svc', ?, 'SERVICE')", svc.path().toString());
             });
         }
-        Files.writeString(ws.resolve("sdd.yml"), """
-                models:
-                  planner: { base_url: http://x/v1, model: p, api_key: k }
-                  coder: { base_url: http://y/v1, model: qwen }
-                """);
+        Files.writeString(ws.resolve("sdd.yml"), sddYml);
         Files.writeString(ws.resolve("s.md"), """
                 ---
                 id: SPEC-9
@@ -130,5 +134,58 @@ class ImplementCommandWaitEndpointTest {
         int exit = cli.execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
 
         assertThat(exit).isEqualTo(3);
+    }
+
+    @Test
+    void waitEndpointPollsEveryLadderTierNotHardcodedCoderPlanner() throws Exception {
+        // A 3-tier ladder whose keys are neither "coder" nor "planner" — those two are still declared
+        // (models.coder/planner are unconditionally required by ConfigLoader) but are never polled,
+        // because the run never touches them.
+        FixtureRepo lib = repo("lib", "exit 0");
+        FixtureRepo svc = repo("svc", "exit 0");
+        writeFixture(lib, svc, """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                  alpha: { base_url: http://a/v1, model: alpha-model, api_key: k }
+                  beta: { base_url: http://b/v1, model: beta-model, api_key: k }
+                  gamma: { base_url: http://g/v1, model: gamma-model, api_key: k }
+                run:
+                  escalation_ladder: [alpha, beta, gamma]
+                """);
+
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.List<String> probedModelIds = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        java.util.concurrent.atomic.AtomicInteger gammaProbes = new java.util.concurrent.atomic.AtomicInteger();
+        ImplementCommand cmd = new ImplementCommand();
+        cmd.coderForTest = req -> {
+            if (calls.incrementAndGet() == 1) {
+                throw new ModelException("transport error: refused", new java.io.IOException("x"));
+            }
+            return done();
+        };
+        cmd.probeForTest = endpoint -> {
+            probedModelIds.add(endpoint.model());
+            if (endpoint.model().equals("gamma-model")) {
+                // Down for the first two polls, then answers — proves the wait actually blocks on it
+                // rather than resuming as soon as alpha/beta (probed first, per ladder order) are up.
+                boolean up = gammaProbes.incrementAndGet() >= 3;
+                return new EndpointProbe.ProbeResult(up, up ? "HTTP 200" : "HTTP 503");
+            }
+            return new EndpointProbe.ProbeResult(true, "HTTP 200");
+        };
+        cmd.waitPollMillis = 1;
+        StringWriter out = new StringWriter();
+        CommandLine cli = new CommandLine(cmd);
+        cli.setOut(new PrintWriter(out));
+
+        int exit = cli.execute("--workspace", ws.toString(), "--wait-endpoint",
+                ws.resolve("s.plan.json").toString());
+
+        assertThat(exit).isEqualTo(0);
+        assertThat(out.toString()).contains("lib: SUCCEEDED").contains("svc: SUCCEEDED");
+        assertThat(probedModelIds).contains("alpha-model", "beta-model", "gamma-model")
+                .doesNotContain("qwen", "p");   // never the hardcoded coder/planner endpoints
+        assertThat(gammaProbes.get()).isGreaterThanOrEqualTo(3);   // resumed only once gamma itself answered
     }
 }
