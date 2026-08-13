@@ -49,4 +49,39 @@ class SchedulerTest {
         state.set("lib", RepoState.FAILED, null, null, "boom");
         assertThat(Scheduler.blockedByUpstream("app", chain, state)).isTrue();
     }
+
+    @Test
+    void levelsBatchIndependentUnitsTogether() {
+        List<List<String>> order = List.of(List.of("a"), List.of("b"), List.of("c"));
+        List<PlanModel.PlanEdge> edges = List.of(
+                new PlanModel.PlanEdge("c", "a", "PINNED", "MAVEN_LOCAL"));   // c consumes a; b is free
+
+        List<List<List<String>>> layers = Scheduler.levels(order, edges);
+
+        assertThat(layers).containsExactly(
+                List.of(List.of("a"), List.of("b")),   // a and b are simultaneously ready
+                List.of(List.of("c")));
+    }
+
+    @Test
+    void aCycleUnitStaysAtomicAndItsConsumersWait() {
+        List<List<String>> order = List.of(List.of("x", "y"), List.of("z"));
+        List<PlanModel.PlanEdge> edges = List.of(
+                new PlanModel.PlanEdge("x", "y", "SNAPSHOT", "INCLUDE_BUILD"),   // intra-unit edge
+                new PlanModel.PlanEdge("y", "x", "SNAPSHOT", "INCLUDE_BUILD"),
+                new PlanModel.PlanEdge("z", "x", "SNAPSHOT", "INCLUDE_BUILD"));
+
+        List<List<List<String>>> layers = Scheduler.levels(order, edges);
+
+        assertThat(layers).containsExactly(
+                List.of(List.of("x", "y")),
+                List.of(List.of("z")));
+    }
+
+    @Test
+    void levelsWithNoEdgesIsOneLayer() {
+        List<List<String>> order = List.of(List.of("a"), List.of("b"));
+        assertThat(Scheduler.levels(order, List.of()))
+                .containsExactly(List.of(List.of("a"), List.of("b")));
+    }
 }

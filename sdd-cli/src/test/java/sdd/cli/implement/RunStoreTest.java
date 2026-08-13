@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -79,5 +80,59 @@ class RunStoreTest {
         assertThat(read.pausedReason()).isEqualTo("model endpoint unavailable: x");
         assertThat(read.tokensSpent()).isEqualTo(42L);
         assertThat(ws.resolve(".sdd/runs/S-v1/spec.md")).hasContent("spec body");
+    }
+
+    @Test
+    void appendRunEventWritesARunScopedLine() throws Exception {
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+
+        store.appendRunEvent(runDir, "run token budget exhausted (42 tokens)");
+
+        assertThat(Files.readString(runDir.resolve("events.jsonl")))
+                .contains("\"run\":\"pause\"")
+                .contains("run token budget exhausted");
+    }
+
+    @Test
+    void aStaleLockFromADeadProcessIsReclaimed() throws Exception {
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = Files.createDirectories(ws.resolve(".sdd/runs/S-v1"));
+        Process dead = new ProcessBuilder("true").start();
+        dead.waitFor();
+        Files.writeString(runDir.resolve("lock"), Long.toString(dead.pid()));
+
+        store.acquireLock(runDir);   // must NOT throw: owner is dead
+
+        assertThat(Files.readString(runDir.resolve("lock")))
+                .isEqualTo(Long.toString(ProcessHandle.current().pid()));
+    }
+
+    @Test
+    void aLiveLockStillRefuses() throws Exception {
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = Files.createDirectories(ws.resolve(".sdd/runs/S-v2"));
+        Files.writeString(runDir.resolve("lock"), Long.toString(ProcessHandle.current().pid()));
+
+        assertThatThrownBy(() -> store.acquireLock(runDir))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("already in progress");
+    }
+
+    @Test
+    void propagationSnapshotRoundTrips() {
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v3", "{}", "");
+        Map<String, RepoPropagation> map = Map.of(
+                "svc", new RepoPropagation(
+                        List.of(new RepoPropagation.BumpEdit("com.acme", "lib", "1.2.3", "1.3.0")), null),
+                "lib", new RepoPropagation(List.of(),
+                        new RepoPropagation.PublishSpec("1.3.0", runDir.resolve("m2"))));
+
+        store.writePropagation(runDir, map);
+        Map<String, RepoPropagation> read = store.readPropagation(runDir);
+
+        assertThat(read).isEqualTo(map);
+        assertThat(store.readPropagation(ws.resolve("nowhere"))).isNull();
     }
 }

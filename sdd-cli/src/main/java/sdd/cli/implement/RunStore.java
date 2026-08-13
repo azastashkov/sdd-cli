@@ -10,6 +10,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.InstantSource;
 import java.util.List;
+import java.util.Map;
 
 /** Persists a run under {@code <workspace>/.sdd/runs/<runId>/}: immutable plan.json, atomic state.json,
  *  append-only events.jsonl, and a lock file. */
@@ -45,13 +46,47 @@ public final class RunStore {
 
     public void acquireLock(Path runDir) {
         Path lock = runDir.resolve("lock");
+        String pid = Long.toString(ProcessHandle.current().pid());
         try {
-            Files.createFile(lock);
+            Files.writeString(lock, pid, StandardOpenOption.CREATE_NEW);
         } catch (java.nio.file.FileAlreadyExistsException e) {
+            if (lockIsStale(lock)) {
+                try {
+                    Files.deleteIfExists(lock);
+                    Files.writeString(lock, pid, StandardOpenOption.CREATE_NEW);
+                    return;
+                } catch (IOException retry) {
+                    throw new UncheckedIOException(retry);
+                }
+            }
             throw new IllegalStateException("run " + runDir.getFileName() + " is already in progress "
-                    + "(lock held at " + lock + "); remove the lock to override");
+                    + "(lock held at " + lock + ownerSuffix(lock) + "); remove the lock to override");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
+        }
+    }
+
+    /** Stale = the lock names a PID that is provably not alive. Empty/legacy/unreadable locks are
+     *  treated as LIVE (safe default: refuse, let the human decide). */
+    private static boolean lockIsStale(Path lock) {
+        try {
+            String text = Files.readString(lock).strip();
+            if (text.isEmpty()) {
+                return false;
+            }
+            long pid = Long.parseLong(text);
+            return ProcessHandle.of(pid).map(handle -> !handle.isAlive()).orElse(true);
+        } catch (IOException | NumberFormatException e) {
+            return false;
+        }
+    }
+
+    private static String ownerSuffix(Path lock) {
+        try {
+            String text = Files.readString(lock).strip();
+            return text.isEmpty() ? "" : " by pid " + text;
+        } catch (IOException e) {
+            return "";
         }
     }
 
@@ -119,6 +154,18 @@ public final class RunStore {
         }
     }
 
+    /** A run-scoped (not repo-scoped) event line — today only pauses use it. */
+    public void appendRunEvent(Path runDir, String detail) {
+        String line = "{\"at\":\"" + clock.instant() + "\",\"run\":\"pause\",\"detail\":"
+                + jsonString(detail) + "}\n";
+        try {
+            Files.writeString(runDir.resolve("events.jsonl"), line,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
     /**
      * Persists the agent loop's notable events for one repo to {@code <repo>/agent-events.jsonl}. NOTE:
      * this is what 4B's {@code StepOutcome.events()} exposes — NOT the design's full model-turn
@@ -134,6 +181,55 @@ public final class RunStore {
                 lines.append(jsonString(event)).append('\n');
             }
             Files.writeString(repoDir.resolve("agent-events.jsonl"), lines.toString());
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    public void writePropagation(Path runDir, Map<String, RepoPropagation> propagation) {
+        record BumpDto(String group, String name, String oldVersion, String newVersion) {
+        }
+        record PropDto(List<BumpDto> bumps, String publishVersion) {
+        }
+        Map<String, PropDto> dto = new java.util.LinkedHashMap<>();
+        for (Map.Entry<String, RepoPropagation> entry : propagation.entrySet()) {
+            List<BumpDto> bumps = entry.getValue().bumps().stream()
+                    .map(b -> new BumpDto(b.group(), b.name(), b.oldVersion(), b.newVersion()))
+                    .toList();
+            String publishVersion = entry.getValue().publish() == null
+                    ? null : entry.getValue().publish().version();
+            dto.put(entry.getKey(), new PropDto(bumps, publishVersion));
+        }
+        try {
+            Files.writeString(runDir.resolve("propagation.json"),
+                    JSON.writerWithDefaultPrettyPrinter().writeValueAsString(dto));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** The frozen propagation plan, or null for runs from before the snapshot existed. */
+    public Map<String, RepoPropagation> readPropagation(Path runDir) {
+        Path file = runDir.resolve("propagation.json");
+        if (!Files.exists(file)) {
+            return null;
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode root = JSON.readTree(Files.readString(file));
+            Map<String, RepoPropagation> result = new java.util.LinkedHashMap<>();
+            root.properties().forEach(entry -> {
+                List<RepoPropagation.BumpEdit> bumps = new java.util.ArrayList<>();
+                for (com.fasterxml.jackson.databind.JsonNode bump : entry.getValue().path("bumps")) {
+                    bumps.add(new RepoPropagation.BumpEdit(bump.path("group").asText(),
+                            bump.path("name").asText(), bump.path("oldVersion").asText(),
+                            bump.path("newVersion").asText()));
+                }
+                com.fasterxml.jackson.databind.JsonNode version = entry.getValue().path("publishVersion");
+                RepoPropagation.PublishSpec publish = version.isNull() || version.isMissingNode()
+                        ? null : new RepoPropagation.PublishSpec(version.asText(), runDir.resolve("m2"));
+                result.put(entry.getKey(), new RepoPropagation(bumps, publish));
+            });
+            return result;
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
