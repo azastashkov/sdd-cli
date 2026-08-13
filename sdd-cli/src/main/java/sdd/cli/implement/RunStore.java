@@ -174,7 +174,7 @@ public final class RunStore {
      */
     public void writeAgentEvents(Path runDir, String repo, List<String> events) {
         try {
-            Path repoDir = runDir.resolve(repo.replaceAll("[^A-Za-z0-9._-]", "-"));
+            Path repoDir = runDir.resolve(sanitize(repo));
             Files.createDirectories(repoDir);
             StringBuilder lines = new StringBuilder();
             for (String event : events) {
@@ -233,6 +233,29 @@ public final class RunStore {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    public void writeContract(Path runDir, String contractId, String body) {
+        try {
+            Path dir = Files.createDirectories(runDir.resolve("contracts"));
+            Files.writeString(dir.resolve(sanitize(contractId) + ".md"), body);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** The actualized contract body, or null when the provider has not gone green yet. */
+    public String readContract(Path runDir, String contractId) {
+        Path file = runDir.resolve("contracts").resolve(sanitize(contractId) + ".md");
+        try {
+            return Files.exists(file) ? Files.readString(file) : null;
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    private static String sanitize(String name) {
+        return name.replaceAll("[^A-Za-z0-9._-]", "-");
     }
 
     private static String jsonString(String value) {

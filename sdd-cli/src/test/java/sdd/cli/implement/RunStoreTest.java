@@ -135,4 +135,16 @@ class RunStoreTest {
         assertThat(read).isEqualTo(map);
         assertThat(store.readPropagation(ws.resolve("nowhere"))).isNull();
     }
+
+    @Test
+    void contractFilesRoundTripUnderTheContractsDir() {
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+
+        store.writeContract(runDir, "c1/api", "actual body");
+
+        assertThat(runDir.resolve("contracts/c1-api.md")).exists();
+        assertThat(store.readContract(runDir, "c1/api")).isEqualTo("actual body");
+        assertThat(store.readContract(runDir, "ghost")).isNull();
+    }
 }
