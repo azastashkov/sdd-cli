@@ -84,6 +84,15 @@ public final class RunGit {
         }
     }
 
+    /** Whether {@code branch}'s current HEAD is still the recorded checkpoint — both nullable
+     *  (a repo that never ran, or ran but never reached a checkpoint, has neither). */
+    public static boolean isAtCheckpoint(Path repo, String branch, String checkpointSha) {
+        if (branch == null || checkpointSha == null) {
+            return false;
+        }
+        return branchHead(repo, branch).equals(checkpointSha);
+    }
+
     public static void resetHard(Path repo, String sha) {
         try (Git git = Git.open(repo.toFile())) {
             git.reset().setMode(ResetCommand.ResetType.HARD).setRef(sha).call();

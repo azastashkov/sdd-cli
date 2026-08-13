@@ -91,4 +91,16 @@ class RunGitTest {
         assertThat(RunGit.head(repo.path())).isEqualTo(checkpoint);   // work intact, not reset
         assertThat(java.nio.file.Files.readString(repo.path().resolve("A.java"))).contains("int y;");
     }
+
+    @Test
+    void isAtCheckpointComparesBranchHeadAndToleratesNulls() throws Exception {
+        FixtureRepo repo = FixtureRepo.in(tmp, "lib").file("A.java", "class A {}\n").commit("base");
+        String base = repo.headSha();
+        RunGit.startBranch(repo.path(), "sdd/S-v1/lib", base);
+
+        assertThat(RunGit.isAtCheckpoint(repo.path(), "sdd/S-v1/lib", base)).isTrue();
+        assertThat(RunGit.isAtCheckpoint(repo.path(), "sdd/S-v1/lib", "0000000")).isFalse();
+        assertThat(RunGit.isAtCheckpoint(repo.path(), null, base)).isFalse();
+        assertThat(RunGit.isAtCheckpoint(repo.path(), "sdd/S-v1/lib", null)).isFalse();
+    }
 }

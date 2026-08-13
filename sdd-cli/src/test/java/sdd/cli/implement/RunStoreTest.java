@@ -2,6 +2,8 @@ package sdd.cli.implement;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import sdd.cli.review.Decision;
+import sdd.cli.review.DecisionRecord;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -179,5 +181,44 @@ class RunStoreTest {
         assertThat(store.reviewDir(runDir)).isEqualTo(runDir.resolve("review"));
         assertThat(runDir.resolve("review/report.md")).hasContent("# Report\n");
         assertThat(runDir.resolve("review/grp-lib.diff")).exists();   // sanitized
+    }
+
+    @Test
+    void decisionsRoundTripUnderTheReviewDir() {
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+
+        assertThat(store.readDecisions(runDir)).isEmpty();
+        store.writeDecisions(runDir, Map.of(
+                "lib", new DecisionRecord(Decision.APPROVED, ""),
+                "svc", new DecisionRecord(Decision.REJECTED, "flaky test")));
+
+        assertThat(runDir.resolve("review/decisions.json")).exists();
+        assertThat(store.readDecisions(runDir).get("svc").reason()).isEqualTo("flaky test");
+        assertThat(store.readDecisions(runDir).get("lib").decision()).isEqualTo(Decision.APPROVED);
+    }
+
+    @Test
+    void anUnknownDecisionTokenDegradesToPendingRatherThanCrashing() throws Exception {
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        Files.createDirectories(store.reviewDir(runDir));
+        Files.writeString(store.reviewDir(runDir).resolve("decisions.json"),
+                "{\"lib\":{\"decision\":\"BLESSED\",\"reason\":\"\"}}");
+
+        assertThat(store.readDecisions(runDir).get("lib").decision()).isEqualTo(Decision.PENDING);
+    }
+
+    @Test
+    void aStaleLockIsNotReportedAsHeld() throws Exception {
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+
+        assertThat(store.isLockHeld(runDir)).isTrue();           // our own live PID
+        Files.writeString(runDir.resolve("lock"), "999999999\n"); // a PID that cannot be alive
+        assertThat(store.isLockHeld(runDir)).isFalse();
+
+        store.releaseLock(runDir);
+        assertThat(store.isLockHeld(runDir)).isFalse();
     }
 }

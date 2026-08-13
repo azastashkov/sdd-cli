@@ -1,6 +1,8 @@
 package sdd.cli.implement;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import sdd.cli.review.Decision;
+import sdd.cli.review.DecisionRecord;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -109,6 +111,14 @@ public final class RunStore {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    /** True only when a lock file exists AND it is not stale — a bare existence check would
+     *  permanently block review of the very run whose {@code sdd implement} crashed, which is
+     *  exactly the run a human most needs to review. */
+    public boolean isLockHeld(Path runDir) {
+        Path lock = runDir.resolve("lock");
+        return Files.exists(lock) && !lockIsStale(lock);
     }
 
     public void releaseLock(Path runDir) {
@@ -289,6 +299,63 @@ public final class RunStore {
         try {
             Path dir = Files.createDirectories(reviewDir(runDir));
             Files.writeString(dir.resolve(sanitize(fileName)), content);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** The Gate-2 decision file, keyed by repo. Empty (not null) when the run has no decisions
+     *  yet — every repo not present defaults to PENDING via {@link sdd.cli.review.Decisions#of}. */
+    public Map<String, DecisionRecord> readDecisions(Path runDir) {
+        Path file = reviewDir(runDir).resolve("decisions.json");
+        if (!Files.exists(file)) {
+            return Map.of();
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode root = JSON.readTree(Files.readString(file));
+            Map<String, DecisionRecord> result = new java.util.LinkedHashMap<>();
+            root.properties().forEach(entry -> result.put(entry.getKey(),
+                    new DecisionRecord(parseDecision(entry.getValue().path("decision").asText()),
+                            entry.getValue().path("reason").asText(""))));
+            return result;
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** A hand-edited or future-versioned file must not crash the command with "No enum constant …" —
+     *  an unrecognized token degrades to PENDING, the safe default (re-decide, don't misread). */
+    private static Decision parseDecision(String token) {
+        try {
+            return Decision.valueOf(token);
+        } catch (IllegalArgumentException e) {
+            return Decision.PENDING;
+        }
+    }
+
+    /** Concurrent {@code sdd review approve}/{@code reject} invocations on the same run are
+     *  explicitly supported, so this copies {@link #writeState}'s temp+atomic-rename idiom: a
+     *  plain write would lose one writer's update silently, or truncate the file on a crash. */
+    public void writeDecisions(Path runDir, Map<String, DecisionRecord> decisions) {
+        record Dto(String decision, String reason) {
+        }
+        try {
+            Path dir = Files.createDirectories(reviewDir(runDir));
+            Map<String, Dto> dto = new java.util.TreeMap<>();
+            decisions.forEach((repo, record) -> dto.put(repo, new Dto(record.decision().name(), record.reason())));
+            String json = JSON.writerWithDefaultPrettyPrinter().writeValueAsString(dto);
+            Path target = dir.resolve("decisions.json");
+            Path tmp = dir.resolve("decisions.json.tmp");
+            Files.writeString(tmp, json);
+            try {
+                try {
+                    Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                    Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(tmp);
+            }
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
