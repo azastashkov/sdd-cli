@@ -53,11 +53,12 @@ public final class RunStore {
     }
 
     public void writeState(Path runDir, RunState state) {
-        record Snapshot(String runId, List<RepoRun> repos) {
+        record Snapshot(String runId, String pausedReason, long tokensSpent, List<RepoRun> repos) {
         }
         try {
             String json = JSON.writerWithDefaultPrettyPrinter()
-                    .writeValueAsString(new Snapshot(state.runId(), state.repos()));
+                    .writeValueAsString(new Snapshot(state.runId(), state.pausedReason(),
+                            state.tokensSpent(), state.repos()));
             Path tmp = runDir.resolve("state.json.tmp");
             Files.writeString(tmp, json);
             try {

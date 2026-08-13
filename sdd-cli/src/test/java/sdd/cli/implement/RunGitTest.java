@@ -44,4 +44,17 @@ class RunGitTest {
         assertThat(RunGit.head(repo.path())).isEqualTo(base);
         assertThat(Files.readString(repo.path().resolve("A.java"))).isEqualTo("class A {}\n");
     }
+
+    @Test
+    void startBranchRemovesUntrackedFilesFromAPriorAttempt() throws Exception {
+        FixtureRepo repo = FixtureRepo.in(tmp, "lib").file("A.java", "class A {}\n").commit("base");   // NB: RunGitTest's @TempDir field is named tmp
+        RunGit.startBranch(repo.path(), "sdd/run/lib", repo.headSha());
+        Files.writeString(repo.path().resolve("Debris.java"), "class Debris {}\n");   // agent-created, never committed
+        Files.createDirectories(repo.path().resolve("build/tmp"));
+
+        RunGit.startBranch(repo.path(), "sdd/run/lib", repo.headSha());
+
+        assertThat(Files.exists(repo.path().resolve("Debris.java"))).isFalse();
+        assertThat(Files.exists(repo.path().resolve("build"))).isFalse();
+    }
 }

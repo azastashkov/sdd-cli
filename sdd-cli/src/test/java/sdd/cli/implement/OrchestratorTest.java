@@ -8,7 +8,9 @@ import sdd.agent.run.RepoStepRunner;
 import sdd.agent.run.RunnerSettings;
 import sdd.core.db.Database;
 import sdd.core.llm.ChatMessage;
+import sdd.core.llm.ChatModel;
 import sdd.core.llm.ChatResponse;
+import sdd.core.llm.ModelException;
 import sdd.core.llm.ToolCall;
 import sdd.core.llm.Usage;
 import sdd.core.testing.FixtureRepo;
@@ -59,10 +61,20 @@ class OrchestratorTest {
                 List.of(), List.of());
     }
 
-    private Orchestrator orchestrator(ScriptedChatModel model) {
-        return new Orchestrator(new RepoStepRunner(db.jdbi()), model, "qwen",
+    private static PlanModel planFor(String repo, String base) {
+        return new PlanModel("S", 1, "", "",
+                List.of(new PlanModel.PlanRepo(repo, "seed", "SEED", "minor", base)),
+                List.of(List.of(repo)), List.of(), List.of(), List.of());
+    }
+
+    private Orchestrator orchestrator(ChatModel coder, ChatModel escalation) {
+        return new Orchestrator(new RepoStepRunner(db.jdbi()), coder, "qwen", escalation, "deepseek",
                 repo -> RunnerSettings.defaults(null), new RunStore(InstantSource.fixed(Instant.EPOCH)),
-                InstantSource.fixed(Instant.EPOCH));
+                30_000_000L);
+    }
+
+    private Orchestrator orchestrator(ScriptedChatModel model) {
+        return orchestrator(model, model);   // legacy tests: same script serves both attempts
     }
 
     @Test
@@ -94,15 +106,98 @@ class OrchestratorTest {
         FixtureRepo svc = repoWith("svc", "exit 0");
         Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
         Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()), "svc", step("svc", svc.path()));
-        // lib: two done→verify-fail cycles → VERIFY_FAILED; svc is never reached (skipped)
+        // lib's attempt 1 consumes two `done` responses (two verify-fail cycles → VERIFY_FAILED), and
+        // attempt 2 (escalated) consumes two more before lib is finally FAILED; svc is never reached (skipped)
         ScriptedChatModel model = new ScriptedChatModel(List.of(
                 call("1", "done", "{\"result\":\"success\",\"summary\":\"try1\"}"),
-                call("2", "done", "{\"result\":\"success\",\"summary\":\"try2\"}")));
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"try2\"}"),
+                call("3", "done", "{\"result\":\"success\",\"summary\":\"try3\"}"),
+                call("4", "done", "{\"result\":\"success\",\"summary\":\"try4\"}")));
 
         Orchestrator.RunResult result = orchestrator(model).run(runDir, plan(lib.headSha(), svc.headSha()), steps);
 
         assertThat(result.exitCode()).isEqualTo(2);
         assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.FAILED);
         assertThat(result.state().stateOf("svc")).isEqualTo(RepoState.SKIPPED_UPSTREAM_FAILED);
+    }
+
+    @Test
+    void secondAttemptEscalatesFromAHardResetTreeAndSucceeds() throws Exception {
+        // Verification passes only when A.java contains the marker the ESCALATION model writes.
+        FixtureRepo lib = repoWith("lib", "grep -q escalated A.java && exit 0 || exit 1");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()));
+        ScriptedChatModel coder = new ScriptedChatModel(List.of(
+                call("1", "apply_edit", "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int attempt1; }\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"try1\"}"),
+                call("3", "done", "{\"result\":\"success\",\"summary\":\"try2\"}")));
+        ScriptedChatModel escalation = new ScriptedChatModel(List.of(
+                call("4", "apply_edit", "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int escalated; }\"}"),
+                call("5", "done", "{\"result\":\"success\",\"summary\":\"escalated fix\"}")));
+
+        Orchestrator.RunResult result = orchestrator(coder, escalation)
+                .run(runDir, planFor("lib", lib.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(0);
+        assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.SUCCEEDED);
+        String a = Files.readString(lib.path().resolve("A.java"));
+        assertThat(a).contains("escalated").doesNotContain("attempt1");   // attempt 1's edit was hard-reset away
+        assertThat(escalation.requests().get(0).messages())
+                .anyMatch(m -> m.content() != null && m.content().contains("previous attempt"));   // digest delivered
+    }
+
+    @Test
+    void endpointOutagePausesTheRunAtExit3() throws Exception {
+        FixtureRepo lib = repoWith("lib", "exit 0");
+        FixtureRepo svc = repoWith("svc", "exit 0");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()), "svc", step("svc", svc.path()));
+        ChatModel dead = req -> {
+            throw new ModelException("transport error: Connection refused", new java.io.IOException("refused"));
+        };
+
+        Orchestrator.RunResult result = orchestrator(dead, dead).run(runDir, plan(lib.headSha(), svc.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(3);
+        assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.PAUSED_ENDPOINT);
+        assertThat(result.state().stateOf("svc")).isEqualTo(RepoState.PENDING);   // walk stopped, not cascaded
+        assertThat(result.state().pausedReason()).contains("endpoint");
+        assertThat(Files.readString(runDir.resolve("state.json"))).contains("PAUSED_ENDPOINT").contains("pausedReason");
+    }
+
+    @Test
+    void infraFailurePausesTheRunAtExit3() throws Exception {
+        FixtureRepo lib = repoWith("lib", "echo 'Could not resolve com.acme:x'; exit 1");
+        FixtureRepo svc = repoWith("svc", "exit 0");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()), "svc", step("svc", svc.path()));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"ok\"}")));
+
+        Orchestrator.RunResult result = orchestrator(model).run(runDir, plan(lib.headSha(), svc.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(3);
+        assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.PAUSED_INFRA);
+        assertThat(result.state().stateOf("svc")).isEqualTo(RepoState.PENDING);
+    }
+
+    @Test
+    void runTokenBudgetExhaustionPausesBeforeTheNextRepo() throws Exception {
+        FixtureRepo lib = repoWith("lib", "exit 0");
+        FixtureRepo svc = repoWith("svc", "exit 0");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()), "svc", step("svc", svc.path()));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"lib ok\"}")));
+        Orchestrator tight = new Orchestrator(new RepoStepRunner(db.jdbi()), model, "qwen", model, "deepseek",
+                repo -> RunnerSettings.defaults(null), new RunStore(InstantSource.fixed(Instant.EPOCH)),
+                10L);   // lib's single call spends 15 tokens > 10
+
+        Orchestrator.RunResult result = tight.run(runDir, plan(lib.headSha(), svc.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(3);
+        assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.SUCCEEDED);
+        assertThat(result.state().stateOf("svc")).isEqualTo(RepoState.PENDING);
+        assertThat(result.state().pausedReason()).contains("token budget");
     }
 }

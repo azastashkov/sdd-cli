@@ -46,6 +46,7 @@ public final class RunGit {
             } else {
                 git.checkout().setCreateBranch(true).setName(branch).setStartPoint(baseSha).call();
             }
+            git.clean().setCleanDirectories(true).setForce(true).call();
         } catch (Exception e) {
             throw new IllegalStateException("cannot start branch " + branch + " in " + repo + ": "
                     + e.getMessage(), e);

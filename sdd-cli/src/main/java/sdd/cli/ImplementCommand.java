@@ -38,6 +38,8 @@ import java.util.function.Function;
 @Command(name = "implement",
         description = "Execute an approved plan.json across the estate (single attempt per repo)")
 public final class ImplementCommand implements Callable<Integer> {
+    private static final long RUN_TOKEN_BUDGET = 30_000_000L;   // design line 59; sdd.yml override is 4C-3b
+
     @Option(names = "--workspace", description = "Workspace directory (default: current dir)")
     Path workspace = Path.of(".");
 
@@ -46,7 +48,8 @@ public final class ImplementCommand implements Callable<Integer> {
 
     @Spec CommandSpec spec;
 
-    ChatModel coderForTest;   // test seam — mirrors ApproveCommand.smokeForTest
+    ChatModel coderForTest;        // test seam — mirrors ApproveCommand.smokeForTest
+    ChatModel escalationForTest;   // test seam for the attempt-2 model
 
     @Override
     public Integer call() {
@@ -90,8 +93,12 @@ public final class ImplementCommand implements Callable<Integer> {
                 }
 
                 ModelEndpoint coderEndpoint = config.models().get("coder");
+                ModelEndpoint plannerEndpoint = config.models().get("planner");
                 ChatModel coder = coderForTest != null ? coderForTest : new HttpChatModel(coderEndpoint);
+                ChatModel escalation = escalationForTest != null ? escalationForTest
+                        : coderForTest != null ? coderForTest : new HttpChatModel(plannerEndpoint);
                 String coderName = coderEndpoint.model();
+                String escalationName = plannerEndpoint.model();
                 Function<String, RunnerSettings> settingsFor = repo -> {
                     Path root = steps.get(repo).repoRoot();
                     Path javaHome = config.jdkHomes()
@@ -105,15 +112,28 @@ public final class ImplementCommand implements Callable<Integer> {
                 RunStore store = RunStore.system();
                 Path runDir = store.create(workspace, runId, planText);
                 Orchestrator orchestrator = new Orchestrator(new RepoStepRunner(jdbi), coder, coderName,
-                        settingsFor, store, java.time.InstantSource.system());
+                        escalation, escalationName, settingsFor, store, RUN_TOKEN_BUDGET);
                 Orchestrator.RunResult result = orchestrator.run(runDir, plan, steps);
 
                 for (var repo : result.state().repos()) {
                     out.println(repo.repo() + ": " + repo.state()
                             + (repo.detail() == null || repo.detail().isBlank() ? "" : " — " + repo.detail()));
                 }
-                out.println("run " + runId + " " + (result.exitCode() == 0 ? "COMPLETE" : "PARTIAL")
+                String label = result.exitCode() == 0 ? "COMPLETE"
+                        : result.exitCode() == 3 ? "PAUSED" : "PARTIAL";
+                out.println("run " + runId + " " + label
                         + " (state: " + runDir.resolve("state.json") + ")");
+                if (result.exitCode() == 3) {
+                    out.println("paused: " + result.state().pausedReason());
+                    if (result.state().pausedReason().contains("token budget")) {
+                        // tokensSpent persists across --resume, so a budget pause re-pauses immediately;
+                        // honesty over a dead-end hint until 4C-3b makes the budget configurable.
+                        out.println("the run token budget is fixed this phase — delete " + runDir
+                                + " to start over, or wait for 4C-3b's configurable budget");
+                    } else {
+                        out.println("resume with: sdd implement --resume " + planJsonPath);
+                    }
+                }
                 return result.exitCode();
             }
         } catch (RuntimeException | java.io.IOException e) {
