@@ -1,5 +1,6 @@
 package sdd.cli.implement;
 
+import sdd.agent.run.InfraClassifier;
 import sdd.agent.run.RepoStep;
 import sdd.agent.run.RepoStepRunner;
 import sdd.agent.run.RunnerSettings;
@@ -21,6 +22,8 @@ import java.util.function.Function;
  * checkpoint-commit on success, cascade failures to downstream skips, and pause the run (exit 3) on
  * endpoint outage, infrastructure failure, or run-budget exhaustion.
  * Concurrency and M8 staleness recovery are 4C-3b.
+ * MAVEN_LOCAL propagation (4C-2b): bump edits re-applied after every branch reset; providers
+ * publish to the run-scoped m2 after their checkpoint commit.
  */
 public final class Orchestrator {
     /** Attempt-2 triggers. BLOCKED asked for a human; INFRA pauses; SUCCESS needs nothing. */
@@ -35,13 +38,16 @@ public final class Orchestrator {
     private final Function<String, RunnerSettings> settingsFor;
     private final RunStore store;
     private final long runTokenBudget;
+    private final Map<String, RepoPropagation> propagation;
+    private final MavenLocalPublisher publisher;
 
     public record RunResult(int exitCode, RunState state) {
     }
 
     public Orchestrator(RepoStepRunner runner, ChatModel coder, String coderModelName,
                         ChatModel escalation, String escalationModelName,
-                        Function<String, RunnerSettings> settingsFor, RunStore store, long runTokenBudget) {
+                        Function<String, RunnerSettings> settingsFor, RunStore store, long runTokenBudget,
+                        Map<String, RepoPropagation> propagation, MavenLocalPublisher publisher) {
         this.runner = runner;
         this.coder = coder;
         this.coderModelName = coderModelName;
@@ -50,6 +56,8 @@ public final class Orchestrator {
         this.settingsFor = settingsFor;
         this.store = store;
         this.runTokenBudget = runTokenBudget;
+        this.propagation = Map.copyOf(propagation);
+        this.publisher = publisher;
     }
 
     public RunResult run(Path runDir, PlanModel plan, Map<String, RepoStep> steps) {
@@ -93,6 +101,7 @@ public final class Orchestrator {
                 boolean escalated = false;
                 try {
                     RunGit.startBranch(step.repoRoot(), branch, base);
+                    applyBumps(repo, step, events);
                     outcome = runner.run(step, coder, coderModelName, settingsFor.apply(repo), "");
                     events.addAll(outcome.events());
                     state.addTokens(outcome.tokens());
@@ -100,6 +109,7 @@ public final class Orchestrator {
                         escalated = true;
                         events.add("attempt 2: hard reset to base, escalating to " + escalationModelName);
                         RunGit.startBranch(step.repoRoot(), branch, base);
+                        applyBumps(repo, step, events);
                         StepOutcome second = runner.run(step, escalation, escalationModelName,
                                 settingsFor.apply(repo), attemptDigest(outcome));
                         events.addAll(second.events());
@@ -120,6 +130,26 @@ public final class Orchestrator {
                 String attemptTag = escalated ? "attempt 2 (" + escalationModelName + ") " : "";
                 if (outcome.result() == StepResult.SUCCESS) {
                     String sha = RunGit.commitAll(step.repoRoot(), "sdd: " + runId + " " + repo);
+                    RepoPropagation prop = propagation.getOrDefault(repo, RepoPropagation.none());
+                    if (prop.publish() != null) {
+                        MavenLocalPublisher.Result published = publisher.publish(step.repoRoot(),
+                                settingsFor.apply(repo).javaHome(), prop.publish().version(),
+                                prop.publish().m2Dir());
+                        events.add("publish " + prop.publish().version() + ": " + summarize(published.log()));
+                        store.writeAgentEvents(runDir, repo, events);   // overwrite now includes publish events
+                        if (!published.ok()) {
+                            if (InfraClassifier.isInfra(published.log())) {
+                                state.pause("infrastructure failure publishing " + repo
+                                        + " — fix the environment and resume");
+                                transition(runDir, state, repo, RepoState.PAUSED_INFRA, branch, null,
+                                        attemptTag + "publish: " + summarize(published.log()));
+                                break;
+                            }
+                            transition(runDir, state, repo, RepoState.FAILED, branch, null,
+                                    attemptTag + "publish failed: " + summarize(published.log()));
+                            continue;
+                        }
+                    }
                     transition(runDir, state, repo, RepoState.SUCCEEDED, branch, sha,
                             attemptTag + outcome.summary());
                 } else if (outcome.result() == StepResult.INFRA) {
@@ -138,6 +168,26 @@ public final class Orchestrator {
         boolean paused = state.pausedReason() != null;
         boolean allSucceeded = state.repos().stream().allMatch(r -> r.state() == RepoState.SUCCEEDED);
         return new RunResult(paused ? 3 : allSucceeded ? 0 : 2, state);
+    }
+
+    private void applyBumps(String repo, RepoStep step, List<String> events) {
+        for (RepoPropagation.BumpEdit bump : propagation.getOrDefault(repo, RepoPropagation.none()).bumps()) {
+            List<java.nio.file.Path> edited = VersionBump.apply(step.repoRoot(), bump.group(),
+                    bump.name(), bump.oldVersion(), bump.newVersion());
+            String coordinate = bump.group() + ":" + bump.name();
+            if (edited.isEmpty()) {
+                events.add("bump: no declaration of " + coordinate + ":" + bump.oldVersion()
+                        + " found — left unedited");
+            } else {
+                events.add("bump: " + coordinate + " " + bump.oldVersion() + " -> " + bump.newVersion()
+                        + " in " + edited.size() + " file(s)");
+            }
+        }
+    }
+
+    private static String summarize(String log) {
+        String flat = log.replace('\n', ' ').strip();
+        return flat.length() > 200 ? flat.substring(0, 200) : flat;
     }
 
     private static boolean endpointTrouble(ModelException e) {
