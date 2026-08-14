@@ -611,4 +611,44 @@ class ContractRecheckTest {
         assertThat(finding.missing()).containsExactly("GET /admin/other");
         assertThat(finding.unresolved()).isEmpty();
     }
+
+    private Path libWithBareRootGetMapping() throws Exception {
+        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme/svc"));
+        Files.writeString(root.resolve("RootController.java"), """
+                package com.acme.svc;
+                import org.springframework.web.bind.annotation.*;
+                @RestController
+                public class RootController {
+                    @GetMapping
+                    public String root() { return ""; }
+                }
+                """);
+        return ws.resolve("lib");
+    }
+
+    @Test
+    void aRootEndpointDoesNotExcuseAnUnrelatedMissingMemberOfTheSameVerb() throws Exception {
+        // Pins the dropped REST shape's safe direction (task-3-report.md): pathTemplate=="/" is
+        // ambiguous between a genuine bare-root @GetMapping and an unresolvable path expression,
+        // and ContractActualizer deliberately marks neither as unresolved. A bare root endpoint
+        // — same verb, GET — must never be mistaken by the partition rule for an excuse covering
+        // some other, genuinely missing GET member. If it were, this surface would silently read
+        // as NOT_RESOLVED instead of DIVERGED_FROM_PLAN.
+        Path lib = libWithBareRootGetMapping();   // GET / only, fully resolved, never marked
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "rest", "lib",
+                List.of("svc"), "GET /admin/other", null, List.of("GET /admin/other"));
+        String actual = ContractActualizer.actualize(lib, List.of(c)).get("c1");
+        assertThat(actual).doesNotContain(ContractActualizer.UNRESOLVED_MARKER);   // sanity
+        store.writeContract(runDir, "c1", actual);
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        ContractRecheck.Finding finding = findings.get(0);
+        assertThat(finding.conformance()).isEqualTo(ContractRecheck.Conformance.DIVERGED_FROM_PLAN);
+        assertThat(finding.missing()).containsExactly("GET /admin/other");
+        assertThat(finding.unresolved()).isEmpty();
+    }
 }

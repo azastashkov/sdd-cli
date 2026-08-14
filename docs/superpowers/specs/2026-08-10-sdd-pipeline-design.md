@@ -199,9 +199,13 @@ deliberately left out of scope.
 The 2026-08-14 declared-contract amendment gave `Conformance` four values. It needs a fifth. Line 42's
 planner rule is **unresolved ≠ nonexistent**, but the conformance axis as shipped cannot say
 "unresolved", so it says `DIVERGED_FROM_PLAN` — the same verdict a genuinely wrong implementation
-gets. A `@Value`-driven Kafka topic, an unresolvable REST path expression, and a verbless
-`@RequestMapping` are all reachable on a real estate, and all three would be reported as an
-implementation defect when the truth is that extraction could not see far enough.
+gets. A `@Value`-driven Kafka topic and a verbless `@RequestMapping` are both reachable on a real
+estate, and both would be reported as an implementation defect when the truth is that extraction
+could not see far enough.
+
+*Correction (phase 5C-2, task 3):* this amendment originally also named an unresolvable REST path
+expression as a third reachable shape. Implementation proved that claim false — see the `rest`
+bullet below, which now states what is actually distinguishable instead of what was assumed to be.
 
 `Conformance` gains **`NOT_RESOLVED`**: a declared member whose actual counterpart exists but could not
 be resolved by extraction. It ranks with `NOT_COMPARABLE` rather than `DIVERGED_FROM_PLAN` — the report
@@ -215,10 +219,20 @@ does not change `sdd-index`:
   the raw expression as the topic when `ValueResolver` cannot resolve it. `ContractActualizer` marks
   such an entry rather than emitting it as if it were a literal topic.
 - `rest` — `SpringModel.EndpointInfo` carries no resolution field, and adding one would reach into the
-  indexed knowledge base. The two degenerate shapes are therefore recognised from the extractor's own
-  output: an empty path template (`RestEndpointExtractor.resolvePaths` substitutes `""`) and the verb
-  `ANY` (a verbless `@RequestMapping`), which `DeclaredContract`'s method vocabulary cannot legally
-  declare in the first place.
+  indexed knowledge base. Only one degenerate shape is recognisable from the extractor's own output
+  without that field: the verb `ANY` (a verbless `@RequestMapping`), which `DeclaredContract`'s
+  method vocabulary cannot legally declare in the first place. An empty path template is **not**
+  distinguishable this way, despite `RestEndpointExtractor.resolvePaths` substituting `""` on a
+  failed resolution: `RestEndpointExtractor.extract` always joins that result through
+  `Routes.join(base, path)` (`sdd-core/src/main/java/sdd/core/route/Routes.java`), whose own floor
+  guard — `if (joined.isEmpty()) return "/";` — means the joined `pathTemplate` field can never
+  literally be `""`. It floors to `"/"` for every combination of empty base and empty path,
+  regardless of *why* either was empty, so a genuinely unresolvable path expression produces exactly
+  the same `pathTemplate` as a plain bare-root endpoint (e.g. a `@GetMapping` with no path attribute
+  at all, which reaches `"/"` through the same floor without `resolvePaths`'s substitution branch
+  ever firing). `EndpointInfo` carries no field that tells the two apart, so this shape is dropped
+  rather than approximated by a heuristic that would misclassify real root endpoints — see the
+  plan's Known carried items.
 - `java-api` — no unresolved shape exists; type extraction either sees a member or does not.
 
 The rule that keeps this honest is the same one the axis already follows: **a member is only
