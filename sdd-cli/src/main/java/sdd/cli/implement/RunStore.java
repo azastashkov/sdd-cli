@@ -457,15 +457,26 @@ public final class RunStore {
      *
      * <p>For callers with nothing to conflict against — a test writing its own fixture, or the very
      * first write of a run nobody else can be racing yet — this reads a fresh fingerprint
-     * immediately beforehand and delegates to {@link #writeDecisions(Path, Map, String)}, discarding
-     * its boolean: a caller here has no transition to re-apply and no loop to retry with, so a
-     * refusal would just mean silently doing nothing, which is worse than the write this replaces.
-     * A caller that CAN be raced — {@code DecisionCommand}, {@code InteractiveReview} — must use the
-     * fingerprinted form and its own retry loop instead; see that method's javadoc for what it
-     * guarantees and what it does not.
+     * immediately beforehand and delegates to {@link #writeDecisions(Path, Map, String)}. This
+     * caller has no transition to re-apply and no loop to retry with, so a refusal is not something
+     * it can recover from — but it must not be swallowed either: silently doing nothing would
+     * recreate the exact hazard this class exists to close (a lost verdict that looks identical to
+     * "never decided"). So a refusal here throws {@link IllegalStateException} naming the run
+     * instead of returning quietly. A caller that CAN recover — {@code DecisionCommand},
+     * {@code InteractiveReview} — must use the fingerprinted form and its own retry loop instead;
+     * see that method's javadoc for what it guarantees and what it does not.
+     *
+     * @throws IllegalStateException if {@code decisions.json} changed between the fingerprint read
+     *                                immediately above and this write — this overload has no retry
+     *                                loop to recover with, so it fails loudly rather than dropping
+     *                                the caller's write
      */
     public void writeDecisions(Path runDir, Map<String, DecisionRecord> decisions) {
-        writeDecisions(runDir, decisions, readDecisionsSnapshot(runDir).fingerprint());
+        if (!writeDecisions(runDir, decisions, readDecisionsSnapshot(runDir).fingerprint())) {
+            throw new IllegalStateException("decisions.json changed concurrently under " + runDir
+                    + " — this caller has no retry loop; use writeDecisions(runDir, decisions, "
+                    + "fingerprint) and retry the one transition instead");
+        }
     }
 
     /**

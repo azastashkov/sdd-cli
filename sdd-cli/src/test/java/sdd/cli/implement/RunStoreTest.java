@@ -252,13 +252,33 @@ class RunStoreTest {
         }
     }
 
+    /**
+     * {@code writeDecisions(Path, Map)} is documented for callers with nothing to conflict
+     * against — it now throws rather than silently drops a write once something else has changed
+     * the file underneath (see {@link RunStore#writeDecisions(Path, Map)}'s javadoc). Hammering it
+     * from six REAL concurrent writers is exactly that scenario, deliberately, on every round: this
+     * test is not exercising the single-writer contract, it is exercising {@code publishAtomically}
+     * underneath it (unique temp names, no torn reads, no leftover staging files) under real
+     * contention, so a conflict throw here is expected and is caught rather than treated as a
+     * regression. What this test does NOT prove: that every round's write survived, or that the
+     * single-key map asserted after a SUCCESSFUL round is that thread's OWN payload rather than a
+     * sibling's that landed in between — {@code writeDecisions(Path, Map, String)} plus a caller-
+     * owned retry loop (as {@code DecisionCommand.applyWithRetry} does) is what a genuinely
+     * concurrent writer must use to avoid losing its own update; that is covered separately by
+     * {@code RunStoreTest#aWriteWhoseFingerprintIsStaleIsRefused} and
+     * {@code ReviewDecisionsCommandTest#aDecisionWrittenUnderneathIsNotLostWhenThisCommandRetries}.
+     */
     @Test
     void concurrentDecisionWritersNeitherCorruptTheFileNorFailOnASharedTempName() throws Exception {
         Path runDir = store.create(ws, "S-v1", "{}", "");
 
         hammer(6, 60, id -> {
-            store.writeDecisions(runDir, Map.of("repo" + id,
-                    new DecisionRecord(Decision.APPROVED, "reason " + id)));
+            try {
+                store.writeDecisions(runDir, Map.of("repo" + id,
+                        new DecisionRecord(Decision.APPROVED, "reason " + id)));
+            } catch (IllegalStateException conflict) {
+                return;   // another writer won this round — expected under real six-way contention
+            }
             // A reader must never see a half-written file: readDecisions parses the whole
             // document, so a torn read fails here rather than degrading silently.
             assertThat(store.readDecisions(runDir)).hasSize(1);
@@ -305,6 +325,43 @@ class RunStoreTest {
         // Our own refused write changed nothing — the file is exactly what the other writer left it,
         // not our REDO for lib and not the APPROVED it held when we read the stale snapshot.
         assertThat(store.readDecisions(runDir)).doesNotContainKey("lib");
+    }
+
+    /**
+     * {@code writeDecisions(Path, Map)} has no transition to re-apply and no retry loop, so it must
+     * not do what the fingerprinted overload's caller gets to choose NOT to do: silently drop a
+     * write whose fingerprint has gone stale. A caller with nothing to conflict against that DOES
+     * get raced has a bug elsewhere (this method's contract assumes single-writer use); the loud
+     * failure here is what surfaces that bug instead of quietly losing the write, which is the exact
+     * hazard this whole class of fix exists to close.
+     *
+     * <p>The 2-arg overload reads its OWN fingerprint fresh, immediately before it writes — so a
+     * write that merely happens BEFORE this method is called is not stale to it at all, it is just
+     * the current state the fresh read picks up. The only way to make its internal write actually
+     * lose the race is a real writer landing in the gap between that internal read and the internal
+     * write a few method calls later, which needs genuine concurrency to trigger — the same
+     * technique {@code concurrentDecisionWritersNeitherCorruptTheFileNorFailOnASharedTempName} uses,
+     * which reliably reproduces this on effectively every run once six real writers contend.
+     */
+    @Test
+    void aStaleTwoArgWriteThrowsRatherThanSilentlyDroppingTheWrite() throws Exception {
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        java.util.concurrent.atomic.AtomicInteger conflicts = new java.util.concurrent.atomic.AtomicInteger();
+
+        hammer(6, 60, id -> {
+            try {
+                store.writeDecisions(runDir, Map.of("repo" + id,
+                        new DecisionRecord(Decision.APPROVED, "reason " + id)));
+            } catch (IllegalStateException conflict) {
+                assertThat(conflict.getMessage()).contains(runDir.toString());
+                conflicts.incrementAndGet();
+            }
+        });
+
+        // Six writers racing 360 rounds of the same file WILL lose that race at least once; this
+        // is what proves the throw actually fires under real contention, not just that the code
+        // compiles a throw statement nothing ever reaches.
+        assertThat(conflicts.get()).isGreaterThan(0);
     }
 
     @Test
