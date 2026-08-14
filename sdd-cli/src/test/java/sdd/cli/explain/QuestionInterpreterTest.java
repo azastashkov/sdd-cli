@@ -193,6 +193,28 @@ class QuestionInterpreterTest {
         assertThat(r.notes()).anySatisfy(n -> assertThat(n).contains("truncated"));
     }
 
+    @Test
+    void dependencyPathTruncationKeepsBothRolesEvenWhenObjectSortsLast() {
+        // Five valid subject-role entities plus the object-role entity last: a naive first-4
+        // truncation would drop the only object, shipping DEPENDENCY_PATH with no object.
+        RetrievalRequest r = interpret("why does svc-orders depend on platform", """
+                {"intent":"dependency_path","restatement":"?",
+                 "entities":[{"kind":"repo","value":"svc-orders","role":"subject"},
+                             {"kind":"repo","value":"lib-api","role":"subject"},
+                             {"kind":"repo","value":"svc-billing","role":"subject"},
+                             {"kind":"repo","value":"svc-notify","role":"subject"},
+                             {"kind":"repo","value":"platform","role":"object"}],"search_terms":[]}""", "stop");
+
+        assertThat(r.intent()).isEqualTo(Intent.DEPENDENCY_PATH);
+        assertThat(r.entities()).hasSize(4);
+        assertThat(r.entities()).anySatisfy(e -> assertThat(e.object()).isFalse());
+        assertThat(r.entities()).anySatisfy(e -> {
+            assertThat(e.object()).isTrue();
+            assertThat(e.value()).isEqualTo("platform");
+        });
+        assertThat(r.notes()).anySatisfy(n -> assertThat(n).contains("truncated"));
+    }
+
     // --- fence handling ---------------------------------------------------------------------
 
     @Test
@@ -259,13 +281,17 @@ class QuestionInterpreterTest {
     }
 
     @Test
-    void theFourUnavailableReasonsAreDistinct() {
+    void theFiveUnavailableReasonsAreDistinct() {
+        ChatModel refusing = req -> {
+            throw new ModelException("boom", 0);
+        };
+        String modelError = QuestionInterpreter.interpret(db.jdbi(), "q", refusing, "m", 512).notes().get(0);
         String truncated = interpret("q", "{", "length").notes().get(0);
         String nullContent = interpret("q", null, "stop").notes().get(0);
         String nonJson = interpret("q", "garbage", "stop").notes().get(0);
         String jsonArray = interpret("q", "[]", "stop").notes().get(0);
 
-        assertThat(List.of(truncated, nullContent, nonJson, jsonArray)).doesNotHaveDuplicates();
+        assertThat(List.of(modelError, truncated, nullContent, nonJson, jsonArray)).doesNotHaveDuplicates();
     }
 
     // --- deterministic fallback: literal matching only, never inferring an intent ------------
@@ -323,5 +349,34 @@ class QuestionInterpreterTest {
                     assertThat(m.content()).contains("what is lib-core used for"));
             assertThat(req.maxTokens()).isEqualTo(512);
         });
+    }
+
+    @Test
+    void sentRequestCarriesKbRepoAndTopicVocabulary() {
+        ScriptedChatModel model = new ScriptedChatModel(List.of(response("""
+                {"intent":"search","restatement":"?","entities":[],"search_terms":[]}""", "stop")));
+
+        QuestionInterpreter.interpret(db.jdbi(), "what is going on", model, "m", 512);
+
+        assertThat(model.requests()).singleElement().satisfies(req ->
+                assertThat(req.messages()).anySatisfy(m -> assertThat(m.content())
+                        .contains(ExplainFixture.SVC_ORDERS)
+                        .contains(ExplainFixture.ORDERS_TOPIC)));
+    }
+
+    @Test
+    void vocabularyCapMarkerAppearsForLargeEstates() {
+        db.jdbi().useHandle(h -> {
+            for (int i = 0; i < 250; i++) {
+                h.execute("INSERT INTO repo(name, path, kind) VALUES ('extra-repo-" + i + "','/w/extra" + i + "','SERVICE')");
+            }
+        });
+        ScriptedChatModel model = new ScriptedChatModel(List.of(response("""
+                {"intent":"search","restatement":"?","entities":[],"search_terms":[]}""", "stop")));
+
+        QuestionInterpreter.interpret(db.jdbi(), "what is going on", model, "m", 512);
+
+        assertThat(model.requests()).singleElement().satisfies(req ->
+                assertThat(req.messages()).anySatisfy(m -> assertThat(m.content()).contains("more)")));
     }
 }

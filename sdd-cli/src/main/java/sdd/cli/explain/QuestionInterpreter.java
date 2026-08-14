@@ -14,6 +14,7 @@ import sdd.core.llm.ChatResponse;
 import sdd.core.llm.ModelException;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -30,6 +31,7 @@ public final class QuestionInterpreter {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final int MAX_ENTITIES = 4;
     private static final int MAX_TERMS = 8;
+    private static final int MAX_VOCAB_NAMES = 200;
 
     private static final Pattern DOTTED_IDENTIFIER =
             Pattern.compile("\\b[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+\\b");
@@ -68,7 +70,7 @@ public final class QuestionInterpreter {
         ChatResponse response;
         try {
             response = model.complete(new ChatRequest(modelName,
-                    List.of(ChatMessage.system(SYSTEM_PROMPT), ChatMessage.user(question)),
+                    List.of(ChatMessage.system(SYSTEM_PROMPT), ChatMessage.user(composeUserMessage(jdbi, question))),
                     List.of(), maxTokens, 0.15));
         } catch (ModelException e) {
             return fallback(jdbi, question, "model error: " + e.getMessage());
@@ -77,6 +79,32 @@ public final class QuestionInterpreter {
             return fallback(jdbi, question, "response truncated (finish_reason=length)");
         }
         return parse(jdbi, question, response.message().content());
+    }
+
+    /**
+     * The system prompt commands "name entities exactly as they appear in the estate", which is
+     * an unreasonable demand of a model that has never seen the estate's names. Handing over the
+     * KB's repo and topic names — names only, never {@code repo_card} text — gives the model a
+     * vocabulary to be exact about without letting it judge relevance; the anti-invention rule in
+     * {@link #SYSTEM_PROMPT} still governs, so this is an aid, not permission to invent. Capped
+     * so a large estate cannot blow up the prompt; validation downstream is unaffected either way
+     * since every name still has to survive {@link KbEntities#resolve}.
+     */
+    private static String composeUserMessage(Jdbi jdbi, String question) {
+        return "Known repos: " + namesLine(KbEntities.repoNames(jdbi)) + "\n"
+                + "Known topics: " + namesLine(KbEntities.topicNames(jdbi)) + "\n\n"
+                + "Question: " + question;
+    }
+
+    private static String namesLine(List<String> names) {
+        if (names.isEmpty()) {
+            return "(none)";
+        }
+        if (names.size() <= MAX_VOCAB_NAMES) {
+            return String.join(", ", names);
+        }
+        return String.join(", ", names.subList(0, MAX_VOCAB_NAMES))
+                + " (+" + (names.size() - MAX_VOCAB_NAMES) + " more)";
     }
 
     private static RetrievalRequest parse(Jdbi jdbi, String question, String content) {
@@ -133,21 +161,7 @@ public final class QuestionInterpreter {
         }
 
         // dependency_path needs a surviving subject AND a surviving object.
-        if (intent == Intent.DEPENDENCY_PATH) {
-            boolean hasSubject = entities.stream().anyMatch(e -> !e.object());
-            boolean hasObject = entities.stream().anyMatch(EntityRef::object);
-            if (!hasSubject || !hasObject) {
-                if (entities.isEmpty()) {
-                    notes.add("dependency_path needs two named entities; none survived validation"
-                            + " — downgraded to search");
-                    intent = Intent.SEARCH;
-                } else {
-                    notes.add("dependency_path needs both a subject and an object entity; only "
-                            + "one side survived validation — downgraded to consumers");
-                    intent = Intent.CONSUMERS;
-                }
-            }
-        }
+        intent = enforceDependencyPathInvariant(intent, entities, notes);
         // describe/consumers/impact with zero surviving entities have nothing to look up.
         if ((intent == Intent.DESCRIBE || intent == Intent.CONSUMERS || intent == Intent.IMPACT)
                 && entities.isEmpty()) {
@@ -156,16 +170,87 @@ public final class QuestionInterpreter {
             intent = Intent.SEARCH;
         }
 
-        if (entities.size() > MAX_ENTITIES) {
-            notes.add("model named " + entities.size() + " entities — truncated to " + MAX_ENTITIES);
-            entities = new ArrayList<>(entities.subList(0, MAX_ENTITIES));
-        }
+        entities = truncateEntities(intent, entities, notes);
+        // Truncation can only shrink the list. For every other intent that is harmless, but a
+        // DEPENDENCY_PATH result that just lost its only surviving object (or subject) to the
+        // cap would ship claiming a role pair that isn't actually there — truncateEntities keeps
+        // both roles when it can, but re-run the same check on the shipped list as a safety net
+        // rather than trust that invariant blindly.
+        intent = enforceDependencyPathInvariant(intent, entities, notes);
         if (searchTerms.size() > MAX_TERMS) {
             notes.add("model supplied " + searchTerms.size() + " search terms — truncated to " + MAX_TERMS);
             searchTerms = new ArrayList<>(searchTerms.subList(0, MAX_TERMS));
         }
 
         return new RetrievalRequest(intent, entities, searchTerms, restatement, notes, false);
+    }
+
+    private static Intent enforceDependencyPathInvariant(Intent intent, List<EntityRef> entities,
+                                                          List<String> notes) {
+        if (intent != Intent.DEPENDENCY_PATH) {
+            return intent;
+        }
+        boolean hasSubject = entities.stream().anyMatch(e -> !e.object());
+        boolean hasObject = entities.stream().anyMatch(EntityRef::object);
+        if (hasSubject && hasObject) {
+            return intent;
+        }
+        if (entities.isEmpty()) {
+            notes.add("dependency_path needs two named entities; none survived validation"
+                    + " — downgraded to search");
+            return Intent.SEARCH;
+        }
+        notes.add("dependency_path needs both a subject and an object entity; only "
+                + "one side survived validation — downgraded to consumers");
+        return Intent.CONSUMERS;
+    }
+
+    /**
+     * For every intent but DEPENDENCY_PATH, truncation is just "keep the first N". For
+     * DEPENDENCY_PATH, the earlier {@link #enforceDependencyPathInvariant} call already proved
+     * the pre-truncation list has both a subject and an object; a naive first-N cut can still
+     * lose whichever role's only survivor sits at index &gt;= {@link #MAX_ENTITIES} (e.g. an
+     * object named last among five entities), shipping a DEPENDENCY_PATH request with no object
+     * — exactly the state that check exists to prevent. So for DEPENDENCY_PATH the first
+     * surviving subject and first surviving object are kept unconditionally, and the remaining
+     * slots are filled in original order.
+     */
+    private static List<EntityRef> truncateEntities(Intent intent, List<EntityRef> entities, List<String> notes) {
+        if (entities.size() <= MAX_ENTITIES) {
+            return entities;
+        }
+        notes.add("model named " + entities.size() + " entities — truncated to " + MAX_ENTITIES);
+        if (intent != Intent.DEPENDENCY_PATH) {
+            return new ArrayList<>(entities.subList(0, MAX_ENTITIES));
+        }
+        int subjectIdx = -1;
+        int objectIdx = -1;
+        for (int i = 0; i < entities.size(); i++) {
+            EntityRef e = entities.get(i);
+            if (subjectIdx < 0 && !e.object()) {
+                subjectIdx = i;
+            }
+            if (objectIdx < 0 && e.object()) {
+                objectIdx = i;
+            }
+        }
+        LinkedHashSet<Integer> keep = new LinkedHashSet<>();
+        if (subjectIdx >= 0) {
+            keep.add(subjectIdx);
+        }
+        if (objectIdx >= 0) {
+            keep.add(objectIdx);
+        }
+        for (int i = 0; i < entities.size() && keep.size() < MAX_ENTITIES; i++) {
+            keep.add(i);
+        }
+        List<Integer> ordered = new ArrayList<>(keep);
+        ordered.sort(null);
+        List<EntityRef> truncated = new ArrayList<>();
+        for (int idx : ordered) {
+            truncated.add(entities.get(idx));
+        }
+        return truncated;
     }
 
     private static Intent intentOf(String raw, List<String> notes) {
