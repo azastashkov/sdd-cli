@@ -79,7 +79,9 @@ public final class ContractRecheck {
                 continue;
             }
             if (repoPaths.get(contract.provider()) == null) {
-                ConformanceResult conformance = conformanceOf(contract, null);
+                // No checkout at all: extraction was never attempted, so there is genuinely no
+                // visibility into whether the declared contract is met.
+                ConformanceResult conformance = conformanceOf(contract, null, false);
                 findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
                         Status.NOT_EXTRACTABLE,
                         combineDetail("provider " + contract.provider()
@@ -91,14 +93,18 @@ public final class ContractRecheck {
             String fresh = freshByProvider.get(contract.provider()).get(contract.id());
             String recorded = store.readContract(runDir, contract.id());
             if (fresh == null || fresh.isBlank()) {
-                ConformanceResult conformance = conformanceOf(contract, fresh);
+                // Extraction DID run for this provider (the checkout-missing case above already
+                // continued past) — a null/blank fresh body here means it ran and found nothing
+                // for this contract, e.g. every declared type was renamed, moved or deleted. That
+                // is a real divergence, not a tooling failure, so it must not read as NOT_COMPARABLE.
+                ConformanceResult conformance = conformanceOf(contract, fresh, true);
                 findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
                         Status.NOT_EXTRACTABLE,
                         combineDetail("nothing extractable for kind " + contract.kind()
                                 + " in " + contract.provider(), conformance.detail()),
                         extractedFrom, conformance.conformance(), conformance.missing()));
             } else if (recorded == null) {
-                ConformanceResult conformance = conformanceOf(contract, fresh);
+                ConformanceResult conformance = conformanceOf(contract, fresh, true);
                 findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
                         Status.MISSING_RECORD,
                         combineDetail("no actualized contract was recorded for this provider",
@@ -107,7 +113,7 @@ public final class ContractRecheck {
             } else {
                 List<String> freshNorm = normalize(fresh);
                 List<String> recordedNorm = normalize(recorded);
-                ConformanceResult conformance = conformanceOf(contract, fresh);
+                ConformanceResult conformance = conformanceOf(contract, fresh, true);
                 if (freshNorm.equals(recordedNorm)) {
                     // Both sides pass through ContractActualizer's shared 4000-char cap. Equal
                     // truncated bodies don't prove the real interfaces match — a real change
@@ -133,11 +139,15 @@ public final class ContractRecheck {
     }
 
     /** Computes the conformance axis independently of {@link Status} — it is purely a function of
-     *  what Gate 1 declared and the freshly re-extracted body, never of what the run recorded. A
-     *  {@code null} fresh body means extraction never happened at all (no checkout, or an
-     *  unsupported/unextractable kind), which is {@code NOT_COMPARABLE} whenever something was
-     *  declared, distinct from a declared member genuinely absent from an extracted-but-empty body. */
-    private static ConformanceResult conformanceOf(PlanModel.PlanContract contract, String fresh) {
+     *  what Gate 1 declared and the freshly re-extracted body, never of what the run recorded.
+     *  {@code extracted} is {@code false} only when extraction was never attempted at all (no
+     *  checkout path in the KB) — that is the sole {@code NOT_COMPARABLE}-for-lack-of-visibility
+     *  case. When {@code extracted} is {@code true}, a null or blank {@code fresh} means extraction
+     *  ran and found nothing for this contract (e.g. every declared type was renamed, moved or
+     *  deleted): that is a genuine divergence, not a tooling failure, so it is normalized to an
+     *  empty actual body and run through the same missing-member computation as any other case. */
+    private static ConformanceResult conformanceOf(PlanModel.PlanContract contract, String fresh,
+                                                    boolean extracted) {
         if (contract.declared().isEmpty()) {
             return new ConformanceResult(Conformance.NOT_DECLARED, List.of(), "");
         }
@@ -148,17 +158,20 @@ public final class ContractRecheck {
             return new ConformanceResult(Conformance.NOT_COMPARABLE, List.of(),
                     "declared contract is malformed: " + String.join("; ", declared.problems()));
         }
-        if (fresh == null) {
+        if (!extracted) {
             return new ConformanceResult(Conformance.NOT_COMPARABLE, List.of(),
                     "no actual body was extracted to compare against the declared contract");
         }
-        List<String> missing = declared.missingFrom(fresh);
+        String actual = fresh == null || fresh.isBlank() ? "" : fresh;
+        List<String> missing = declared.missingFrom(actual);
         if (missing.isEmpty()) {
             return new ConformanceResult(Conformance.DECLARED_MET, List.of(), "");
         }
-        if (fresh.endsWith(ContractActualizer.TRUNCATION_MARKER)) {
+        if (actual.endsWith(ContractActualizer.TRUNCATION_MARKER)) {
             // Same reasoning as TRUNCATED_MATCH on the drift axis: a missing declared member may
             // simply be sitting past the 4000-char cut, so a verdict of divergence would be a lie.
+            // An empty actual body (extraction found nothing at all) can never satisfy this — it is
+            // never truncated — so this branch cannot swallow the "found nothing" case above.
             return new ConformanceResult(Conformance.NOT_COMPARABLE, List.of(),
                     "declared member(s) not found before the 4000-char actualization cap"
                             + " — divergence beyond the cap cannot be detected");

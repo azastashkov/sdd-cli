@@ -356,4 +356,27 @@ class ContractRecheckTest {
         assertThat(finding.missing()).isEmpty();
         assertThat(finding.detail()).contains("malformed java-api declaration");
     }
+
+    @Test
+    void everyDeclaredTypeMissingFromExtractionIsDivergedNotNotComparable() throws Exception {
+        // Extraction genuinely ran (the provider has a real checkout) but found zero matches for
+        // the declared type — every declared type was renamed, moved or deleted. That is the
+        // grossest divergence possible, and must read as an implementation failure the human can
+        // act on, not as a tooling failure ("nothing extractable").
+        Path lib = libWith("public int f(int x) { return x; }");   // real code exists, just not Ghost
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "java-api", "lib",
+                List.of("svc"), "Ghost.foo", null, List.of("com.acme.Ghost#foo(): void"));
+        // deliberately no store.writeContract — irrelevant to this scenario: the branch that fires
+        // here (fresh == null) is checked before the recorded-contract lookup even matters
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        ContractRecheck.Finding finding = findings.get(0);
+        assertThat(finding.status()).isEqualTo(ContractRecheck.Status.NOT_EXTRACTABLE);
+        assertThat(finding.conformance()).isEqualTo(ContractRecheck.Conformance.DIVERGED_FROM_PLAN);
+        assertThat(finding.missing()).containsExactly("com.acme.Ghost#foo():void");
+    }
 }

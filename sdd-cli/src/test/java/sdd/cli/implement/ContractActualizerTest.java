@@ -72,6 +72,24 @@ class ContractActualizerTest {
     }
 
     @Test
+    void declaredTypeSelectionExtractsOnlyTheDeclaredTypeNotEveryType() throws Exception {
+        // Pins the positive half of the rule: a mutation that fell back to selecting `all` whenever
+        // the declared selection is non-empty would still pass every other test in this class, since
+        // they only ever prove the fallback is *suppressed*, never that the selection is *precise*.
+        javaFile("src/main/java/com/acme/lib/Alpha.java",
+                "package com.acme.lib;\npublic class Alpha { public void a() {} }\n");
+        javaFile("src/main/java/com/acme/lib/Beta.java",
+                "package com.acme.lib;\npublic class Beta { public void b() {} }\n");
+        PlanModel.PlanContract contract = new PlanModel.PlanContract("c1", "java-api", "lib",
+                List.of(), "something about Alpha", null,
+                List.of("com.acme.lib.Alpha#a():void"));
+
+        Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
+
+        assertThat(actual.get("c1")).contains("Alpha").doesNotContain("Beta");
+    }
+
+    @Test
     void actualizesARestContract() throws Exception {
         javaFile("src/main/java/com/acme/svc/SpreadController.java", """
                 package com.acme.svc;
