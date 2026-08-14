@@ -193,3 +193,37 @@ Divergence is a **warning** that never fails the review, consistent with line 66
 warnings, human adjudicates". It renders in its own report section and is counted in the Summary, so
 the human deciding approve/reject sees it. Coupling it to `Decisions.approve` as a refusal is
 deliberately left out of scope.
+
+## Amendment (2026-08-14): unresolved extraction is its own conformance verdict
+
+The 2026-08-14 declared-contract amendment gave `Conformance` four values. It needs a fifth. Line 42's
+planner rule is **unresolved ≠ nonexistent**, but the conformance axis as shipped cannot say
+"unresolved", so it says `DIVERGED_FROM_PLAN` — the same verdict a genuinely wrong implementation
+gets. A `@Value`-driven Kafka topic, an unresolvable REST path expression, and a verbless
+`@RequestMapping` are all reachable on a real estate, and all three would be reported as an
+implementation defect when the truth is that extraction could not see far enough.
+
+`Conformance` gains **`NOT_RESOLVED`**: a declared member whose actual counterpart exists but could not
+be resolved by extraction. It ranks with `NOT_COMPARABLE` rather than `DIVERGED_FROM_PLAN` — the report
+states what is not known rather than accusing — and like every other conformance value it is a warning
+that never changes an exit code.
+
+The signal travels differently per kind, because the extractors differ and this amendment deliberately
+does not change `sdd-index`:
+
+- `kafka` — `SpringModel.KafkaUse` already carries `resolution()`, and `KafkaExtractor` falls back to
+  the raw expression as the topic when `ValueResolver` cannot resolve it. `ContractActualizer` marks
+  such an entry rather than emitting it as if it were a literal topic.
+- `rest` — `SpringModel.EndpointInfo` carries no resolution field, and adding one would reach into the
+  indexed knowledge base. The two degenerate shapes are therefore recognised from the extractor's own
+  output: an empty path template (`RestEndpointExtractor.resolvePaths` substitutes `""`) and the verb
+  `ANY` (a verbless `@RequestMapping`), which `DeclaredContract`'s method vocabulary cannot legally
+  declare in the first place.
+- `java-api` — no unresolved shape exists; type extraction either sees a member or does not.
+
+The rule that keeps this honest is the same one the axis already follows: **a member is only
+`NOT_RESOLVED` when the reason it is missing is a named unresolved shape on the actual side.** A
+declared member absent from a fully resolved surface stays `DIVERGED_FROM_PLAN`. Where a contract has
+both, divergence wins the verdict — an implementation known to be wrong is the more actionable fact —
+and the report names the unresolved members separately so the human can see why the rest could not be
+judged.
