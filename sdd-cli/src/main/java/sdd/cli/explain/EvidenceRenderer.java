@@ -103,6 +103,16 @@ public final class EvidenceRenderer {
     private EvidenceRenderer() {
     }
 
+    /**
+     * The sanitized, {@link #RESTATEMENT_CAP}-capped {@code restatement} this class renders as
+     * {@code Interpreted as: ...} inside {@code ### Interpretation} — exposed so Task 7's
+     * {@code ExplainReport} can print the identical top-of-report line without a second,
+     * independently-maintained copy of the same sanitize-then-cap logic.
+     */
+    public static String restatementLine(RetrievalRequest request) {
+        return capField(request.restatement(), RESTATEMENT_CAP);
+    }
+
     public static String render(Evidence evidence) {
         StringBuilder out = new StringBuilder();
         out.append(renderProvenance(evidence.provenance()));
