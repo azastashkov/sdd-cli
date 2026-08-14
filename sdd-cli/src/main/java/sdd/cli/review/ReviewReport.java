@@ -31,15 +31,22 @@ public final class ReviewReport {
     private ReviewReport() {
     }
 
-    public static String render(String runId, PlanModel plan, RunState state,
-                                Map<String, RunGit.DiffStat> diffStats,
-                                Map<String, EstateRebuild.Result> rebuilds,
-                                List<String> notLocallyVerified, List<String> stagingFailures,
-                                List<String> restoreFailures, List<String> diffFailures,
-                                List<ContractRecheck.Finding> contracts,
-                                Map<String, DecisionRecord> decisions,
-                                RunContext.Checkpoints checkpoints,
-                                String runbook, RebuildScope rebuild) {
+    public static String render(ReportInputs in) {
+        String runId = in.runId();
+        PlanModel plan = in.plan();
+        RunState state = in.state();
+        Map<String, RunGit.DiffStat> diffStats = in.diffStats();
+        Map<String, EstateRebuild.Result> rebuilds = in.rebuilds();
+        List<String> notLocallyVerified = in.notLocallyVerified();
+        List<String> stagingFailures = in.stagingFailures();
+        List<String> restoreFailures = in.restoreFailures();
+        List<String> diffFailures = in.diffFailures();
+        List<ContractRecheck.Finding> contracts = in.contracts();
+        Map<String, DecisionRecord> decisions = in.decisions();
+        RunContext.Checkpoints checkpoints = in.checkpoints();
+        String runbook = in.runbook();
+        RebuildScope rebuild = in.rebuild();
+
         Map<String, RepoRun> byName = new LinkedHashMap<>();
         for (RepoRun run : state.repos()) {
             byName.put(run.repo(), run);

@@ -56,9 +56,9 @@ class ReviewReportTest {
 
     /** The no-frills call: no diffs, no rebuilds, no failures, no decisions. */
     private static String render(PlanModel plan, RunState state) {
-        return ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+        return ReviewReport.render(new ReportInputs("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.skipped());
+                "runbook", RebuildScope.skipped()));
     }
 
     @Test
@@ -67,9 +67,9 @@ class ReviewReportTest {
                 new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok", null)), null, 10L);
         PlanModel plan = planNoContracts();
 
-        String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.skipped());
+                "runbook", RebuildScope.skipped()));
 
         assertThat(report).contains("- Contract re-check: no contracts in this plan");
     }
@@ -85,9 +85,9 @@ class ReviewReportTest {
                 new ContractRecheck.Finding("contract-1", "lib", "interface",
                         ContractRecheck.Status.MATCHES, "", "main", ContractRecheck.Conformance.NOT_DECLARED, List.of(), List.of()));
 
-        String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.estate());
+                "runbook", RebuildScope.estate()));
 
         assertThat(report).contains("- Contract re-check: 2 checked, 0 mismatches");
         // When all match, no detail section should be present
@@ -105,9 +105,9 @@ class ReviewReportTest {
                 new ContractRecheck.Finding("contract-1", "lib", "interface",
                         ContractRecheck.Status.DRIFTED, "bodies differ", "main", ContractRecheck.Conformance.NOT_DECLARED, List.of(), List.of()));
 
-        String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.estate());
+                "runbook", RebuildScope.estate()));
 
         assertThat(report).contains("- Contract re-check: 2 checked, 1 mismatch");
         // Detail section should be present when there are mismatches
@@ -127,9 +127,9 @@ class ReviewReportTest {
                 new ContractRecheck.Finding("contract-2", "lib", "interface",
                         ContractRecheck.Status.MISSING_RECORD, "no record", "main", ContractRecheck.Conformance.NOT_DECLARED, List.of(), List.of()));
 
-        String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.estate());
+                "runbook", RebuildScope.estate()));
 
         assertThat(report).contains("- Contract re-check: 3 checked, 2 mismatches");
         // Detail section should be present
@@ -143,9 +143,9 @@ class ReviewReportTest {
                 "lib", new DecisionRecord(Decision.APPROVED, ""),
                 "svc", new DecisionRecord(Decision.REJECTED, "wrong API"));
 
-        String report = ReviewReport.render("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
                 Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), decisions,
-                RunContext.Checkpoints.none(), "runbook", RebuildScope.estate());
+                RunContext.Checkpoints.none(), "runbook", RebuildScope.estate()));
 
         assertThat(report).contains("- **lib**: SUCCEEDED, decision: APPROVED");
         assertThat(report).contains("- **svc**: SUCCEEDED, decision: REJECTED (wrong API)");
@@ -172,9 +172,9 @@ class ReviewReportTest {
         List<String> drift = List.of("lib: branch sdd/SPEC-1-v1/lib is at abcdefg, checkpoint was "
                 + "1234567 — diffs and runbook describe the checkpoint");
 
-        String report = ReviewReport.render("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
                 Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(),
-                new RunContext.Checkpoints(drift, Set.of()), "runbook", RebuildScope.estate());
+                new RunContext.Checkpoints(drift, Set.of()), "runbook", RebuildScope.estate()));
 
         assertThat(report).contains("## Checkpoint drift");
         assertThat(report).contains("- lib: branch sdd/SPEC-1-v1/lib is at abcdefg, checkpoint was "
@@ -190,9 +190,9 @@ class ReviewReportTest {
     void aRunBranchThatNoLongerExistsIsStatedOnItsRepoLineButIsNotDrift() {
         // The runbook below still tells a human to merge this branch, so the report may not stay
         // silent about it — but nothing MOVED, so it is not drift and must not fail the review.
-        String report = ReviewReport.render("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
                 Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(),
-                new RunContext.Checkpoints(List.of(), Set.of("lib")), "runbook", RebuildScope.estate());
+                new RunContext.Checkpoints(List.of(), Set.of("lib")), "runbook", RebuildScope.estate()));
 
         assertThat(report).contains("- **lib**: SUCCEEDED, decision: PENDING, checkpoint sha, "
                 + "run branch sdd/SPEC-1-v1/lib no longer exists");
@@ -210,9 +210,9 @@ class ReviewReportTest {
         RunState state = new RunState("SPEC-1-v1", List.of(
                 new RepoRun("lib", RepoState.SUCCEEDED, "b", "sha", "", null)), null, 0L);
 
-        String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.estate());
+                "runbook", RebuildScope.estate()));
 
         assertThat(report).contains("(extracted from: sdd/SPEC-1-v1/lib)");
         // Nothing was extracted at all, so the report must say so rather than print a confident default.
@@ -224,9 +224,9 @@ class ReviewReportTest {
         Map<String, EstateRebuild.Result> subset = Map.of(
                 "svc", new EstateRebuild.Result(true, "ok"));
 
-        String report = ReviewReport.render("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
                 subset, List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.none().withReverifiedSubtreeOf("lib"));
+                "runbook", RebuildScope.none().withReverifiedSubtreeOf("lib")));
 
         assertThat(report).doesNotContain("- Estate rebuild: 1 passed, 0 failed");
         assertThat(report).contains("- Estate rebuild: not re-run for the whole estate; only lib's "
@@ -235,9 +235,9 @@ class ReviewReportTest {
 
     @Test
     void aReportRefreshedByADecisionDoesNotClaimTheRebuildWasSkippedByAFlag() {
-        String report = ReviewReport.render("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
                 Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.none());
+                "runbook", RebuildScope.none()));
 
         assertThat(report).doesNotContain("--no-rebuild");
         assertThat(report).contains("- Estate rebuild: not re-run in this invocation");
@@ -249,9 +249,9 @@ class ReviewReportTest {
                 "lib", new EstateRebuild.Result(true, "ok"),
                 "svc", new EstateRebuild.Result(true, "ok"));
 
-        String report = ReviewReport.render("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", planWithEdge(), threeSucceeded(), Map.of(),
                 rebuilds, List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.estate().withReverifiedSubtreeOf("lib"));
+                "runbook", RebuildScope.estate().withReverifiedSubtreeOf("lib")));
 
         assertThat(report).contains("- Estate rebuild: 2 passed, 0 failed (estate-wide, with lib's "
                 + "downstream subtree re-verified again after a redo)");
@@ -269,9 +269,9 @@ class ReviewReportTest {
         PlanModel plan = planWithEdge(List.of(new PlanModel.PlanContract(
                 "contract-0", "interface", "lib", List.of("svc"), "body", "source", List.of())));
 
-        String report = ReviewReport.render("SPEC-1-v1", plan, threeSucceeded(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", plan, threeSucceeded(), Map.of(),
                 rebuilds, List.of(), stagingFailures, List.of(), List.of(), findings, Map.of(),
-                RunContext.Checkpoints.none(), "runbook", RebuildScope.estate());
+                RunContext.Checkpoints.none(), "runbook", RebuildScope.estate()));
 
         // The provider itself: its own line says it never reached its checkpoint.
         assertThat(report).contains("- **lib**: SUCCEEDED, decision: PENDING, checkpoint sha, "
@@ -298,9 +298,9 @@ class ReviewReportTest {
         RunState state = new RunState("SPEC-1-v1", List.of(
                 new RepoRun("lib", RepoState.SUCCEEDED, "b", "sha", "", null)), null, 0L);
 
-        String report = ReviewReport.render("SPEC-1-v1", planWithContracts(2), state, Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", planWithContracts(2), state, Map.of(),
                 Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.none());
+                "runbook", RebuildScope.none()));
 
         assertThat(report).doesNotContain("no contracts in this plan");
         assertThat(report).contains("- Contract re-check: none of this plan's 2 contracts were "
@@ -315,9 +315,9 @@ class ReviewReportTest {
                 new ContractRecheck.Finding("contract-0", "lib", "interface",
                         ContractRecheck.Status.MATCHES, "", "main", ContractRecheck.Conformance.NOT_DECLARED, List.of(), List.of()));
 
-        String report = ReviewReport.render("SPEC-1-v1", planWithContracts(1), state, Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", planWithContracts(1), state, Map.of(),
                 Map.of(), List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.skipped());
+                "runbook", RebuildScope.skipped()));
 
         assertThat(report).contains("- Contract re-check: 1 checked, 0 mismatches — no rebuild "
                 + "staged the estate first, so each provider was read on whatever branch it was "
@@ -339,9 +339,9 @@ class ReviewReportTest {
                         List.of("com.trading.pricing.core.TierResolver#tierFor(String):Optional<Tier>"),
                         List.of()));
 
-        String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.estate());
+                "runbook", RebuildScope.estate()));
 
         assertThat(report).contains("## Contract re-check");
         assertThat(report).contains("DIVERGED_FROM_PLAN")
@@ -365,9 +365,9 @@ class ReviewReportTest {
                         ContractRecheck.Status.MATCHES, reason, "main",
                         ContractRecheck.Conformance.NOT_COMPARABLE, List.of(), List.of()));
 
-        String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.estate());
+                "runbook", RebuildScope.estate()));
 
         assertThat(report).contains("## Contract re-check");
         assertThat(report).contains("`contract-0`").contains("(lib, java-api)")
@@ -405,9 +405,9 @@ class ReviewReportTest {
                         ContractRecheck.Status.MATCHES, "", "main",
                         ContractRecheck.Conformance.NOT_RESOLVED, List.of(), List.of("consumes t.orders")));
 
-        String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.estate());
+                "runbook", RebuildScope.estate()));
 
         assertThat(report).contains(
                 "- Plan conformance: 1 met, 1 diverged, 1 undeclared, 1 not comparable, 1 not resolved\n");
@@ -429,9 +429,9 @@ class ReviewReportTest {
                         ContractRecheck.Conformance.NOT_RESOLVED, List.of(),
                         List.of("consumes orders.topic")));
 
-        String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.estate());
+                "runbook", RebuildScope.estate()));
 
         assertThat(report).contains("## Contract re-check");
         assertThat(report).contains("NOT_RESOLVED")
@@ -452,9 +452,9 @@ class ReviewReportTest {
                         ContractRecheck.Status.DRIFTED, "bodies differ", "main",
                         ContractRecheck.Conformance.NOT_DECLARED, List.of(), List.of()));
 
-        String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.estate());
+                "runbook", RebuildScope.estate()));
 
         assertThat(report).contains("NOT_DECLARED").doesNotContain("DECLARED_MET");
     }
@@ -464,9 +464,9 @@ class ReviewReportTest {
         RunState state = new RunState("SPEC-1-v1", List.of(), null, 7L);
         Map<String, RunGit.DiffStat> stats = Map.of("lib", new RunGit.DiffStat(2, 10, 3));
 
-        String report = ReviewReport.render("SPEC-1-v1", planNoContracts(), state, stats, Map.of(),
+        String report = ReviewReport.render(new ReportInputs("SPEC-1-v1", planNoContracts(), state, stats, Map.of(),
                 List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), RunContext.Checkpoints.none(),
-                "runbook", RebuildScope.skipped());
+                "runbook", RebuildScope.skipped()));
 
         assertThat(report).contains("- **lib**: UNKNOWN, decision: PENDING, 2 files changed (+10/-3)");
         assertThat(report).contains("- Total tokens spent: 7");

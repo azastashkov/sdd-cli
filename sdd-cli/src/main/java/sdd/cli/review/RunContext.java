@@ -120,9 +120,9 @@ public record RunContext(String runId, Path runDir, RunStore store, PlanModel pl
                             RebuildScope rebuild) {
         Map<String, DecisionRecord> decisions = store.readDecisions(runDir);
         String runbook = ReleaseRunbook.render(plan, state);
-        String report = ReviewReport.render(runId, plan, state, diffs.stats(), rebuilds,
-                notLocallyVerified, stagingFailures, restoreFailures, diffs.failures(), contracts,
-                decisions, checkpoints(decisions), runbook, rebuild);
+        String report = ReviewReport.render(new ReportInputs(runId, plan, state, diffs.stats(),
+                rebuilds, notLocallyVerified, stagingFailures, restoreFailures, diffs.failures(),
+                contracts, decisions, checkpoints(decisions), runbook, rebuild));
         store.writeReview(runDir, "report.md", report);
         return store.reviewDir(runDir).resolve("report.md");
     }
