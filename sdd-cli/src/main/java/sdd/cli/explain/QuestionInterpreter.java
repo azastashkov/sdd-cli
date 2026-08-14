@@ -16,6 +16,7 @@ import sdd.core.llm.ModelException;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -294,8 +295,14 @@ public final class QuestionInterpreter {
      * Emits {@link Intent#DESCRIBE} when it names at least one entity (so the deterministic
      * fetch describes each one), {@link Intent#SEARCH} otherwise — the same zero-entities
      * downgrade the model path applies, applied uniformly. Search terms are always populated
-     * from the question's significant words, so a full-text search still runs alongside whatever
-     * entities were found.
+     * from the question's significant words, but that does <strong>not</strong> mean a full-text
+     * search runs alongside whatever entities were found: {@link EvidenceCollector#collect}
+     * dispatches purely on {@link RetrievalRequest#intent()}, and only {@link Intent#SEARCH}
+     * ever reads {@link RetrievalRequest#searchTerms()} ({@code SearchFacts.of}) — a
+     * {@link Intent#DESCRIBE} result (the common case here, once an entity is named) routes to
+     * {@code RepoFacts.of} alone, which never looks at them. The terms are populated regardless
+     * of intent purely so they are available if a caller ever does downgrade to search (e.g. the
+     * zero-entities case above), not because they are consulted on every path.
      *
      * <p>Public (rather than package-private) because Task 8's {@code ExplainCommand} calls it
      * directly for the one failure {@link #interpret} cannot itself catch: never having had a
@@ -341,7 +348,7 @@ public final class QuestionInterpreter {
         List<String> searchTerms = new ArrayList<>();
         Matcher wordMatcher = WORD.matcher(question);
         while (wordMatcher.find() && searchTerms.size() < MAX_TERMS) {
-            String word = wordMatcher.group().toLowerCase();
+            String word = wordMatcher.group().toLowerCase(Locale.ROOT);
             if (!searchTerms.contains(word)) {
                 searchTerms.add(word);
             }

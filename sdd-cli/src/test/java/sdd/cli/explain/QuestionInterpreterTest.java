@@ -333,6 +333,23 @@ class QuestionInterpreterTest {
         assertThat(r.intent()).isEqualTo(Intent.DESCRIBE);
     }
 
+    @Test
+    void fallbackSearchTermsLowercaseWithLocaleRootNotTheJvmDefault() {
+        // Under a Turkish default locale, String.toLowerCase() (no Locale argument) maps 'I' to
+        // the dotless 'ı' rather than 'i' -- EvidenceCollector.kindLabel/EvidenceRenderer.kindLabel
+        // and SearchFacts all pass Locale.ROOT for exactly this reason; QuestionInterpreter's
+        // search-term extraction did not.
+        java.util.Locale previous = java.util.Locale.getDefault();
+        java.util.Locale.setDefault(java.util.Locale.forLanguageTag("tr"));
+        try {
+            RetrievalRequest r = QuestionInterpreter.fallback(db.jdbi(), "what is the TIER here", "test reason");
+
+            assertThat(r.searchTerms()).contains("tier");
+        } finally {
+            java.util.Locale.setDefault(previous);
+        }
+    }
+
     // --- the sent request carries the question and the system prompt -------------------------
 
     @Test
