@@ -42,7 +42,16 @@ public final class PlanDrafter {
              "contracts": [{"id": string, "kind": "java-api"|"rest"|"kafka", "provider": string,
                             "consumers": [string, ...], "body": string,
                             "compat": "binary-compatible" (OPTIONAL, java-api only — declare it \
-            when consumers must keep binary compatibility)}, ...],
+            when consumers must keep binary compatibility),
+                            "declarations": [string, ...] (OPTIONAL — the machine-checkable \
+            members this contract exposes, one exact line per member, no prose, using EXACTLY \
+            this grammar for the contract's kind: java-api "<fqcn>#<signature>: <returnType>" \
+            e.g. "com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier"; \
+            rest "<METHOD> <path>" e.g. "GET /api/admin/tier-spreads"; kafka \
+            "produces <topic>" or "consumes <topic>" e.g. "produces orders.v1". Omit this list, \
+            or leave it empty, whenever you are not certain of the exact signature or path — an \
+            invented declaration is checked against the real implementation later and reports a \
+            false alarm)}, ...],
              "repo_steps": [{"repo": string, "covers": [requirement ids], "sub_spec": string,
                              "files": [string, ...], "provides_contracts": [contract ids],
                              "consumes_contracts": [contract ids],
@@ -53,7 +62,8 @@ public final class PlanDrafter {
             - Name only files and classes present in the evidence; contracts' bodies are concrete
               interface deltas (java signatures, REST verb+path+types, topic+payload).
             - Every contract referenced by a step must be defined in "contracts".
-            - Anything uncertain becomes a question, not an invention.
+            - Anything uncertain becomes a question, not an invention; the same goes for
+              "declarations" — when unsure, omit the list rather than guess.
             """;
 
     public record DraftStep(String repo, List<String> covers, String subSpec, List<String> files,
@@ -177,8 +187,19 @@ public final class PlanDrafter {
                 notes.add("drafter contract '" + id + "' compat '" + compat + "' dropped");
                 compat = null;
             }
+            // Absence is silence, never invention: a model that omits "declarations" (or the
+            // key is missing entirely) leaves this list empty rather than deriving one from
+            // "body" or "kind" — an invented declaration would be checked against the real
+            // implementation later and report a false divergence the human never approved.
+            List<String> declared = new ArrayList<>();
+            for (JsonNode d : node.path("declarations")) {
+                String line = sanitizeDeclaredLine(d.asText());
+                if (!line.isBlank()) {
+                    declared.add(line);
+                }
+            }
             contracts.add(new DraftContract(id, kind, provider, consumers,
-                    node.path("body").asText(), compat, List.of()));
+                    node.path("body").asText(), compat, declared));
             contractIds.add(id);
         }
 
@@ -229,6 +250,13 @@ public final class PlanDrafter {
         }
         return new Draft(root.path("summary").asText().strip(), steps, contracts, questions,
                 notes, false);
+    }
+
+    /** Mirrors PlanMdRenderer's fence neutralization (the established anti-forgery pattern) so a
+     *  declared line can never smuggle a ``` sequence into the rendered contract fence before a
+     *  human ever reviews the plan. Grammar checking is PlanValidator's job at approve time. */
+    private static String sanitizeDeclaredLine(String raw) {
+        return raw.strip().replace("```", "'''");
     }
 
     private static List<String> filtered(JsonNode node, String field, Set<String> allowed,

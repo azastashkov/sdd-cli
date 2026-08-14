@@ -1,6 +1,8 @@
 package sdd.plan.approve;
 
 import org.jdbi.v3.core.Jdbi;
+import sdd.core.contract.ContractKinds;
+import sdd.core.contract.DeclaredContract;
 import sdd.plan.gen.ExecutionOrder;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecItem;
@@ -99,6 +101,18 @@ public final class PlanValidator {
             if (providerStep == null || !providerStep.provides().contains(contract.id())) {
                 problems.add("contract '" + contract.id() + "': provider '"
                         + contract.provider() + "' has no step providing it");
+            }
+            if (contract.declared().isEmpty()) {
+                if (ContractKinds.declarable(contract.kind())) {
+                    warnings.add("contract '" + contract.id() + "' declares nothing — "
+                            + "Gate 2 cannot check it against the implementation");
+                }
+            } else {
+                DeclaredContract declared = DeclaredContract.parse(contract.kind(),
+                        String.join("\n", contract.declared()));
+                for (String problem : declared.problems()) {
+                    problems.add("contract '" + contract.id() + "': " + problem);
+                }
             }
             for (String consumer : contract.consumers()) {
                 if (!affectedNames.contains(consumer)) {

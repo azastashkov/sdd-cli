@@ -122,6 +122,53 @@ class PlanDrafterTest {
     }
 
     @Test
+    void theDrafterCapturesADeclaredBlockFromTheModel() {
+        String json = """
+                {"summary": "S.", "questions": [], "repo_steps": [],
+                 "contracts": [{"id": "C-1", "kind": "java-api", "provider": "lib-core",
+                                "consumers": ["svc-pricing"], "body": "b",
+                                "declarations": [
+                                  "com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier",
+                                  " ",
+                                  "  com.acme.LoyaltyTier#tierFor(String): Tier  "]}]}""";
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(response(json, "stop")));
+
+        PlanDrafter.Draft draft = PlanDrafter.draft(db.jdbi(), spec(), impact(), order(), planner, "m", 4096);
+
+        assertThat(draft.contracts()).singleElement().satisfies(c ->
+                assertThat(c.declared()).containsExactly(
+                        "com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier",
+                        "com.acme.LoyaltyTier#tierFor(String): Tier"));   // blank dropped, whitespace trimmed
+    }
+
+    @Test
+    void aModelThatOmitsDeclarationsDegradesToAnUndeclaredContractRatherThanInventingOne() {
+        // Silence must never be filled in: an invented declaration would be checked against
+        // reality at Gate 2 and reported as divergence the human never approved.
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(response(GOOD_JSON, "stop")));
+
+        PlanDrafter.Draft draft = PlanDrafter.draft(db.jdbi(), spec(), impact(), order(), planner, "m", 4096);
+
+        assertThat(draft.contracts()).singleElement()
+                .satisfies(c -> assertThat(c.declared()).isEmpty());
+    }
+
+    @Test
+    void aDeclaredLineCarryingAFenceMarkerIsNeutralized() {
+        String json = """
+                {"summary": "S.", "questions": [], "repo_steps": [],
+                 "contracts": [{"id": "C-1", "kind": "java-api", "provider": "lib-core",
+                                "consumers": [], "body": "b",
+                                "declarations": ["evil ``` fence break"]}]}""";
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(response(json, "stop")));
+
+        PlanDrafter.Draft draft = PlanDrafter.draft(db.jdbi(), spec(), impact(), order(), planner, "m", 4096);
+
+        assertThat(draft.contracts()).singleElement().satisfies(c ->
+                assertThat(c.declared()).containsExactly("evil ''' fence break"));
+    }
+
+    @Test
     void fencedJsonResponseIsUnwrapped() {
         ScriptedChatModel planner = new ScriptedChatModel(List.of(response(
                 "```json\n{\"summary\": \"S.\", \"questions\": [], \"contracts\": [], \"repo_steps\": []}\n```",

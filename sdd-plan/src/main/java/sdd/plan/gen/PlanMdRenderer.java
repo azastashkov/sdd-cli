@@ -94,7 +94,7 @@ public final class PlanMdRenderer {
                 md.append("```yaml\n").append(contract.body().replace("```", "'''"))
                         .append("\n```\n");
                 if (!contract.declared().isEmpty()) {
-                    md.append("\n```contract\n").append(String.join("\n", contract.declared()))
+                    md.append("\n```contract\n").append(declaredFence(contract.declared()))
                             .append("\n```\n");
                 }
             }
@@ -140,6 +140,21 @@ public final class PlanMdRenderer {
         for (String value : values) {
             md.append("  - ").append(inline(value)).append('\n');
         }
+    }
+
+    /** Declared members ride their own ```` ```contract ```` fence, exactly as the prose body
+     *  rides its ```` ```yaml ```` fence above; a member carrying a literal ``` would otherwise
+     *  close that fence early, same as an unescaped body. Escaped per line so a legitimate
+     *  multi-member declared list still joins one member per line. */
+    private static String declaredFence(List<String> declared) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < declared.size(); i++) {
+            if (i > 0) {
+                sb.append('\n');
+            }
+            sb.append(declared.get(i).replace("```", "'''"));
+        }
+        return sb.toString();
     }
 
     /** Drafter-controlled single-line text may never forge headings or front matter. */

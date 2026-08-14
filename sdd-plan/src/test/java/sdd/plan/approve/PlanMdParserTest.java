@@ -172,6 +172,36 @@ class PlanMdParserTest {
     }
 
     @Test
+    void aDeclaredLineCarryingAFenceMarkerSurvivesRenderAndReparseIntact() {
+        NormalizedSpec spec = new NormalizedSpec("SPEC-9", "T", "o", "draft", "G.", "",
+                List.of(new SpecItem("R1", "req")), List.of(new SpecItem("A1", "acc")),
+                List.of(), List.of(), List.of(), List.of(), List.of());
+        ImpactResult impact = new ImpactResult(List.of(),
+                List.of(new AffectedRepo("lib-core", "seed", "SEED", List.of("R1"), List.of("owns it"))),
+                List.of(), List.of(), List.of(), List.of(), List.of());
+        // A bare "```" declared entry would, unescaped, close the `contract` fence early and
+        // throw off the odd/even fence count PlanMdParser tracks for the rest of the document.
+        PlanDrafter.Draft draft = new PlanDrafter.Draft("S.", List.of(),
+                List.of(new PlanDrafter.DraftContract("C-1", "java-api", "lib-core",
+                        List.of("svc-a"), "Add to existing JdbcTierResolver", null,
+                        List.of("com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier",
+                                "```"))),
+                List.of(), List.of("trailing note"), false);
+
+        String md = PlanMdRenderer.render(spec, impact,
+                List.of(new ExecutionOrder.Unit(List.of("lib-core"))), List.of(), draft);
+
+        PlanDocument doc = PlanMdParser.parse(md);   // must not throw, must not merge sections
+
+        assertThat(doc.contracts()).singleElement()
+                .extracting(PlanDocument.PlanContract::declared, InstanceOfAssertFactories.list(String.class))
+                .containsExactly(
+                        "com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier", "'''");
+        // the rest of the document parsed as its own section, untouched by the neutralized fence
+        assertThat(doc.notes()).containsExactly("trailing note");
+    }
+
+    @Test
     void aPreExistingPlanWithNoContractFenceParsesWithEmptyDeclarations() {
         PlanDocument doc = PlanMdParser.parse(LEGACY_PLAN_MD);
         assertThat(doc.contracts().get(0).declared()).isEmpty();

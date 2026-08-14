@@ -60,6 +60,49 @@ class PlanValidatorTest {
                 "svc-a", new LiveGit.State(SHA_B, true));
     }
 
+    private static PlanDocument planWithDeclared(String... declared) {
+        return new PlanDocument("SPEC-9", 1, "S.",
+                List.of(new PlanDocument.PlanQuestion(1, true, "q", "resolved")),
+                List.of(new PlanDocument.PlanRepo("lib-core", "seed", "SEED", List.of("R1"), "w"),
+                        new PlanDocument.PlanRepo("svc-a", "dependent", "CODE_CHANGE_LIKELY", List.of(), "w")),
+                List.of(), List.of(List.of("lib-core"), List.of("svc-a")),
+                List.of(new PlanDocument.PlanContract("tier-resolver-api", "java-api", "lib-core",
+                        List.of("svc-a"), "Resolve a client's pricing tier.", null, List.of(declared))),
+                List.of(new PlanDocument.PlanStep("lib-core", List.of("R1", "R2"), "minor",
+                                List.of("tier-resolver-api"), List.of(), List.of(), List.of(), "s"),
+                        new PlanDocument.PlanStep("svc-a", List.of(), "none",
+                                List.of(), List.of("tier-resolver-api"), List.of(), List.of(), "s")),
+                List.of());
+    }
+
+    @Test
+    void aMalformedDeclarationIsAProblem() {
+        PlanValidator.Verdict verdict = PlanValidator.validate(db.jdbi(),
+                planWithDeclared("resolveTier(String): X"), spec(), freshStates());
+
+        assertThat(verdict.problems()).anySatisfy(p ->
+                assertThat(p).contains("tier-resolver-api").contains("<fqcn>#<signature>: <returnType>"));
+    }
+
+    @Test
+    void anUndeclaredContractIsOnlyAWarning() {
+        PlanValidator.Verdict verdict = PlanValidator.validate(db.jdbi(),
+                planWithDeclared(), spec(), freshStates());   // none
+
+        assertThat(verdict.problems()).noneMatch(p -> p.contains("declares nothing"));
+        assertThat(verdict.warnings()).anySatisfy(w ->
+                assertThat(w).contains("tier-resolver-api").contains("declares nothing"));
+    }
+
+    @Test
+    void aWellFormedDeclarationIsSilent() {
+        PlanValidator.Verdict verdict = PlanValidator.validate(db.jdbi(),
+                planWithDeclared("com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier"),
+                spec(), freshStates());
+
+        assertThat(verdict.problems()).isEmpty();
+    }
+
     @Test
     void cleanPlanYieldsNoProblemsButConflictWarningFires() {
         PlanValidator.Verdict verdict = PlanValidator.validate(db.jdbi(),
