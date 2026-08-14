@@ -23,6 +23,10 @@ import java.util.regex.PatternSyntaxException;
  * never fail the review. Providers that did not go green are skipped: nothing was checkpointed.
  */
 public final class ContractRecheck {
+    /** {@code TRUNCATED_MATCH} is the "cannot tell" verdict of this axis, not a weaker
+     *  {@code MATCHES}: it covers both truncated bodies that agree up to the cap and a comparison
+     *  where only ONE side was cut there — see {@link #check} for why the one-sided case cannot be
+     *  DRIFTED. */
     public enum Status { MATCHES, TRUNCATED_MATCH, DRIFTED, MISSING_RECORD, NOT_EXTRACTABLE }
 
     /**
@@ -131,12 +135,27 @@ public final class ContractRecheck {
                 List<String> freshNorm = normalize(fresh);
                 List<String> recordedNorm = normalize(recorded);
                 ConformanceResult conformance = conformanceOf(contract, fresh, true);
-                if (freshNorm.equals(recordedNorm)) {
+                if (endsWithTruncationMarker(freshNorm) != endsWithTruncationMarker(recordedNorm)) {
+                    // Exactly one side was cut at the cap, so the two bodies cover different
+                    // amounts of the same interface and cannot be compared line-for-line at all.
+                    // ContractActualizer.cap applies AFTER UNRESOLVED_MARKER is appended, so a body
+                    // recorded just under the cap before that marker existed genuinely does cross
+                    // it when re-extracted today with N markers (+13 chars each) — normalize()
+                    // strips the markers but cannot un-truncate. Calling that DRIFTED accused
+                    // untouched source of changing, complete with a "no longer present" line naming
+                    // a member that is still right there past the cut. This is the same "cannot
+                    // tell" verdict equal-but-truncated bodies get, for the same reason.
+                    findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
+                            Status.TRUNCATED_MATCH,
+                            combineDetail("one side of the comparison was truncated at the"
+                                    + " 4000-char actualization cap and the other was not — the two"
+                                    + " bodies cannot be compared line-for-line", conformance.detail()),
+                            extractedFrom, conformance.conformance(), conformance.missing(), conformance.unresolved()));
+                } else if (freshNorm.equals(recordedNorm)) {
                     // Both sides pass through ContractActualizer's shared 4000-char cap. Equal
                     // truncated bodies don't prove the real interfaces match — a real change
                     // landing past the cut is invisible to this comparison.
-                    boolean truncated = endsWithTruncationMarker(freshNorm)
-                            && endsWithTruncationMarker(recordedNorm);
+                    boolean truncated = endsWithTruncationMarker(freshNorm);
                     findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
                             truncated ? Status.TRUNCATED_MATCH : Status.MATCHES,
                             combineDetail(truncated

@@ -138,6 +138,67 @@ class ContractRecheckTest {
                         + " — drift beyond the cap cannot be detected");
     }
 
+    /** {@code listeners} unresolvable-topic listeners: every actualized line carries
+     *  {@code UNRESOLVED_MARKER}, so the marked body is 13 chars per line longer than the body the
+     *  same source produced before the marker existed. Returns the pre-marker body — exactly what a
+     *  run recorded then — alongside the repo. */
+    private record PreMarkerRun(Path lib, String recorded) {
+    }
+
+    private PreMarkerRun libWithManyDynamicKafkaTopics(int listeners) throws Exception {
+        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme/svc"));
+        StringBuilder src = new StringBuilder("package com.acme.svc;\n"
+                + "import org.springframework.kafka.annotation.KafkaListener;\n"
+                + "public class ManyListeners {\n");
+        StringBuilder recorded = new StringBuilder("# actualized (kafka)\n");
+        for (int i = 0; i < listeners; i++) {
+            src.append("    @KafkaListener(topics = \"${orders.topic").append(i).append("}\")\n")
+                    .append("    public void on").append(i).append("(String order) { }\n");
+            recorded.append("CONSUMER \"${orders.topic").append(i).append("}\"\n");
+        }
+        src.append("}\n");
+        Files.writeString(root.resolve("ManyListeners.java"), src.toString());
+        return new PreMarkerRun(ws.resolve("lib"), recorded.toString());
+    }
+
+    @Test
+    void aOneSidedTruncationReportsTruncatedMatchRatherThanAccusingUntouchedSource() throws Exception {
+        // ContractActualizer.cap applies AFTER the unresolved markers are appended, so a body
+        // recorded just under the 4000-char cap before this phase existed can cross it when it is
+        // re-extracted today with N markers (+13 chars each). normalize() strips the markers but
+        // cannot un-truncate: the fresh side ends in TRUNCATION_MARKER, the recorded side does
+        // not, and the drift axis reported DRIFTED with "no longer present: <line>" against source
+        // nobody touched. TRUNCATED_MATCH does not cover this on its own — that branch requires
+        // BOTH sides truncated. One-sided truncation is not evidence of drift; it is evidence the
+        // two bodies cannot be compared line-for-line at all.
+        PreMarkerRun fixture = libWithManyDynamicKafkaTopics(100);
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "kafka", "lib",
+                List.of("svc"), "many topics", null, List.of());
+        String fresh = ContractActualizer.actualize(fixture.lib(), List.of(c)).get("c1");
+        assertThat(fresh).endsWith(ContractActualizer.TRUNCATION_MARKER);   // the markers tipped it over
+        assertThat(fixture.recorded()).doesNotContain(ContractActualizer.TRUNCATION_MARKER);
+        assertThat(fixture.recorded().length()).isLessThanOrEqualTo(4000);  // unmarked, it fit
+        // and the two really are the same source: every whole line the fresh side got to emit,
+        // minus its marker, is byte-identical to the recorded body's prefix.
+        String freshWholeLines = fresh.substring(0,
+                        fresh.length() - ("\n" + ContractActualizer.TRUNCATION_MARKER).length())
+                .replace(ContractActualizer.UNRESOLVED_MARKER, "");
+        assertThat(fixture.recorded())
+                .startsWith(freshWholeLines.substring(0, freshWholeLines.lastIndexOf('\n') + 1));
+        store.writeContract(runDir, "c1", fixture.recorded());
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", fixture.lib()), store, runDir);
+
+        assertThat(findings.get(0).status()).isEqualTo(ContractRecheck.Status.TRUNCATED_MATCH);
+        assertThat(findings.get(0).detail())
+                .isEqualTo("one side of the comparison was truncated at the 4000-char"
+                        + " actualization cap and the other was not — the two bodies cannot be"
+                        + " compared line-for-line");
+    }
+
     private Path libWithTwoTypes() throws Exception {
         Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme"));
         Files.writeString(root.resolve("Alpha.java"),
