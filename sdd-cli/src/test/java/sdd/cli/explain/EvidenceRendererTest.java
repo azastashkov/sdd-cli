@@ -253,6 +253,25 @@ class EvidenceRendererTest {
     }
 
     @Test
+    void aSearchTermLongerThanItsCapIsTruncatedWithAStatedMarker() {
+        // QuestionInterpreter.MAX_TERMS = 8 caps the COUNT of search terms; nothing upstream caps
+        // the LENGTH of any one term (search_terms[i] is unvalidated model text, never checked
+        // against KbEntities.resolve) -- this is the fourth path to the same defect already fixed
+        // for restatement and notes.
+        String hugeTerm = "z".repeat(1000);
+        RetrievalRequest req = new RetrievalRequest(Intent.SEARCH, List.of(), List.of(hugeTerm, "short"),
+                "irrelevant", List.of(), false);
+        Evidence ev = evidence(req, List.of(), List.of());
+
+        String out = EvidenceRenderer.render(ev);
+
+        assertThat(out).doesNotContain(hugeTerm);
+        assertThat(out).contains("[truncated to 100 of 1000 chars]");
+        // The short term rode along unmodified, and both still ended up on the "Search terms:" line.
+        assertThat(out).contains("Search terms:").contains("short");
+    }
+
+    @Test
     void farMoreNotesThanTheLimitAreCappedByCountWithAStatedOmission() {
         // Mirrors QuestionInterpreter's actual failure mode: one drop-note per entity the model
         // named, appended BEFORE MAX_ENTITIES truncation runs -- so a response naming far more
