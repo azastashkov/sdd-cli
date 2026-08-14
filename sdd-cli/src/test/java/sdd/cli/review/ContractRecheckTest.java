@@ -428,6 +428,45 @@ class ContractRecheckTest {
         assertThat(diverged.missing()).containsExactly("produces t.orders");
     }
 
+    private Path libWithRestController() throws Exception {
+        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme/svc"));
+        Files.writeString(root.resolve("SpreadController.java"), """
+                package com.acme.svc;
+                import org.springframework.web.bind.annotation.*;
+                @RestController
+                public class SpreadController {
+                    @GetMapping("/admin/spreads")
+                    public String spreads() { return ""; }
+                }
+                """);
+        return ws.resolve("lib");
+    }
+
+    @Test
+    void aRestContractIsComparedAgainstWhatTheActualizerReallyEmits() throws Exception {
+        Path lib = libWithRestController();
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract met = new PlanModel.PlanContract("c1", "rest", "lib",
+                List.of("svc"), "GET /admin/spreads", null, List.of("GET /admin/spreads"));
+        store.writeContract(runDir, "c1", ContractActualizer.actualize(lib, List.of(met)).get("c1"));
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(met), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        assertThat(findings.get(0).status()).isEqualTo(ContractRecheck.Status.MATCHES);
+        assertThat(findings.get(0).conformance()).isEqualTo(ContractRecheck.Conformance.DECLARED_MET);
+        assertThat(findings.get(0).missing()).isEmpty();
+
+        // ...and the check still has teeth: the same tree against the wrong verb diverges.
+        PlanModel.PlanContract wrongVerb = new PlanModel.PlanContract("c1", "rest", "lib",
+                List.of("svc"), "POST /admin/spreads", null, List.of("POST /admin/spreads"));
+        ContractRecheck.Finding diverged = ContractRecheck.check(plan(wrongVerb), succeeded(),
+                Map.of("lib", lib), store, runDir).get(0);
+        assertThat(diverged.conformance()).isEqualTo(ContractRecheck.Conformance.DIVERGED_FROM_PLAN);
+        assertThat(diverged.missing()).containsExactly("POST /admin/spreads");
+    }
+
     @Test
     void everyDeclaredTypeMissingFromExtractionIsDivergedNotNotComparable() throws Exception {
         // Extraction genuinely ran (the provider has a real checkout) but found zero matches for
