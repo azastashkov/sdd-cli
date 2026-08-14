@@ -1,6 +1,7 @@
 package sdd.plan.gen;
 
 import org.jdbi.v3.core.Jdbi;
+import sdd.core.kb.ContractEdges;
 import sdd.plan.impact.AffectedRepo;
 import sdd.plan.impact.ImpactResult;
 
@@ -97,41 +98,20 @@ public final class ExecutionOrder {
     /** [provider, consumer] constraint edges among the given repos — shared with PlanValidator. */
     public static List<String[]> edges(Jdbi jdbi, Set<String> affected) {
         List<String[]> edges = new ArrayList<>();
-        jdbi.useHandle(h -> {
-            h.createQuery("""
-                            SELECT rt.name AS provider, rf.name AS consumer
-                            FROM v_repo_dep_edge v
-                            JOIN repo rf ON rf.id = v.from_repo_id
-                            JOIN repo rt ON rt.id = v.to_repo_id
-                            ORDER BY rt.name, rf.name""")
-                    .mapToMap().forEach(row -> edges.add(new String[]{
-                            String.valueOf(row.get("provider")), String.valueOf(row.get("consumer"))}));
-            h.createQuery("""
-                            SELECT DISTINCT rp.name AS provider, rc.name AS consumer
-                            FROM rest_call_edge ce
-                            JOIN rest_client c ON c.id = ce.client_id
-                            JOIN module mc ON mc.id = c.module_id
-                            JOIN repo rc ON rc.id = mc.repo_id
-                            JOIN rest_endpoint e ON e.id = ce.endpoint_id
-                            JOIN module mp ON mp.id = e.module_id
-                            JOIN repo rp ON rp.id = mp.repo_id
-                            WHERE rc.name <> rp.name
-                            ORDER BY rp.name, rc.name""")
-                    .mapToMap().forEach(row -> edges.add(new String[]{
-                            String.valueOf(row.get("provider")), String.valueOf(row.get("consumer"))}));
-            h.createQuery("""
-                            SELECT DISTINCT rp.name AS provider, rc.name AS consumer
-                            FROM kafka_role prod
-                            JOIN module mp ON mp.id = prod.module_id
-                            JOIN repo rp ON rp.id = mp.repo_id
-                            JOIN kafka_role cons ON cons.topic_id = prod.topic_id AND cons.role = 'CONSUMER'
-                            JOIN module mc ON mc.id = cons.module_id
-                            JOIN repo rc ON rc.id = mc.repo_id
-                            WHERE prod.role = 'PRODUCER' AND rp.name <> rc.name
-                            ORDER BY rp.name, rc.name""")
-                    .mapToMap().forEach(row -> edges.add(new String[]{
-                            String.valueOf(row.get("provider")), String.valueOf(row.get("consumer"))}));
-        });
+        jdbi.useHandle(h -> h.createQuery("""
+                        SELECT rt.name AS provider, rf.name AS consumer
+                        FROM v_repo_dep_edge v
+                        JOIN repo rf ON rf.id = v.from_repo_id
+                        JOIN repo rt ON rt.id = v.to_repo_id
+                        ORDER BY rt.name, rf.name""")
+                .mapToMap().forEach(row -> edges.add(new String[]{
+                        String.valueOf(row.get("provider")), String.valueOf(row.get("consumer"))})));
+        for (ContractEdges.RestEdge edge : ContractEdges.rest(jdbi)) {
+            edges.add(new String[]{edge.providerRepo(), edge.consumerRepo()});
+        }
+        for (ContractEdges.KafkaEdge edge : ContractEdges.kafka(jdbi)) {
+            edges.add(new String[]{edge.producerRepo(), edge.consumerRepo()});
+        }
         return edges.stream().filter(e -> affected.contains(e[0]) && affected.contains(e[1])).toList();
     }
 }
