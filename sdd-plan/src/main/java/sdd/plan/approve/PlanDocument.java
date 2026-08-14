@@ -52,13 +52,14 @@ public record PlanDocument(String specId, int planVersion, String summary,
     }
 
     public record PlanContract(String id, String kind, String provider, List<String> consumers,
-                               String body, String compat) {
+                               String body, String compat, List<String> declared) {
         public PlanContract {
             Objects.requireNonNull(id);
             Objects.requireNonNull(kind);
             Objects.requireNonNull(provider);
             consumers = List.copyOf(consumers);
             Objects.requireNonNull(body);
+            declared = List.copyOf(declared);
         }
     }
 

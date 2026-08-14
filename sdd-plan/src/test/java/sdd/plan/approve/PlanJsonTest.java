@@ -38,7 +38,7 @@ class PlanJsonTest {
                         new PlanDocument.PlanRepo("svc-a", "dependent", "CODE_CHANGE_LIKELY", List.of(), "w")),
                 List.of(), List.of(List.of("lib-core"), List.of("svc-a")),
                 List.of(new PlanDocument.PlanContract("C-1", "java-api", "lib-core",
-                        List.of("svc-a"), "body", null)),
+                        List.of("svc-a"), "body", null, List.of())),
                 List.of(new PlanDocument.PlanStep("lib-core", List.of("R1"), "minor",
                         List.of("C-1"), List.of(), List.of("src/A.java"), List.of("t"), "s")),
                 List.of());
@@ -96,7 +96,7 @@ class PlanJsonTest {
                         new PlanDocument.PlanRepo("svc-a", "dependent", "CODE_CHANGE_LIKELY", List.of(), "w")),
                 List.of(), List.of(List.of("lib-core"), List.of("svc-a")),
                 List.of(new PlanDocument.PlanContract("C-1", "java-api", "lib-core",
-                        List.of("svc-a"), "body", "binary-compatible")),
+                        List.of("svc-a"), "body", "binary-compatible", List.of())),
                 List.of(new PlanDocument.PlanStep("lib-core", List.of("R1"), "minor",
                         List.of("C-1"), List.of(), List.of("src/A.java"), List.of("t"), "s")),
                 List.of());
@@ -106,6 +106,30 @@ class PlanJsonTest {
 
         JsonNode root = new ObjectMapper().readTree(json);
         assertThat(root.get("contracts").get(0).get("compat").asText()).isEqualTo("binary-compatible");
+    }
+
+    @Test
+    void declarationsSurviveTheRoundTripThroughPlanJson() throws Exception {
+        List<String> declared = List.of(
+                "com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier");
+        PlanDocument withDeclared = new PlanDocument("SPEC-9", 3, "S.", List.of(),
+                List.of(new PlanDocument.PlanRepo("lib-core", "seed", "SEED", List.of("R1"), "w"),
+                        new PlanDocument.PlanRepo("svc-a", "dependent", "CODE_CHANGE_LIKELY", List.of(), "w")),
+                List.of(), List.of(List.of("lib-core"), List.of("svc-a")),
+                List.of(new PlanDocument.PlanContract("C-1", "java-api", "lib-core",
+                        List.of("svc-a"), "body", null, declared)),
+                List.of(new PlanDocument.PlanStep("lib-core", List.of("R1"), "minor",
+                        List.of("C-1"), List.of(), List.of("src/A.java"), List.of("t"), "s")),
+                List.of());
+        SmokeRunner ok = (consumer, provider) -> new SmokeRunner.Result(true, "");
+
+        String json = PlanJson.compile(db.jdbi(), withDeclared, "spec-sha", "plan-sha", ok, new ArrayList<>());
+
+        JsonNode root = new ObjectMapper().readTree(json);
+        JsonNode declaredNode = root.get("contracts").get(0).get("declared");
+        List<String> readBack = new ArrayList<>();
+        declaredNode.forEach(n -> readBack.add(n.asText()));
+        assertThat(readBack).isEqualTo(declared);
     }
 
     @Test

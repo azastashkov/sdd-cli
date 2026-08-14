@@ -106,9 +106,25 @@ final class Sections {
                 throw new PlanParseException(startLine + i - 1, "contract body fence is never closed");
             }
             i++;
+            // An optional second fence — "declared" contract members — follows immediately after
+            // a blank line, exactly as the renderer emits it. Its absence (a pre-5C-1 plan.md, or
+            // a contract with no declarations) means empty declarations, not an error.
+            List<String> declared = new ArrayList<>();
+            if (i < body.size() && body.get(i).isBlank() && i + 1 < body.size()
+                    && body.get(i + 1).equals("```contract")) {
+                i += 2;
+                while (i < body.size() && !body.get(i).equals("```")) {
+                    declared.add(body.get(i));
+                    i++;
+                }
+                if (i >= body.size()) {
+                    throw new PlanParseException(startLine + i - 1, "contract declared fence is never closed");
+                }
+                i++;
+            }
             b.contracts.add(new PlanDocument.PlanContract(head.group(1), head.group(2),
                     head.group(4), head.group(5) == null ? List.of() : csv(head.group(5)),
-                    String.join("\n", bodyLines), head.group(3)));
+                    String.join("\n", bodyLines), head.group(3), declared));
         }
     }
 

@@ -23,9 +23,10 @@ public record PlanModel(String specId, int planVersion, String specSha256, Strin
     }
 
     public record PlanContract(String id, String kind, String provider, List<String> consumers, String body,
-                               String compat) {
+                               String compat, List<String> declared) {
         public PlanContract {
             consumers = List.copyOf(consumers);
+            declared = List.copyOf(declared);
         }
     }
 

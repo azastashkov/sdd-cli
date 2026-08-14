@@ -17,7 +17,7 @@ class ReviewReportTest {
     private static PlanModel planWithContracts(int contractCount) {
         List<PlanModel.PlanContract> contracts = java.util.stream.IntStream.range(0, contractCount)
                 .mapToObj(i -> new PlanModel.PlanContract(
-                        "contract-" + i, "interface", "lib", List.of(), "body", "source"))
+                        "contract-" + i, "interface", "lib", List.of(), "body", "source", List.of()))
                 .toList();
         return new PlanModel("SPEC-1", 1, "", "",
                 List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", "a")),
@@ -267,7 +267,7 @@ class ReviewReportTest {
                 new ContractRecheck.Finding("contract-0", "lib", "interface",
                         ContractRecheck.Status.MATCHES, "", "main"));
         PlanModel plan = planWithEdge(List.of(new PlanModel.PlanContract(
-                "contract-0", "interface", "lib", List.of("svc"), "body", "source")));
+                "contract-0", "interface", "lib", List.of("svc"), "body", "source", List.of())));
 
         String report = ReviewReport.render("SPEC-1-v1", plan, threeSucceeded(), Map.of(),
                 rebuilds, List.of(), stagingFailures, List.of(), List.of(), findings, Map.of(),

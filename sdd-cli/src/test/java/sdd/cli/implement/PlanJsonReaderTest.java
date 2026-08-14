@@ -83,6 +83,33 @@ class PlanJsonReaderTest {
     }
 
     @Test
+    void aPlanJsonWithoutDeclaredLoadsWithAnEmptyList() {
+        PlanModel plan = PlanJsonReader.read(PLAN);   // no "declared" key anywhere
+
+        assertThat(plan.contracts()).singleElement()
+                .extracting(PlanModel.PlanContract::declared).isEqualTo(List.of());
+    }
+
+    @Test
+    void readsDeclaredFromPlanJsonWhenPresent() {
+        String withDeclared = """
+                {
+                  "spec_id" : "S", "plan_version" : 1, "repos" : [], "order" : [], "steps" : [],
+                  "contracts" : [
+                    { "id" : "c1", "kind" : "java-api", "provider" : "lib", "consumers" : [ ], "body" : "b",
+                      "declared" : [ "com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier" ] }
+                  ]
+                }
+                """;
+
+        PlanModel plan = PlanJsonReader.read(withDeclared);
+
+        assertThat(plan.contracts()).singleElement().extracting(PlanModel.PlanContract::declared,
+                        org.assertj.core.api.InstanceOfAssertFactories.list(String.class))
+                .containsExactly("com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier");
+    }
+
+    @Test
     void toleratesMissingOptionalArrays() {
         PlanModel plan = PlanJsonReader.read(
                 "{\"spec_id\":\"S\",\"plan_version\":2,\"repos\":[],\"order\":[],\"steps\":[]}");

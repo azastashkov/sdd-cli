@@ -48,7 +48,7 @@ class ContractRecheckTest {
         RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
         Path runDir = store.create(ws, "S-v1", "{}", "");
         PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "java-api", "lib",
-                List.of("svc"), "Api.f", null);
+                List.of("svc"), "Api.f", null, List.of());
         // record exactly what a fresh actualization produces
         store.writeContract(runDir, "c1",
                 sdd.cli.implement.ContractActualizer.actualize(lib, List.of(c)).get("c1"));
@@ -66,7 +66,7 @@ class ContractRecheckTest {
         RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
         Path runDir = store.create(ws, "S-v1", "{}", "");
         PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "java-api", "lib",
-                List.of("svc"), "Api.f", null);
+                List.of("svc"), "Api.f", null, List.of());
         store.writeContract(runDir, "c1",
                 sdd.cli.implement.ContractActualizer.actualize(lib, List.of(c)).get("c1"));
         // the tree changes after the run recorded its contract
@@ -86,7 +86,7 @@ class ContractRecheckTest {
         RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
         Path runDir = store.create(ws, "S-v1", "{}", "");
         PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "java-api", "lib",
-                List.of("svc"), "Api.f", null);   // nothing written to contracts/
+                List.of("svc"), "Api.f", null, List.of());   // nothing written to contracts/
 
         assertThat(ContractRecheck.check(plan(c), succeeded(), Map.of("lib", lib), store, runDir))
                 .singleElement()
@@ -122,7 +122,7 @@ class ContractRecheckTest {
         RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
         Path runDir = store.create(ws, "S-v1", "{}", "");
         PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "java-api", "lib",
-                List.of("svc"), "Huge", null);
+                List.of("svc"), "Huge", null, List.of());
         String recorded = ContractActualizer.actualize(lib, List.of(c)).get("c1");
         assertThat(recorded).endsWith("…(truncated)");   // sanity: this fixture is over the cap
         store.writeContract(runDir, "c1", recorded);
@@ -153,9 +153,9 @@ class ContractRecheckTest {
         RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
         Path runDir = store.create(ws, "S-v1", "{}", "");
         PlanModel.PlanContract cAlpha = new PlanModel.PlanContract("cA", "java-api", "lib",
-                List.of("svc"), "Alpha.a", null);
+                List.of("svc"), "Alpha.a", null, List.of());
         PlanModel.PlanContract cBeta = new PlanModel.PlanContract("cB", "java-api", "lib",
-                List.of("svc"), "Beta.b", null);
+                List.of("svc"), "Beta.b", null, List.of());
         store.writeContract(runDir, "cA", ContractActualizer.actualize(lib, List.of(cAlpha)).get("cA"));
         store.writeContract(runDir, "cB", ContractActualizer.actualize(lib, List.of(cBeta)).get("cB"));
         // Beta drifts after recording; Alpha does not
@@ -182,9 +182,9 @@ class ContractRecheckTest {
         RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
         Path runDir = store.create(ws, "S-v1", "{}", "");
         PlanModel.PlanContract c1 = new PlanModel.PlanContract("c1", "java-api", "lib",
-                List.of("svc"), "Api.f", null);
+                List.of("svc"), "Api.f", null, List.of());
         PlanModel.PlanContract c2 = new PlanModel.PlanContract("c2", "java-api", "other",
-                List.of("svc"), "Other.g", null);
+                List.of("svc"), "Other.g", null, List.of());
         store.writeContract(runDir, "c1", ContractActualizer.actualize(lib, List.of(c1)).get("c1"));
         PlanModel plan = new PlanModel("S", 1, "", "",
                 List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", "a"),
@@ -215,7 +215,7 @@ class ContractRecheckTest {
         RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
         Path runDir = store.create(ws, "S-v1", "{}", "");
         PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "java-api", "lib",
-                List.of("svc"), "Api.f", null);
+                List.of("svc"), "Api.f", null, List.of());
 
         List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
                 Map.of("lib", lib), store, runDir);

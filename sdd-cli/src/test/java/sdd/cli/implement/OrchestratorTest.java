@@ -620,7 +620,7 @@ class OrchestratorTest {
                 List.of(List.of("lib"), List.of("svc")),
                 List.of(new PlanModel.PlanEdge("svc", "lib", "SNAPSHOT", "NONE")),
                 List.of(new PlanModel.PlanContract("c1", "java-api", "lib", List.of("svc"),
-                        "Api.f(int): int", compat)),
+                        "Api.f(int): int", compat, List.of())),
                 List.of(new PlanModel.PlanStep("lib", List.of(), "minor", List.of("c1"), List.of(),
                                 List.of(), List.of(), "provider step"),
                         new PlanModel.PlanStep("svc", List.of(), "patch", List.of(), List.of("c1"),

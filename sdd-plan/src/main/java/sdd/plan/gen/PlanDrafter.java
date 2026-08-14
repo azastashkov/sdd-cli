@@ -69,9 +69,10 @@ public final class PlanDrafter {
     }
 
     public record DraftContract(String id, String kind, String provider, List<String> consumers,
-                                String body, String compat) {
+                                String body, String compat, List<String> declared) {
         public DraftContract {
             consumers = List.copyOf(consumers);
+            declared = List.copyOf(declared);
         }
     }
 
@@ -177,7 +178,7 @@ public final class PlanDrafter {
                 compat = null;
             }
             contracts.add(new DraftContract(id, kind, provider, consumers,
-                    node.path("body").asText(), compat));
+                    node.path("body").asText(), compat, List.of()));
             contractIds.add(id);
         }
 

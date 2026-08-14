@@ -93,6 +93,10 @@ public final class PlanMdRenderer {
                 md.append('\n');
                 md.append("```yaml\n").append(contract.body().replace("```", "'''"))
                         .append("\n```\n");
+                if (!contract.declared().isEmpty()) {
+                    md.append("\n```contract\n").append(String.join("\n", contract.declared()))
+                            .append("\n```\n");
+                }
             }
         }
 

@@ -90,7 +90,7 @@ class RebuildPassTest {
         SddConfig config = ConfigLoader.load(ws);
 
         PlanModel.PlanContract contract = new PlanModel.PlanContract("c1", "java-api", "lib",
-                List.of("other"), "Api.f", null);
+                List.of("other"), "Api.f", null, List.of());
         PlanModel plan = new PlanModel("SPEC-9", 1, "", "",
                 List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", libBase),
                         new PlanModel.PlanRepo("other", "dependent", "X", "patch", otherBase)),
@@ -475,7 +475,7 @@ class RebuildPassTest {
         SddConfig config = ConfigLoader.load(ws);
 
         PlanModel.PlanContract contract = new PlanModel.PlanContract("c1", "java-api", "lib",
-                List.of("other"), "Api.f", null);
+                List.of("other"), "Api.f", null, List.of());
         PlanModel plan = new PlanModel("SPEC-9", 1, "", "",
                 List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", libBase),
                         new PlanModel.PlanRepo("other", "dependent", "X", "patch", otherBase)),

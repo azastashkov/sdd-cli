@@ -29,7 +29,7 @@ class ContractActualizerTest {
                 }
                 """);
         PlanModel.PlanContract contract = new PlanModel.PlanContract("c1", "java-api", "lib",
-                List.of("svc"), "TierResolver.resolve(String): String — planned delta", null);
+                List.of("svc"), "TierResolver.resolve(String): String — planned delta", null, List.of());
 
         Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
 
@@ -46,7 +46,7 @@ class ContractActualizerTest {
         javaFile("src/main/java/com/acme/lib/Beta.java",
                 "package com.acme.lib;\npublic class Beta { public void b() {} }\n");
         PlanModel.PlanContract contract = new PlanModel.PlanContract("c1", "java-api", "lib",
-                List.of(), "something about Gamma", null);
+                List.of(), "something about Gamma", null, List.of());
 
         Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
 
@@ -65,7 +65,7 @@ class ContractActualizerTest {
                 }
                 """);
         PlanModel.PlanContract contract = new PlanModel.PlanContract("c2", "rest", "svc",
-                List.of(), "GET /admin/spreads", null);
+                List.of(), "GET /admin/spreads", null, List.of());
 
         Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
 
@@ -77,7 +77,7 @@ class ContractActualizerTest {
         javaFile("core/src/main/java/com/acme/core/Deep.java",
                 "package com.acme.core;\npublic class Deep { public void d() {} }\n");
         PlanModel.PlanContract contract = new PlanModel.PlanContract("c3", "java-api", "lib",
-                List.of(), "Deep", null);
+                List.of(), "Deep", null, List.of());
 
         Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
 
@@ -91,7 +91,7 @@ class ContractActualizerTest {
         javaFile("libs/common-model/src/main/java/com/acme/model/Money.java",
                 "package com.acme.model;\npublic class Money { public String currency() { return \"USD\"; } }\n");
         PlanModel.PlanContract contract = new PlanModel.PlanContract("c6", "java-api", "common-model",
-                List.of(), "Money", null);
+                List.of(), "Money", null, List.of());
 
         Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
 
@@ -112,7 +112,7 @@ class ContractActualizerTest {
                 }
                 """);
         PlanModel.PlanContract contract = new PlanModel.PlanContract("c7", "rest", "pricing-a",
-                List.of(), "GET /pricing/quote", null);
+                List.of(), "GET /pricing/quote", null, List.of());
 
         Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
 
@@ -132,7 +132,7 @@ class ContractActualizerTest {
         javaFile("src/main/java/com/acme/lib/Real.java",
                 "package com.acme.lib;\npublic class Real { public void r() {} }\n");
         PlanModel.PlanContract contract = new PlanModel.PlanContract("c8", "java-api", "lib",
-                List.of(), "something unmatched", null);
+                List.of(), "something unmatched", null, List.of());
 
         Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
 
@@ -150,7 +150,7 @@ class ContractActualizerTest {
                 }
                 """);
         PlanModel.PlanContract contract = new PlanModel.PlanContract("c4", "kafka", "svc",
-                List.of(), "consumes t.orders", null);
+                List.of(), "consumes t.orders", null, List.of());
 
         Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
 
@@ -166,7 +166,7 @@ class ContractActualizerTest {
         src.append("}\n");
         javaFile("src/main/java/com/acme/lib/Huge.java", src.toString());
         PlanModel.PlanContract contract = new PlanModel.PlanContract("c5", "java-api", "lib",
-                List.of(), "Huge", null);
+                List.of(), "Huge", null, List.of());
 
         Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
 

@@ -36,7 +36,7 @@ class PlanMdRendererTest {
                         List.of("src/main/java/A.java"), List.of("C-1"), List.of(), "minor",
                         List.of("./gradlew test"))),
                 List.of(new PlanDrafter.DraftContract("C-1", "java-api", "lib-core",
-                        List.of("svc-pricing"), "method: Tier tierFor(String)\n```evil```", null)),
+                        List.of("svc-pricing"), "method: Tier tierFor(String)\n```evil```", null, List.of())),
                 List.of(new Question("From the model?", false)),
                 List.of("drafter note"), false);
         List<Question> detectors = List.of(new Question("no repo covers R1", true));
@@ -131,7 +131,7 @@ class PlanMdRendererTest {
     void contractWithNoConsumersRendersHeadingWithoutArrow() {
         PlanDrafter.Draft draft = new PlanDrafter.Draft("S.",
                 List.of(),
-                List.of(new PlanDrafter.DraftContract("C-1", "java-api", "lib-core", List.of(), "body", null)),
+                List.of(new PlanDrafter.DraftContract("C-1", "java-api", "lib-core", List.of(), "body", null, List.of())),
                 List.of(), List.of(), false);
 
         String md = PlanMdRenderer.render(spec(), impact(),
@@ -146,9 +146,9 @@ class PlanMdRendererTest {
         PlanDrafter.Draft draft = new PlanDrafter.Draft("S.",
                 List.of(),
                 List.of(new PlanDrafter.DraftContract("c1", "java-api", "lib", List.of("svc"),
-                                "body", "binary-compatible"),
+                                "body", "binary-compatible", List.of()),
                         new PlanDrafter.DraftContract("c2", "java-api", "lib", List.of("svc"),
-                                "body", null)),
+                                "body", null, List.of())),
                 List.of(), List.of(), false);
 
         String md = PlanMdRenderer.render(spec(), impact(),
@@ -156,5 +156,28 @@ class PlanMdRendererTest {
 
         assertThat(md).contains("### c1 (java-api, binary-compatible) — lib -> svc")
                 .contains("### c2 (java-api) — lib -> svc");
+    }
+
+    private static String draftWithContract(List<String> declared) {
+        PlanDrafter.Draft draft = new PlanDrafter.Draft("S.", List.of(),
+                List.of(new PlanDrafter.DraftContract("C-1", "java-api", "lib-core",
+                        List.of("svc-pricing"), "Add to existing JdbcTierResolver", null, declared)),
+                List.of(), List.of(), false);
+        return PlanMdRenderer.render(spec(), impact(),
+                List.of(new ExecutionOrder.Unit(List.of("lib-core"))), List.of(), draft);
+    }
+
+    @Test
+    void aContractWithDeclarationsRendersASecondFencedBlock() {
+        String md = draftWithContract(List.of(
+                "com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier"));
+        assertThat(md).contains("```contract\n"
+                + "com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier\n"
+                + "```");
+    }
+
+    @Test
+    void aContractWithNoDeclarationsRendersNoContractFence() {
+        assertThat(draftWithContract(List.of())).doesNotContain("```contract");
     }
 }

@@ -71,10 +71,10 @@ public final class PlanMdParser {
                 }
             } else {
                 body.add(line);
-                // Between an exact ```yaml open and its exact ``` close, heading detection is
-                // suspended: those lines belong to the current section's (contract) body, even
-                // if a drafted line happens to start with "## ".
-                if (!inFence && line.equals("```yaml")) {
+                // Between an exact ```yaml or ```contract open and its exact ``` close, heading
+                // detection is suspended: those lines belong to the current section's (contract)
+                // body, even if a drafted line happens to start with "## ".
+                if (!inFence && (line.equals("```yaml") || line.equals("```contract"))) {
                     inFence = true;
                 } else if (inFence && line.equals("```")) {
                     inFence = false;
