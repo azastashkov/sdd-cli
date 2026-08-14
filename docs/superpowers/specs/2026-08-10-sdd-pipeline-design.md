@@ -257,3 +257,50 @@ declared member absent from a fully resolved surface stays `DIVERGED_FROM_PLAN`.
 both, divergence wins the verdict — an implementation known to be wrong is the more actionable fact —
 and the report names the unresolved members separately so the human can see why the rest could not be
 judged.
+
+## Amendment (2026-08-14): sdd explain — the three deferred decisions, resolved
+
+The 2026-08-12 `sdd explain` amendment deliberately left three choices to the implementing phase:
+how a question maps to queries, what the output looks like, and whether it reuses the 4A agent-tool
+loop. Phase 6 resolves them. Everything that amendment made binding is unchanged: read-only with no
+writes, empty-KB handling mirroring `sdd graph`/`sdd plan`, and the planner endpoint as interpreter
+and synthesizer.
+
+**Retrieval is interpret → deterministic fetch → narrate, in two model calls.** Call 1 turns the
+question into a *validated retrieval request* — an intent plus entities, each resolved against the KB
+and dropped with a stated reason when it does not exist. Deterministic SQL then runs; **no model
+participates in retrieval**. Call 2 narrates over the retrieved evidence and nothing else.
+
+Reusing the 4A agent-tool loop was rejected on a mechanical ground, not a stylistic one: `AgentLoop`
+takes the concrete `Toolbox`, not an interface, so a read-only KB toolbox would require extracting a
+tool-provider seam from code the implement path depends on — and the alternative, extending
+`Toolbox`'s switch, would hand a read-only command `apply_edit` and `run_gradle`. A one-shot fixed
+bundle was rejected because it cannot target the question: "what consumes X" and "why does A depend
+on B" would receive the same facts.
+
+**The output is a prose answer followed by an `## Evidence` section**, to stdout by default and to a
+file with `--out`. The rendered evidence string is *both* the call-2 prompt and the printed section —
+one string, so an answer can never be grounded in facts its reader cannot see. That identity is the
+auditability property this command exists for, and it is enforced by test rather than convention.
+
+**Impact questions are answered by `Closure.expand` alone** — the deterministic reverse closure over
+the dependency graph. The model-driven `ImpactAnalysis`/`ModelSeeder` pipeline is deliberately not
+reused: it would add a third model call and let a model contribute repos to what must be a
+deterministic closure. `Closure.expand(Jdbi, Set<String>)` takes no model, and that signature is the
+guarantee.
+
+Three rules keep the command honest, each deterministic rather than left to a prompt:
+
+1. **Never narrate over an empty evidence bundle.** When retrieval yields no facts, call 2 is skipped
+   entirely — a narrator handed nothing is exactly where invention happens.
+2. **Absence is never asserted as fact.** `rest_client.resolution` is not always `LITERAL` and
+   `kafka_topic.resolution` can be `DYNAMIC`, so the KB cannot support "nothing consumes X". Every
+   consumer and impact answer carries a caveat counting the unresolved callers and dynamic topics in
+   the repos in play.
+3. **`repo_card` text is model-generated and labelled as such** wherever it appears, and may never be
+   the sole basis for a structural claim — it is a model's earlier summary stored in SQL, not an
+   extracted fact.
+
+Deliberately out of scope: conversational follow-up (each invocation is independent), any git
+freshness check against the working tree, and fixing `SddConfig.retrieval` being dead config — the
+search section is instead labelled with the backend that actually answered.
