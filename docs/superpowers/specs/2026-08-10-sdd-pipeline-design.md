@@ -139,3 +139,52 @@ User requirement: add `sdd explain <free-text question>` — a **read-only** nat
 ## Amendment (2026-08-13): configurable N-tier model escalation ladder
 
 Line 59's "Max 2 attempts; attempt 2 = hard reset to base + attempt-1 digest + escalation to DeepSeek" is generalized: `sdd.yml`'s `run:` section gains an optional `escalation_ladder` (a list of `models:` keys, in attempt order), defaulting to `[coder, planner]` — exactly the original two-tier shape. The orchestrator walks the ladder tier by tier; after any attempt whose result needs escalation (VERIFY_FAILED/EXHAUSTED/BUDGET/MALFORMED/WEDGED), it hard-resets to base, re-applies bump edits, and runs the next tier — as long as one exists and the run token budget isn't exhausted — otherwise it stops with the last outcome. Every tier after the first sees a digest naming every prior attempt (one-line summary each) plus the most recent one's full verification output, capped at 4000 chars. A 1-entry ladder means no escalation ever happens; an N-entry ladder (N > 2) escalates up to N-1 times. Default configuration reproduces today's behavior byte-for-byte.
+
+## Amendment (2026-08-14): declared contract grammar, and the Gate-2 plan-conformance axis
+
+Line 51 already requires Interface Contracts to hold "java-api with compilable skeletons, rest deltas,
+kafka deltas" in fenced YAML, and `PlanMdRenderer` already emits the fenced block — but `PlanDrafter`
+fills it with prose, so line 66's "diff vs plan deltas" has never had a machine-comparable baseline to
+diff against. `ContractActualizer.javaApi` uses `contract.body()` only as a *selector* for which types
+to re-extract, never as a comparison baseline, so an implementation that shipped a different interface
+than Gate 1 approved re-checks as `MATCHES`. This amendment closes that.
+
+**The declared block's grammar is the actualizer's own output vocabulary**, normalized. That constraint
+is the design: a contract may declare only what Gate 2 can extract, because anything else builds a
+check that cannot check. Per kind:
+
+- `java-api` — one member per line, `<fqcn>#<signature>: <returnType>`, e.g.
+  `com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier`. Types are compared by
+  simple name, matching what `ApiSurfaceExtractor` emits.
+- `rest` — `<METHOD> <pathTemplate>`, e.g. `GET /api/admin/tier-spreads`. The handler class behind the
+  extractor's `-> <fqcn>#<method>` is an implementation detail no one approves at Gate 1, so it is
+  excluded from both the declaration and the comparison. Status codes and response types are not
+  extracted today and therefore stay in prose.
+- `kafka` — `<role> <topic>`, e.g. `produces orders.v1`.
+
+Prose keeps its place alongside the block: it carries intent and the constraints no extractor sees.
+
+**Gate 2 gains a second, independent axis.** The existing `Status` answers "did the implementation
+change since the run recorded it". Plan conformance answers "does it match what Gate 1 approved" —
+a different question, so it is a separate field rather than another `Status` constant, which avoids a
+precedence fight when a contract both drifted and diverged. Values: `DECLARED_MET`,
+`DIVERGED_FROM_PLAN`, `NOT_DECLARED`, `NOT_COMPARABLE`. The check is **containment**: every declared
+member must appear in the freshly extracted surface; extras are not divergence, because adding API is
+not breaking a contract.
+
+Three rules keep the axis honest:
+
+1. **Truncation suppresses the verdict.** Bodies are capped at `MAX_BODY`; a declared member absent
+   only because extraction was cut off reports `NOT_COMPARABLE`, never `DIVERGED_FROM_PLAN` — the same
+   reasoning that `TRUNCATED_MATCH` already encodes for the drift axis.
+2. **A plan with no declared block reports `NOT_DECLARED`, never `MATCHES`.** Plans frozen before this
+   amendment have prose-only bodies; they must not read as conforming.
+3. **When a declared block is present it replaces the prose selector, and `javaApi`'s
+   `relevant.isEmpty() ? all : relevant` fallback does not apply.** Dumping the entire API surface when
+   nothing matches would mask the strongest divergence signal there is — that none of the declared
+   types exist at all.
+
+Divergence is a **warning** that never fails the review, consistent with line 66's "mismatches = report
+warnings, human adjudicates". It renders in its own report section and is counted in the Summary, so
+the human deciding approve/reject sees it. Coupling it to `Decisions.approve` as a refusal is
+deliberately left out of scope.
