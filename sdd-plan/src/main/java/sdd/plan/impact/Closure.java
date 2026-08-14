@@ -1,6 +1,7 @@
 package sdd.plan.impact;
 
 import org.jdbi.v3.core.Jdbi;
+import sdd.core.kb.KbStatus;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -267,22 +268,6 @@ public final class Closure {
     }
 
     private static void statusWarnings(Jdbi jdbi, Set<String> affected, List<String> warnings) {
-        List<Map<String, Object>> rows = jdbi.withHandle(h -> h.createQuery("""
-                        SELECT name, gradle_status, parse_status FROM repo
-                        WHERE (gradle_status IN ('DEGRADED','FAILED','STALE_OK')
-                               OR parse_status IN ('DEGRADED','FAILED','STALE_OK'))
-                        ORDER BY name""")
-                .mapToMap().list());
-        for (Map<String, Object> row : rows) {
-            String name = String.valueOf(row.get("name"));
-            if (affected.contains(name)) {
-                String status = row.get("gradle_status") != null
-                        && !"OK".equals(row.get("gradle_status"))
-                        ? String.valueOf(row.get("gradle_status"))
-                        : String.valueOf(row.get("parse_status"));
-                warnings.add("affected repo " + name + " indexed with status " + status
-                        + " — downgrade confidence in its facts");
-            }
-        }
+        warnings.addAll(KbStatus.warnings(jdbi, affected));
     }
 }
