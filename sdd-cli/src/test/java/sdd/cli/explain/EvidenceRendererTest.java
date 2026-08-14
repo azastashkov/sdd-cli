@@ -253,6 +253,30 @@ class EvidenceRendererTest {
     }
 
     @Test
+    void farMoreNotesThanTheLimitAreCappedByCountWithAStatedOmission() {
+        // Mirrors QuestionInterpreter's actual failure mode: one drop-note per entity the model
+        // named, appended BEFORE MAX_ENTITIES truncation runs -- so a response naming far more
+        // entities than survive validation produces far more notes than EVIDENCE_CAP should have
+        // to absorb. 500 short, well-under-NOTE_CAP notes: only the count cap should be at work.
+        List<String> notes = new ArrayList<>();
+        for (int i = 0; i < 500; i++) {
+            notes.add("model referenced repo 'nope-" + i + "' — no repo named 'nope-" + i
+                    + "' in the estate — dropped");
+        }
+        RetrievalRequest req = new RetrievalRequest(Intent.SEARCH, List.of(), List.of(),
+                "irrelevant", notes, false);
+        Evidence ev = evidence(req, List.of(), List.of());
+
+        String out = EvidenceRenderer.render(ev);
+
+        // The cap held: only the first 20 individual note lines made it in.
+        assertThat(out).contains("nope-0'").contains("nope-19'");
+        assertThat(out).doesNotContain("nope-20'").doesNotContain("nope-499'");
+        // The omission is stated, not silent, with an accurate count.
+        assertThat(out).contains("+480 more notes omitted (showing 20 of 500)");
+    }
+
+    @Test
     void shortRestatementAndNotesAreNeverTruncated() {
         RetrievalRequest req = new RetrievalRequest(Intent.SEARCH, List.of(), List.of(),
                 "What is svc-orders?", List.of("a short note"), false);

@@ -29,14 +29,17 @@ import java.util.Locale;
  * <p><b>What {@link #EVIDENCE_CAP} actually bounds:</b> {@link Section} blocks only — see
  * {@link #appendCapped}. {@code Provenance} and {@code Interpretation} always render in full, and
  * {@code Caveats} always renders in full once non-empty (see {@link #render}'s comment on why). To
- * keep the promised bound meaningful despite that, {@code Interpretation}'s two model-authored,
- * length-unbounded fields — {@code restatement} and each {@code notes} entry — carry their own
- * per-field cap ({@link #capField}) independent of {@link #EVIDENCE_CAP}: {@code QuestionInterpreter}
- * only bounds how many entities/terms survive validation, never the length of a string a hostile or
- * malfunctioning call-1 response could put in {@code restatement} or a rejected entity's {@code
- * value} (which never passed KB validation, unlike a surviving {@link EntityRef}). A renderer that
- * advertises a cap but trusts its input to stay short is not actually enforcing one, so the cap is
- * applied here rather than relying solely on upstream discipline.
+ * keep the promised bound meaningful despite that, {@code Interpretation}'s model-authored,
+ * unbounded surface carries its own independent caps: a per-field length cap ({@link #capField}) on
+ * {@code restatement} and on each {@code notes} entry, and a count cap ({@link #NOTES_LIMIT}) on how
+ * many {@code notes} entries render at all. Both are necessary — {@code QuestionInterpreter} bounds
+ * neither: {@code MAX_ENTITIES}/{@code MAX_TERMS} only cap how many entities/terms *survive*
+ * validation, but one drop-note is appended per rejected entity *before* that truncation runs, so a
+ * response naming a thousand entities produces a thousand notes regardless of how few ultimately
+ * survive. A rejected entity's {@code value} also never passed KB validation, unlike a surviving
+ * {@link EntityRef}, so both its length and the sheer count of such notes are attacker-controlled. A
+ * renderer that advertises a cap but trusts its input to stay short (or few) is not actually
+ * enforcing one, so both caps are applied here rather than relying solely on upstream discipline.
  */
 public final class EvidenceRenderer {
 
@@ -57,6 +60,14 @@ public final class EvidenceRenderer {
 
     /** Per-entry cap on each {@code notes()} string — see the class Javadoc's note on why this exists. */
     private static final int NOTE_CAP = 300;
+
+    /**
+     * Cap on how many {@code notes()} entries render at all — see the class Javadoc's note on why
+     * this exists alongside {@link #NOTE_CAP}. Modest on purpose: notes exist to explain drops, not
+     * to enumerate every one, so a reader who wants to know "were things dropped and roughly why"
+     * is served by the first several just as well as by all one thousand.
+     */
+    private static final int NOTES_LIMIT = 20;
 
     private EvidenceRenderer() {
     }
@@ -129,7 +140,9 @@ public final class EvidenceRenderer {
      * {@code restatement} is printed verbatim as {@code Interpreted as: ...} — the cheapest defence
      * against a silently misread question, since a misreading becomes visible instead of becoming a
      * wrong answer. Every note (dropped entity, downgrade, truncation) from call 1's validation is
-     * listed too, never silently absorbed.
+     * listed too, up to {@link #NOTES_LIMIT} of them, each capped at {@link #NOTE_CAP} characters —
+     * the two caps compose, so neither an unusually long note nor an unusually large number of them
+     * can defeat the other. Never silently absorbed either way: both truncations are stated.
      */
     private static String renderInterpretation(RetrievalRequest request) {
         StringBuilder sb = new StringBuilder();
@@ -156,8 +169,16 @@ public final class EvidenceRenderer {
         }
         if (!request.notes().isEmpty()) {
             sb.append("Notes:\n");
-            for (String note : request.notes()) {
-                sb.append("- ").append(capField(note, NOTE_CAP)).append('\n');
+            List<String> notes = request.notes();
+            int shown = Math.min(notes.size(), NOTES_LIMIT);
+            for (int i = 0; i < shown; i++) {
+                sb.append("- ").append(capField(notes.get(i), NOTE_CAP)).append('\n');
+            }
+            if (shown < notes.size()) {
+                int omitted = notes.size() - shown;
+                sb.append("- +").append(omitted).append(" more note").append(omitted == 1 ? "" : "s")
+                        .append(" omitted (showing ").append(shown).append(" of ").append(notes.size())
+                        .append(")\n");
             }
         }
         sb.append('\n');
