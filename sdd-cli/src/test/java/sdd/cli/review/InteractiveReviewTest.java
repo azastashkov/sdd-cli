@@ -282,6 +282,14 @@ class InteractiveReviewTest {
     }
 
     @Test
+    void promptLabelsRedoAsReDoNotDedo() {
+        // Live output rendered "[d]edo" — the key binding (d) is correct, only the label read wrong.
+        assertThat(InteractiveReview.PROMPT)
+                .isEqualTo("[a]pprove / [r]eject / re[d]o / [v]iew diff / [s]kip / [q]uit: ")
+                .doesNotContain("dedo");
+    }
+
+    @Test
     void aDirtyTreeRefusesTheSquashAndPropagatesExitTwoWithoutLosingTheDecision() throws Exception {
         Fixture f = fixture();
         InteractiveReview.Context ctx = context(f);

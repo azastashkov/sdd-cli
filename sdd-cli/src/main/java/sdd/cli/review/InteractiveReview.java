@@ -31,7 +31,7 @@ import java.util.Map;
  * terminal.
  */
 public final class InteractiveReview {
-    static final String PROMPT = "[a]pprove / [r]eject / [d]edo / [v]iew diff / [s]kip / [q]uit: ";
+    static final String PROMPT = "[a]pprove / [r]eject / re[d]o / [v]iew diff / [s]kip / [q]uit: ";
     private static final String REASON_PROMPT = "reason (optional, press enter to skip): ";
 
     private InteractiveReview() {
