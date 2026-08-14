@@ -30,7 +30,7 @@ final class RepoFacts {
         for (EntityRef entity : request.entities()) {
             Resolution resolution = KbEntities.resolve(jdbi, entity.kind(), entity.value());
             if (entity.kind() != EntityKind.REPO) {
-                sections.add(EvidenceCollector.citation(entity, resolution));
+                sections.add(EvidenceCollector.citation(entity, resolution, false));
             }
             repos.addAll(resolution.repos());
         }

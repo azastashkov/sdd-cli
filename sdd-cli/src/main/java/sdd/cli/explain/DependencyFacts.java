@@ -44,10 +44,10 @@ final class DependencyFacts {
 
         List<Section> sections = new ArrayList<>();
         if (subject.kind() != EntityKind.REPO) {
-            sections.add(EvidenceCollector.citation(subject, subjectRes));
+            sections.add(EvidenceCollector.citation(subject, subjectRes, true));
         }
         if (object.kind() != EntityKind.REPO) {
-            sections.add(EvidenceCollector.citation(object, objectRes));
+            sections.add(EvidenceCollector.citation(object, objectRes, true));
         }
 
         List<String> fromRepos = subjectRes.repos();

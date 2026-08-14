@@ -6,6 +6,7 @@ import org.junit.jupiter.api.io.TempDir;
 import sdd.core.db.Database;
 import sdd.core.kb.EntityKind;
 import sdd.core.retrieve.FtsRetriever;
+import sdd.core.retrieve.Hit;
 import sdd.core.retrieve.Retriever;
 
 import java.nio.file.Path;
@@ -88,6 +89,36 @@ class EvidenceCollectorTest {
         assertThat(evidence.sections()).anySatisfy(s -> assertThat(s.title()).isEqualTo("Repo: " + ExplainFixture.LIB_API));
     }
 
+    @Test
+    void describeOnATopicEntityDeduplicatesCitationAcrossDuplicateRoleRows() {
+        // resolveTopic (KbEntities) has no DISTINCT either — seed a second, identical CONSUMER
+        // row for svc-notify so the same duplication risk named for CLASS also gets exercised
+        // for TOPIC, the other kind the brief names.
+        db.jdbi().useHandle(h -> h.execute(
+                "INSERT INTO kafka_role(module_id, topic_id, role) VALUES (5, 1, 'CONSUMER')"));
+
+        RetrievalRequest request = new RetrievalRequest(Intent.DESCRIBE,
+                List.of(new EntityRef(EntityKind.TOPIC, ExplainFixture.ORDERS_TOPIC, false)),
+                List.of(), "What is orders.events?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        Section citation = section(evidence, "Resolved topic '" + ExplainFixture.ORDERS_TOPIC + "'");
+        assertThat(citation.facts()).extracting(Fact::text).containsExactlyInAnyOrder(
+                ExplainFixture.SVC_ORDERS + ": PRODUCER",
+                ExplainFixture.SVC_NOTIFY + ": CONSUMER");
+    }
+
+    @Test
+    void describeProducesIdenticalEvidenceAcrossTwoCalls() {
+        RetrievalRequest request = new RetrievalRequest(Intent.DESCRIBE,
+                List.of(new EntityRef(EntityKind.REPO, ExplainFixture.SVC_ORDERS, false),
+                        new EntityRef(EntityKind.CLASS, ExplainFixture.PRICE_API_FQCN, false)),
+                List.of(), "What is svc-orders, and what is PriceApi?", List.of(), false);
+
+        assertThat(collect(request)).isEqualTo(collect(request));
+    }
+
     // --- dependency_path ------------------------------------------------------------------------
 
     @Test
@@ -155,12 +186,23 @@ class EvidenceCollectorTest {
         RetrievalRequest request = new RetrievalRequest(Intent.SEARCH, List.of(),
                 List.of("PriceApi", "OrdersController"), "tell me about these symbols", List.of(), false);
 
+        // Ground truth: the retriever's own best-first (ascending score) order for the exact same
+        // query string SearchFacts joins internally, gathered independently of SearchFacts so this
+        // test can actually falsify a reordering bug in SearchFacts rather than just re-deriving
+        // whatever order it happened to produce.
+        List<Hit> rawHits = retriever.search("PriceApi OrdersController", 50);
+        assertThat(rawHits).hasSize(2); // sanity: both fixture symbols matched, nothing degenerate
+
         Evidence first = collect(request);
         Evidence second = collect(request);
 
         assertThat(first).isEqualTo(second);
         List<String> hits = texts(section(first, "Search hits"));
-        assertThat(hits).isNotEmpty();
+        assertThat(hits).hasSize(2);
+        // best-first: SearchFacts' fact order must mirror the retriever's ascending-score order,
+        // not just contain the same items — this fails if SearchFacts reverses or shuffles hits.
+        assertThat(hits.get(0)).startsWith(rawHits.get(0).identifier() + " (");
+        assertThat(hits.get(1)).startsWith(rawHits.get(1).identifier() + " (");
         assertThat(hits).anySatisfy(t -> assertThat(t).contains("PriceApi").contains(ExplainFixture.LIB_API));
         assertThat(hits).anySatisfy(t -> assertThat(t).contains("OrdersController").contains(ExplainFixture.SVC_ORDERS));
         assertThat(section(first, "Search hits").source()).isEqualTo("fts_symbol (bm25)");
