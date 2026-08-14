@@ -359,7 +359,11 @@ public final class ImplementCommand implements Callable<Integer> {
                         : orchestrator.run(runDir, activePlan, activeSteps, initialState);
 
                 for (var repo : result.state().repos()) {
+                    // Same idiom as ReviewReport's Repos section: the machine-readable failure code
+                    // (now the only place the StepResult name appears — Orchestrator no longer folds
+                    // it into detail(), to avoid the two repeating each other) precedes the prose.
                     out.println(repo.repo() + ": " + repo.state()
+                            + (repo.failureCode() == null ? "" : " [" + repo.failureCode() + "]")
                             + (repo.detail() == null || repo.detail().isBlank() ? "" : " — " + repo.detail()));
                 }
                 String label = result.exitCode() == 0 ? "COMPLETE"

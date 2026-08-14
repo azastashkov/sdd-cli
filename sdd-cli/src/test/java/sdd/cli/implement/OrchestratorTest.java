@@ -198,6 +198,11 @@ class OrchestratorTest {
         assertThat(result.exitCode()).isEqualTo(3);
         assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.PAUSED_INFRA);
         assertThat(result.state().stateOf("svc")).isEqualTo(RepoState.PENDING);
+        // The other half of the FAILED/PAUSED_INFRA pair: StepResult.INFRA persists as failureCode
+        // exactly like StepResult.VERIFY_FAILED does on the FAILED path.
+        assertThat(result.state().repos().stream()
+                .filter(r -> r.repo().equals("lib")).findFirst().orElseThrow().failureCode())
+                .isEqualTo("INFRA");
     }
 
     @Test

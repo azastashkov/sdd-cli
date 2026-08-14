@@ -334,8 +334,11 @@ public final class Orchestrator {
             return false;
         } else {
             synchronized (lock) {
+                // outcome.result() is no longer folded into the detail text itself — it is now
+                // carried as failureCode, and ReviewReport renders that in its own bracket ahead of
+                // this detail. Repeating it here would print it twice on every FAILED line.
                 transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
-                        attemptTag + outcome.result() + ": " + outcome.summary(), outcome.result().name());
+                        attemptTag + outcome.summary(), outcome.result().name());
             }
         }
         return true;
