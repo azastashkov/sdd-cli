@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * {@link ExplainReport} is a pure {@code String}-returning assembly, like {@link EvidenceRenderer}
@@ -61,6 +62,29 @@ class ExplainReportTest {
         String out = ExplainReport.render(evidence, Optional.of(answer), List.of());
 
         assertThat(out).doesNotContain("Audit notes");
+    }
+
+    // --- the answer/evidence presence guard ------------------------------------------------------
+
+    @Test
+    void presentAnswerWithEmptyEvidenceThrows() {
+        Evidence evidence = new Evidence(PROVENANCE, request("What is svc-orders?", false, List.of()),
+                List.of(), List.of());
+        Answer answer = new Answer("some prose", List.of(), false);
+
+        assertThatThrownBy(() -> ExplainReport.render(evidence, Optional.of(answer), List.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("answer must be present iff evidence is non-empty");
+    }
+
+    @Test
+    void absentAnswerWithNonEmptyEvidenceThrows() {
+        Evidence evidence = new Evidence(PROVENANCE, request("What is svc-orders?", false, List.of()),
+                List.of(moduleSection()), List.of());
+
+        assertThatThrownBy(() -> ExplainReport.render(evidence, Optional.empty(), List.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("answer must be present iff evidence is non-empty");
     }
 
     // --- degraded shape: answer unavailable -----------------------------------------------------
