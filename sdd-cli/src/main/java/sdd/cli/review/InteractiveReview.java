@@ -87,12 +87,14 @@ public final class InteractiveReview {
                 }
                 switch (line.strip().toLowerCase(Locale.ROOT)) {
                     case "a" -> {
-                        Decisions.Outcome outcome = decisions.approve(repo, run.plan(), run.state());
-                        if (!outcome.applied()) {
-                            out.println("refused: " + outcome.message());
+                        DecisionCommand.Applied applied = DecisionCommand.applyWithRetry(run, repo,
+                                (d, r) -> d.approve(repo, r.plan(), r.state()));
+                        if (!applied.outcome().applied()) {
+                            out.println("refused: " + applied.outcome().message());
                             continue;   // reprompt the SAME repo — nothing changed
                         }
-                        record(out, run, decisions, repo, outcome);
+                        decisions = applied.decisions();
+                        record(out, run, repo, applied.before(), decisions, applied.outcome());
                         anyDecision = true;
                         DecisionCommand.Followup followup =
                                 DecisionCommand.squashAndRecord(run, repo, out, err);
@@ -111,15 +113,19 @@ public final class InteractiveReview {
                     }
                     case "r" -> {
                         String reason = promptReason(in, out);
-                        Decisions.Outcome outcome = decisions.reject(repo, run.plan(), reason);
-                        record(out, run, decisions, repo, outcome);
+                        DecisionCommand.Applied applied = DecisionCommand.applyWithRetry(run, repo,
+                                (d, r) -> d.reject(repo, r.plan(), reason));
+                        decisions = applied.decisions();
+                        record(out, run, repo, applied.before(), decisions, applied.outcome());
                         anyDecision = true;
                         continue walk;
                     }
                     case "d" -> {
                         String reason = promptReason(in, out);
-                        Decisions.Outcome outcome = decisions.redo(repo, run.plan(), reason);
-                        record(out, run, decisions, repo, outcome);
+                        DecisionCommand.Applied applied = DecisionCommand.applyWithRetry(run, repo,
+                                (d, r) -> d.redo(repo, r.plan(), reason));
+                        decisions = applied.decisions();
+                        record(out, run, repo, applied.before(), decisions, applied.outcome());
                         anyDecision = true;
                         DecisionCommand.Followup followup = DecisionCommand.redoFollowUp(run, repo,
                                 false, ctx.workspace(), ctx.planJsonPath(), out, err);
@@ -175,14 +181,16 @@ public final class InteractiveReview {
         return line == null ? "" : line.strip();
     }
 
-    /** Persists the decision (before anything else observable happens — a crash right after this
-     *  call must not lose the verdict a human just gave), appends its event and any downstream
-     *  downgrade events, and prints the same lines {@code DecisionCommand} prints. */
-    private static void record(PrintWriter out, RunContext run, Decisions decisions, String repo,
-                               Decisions.Outcome outcome) {
-        run.store().writeDecisions(run.runDir(), decisions.asMap());
+    /** The decision itself is already persisted by {@link DecisionCommand#applyWithRetry} before
+     *  this runs (a crash right after that call must not lose the verdict a human just gave) — this
+     *  appends its event and any downstream downgrade events, and prints the same lines
+     *  {@code DecisionCommand} prints. {@code before} comes from the SAME attempt that succeeded,
+     *  not assumed to be PENDING: a retry re-reads fresh state, and what {@code repo} held going
+     *  into that winning attempt is what actually transitioned. */
+    private static void record(PrintWriter out, RunContext run, String repo, Decision before,
+                               Decisions decisions, Decisions.Outcome outcome) {
         Decision after = decisions.of(repo);
-        run.store().appendEvent(run.runDir(), repo, Decision.PENDING, after, decisions.reasonOf(repo));
+        run.store().appendEvent(run.runDir(), repo, before, after, decisions.reasonOf(repo));
         for (String downgraded : outcome.downgraded()) {
             run.store().appendEvent(run.runDir(), downgraded, Decision.APPROVED, Decision.PENDING,
                     "upstream " + repo + " is " + after);

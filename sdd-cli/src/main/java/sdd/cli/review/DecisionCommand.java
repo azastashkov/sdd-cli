@@ -9,6 +9,7 @@ import picocli.CommandLine.Spec;
 import sdd.cli.ReviewCommand;
 import sdd.cli.implement.RepoRun;
 import sdd.cli.implement.RunGit;
+import sdd.cli.implement.RunStore;
 
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -16,6 +17,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.function.BiFunction;
 
 /**
  * The human half of Gate 2 (design line 68): {@code sdd review approve|reject|redo <repo>
@@ -25,14 +27,16 @@ import java.util.concurrent.Callable;
  * persisting it, recording the event, and re-rendering {@code report.md} so the artifact reflects
  * the decision rather than a pre-decision snapshot.
  *
- * <p><b>Single writer at a time.</b> No lock is taken beyond the run lock {@code sdd implement}
- * holds, and none of what happens below is atomic as a whole: the decisions map is read
- * ({@code readDecisions}), edited, and written back in full. {@code RunStore.writeDecisions}
- * publishes through an atomic rename, so a reader never sees a half-written file and two writers
- * cannot corrupt each other's staging file — but that is all it buys. Two humans deciding the same
- * run concurrently can still lose a verdict: the later write simply wins, and a lost APPROVED
- * record is indistinguishable from "never decided" to {@code sdd clean}. Serialising that needs a
- * lock spanning the whole read-modify-write, which this command does not have.
+ * <p><b>Optimistic retry, not a lock.</b> No lock is taken beyond the run lock {@code sdd implement}
+ * holds. Instead, {@link #applyWithRetry} reads a fingerprinted snapshot, applies this command's one
+ * transition, and writes back with {@link RunStore#writeDecisions(java.nio.file.Path, java.util.Map,
+ * String)}, which refuses when the file changed underneath. On refusal it re-reads
+ * and re-applies the SAME transition against the fresh state, up to {@link #MAX_ATTEMPTS} times —
+ * capped so two humans deciding different repos of the same run at the same moment lose a race, not
+ * a verdict, and so a livelock fails loudly instead of hanging. This is not serialization: a write
+ * can still land in the gap between the fingerprint check and the rename, but that is caught on the
+ * NEXT read, not silently lost. See {@code RunStore.writeDecisions}'s javadoc for exactly what that
+ * guarantees.
  */
 public abstract class DecisionCommand implements Callable<Integer> {
     /** Only for {@code --workspace}, which is declared {@code scope = INHERIT} on the parent. */
@@ -74,6 +78,54 @@ public abstract class DecisionCommand implements Callable<Integer> {
         return Followup.none();
     }
 
+    /** A retry attempt's cap: high enough that two humans deciding different repos of the same run
+     *  a moment apart never see it, low enough that a bug making every attempt conflict (or a truly
+     *  pathological amount of contention) fails with a clear message instead of spinning forever. */
+    static final int MAX_ATTEMPTS = 5;
+
+    /** What one successful (or refused) application of a transition produced: the {@code Decisions}
+     *  it was applied against (freshly rebuilt from disk on every retry, never the caller's stale
+     *  copy), the value {@code repo} held immediately before this attempt, and the outcome. */
+    protected record Applied(Decisions decisions, Decision before, Decisions.Outcome outcome) {
+    }
+
+    /**
+     * Reads a fresh {@link RunStore.DecisionsSnapshot}, applies {@code transition} to the
+     * {@code Decisions} built from it, and writes the result back with the snapshot's fingerprint.
+     * On a refusal — the file changed underneath, per
+     * {@link RunStore#writeDecisions(java.nio.file.Path, java.util.Map, String)} — this re-reads and
+     * re-applies {@code transition} against the fresh state and tries again, up to
+     * {@link #MAX_ATTEMPTS} times. A transition that itself refuses (only {@code approve} can) short
+     * -circuits immediately without writing or retrying — a refusal is not a conflict.
+     *
+     * <p>This lives here, not on {@code RunStore}, because only the caller knows which ONE
+     * transition to re-apply; a store-level retry could only replay an opaque map, which would
+     * clobber whatever the other writer just added — the very bug this exists to fix. Shared by
+     * {@link DecisionCommand#call} and {@link InteractiveReview}, whose walk applies the identical
+     * one-transition-per-write shape across three different {@link Decisions} methods.
+     */
+    static Applied applyWithRetry(RunContext run, String repo,
+                                  BiFunction<Decisions, RunContext, Decisions.Outcome> transition) {
+        RunStore.DecisionsSnapshot snapshot = run.store().readDecisionsSnapshot(run.runDir());
+        for (int attempt = 1; ; attempt++) {
+            Decisions decisions = new Decisions(snapshot.decisions());
+            Decision before = decisions.of(repo);
+            Decisions.Outcome outcome = transition.apply(decisions, run);
+            if (!outcome.applied()) {
+                return new Applied(decisions, before, outcome);
+            }
+            if (run.store().writeDecisions(run.runDir(), decisions.asMap(), snapshot.fingerprint())) {
+                return new Applied(decisions, before, outcome);
+            }
+            if (attempt >= MAX_ATTEMPTS) {
+                throw new IllegalStateException("could not persist the decision for run " + run.runId()
+                        + " after " + MAX_ATTEMPTS + " attempts — decisions.json kept changing "
+                        + "underneath (concurrent writers); try again");
+            }
+            snapshot = run.store().readDecisionsSnapshot(run.runDir());
+        }
+    }
+
     @Override
     public final Integer call() {
         PrintWriter out = spec.commandLine().getOut();
@@ -99,18 +151,19 @@ public abstract class DecisionCommand implements Callable<Integer> {
                 return 4;
             }
 
-            Decisions decisions = new Decisions(run.store().readDecisions(run.runDir()));
-            Decision before = decisions.of(repo);
-            Decisions.Outcome outcome = decide(decisions, run);
+            // Persist before anything else observable happens: a crash in the follow-up work must
+            // not lose the verdict a human just gave. applyWithRetry both applies decide() and
+            // persists it, re-reading and re-applying against fresh state if another writer's
+            // decision landed underneath us first.
+            Applied applied = applyWithRetry(run, repo, this::decide);
+            Decisions.Outcome outcome = applied.outcome();
             if (!outcome.applied()) {
                 err.println("refused: " + outcome.message());
                 return 2;
             }
-            // Persist before anything else observable happens: a crash in the follow-up work must
-            // not lose the verdict a human just gave.
-            run.store().writeDecisions(run.runDir(), decisions.asMap());
+            Decisions decisions = applied.decisions();
             Decision after = decisions.of(repo);
-            run.store().appendEvent(run.runDir(), repo, before, after, decisions.reasonOf(repo));
+            run.store().appendEvent(run.runDir(), repo, applied.before(), after, decisions.reasonOf(repo));
             for (String downgraded : outcome.downgraded()) {
                 run.store().appendEvent(run.runDir(), downgraded, Decision.APPROVED, Decision.PENDING,
                         "upstream " + repo + " is " + after);

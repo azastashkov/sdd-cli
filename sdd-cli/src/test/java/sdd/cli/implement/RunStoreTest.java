@@ -285,6 +285,56 @@ class RunStoreTest {
                 .noneMatch(name -> name.endsWith(".tmp"));
     }
 
+    /**
+     * The optimistic-retry contract {@link RunStore#writeDecisions(Path, Map, String)} adds on top
+     * of {@link RunStore#writeDecisions(Path, Map)}: a write whose caller read the file BEFORE
+     * someone else wrote to it must be refused rather than silently clobbering that other write — a
+     * lost update must become a detected conflict, not stay a lost update.
+     */
+    @Test
+    void aWriteWhoseFingerprintIsStaleIsRefused() {
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        store.writeDecisions(runDir, Map.of("lib", new DecisionRecord(Decision.APPROVED, "")));
+        RunStore.DecisionsSnapshot stale = store.readDecisionsSnapshot(runDir);
+
+        store.writeDecisions(runDir, Map.of("svc", new DecisionRecord(Decision.REJECTED, "no")));   // someone else
+
+        assertThat(store.writeDecisions(runDir, Map.of("lib", new DecisionRecord(Decision.REDO, "")),
+                stale.fingerprint())).isFalse();
+        assertThat(store.readDecisions(runDir)).containsKey("svc");   // the other writer's verdict survived
+        // Our own refused write changed nothing — the file is exactly what the other writer left it,
+        // not our REDO for lib and not the APPROVED it held when we read the stale snapshot.
+        assertThat(store.readDecisions(runDir)).doesNotContainKey("lib");
+    }
+
+    @Test
+    void aWriteWithACurrentFingerprintSucceeds() {
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        store.writeDecisions(runDir, Map.of("lib", new DecisionRecord(Decision.APPROVED, "")));
+        RunStore.DecisionsSnapshot current = store.readDecisionsSnapshot(runDir);
+
+        boolean applied = store.writeDecisions(runDir,
+                Map.of("lib", new DecisionRecord(Decision.REDO, "again")), current.fingerprint());
+
+        assertThat(applied).isTrue();
+        assertThat(store.readDecisions(runDir).get("lib").decision()).isEqualTo(Decision.REDO);
+        assertThat(store.readDecisions(runDir).get("lib").reason()).isEqualTo("again");
+    }
+
+    @Test
+    void anAbsentFileHasAnEmptyFingerprintAndAConcurrentCreateIsAConflict() {
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        RunStore.DecisionsSnapshot before = store.readDecisionsSnapshot(runDir);
+        assertThat(before.fingerprint()).isEmpty();
+        assertThat(before.decisions()).isEmpty();
+
+        store.writeDecisions(runDir, Map.of("lib", new DecisionRecord(Decision.APPROVED, "")));
+
+        assertThat(store.writeDecisions(runDir, Map.of("svc", new DecisionRecord(Decision.REDO, "")),
+                before.fingerprint())).isFalse();
+        assertThat(store.readDecisions(runDir)).containsKey("lib").doesNotContainKey("svc");
+    }
+
     @Test
     void aStaleLockIsNotReportedAsHeld() throws Exception {
         RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));

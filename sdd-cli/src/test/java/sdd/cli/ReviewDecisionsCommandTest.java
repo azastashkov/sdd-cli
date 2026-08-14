@@ -9,6 +9,7 @@ import sdd.cli.implement.RepoState;
 import sdd.cli.implement.RunGit;
 import sdd.cli.implement.RunState;
 import sdd.cli.implement.RunStore;
+import sdd.cli.review.ConflictInjectingRedo;
 import sdd.cli.review.Decision;
 import sdd.cli.review.DecisionRecord;
 import sdd.core.db.Database;
@@ -139,6 +140,20 @@ class ReviewDecisionsCommandTest {
         StringWriter out = new StringWriter();
         StringWriter err = new StringWriter();
         CommandLine cli = new CommandLine(new ReviewCommand());
+        cli.setOut(new PrintWriter(out));
+        cli.setErr(new PrintWriter(err));
+        int exit = cli.execute(args);
+        return new Invocation(exit, out.toString(), err.toString());
+    }
+
+    /** Like {@link #exec}, but runs a hand-built {@link ConflictInjectingRedo} instead of the real
+     *  {@code redo}, wired in as a dynamically-registered picocli subcommand rather than one of
+     *  {@link ReviewCommand}'s statically declared ones. */
+    private static Invocation execConflicting(ConflictInjectingRedo custom, String... args) {
+        StringWriter out = new StringWriter();
+        StringWriter err = new StringWriter();
+        CommandLine cli = new CommandLine(new ReviewCommand());
+        cli.addSubcommand("conflict-injecting-redo", custom);
         cli.setOut(new PrintWriter(out));
         cli.setErr(new PrintWriter(err));
         int exit = cli.execute(args);
@@ -400,6 +415,48 @@ class ReviewDecisionsCommandTest {
         assertThat(rootOut.toString()).contains("lib approved")
                 .contains("lib is already a single commit past");
         assertThat(commitsOnBranch(f.lib().path(), f.libBase(), LIB_BRANCH)).isEqualTo(1);
+    }
+
+    /**
+     * The property that matters end to end: a second writer's decision that lands on disk in the
+     * instant between this command's read and its own write must not be lost. Pre-seeding is done
+     * inside {@code decide()} — {@link DecisionCommand}'s existing per-transition extension point,
+     * the same one {@code approve}/{@code reject}/{@code redo} already override — which
+     * {@code applyWithRetry} calls strictly between its own read and its own write. That makes the
+     * race deterministic: no thread timing, and no seam added to production code purely for this
+     * test. See {@link ConflictInjectingRedo}'s javadoc.
+     */
+    @Test
+    void aDecisionWrittenUnderneathIsNotLostWhenThisCommandRetries() throws Exception {
+        Fixture f = fixture();
+        ConflictInjectingRedo redo = new ConflictInjectingRedo("svc", 1);   // conflicts once, then converges
+
+        Invocation r = execConflicting(redo, "--workspace", ws.toString(),
+                "conflict-injecting-redo", "lib", f.planPath().toString());
+
+        assertThat(r.exit()).isZero();
+        Map<String, DecisionRecord> persisted = RunStore.system().readDecisions(f.runDir());
+        assertThat(persisted.get("lib").decision()).isEqualTo(Decision.REDO);       // our verdict landed
+        assertThat(persisted.get("svc").decision()).isEqualTo(Decision.REJECTED);   // the other writer's survived
+        assertThat(persisted.get("svc").reason()).isEqualTo("conflict #1");
+        assertThat(Files.readString(f.runDir().resolve("events.jsonl"))).contains("REDO").contains("lib");
+    }
+
+    @Test
+    void aConflictThatNeverStopsFailsLoudlyAfterFiveAttemptsRatherThanHanging() throws Exception {
+        Fixture f = fixture();
+        ConflictInjectingRedo redo = new ConflictInjectingRedo("svc", Integer.MAX_VALUE);   // never converges
+
+        Invocation r = execConflicting(redo, "--workspace", ws.toString(),
+                "conflict-injecting-redo", "lib", f.planPath().toString());
+
+        assertThat(r.exit()).isEqualTo(4);
+        assertThat(r.err()).contains(RUN_ID).contains("5 attempts");
+        // The livelock never got to write OUR decision, but the other writer's last conflicting
+        // write is still exactly what it published — nothing here corrupts decisions.json either.
+        assertThat(RunStore.system().readDecisions(f.runDir()).get("svc").decision())
+                .isEqualTo(Decision.REJECTED);
+        assertThat(RunStore.system().readDecisions(f.runDir())).doesNotContainKey("lib");
     }
 
     @Test

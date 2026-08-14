@@ -10,7 +10,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.InstantSource;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
@@ -359,14 +362,57 @@ public final class RunStore {
             return Map.of();
         }
         try {
-            com.fasterxml.jackson.databind.JsonNode root = JSON.readTree(Files.readString(file));
-            Map<String, DecisionRecord> result = new java.util.LinkedHashMap<>();
-            root.properties().forEach(entry -> result.put(entry.getKey(),
-                    new DecisionRecord(parseDecision(entry.getValue().path("decision").asText()),
-                            entry.getValue().path("reason").asText(""))));
-            return result;
+            return parseDecisions(Files.readAllBytes(file));
         } catch (IOException e) {
             throw new UncheckedIOException(e);
+        }
+    }
+
+    /**
+     * {@code decisions.json} plus a SHA-256 fingerprint of the exact bytes it was parsed from — the
+     * pair {@link #writeDecisions(Path, Map, String)} needs to detect whether the file changed
+     * underneath a caller between this read and that write. The fingerprint is {@code ""} when the
+     * file does not exist yet, so a concurrent CREATE (not just a concurrent edit) is a conflict
+     * too, never a silent overwrite of whoever wrote it first.
+     *
+     * <p>Both the map and the fingerprint are derived from ONE {@code readAllBytes} call, not two
+     * separate reads — reading the bytes once and parsing them twice would let the file change
+     * between those two reads and hand back a map and a fingerprint that describe different
+     * generations of the file.
+     */
+    public DecisionsSnapshot readDecisionsSnapshot(Path runDir) {
+        Path file = reviewDir(runDir).resolve("decisions.json");
+        try {
+            if (!Files.exists(file)) {
+                return new DecisionsSnapshot(Map.of(), "");
+            }
+            byte[] bytes = Files.readAllBytes(file);
+            return new DecisionsSnapshot(parseDecisions(bytes), fingerprint(bytes));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** See {@link #readDecisionsSnapshot}. */
+    public record DecisionsSnapshot(Map<String, DecisionRecord> decisions, String fingerprint) {
+    }
+
+    private static Map<String, DecisionRecord> parseDecisions(byte[] bytes) throws IOException {
+        com.fasterxml.jackson.databind.JsonNode root = JSON.readTree(bytes);
+        Map<String, DecisionRecord> result = new java.util.LinkedHashMap<>();
+        root.properties().forEach(entry -> result.put(entry.getKey(),
+                new DecisionRecord(parseDecision(entry.getValue().path("decision").asText()),
+                        entry.getValue().path("reason").asText(""))));
+        return result;
+    }
+
+    /** SHA-256 is guaranteed present on every JDK (it's one of the JCA's standard algorithm names),
+     *  so {@link NoSuchAlgorithmException} here would mean a broken JVM, not a caller error. */
+    private static String fingerprint(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
         }
     }
 
@@ -409,22 +455,57 @@ public final class RunStore {
      * {@link #publishAtomically}: a reader is guaranteed to see either the previous file or the
      * whole new one, and two writers cannot corrupt each other's staging file.
      *
-     * <p><b>This does NOT make concurrent deciding safe.</b> Every caller reads the map, edits it
-     * and writes it all back across two commands' worth of code, so two humans deciding the same
-     * run at the same time can still lose a verdict — the later write simply wins, and a lost
-     * APPROVED record is indistinguishable from "never decided" to {@code sdd clean}. The commands
-     * assume a single writer at a time; serialising them needs a lock spanning that whole
-     * read-modify-write, which this method cannot provide.
+     * <p>For callers with nothing to conflict against — a test writing its own fixture, or the very
+     * first write of a run nobody else can be racing yet — this reads a fresh fingerprint
+     * immediately beforehand and delegates to {@link #writeDecisions(Path, Map, String)}, discarding
+     * its boolean: a caller here has no transition to re-apply and no loop to retry with, so a
+     * refusal would just mean silently doing nothing, which is worse than the write this replaces.
+     * A caller that CAN be raced — {@code DecisionCommand}, {@code InteractiveReview} — must use the
+     * fingerprinted form and its own retry loop instead; see that method's javadoc for what it
+     * guarantees and what it does not.
      */
     public void writeDecisions(Path runDir, Map<String, DecisionRecord> decisions) {
+        writeDecisions(runDir, decisions, readDecisionsSnapshot(runDir).fingerprint());
+    }
+
+    /**
+     * Publishes {@code decisions} at {@code decisions.json} exactly like
+     * {@link #writeDecisions(Path, Map)}, but refuses — writing nothing, returning {@code false} —
+     * when the file's current fingerprint no longer matches {@code expectedFingerprint}: someone
+     * else has written since the caller last read. This is what turns the read-modify-write hazard
+     * described on {@link #writeDecisions(Path, Map)} into something a caller can detect and act on:
+     * read a {@link DecisionsSnapshot}, build a {@code Decisions} from it, apply exactly one
+     * transition, and write back with the snapshot's fingerprint; on {@code false}, re-read and redo
+     * the same transition against the fresh state. {@code RunStore} does not run that loop itself —
+     * only the caller knows which single transition to re-apply, and a store-level retry could only
+     * replay an opaque map, clobbering whatever the other writer just added.
+     *
+     * <p><b>What this does and does not guarantee.</b> Compare-then-publish is not atomic against a
+     * determined racer: another writer's own {@link #publishAtomically} rename can still land in the
+     * gap between this method's fingerprint check and its own rename, so two callers can both
+     * observe a matching fingerprint and both believe they are about to win. That interleaving is
+     * not serialized away here — it is caught on the NEXT read, because the file it lands on no
+     * longer matches whatever fingerprint that write itself was compared against. The guarantee this
+     * provides is narrower than "safe concurrent writes": every write either lands against state the
+     * caller has actually seen, or is refused so the caller can retry against fresher state. A lost
+     * update becomes a detected conflict — not a guarantee of serialization, and not less
+     * concurrency-safety than that.
+     */
+    public boolean writeDecisions(Path runDir, Map<String, DecisionRecord> decisions,
+                                  String expectedFingerprint) {
         record Dto(String decision, String reason) {
         }
+        Path file = reviewDir(runDir).resolve("decisions.json");
         try {
-            Path dir = Files.createDirectories(reviewDir(runDir));
+            Files.createDirectories(reviewDir(runDir));
+            String currentFingerprint = Files.exists(file) ? fingerprint(Files.readAllBytes(file)) : "";
+            if (!currentFingerprint.equals(expectedFingerprint)) {
+                return false;
+            }
             Map<String, Dto> dto = new java.util.TreeMap<>();
             decisions.forEach((repo, record) -> dto.put(repo, new Dto(record.decision().name(), record.reason())));
-            publishAtomically(dir.resolve("decisions.json"),
-                    JSON.writerWithDefaultPrettyPrinter().writeValueAsString(dto));
+            publishAtomically(file, JSON.writerWithDefaultPrettyPrinter().writeValueAsString(dto));
+            return true;
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
