@@ -292,6 +292,32 @@ class ContractRecheckTest {
     }
 
     @Test
+    void aDeclaredBlockThatParsesToNothingIsNotDeclaredRatherThanMet() throws Exception {
+        // The raw declared list is non-empty but every line is skipped by the parser, so there are
+        // zero members AND zero problems: containment over an empty member list is vacuously
+        // satisfied and the verdict used to be DECLARED_MET — a silent false pass indistinguishable
+        // from a genuinely verified contract. Both shapes are ordinary hand-edits: the empty
+        // ```contract fence a human left behind after deleting its one line (Sections.contracts
+        // copies fence lines verbatim), and the TODO a human or the drafter parked there.
+        Path lib = libWith("public int f(int x) { return x; }");
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        for (List<String> declared : List.of(List.of("# TODO: confirm signature"), List.of(""))) {
+            PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "java-api", "lib",
+                    List.of("svc"), "Api.f", null, declared);
+            store.writeContract(runDir, "c1", ContractActualizer.actualize(lib, List.of(c)).get("c1"));
+
+            List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                    Map.of("lib", lib), store, runDir);
+
+            assertThat(findings.get(0).conformance())
+                    .describedAs("declared=%s", declared)
+                    .isEqualTo(ContractRecheck.Conformance.NOT_DECLARED);
+            assertThat(findings.get(0).missing()).isEmpty();
+        }
+    }
+
+    @Test
     void aMissingMemberBeyondTheTruncationCapIsNotComparableNotDiverged() throws Exception {
         Path lib = hugeLib("String");
         RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));

@@ -95,6 +95,21 @@ class PlanValidatorTest {
     }
 
     @Test
+    void aDeclarationThatParsesToNothingWarnsExactlyLikeNoDeclarationAtAll() {
+        // A comment-only or blank declared block carries no members and no grammar problems, so
+        // testing the RAW list let it pass Gate 1 silently — and then read as DECLARED_MET at
+        // Gate 2. The warning must fire off the PARSED result.
+        for (String declared : List.of("# TODO: confirm the signature", "")) {
+            PlanValidator.Verdict verdict = PlanValidator.validate(db.jdbi(),
+                    planWithDeclared(declared), spec(), freshStates());
+
+            assertThat(verdict.problems()).as("declared=%s", declared).isEmpty();
+            assertThat(verdict.warnings()).as("declared=%s", declared).anySatisfy(w ->
+                    assertThat(w).contains("tier-resolver-api").contains("declares nothing"));
+        }
+    }
+
+    @Test
     void aWellFormedDeclarationIsSilent() {
         PlanValidator.Verdict verdict = PlanValidator.validate(db.jdbi(),
                 planWithDeclared("com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier"),

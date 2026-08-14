@@ -102,17 +102,18 @@ public final class PlanValidator {
                 problems.add("contract '" + contract.id() + "': provider '"
                         + contract.provider() + "' has no step providing it");
             }
-            if (contract.declared().isEmpty()) {
-                if (ContractKinds.declarable(contract.kind())) {
-                    warnings.add("contract '" + contract.id() + "' declares nothing — "
-                            + "Gate 2 cannot check it against the implementation");
-                }
-            } else {
-                DeclaredContract declared = DeclaredContract.parse(contract.kind(),
-                        String.join("\n", contract.declared()));
-                for (String problem : declared.problems()) {
-                    problems.add("contract '" + contract.id() + "': " + problem);
-                }
+            DeclaredContract declared = DeclaredContract.parse(contract.kind(),
+                    String.join("\n", contract.declared()));
+            for (String problem : declared.problems()) {
+                problems.add("contract '" + contract.id() + "': " + problem);
+            }
+            // "Declares nothing" is decided from the PARSED result, not the raw list: a block of
+            // blank or '#' lines is a non-empty list that declares nothing, and letting it through
+            // silently here is what lets Gate 2 report it as DECLARED_MET.
+            if (declared.members().isEmpty() && declared.problems().isEmpty()
+                    && ContractKinds.declarable(contract.kind())) {
+                warnings.add("contract '" + contract.id() + "' declares nothing — "
+                        + "Gate 2 cannot check it against the implementation");
             }
             for (String consumer : contract.consumers()) {
                 if (!affectedNames.contains(consumer)) {

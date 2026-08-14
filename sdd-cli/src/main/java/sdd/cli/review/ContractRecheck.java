@@ -156,10 +156,15 @@ public final class ContractRecheck {
      *  empty actual body and run through the same missing-member computation as any other case. */
     private static ConformanceResult conformanceOf(PlanModel.PlanContract contract, String fresh,
                                                     boolean extracted) {
-        if (contract.declared().isEmpty()) {
+        DeclaredContract declared = DeclaredContract.parse(contract.kind(), String.join("\n", contract.declared()));
+        if (declared.members().isEmpty() && declared.problems().isEmpty()) {
+            // NOT_DECLARED is decided from the PARSED result, never from the raw list: a block of
+            // blank or '#' lines (an emptied ```contract fence, a parked "# TODO") is non-empty as
+            // a list yet declares nothing, and containment over zero members is vacuously satisfied
+            // — that reported DECLARED_MET, a silent false pass indistinguishable from a genuinely
+            // verified contract. A hand-edit must make Gate 2 degrade, not lie.
             return new ConformanceResult(Conformance.NOT_DECLARED, List.of(), "");
         }
-        DeclaredContract declared = DeclaredContract.parse(contract.kind(), String.join("\n", contract.declared()));
         if (!declared.problems().isEmpty()) {
             // Carried finding: all-malformed declared lines are NOT the same as nothing declared —
             // that would be a quiet lie in the very section this phase adds.
