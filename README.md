@@ -59,10 +59,12 @@ reference.
    below call it as `sdd`; put that path on your `PATH`, or prefix every
    command with it.
 
-2. **Serve the local coder model** (Apple Silicon, ~40 GB disk):
-   `scripts/serve-qwen.sh`. **Configure the planner model's key**:
-   `cp .env.example .env`, paste the real key, `source .env`. Never commit
-   `.env`.
+2. **Configure model credentials.** `cp .env.example .env`, paste the real
+   keys, `source .env`. Never commit `.env`. The example configuration uses
+   hosted endpoints for every tier; to keep the coding tier on your own
+   machine instead (Apple Silicon, ~40 GB disk), run `scripts/serve-qwen.sh`
+   and point `models.coder` at it — `sdd.yml.example` carries that variant
+   commented out.
 
 3. **Configure the workspace.** A *workspace* is a directory holding one
    checkout of every repo in the estate, plus one `sdd.yml`:

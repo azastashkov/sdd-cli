@@ -1,17 +1,67 @@
 # Copy to <workspace>/sdd.yml — the directory containing all estate checkouts.
 retrieval: fts            # fts | embeddings (embeddings needs a models.embeddings endpoint)
 
+# Every key under `models:` is an endpoint you can name in `run.escalation_ladder`.
+# `planner` is also used directly for impact seeding and Gate-1 plan drafting, and
+# `coder` for repo cards, so keep both defined even if the ladder names others.
+#
+# api_key resolves ${ENV_VAR} at load time. Read-only commands (review, status,
+# clean) never call a model and never need the credential; implement, plan, index
+# and doctor fail at first use if it is missing.
 models:
-  planner:                # whole-estate synthesis: impact seeding, plan drafting, escalation
+  flash:                  # tier 1: cheapest capable model — most repos resolve here
+    base_url: https://routerai.ru/api/v1
+    model: qwen/qwen3.5-flash-02-23
+    api_key: ${ROUTER_AI_API_KEY}
+    max_tokens: 8192
+    extra_body:
+      # Thinking models spend the whole completion budget on reasoning and return
+      # finish_reason=length with empty content. Disable it for structured work.
+      chat_template_kwargs:
+        enable_thinking: false
+  coder:                  # tier 2: larger model for repos tier 1 could not finish
+    base_url: https://routerai.ru/api/v1
+    model: qwen/qwen3.5-397b-a17b
+    api_key: ${ROUTER_AI_API_KEY}
+    max_tokens: 8192
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  planner:                # tier 3, and the whole-estate synthesis model
     base_url: https://api.deepseek.com/v1
     model: deepseek-v4-flash
     api_key: ${DEEPSEEK_API_KEY}
     # drafting a Gate-1 plan needs ~2x the seeding budget; 16384 truncates on medium estates
     max_tokens: 32768
-  coder:                  # local precise work: repo cards, coding agent
-    base_url: http://127.0.0.1:8080/v1
-    model: mlx-community/Qwen3.6-35B-A3B-8bit
-    max_tokens: 4096
+  pro:                    # tier 4: last resort
+    base_url: https://api.deepseek.com/v1
+    model: deepseek-v4-pro
+    api_key: ${DEEPSEEK_API_KEY}
+    max_tokens: 32768
+
+  # Local alternative for `coder` (Apple Silicon, ~40 GB): run scripts/serve-qwen.sh
+  # and point the tier at it instead. Keeps every token on the machine.
+  # coder:
+  #   base_url: http://127.0.0.1:8080/v1
+  #   model: mlx-community/Qwen3.6-35B-A3B-8bit
+  #   max_tokens: 4096
+
+run:
+  # Attempt order for sdd implement. After an attempt that needs escalation
+  # (VERIFY_FAILED / EXHAUSTED / BUDGET / MALFORMED / WEDGED) the repo is reset to
+  # base and retried on the next tier. A 1-entry ladder never escalates.
+  # Default when omitted: [coder, planner].
+  escalation_ladder: [flash, coder, planner, pro]
+  agent_turns: 100        # per-attempt turn cap (default 40)
+  agent_tokens: 6000000   # per-attempt token cap (default 1500000)
+  token_budget: 30000000  # whole-run cap; the run pauses at exit 3 when it is hit
+  gradle_workers: 2       # concurrent gradle subprocesses
+  model_concurrency: 2    # concurrent model calls
+
+# Verification tasks to skip per repo — the report marks these "not locally verified"
+# rather than pretending they passed:
+# verification_exclusions:
+#   some-repo: [integrationTest]
 
 # Gradle daemon JDKs for old wrappers (filled per machine):
 # jdk_homes:
