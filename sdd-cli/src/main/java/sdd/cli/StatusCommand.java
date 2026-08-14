@@ -94,14 +94,19 @@ public final class StatusCommand implements Callable<Integer> {
         String runId = runDir.getFileName().toString();
         PlanModel plan;
         RunState state;
+        Map<String, DecisionRecord> decisions;
         try {
             plan = PlanJsonReader.read(Files.readString(runDir.resolve("plan.json")));
             state = store.readState(runDir);
+            // Same try as plan/state, not a separate one: a malformed decisions.json must isolate
+            // to this one run dir exactly like a malformed plan.json or state.json does — none of
+            // the three may abort the whole scan or claim the outer exit-4 (that's reserved for an
+            // explicitly named plan with no run dir, or unusable input).
+            decisions = store.readDecisions(runDir);
         } catch (RuntimeException | IOException e) {
             err.println("error: " + runId + ": " + e.getMessage());
             return;
         }
-        Map<String, DecisionRecord> decisions = store.readDecisions(runDir);
         Map<String, RepoRun> byName = new LinkedHashMap<>();
         for (RepoRun repoRun : state.repos()) {
             byName.put(repoRun.repo(), repoRun);

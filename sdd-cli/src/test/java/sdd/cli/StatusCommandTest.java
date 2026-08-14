@@ -14,6 +14,7 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.util.List;
 import java.util.Map;
 
@@ -63,6 +64,32 @@ class StatusCommandTest {
 
     private static Path runDir(Path ws) {
         return ws.resolve(".sdd/runs/" + RUN_ID);
+    }
+
+    /** A second, minimal, independent run — one repo, no decisions — used by the corrupt-run-dir
+     *  fixture below, which needs several distinct run dirs rather than {@link #fixture}'s one. */
+    private Path minimalHealthyRun(String specId) throws Exception {
+        String runId = specId + "-v1";
+        String planJson = """
+                { "spec_id":"%s","plan_version":1,"spec_sha256":"z","plan_sha256":"z",
+                  "repos":[{"name":"only","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"a"}],
+                  "order":[["only"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"only","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x."}] }
+                """.formatted(specId);
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, runId, planJson, "");
+        store.releaseLock(runDir);
+        store.writeState(runDir, new RunState(runId, List.of(
+                new RepoRun("only", RepoState.SUCCEEDED, "sdd/" + runId + "/only", "cafe123", "ok")),
+                null, 0L));
+        return runDir;
+    }
+
+    /** Pins a run dir's own last-modified time — the signal {@code StatusCommand}'s newest-first
+     *  sort reads — to an exact instant, overriding whatever the fixture writes above left it at. */
+    private static void touch(Path runDir, long epochMillis) throws Exception {
+        Files.setLastModifiedTime(runDir, FileTime.fromMillis(epochMillis));
     }
 
     private static void decide(Path runDir, Map<String, DecisionRecord> decisions) {
@@ -155,6 +182,53 @@ class StatusCommandTest {
 
         assertThat(r.exit()).isZero();
         assertThat(r.out()).contains(RUN_ID).contains("lib").contains("SUCCEEDED");
+    }
+
+    /**
+     * Regression for the Important finding: a malformed {@code decisions.json} used to be read
+     * OUTSIDE {@code printOne}'s try/catch, so it threw uncaught, was swallowed by the OUTER
+     * try/catch in {@code call()}, and turned the whole invocation into exit 4 with a single
+     * message naming no run id — hiding every other run in the same scan. This drives a four-run
+     * scan (one with a corrupt {@code plan.json}, one with a corrupt {@code decisions.json}, two
+     * healthy) to prove per-run isolation for BOTH corruption shapes, and pins each run dir's
+     * mtime to also exercise the newest-first ordering the interface requires — nothing else in
+     * this file drives more than one run dir at a time.
+     */
+    @Test
+    void corruptRunDirsAreSkippedNotFatalAndHealthyRunsStillPrintNewestFirst() throws Exception {
+        long base = System.currentTimeMillis();
+
+        Path oldHealthy = minimalHealthyRun("SPEC-1");
+        touch(oldHealthy, base);
+
+        Path corruptPlan = minimalHealthyRun("SPEC-2");
+        Files.writeString(corruptPlan.resolve("plan.json"), "{ not valid json");
+        touch(corruptPlan, base + 1000);
+
+        Path corruptDecisions = minimalHealthyRun("SPEC-3");
+        Files.createDirectories(corruptDecisions.resolve("review"));
+        Files.writeString(corruptDecisions.resolve("review/decisions.json"), "{ not valid json");
+        touch(corruptDecisions, base + 2000);
+
+        Path newHealthy = minimalHealthyRun("SPEC-4");
+        touch(newHealthy, base + 3000);
+
+        Invocation r = exec("--workspace", ws.toString());
+
+        // Neither corrupted run dir aborts the scan or claims the outer exit-4 — that is reserved
+        // for an explicitly named plan with no run dir, or unusable input; a corrupt sibling
+        // discovered during a bare scan is neither.
+        assertThat(r.exit()).isZero();
+
+        // Both corrupted runs are named in err, by run id, and only there.
+        assertThat(r.err()).contains("SPEC-2-v1").contains("SPEC-3-v1");
+        assertThat(r.out()).doesNotContain("SPEC-2-v1").doesNotContain("SPEC-3-v1");
+
+        // Both healthy runs still print despite two corrupted siblings in the very same scan.
+        assertThat(r.out()).contains("SPEC-1-v1").contains("SPEC-4-v1");
+
+        // Newest first: SPEC-4 (touched last) precedes SPEC-1 (touched first) in the output.
+        assertThat(r.out().indexOf("SPEC-4-v1")).isLessThan(r.out().indexOf("SPEC-1-v1"));
     }
 
     @Test
