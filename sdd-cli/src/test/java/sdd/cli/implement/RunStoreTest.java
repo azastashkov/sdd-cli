@@ -380,30 +380,59 @@ class RunStoreTest {
      * <p>The 2-arg overload reads its OWN fingerprint fresh, immediately before it writes — so a
      * write that merely happens BEFORE this method is called is not stale to it at all, it is just
      * the current state the fresh read picks up. The only way to make its internal write actually
-     * lose the race is a real writer landing in the gap between that internal read and the internal
-     * write a few method calls later, which needs genuine concurrency to trigger — the same
-     * technique {@code concurrentDecisionWritersNeitherCorruptTheFileNorFailOnASharedTempName} uses,
-     * which reliably reproduces this on effectively every run once six real writers contend.
+     * lose the race is another writer landing in the gap between that internal read and the internal
+     * write a few method calls later. {@link ConflictInjectingStore} puts one there exactly once, on
+     * this thread, with no timing involved: the same inject-between-read-and-write technique
+     * {@code sdd.cli.review.ConflictInjectingRedo} uses one layer up. This test previously hammered
+     * six real threads and asserted the conflict count was non-zero — true in practice, but a
+     * timing assertion on a machine with fewer cores or a busy CI box, where correct behavior would
+     * have shown up as a red build.
      */
     @Test
-    void aStaleTwoArgWriteThrowsRatherThanSilentlyDroppingTheWrite() throws Exception {
-        Path runDir = store.create(ws, "S-v1", "{}", "");
-        java.util.concurrent.atomic.AtomicInteger conflicts = new java.util.concurrent.atomic.AtomicInteger();
+    void aStaleTwoArgWriteThrowsRatherThanSilentlyDroppingTheWrite() {
+        RunStore racy = new ConflictInjectingStore(InstantSource.fixed(Instant.EPOCH), "svc");
+        Path runDir = racy.create(ws, "S-v1", "{}", "");
 
-        hammer(6, 60, id -> {
-            try {
-                store.writeDecisions(runDir, Map.of("repo" + id,
-                        new DecisionRecord(Decision.APPROVED, "reason " + id)));
-            } catch (IllegalStateException conflict) {
-                assertThat(conflict.getMessage()).contains(runDir.toString());
-                conflicts.incrementAndGet();
+        assertThatThrownBy(() -> racy.writeDecisions(runDir,
+                Map.of("lib", new DecisionRecord(Decision.APPROVED, "looks good"))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("changed concurrently")
+                .hasMessageContaining(runDir.toString());
+
+        // The other writer's verdict survived and ours was not half-applied: a refused write must
+        // change nothing at all, and must not read afterwards as "never decided".
+        assertThat(racy.readDecisions(runDir)).containsKey("svc").doesNotContainKey("lib");
+    }
+
+    /**
+     * A {@link RunStore} whose {@code readDecisionsSnapshot} — the exact read
+     * {@link RunStore#writeDecisions(Path, Map)} takes its fingerprint from — lands ONE conflicting
+     * write for a DIFFERENT repo immediately before returning, on the first call only. Because the
+     * 2-arg overload compares that fingerprint inside its own write a few calls later, this puts a
+     * real concurrent verdict in precisely the window the throw exists to catch, deterministically.
+     * The injected write goes through the 3-arg overload, which does not consult this method, so it
+     * cannot recurse; subsequent reads behave exactly like the real store.
+     */
+    private static final class ConflictInjectingStore extends RunStore {
+        private final java.util.concurrent.atomic.AtomicBoolean injected =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        private final String conflictingRepo;
+
+        ConflictInjectingStore(InstantSource clock, String conflictingRepo) {
+            super(clock);
+            this.conflictingRepo = conflictingRepo;
+        }
+
+        @Override
+        public DecisionsSnapshot readDecisionsSnapshot(Path runDir) {
+            DecisionsSnapshot snapshot = super.readDecisionsSnapshot(runDir);
+            if (injected.compareAndSet(false, true)) {
+                super.writeDecisions(runDir, Map.of(conflictingRepo,
+                        new DecisionRecord(Decision.REJECTED, "someone else got there first")),
+                        snapshot.fingerprint());
             }
-        });
-
-        // Six writers racing 360 rounds of the same file WILL lose that race at least once; this
-        // is what proves the throw actually fires under real contention, not just that the code
-        // compiles a throw statement nothing ever reaches.
-        assertThat(conflicts.get()).isGreaterThan(0);
+            return snapshot;
+        }
     }
 
     @Test

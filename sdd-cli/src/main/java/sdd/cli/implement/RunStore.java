@@ -18,8 +18,14 @@ import java.util.List;
 import java.util.Map;
 
 /** Persists a run under {@code <workspace>/.sdd/runs/<runId>/}: immutable plan.json, atomic state.json,
- *  append-only events.jsonl, and a lock file. */
-public final class RunStore {
+ *  append-only events.jsonl, and a lock file.
+ *
+ *  <p>Not {@code final} for one reason: a test overriding {@link #readDecisionsSnapshot} is the only
+ *  way to land a conflicting write inside {@link #writeDecisions(Path, Map)}'s own read-then-write
+ *  window deterministically — the same inject-between-read-and-write technique
+ *  {@code ConflictInjectingRedo} uses one layer up. Production has exactly one implementation and
+ *  nothing here is designed for behavioral subclassing. */
+public class RunStore {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     /** Makes {@link #publishAtomically}'s staging file unique among this JVM's threads; the PID
