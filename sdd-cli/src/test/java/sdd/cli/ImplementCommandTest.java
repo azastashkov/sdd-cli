@@ -108,6 +108,65 @@ class ImplementCommandTest {
     }
 
     @Test
+    void unresolvedCoderApiKeyFailsBeforeWritingAnyRunState() throws Exception {
+        // coder's api_key references an env var this test process never sets, and coderForTest is
+        // deliberately left unset so the real credential path is exercised (a test seam bypasses
+        // HttpChatModel entirely, which would hide this defect). Pre-fix, ConfigLoader.load
+        // succeeds, and the run dir/lock/plan.json/spec.md/propagation.json are all written to
+        // disk before the ladder-construction loop finally throws deep inside runPlan — a fresh
+        // `sdd implement` against a workspace missing a credential must produce ZERO filesystem
+        // side effects, not just eventually fail.
+        FixtureRepo lib = repo("lib");
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen, api_key: "${SDD_LIVE_FIXES_TEST_UNSET_API_KEY}" }
+                """);
+        Files.writeString(ws.resolve("s.md"), """
+                ---
+                id: SPEC-101
+                title: Tiers
+                owner: me
+                status: approved
+                ---
+
+                ## Goal
+                g
+
+                ## Requirements
+                - R1: Expose tierFor.
+
+                ## Acceptance Criteria
+                - A1: tierFor returns a tier.
+                """);
+        String specSha = sdd.plan.approve.Hashes.sha256(Files.readString(ws.resolve("s.md")));
+        Files.writeString(ws.resolve("s.plan.json"), """
+                { "spec_id":"SPEC-101","plan_version":1,"spec_sha256":"%s","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x to A."}] }
+                """.formatted(specSha, lib.headSha()));
+
+        ImplementCommand cmd = new ImplementCommand();   // coderForTest left null on purpose
+        StringWriter out = new StringWriter();
+        StringWriter err = new StringWriter();
+        CommandLine cli = new CommandLine(cmd);
+        cli.setOut(new PrintWriter(out));
+        cli.setErr(new PrintWriter(err));
+        int exit = cli.execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
+
+        assertThat(exit).isEqualTo(4);
+        assertThat(err.toString()).contains("models.coder.api_key: environment variable "
+                + "SDD_LIVE_FIXES_TEST_UNSET_API_KEY is not set");
+        assertThat(ws.resolve(".sdd/runs/SPEC-101-v1")).doesNotExist();
+    }
+
+    @Test
     void sddYmlVerificationExclusionsSkipTheGateAndSurfaceNotLocallyVerified() throws Exception {
         FixtureRepo libRepo = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
         Path g = libRepo.path().resolve("gradlew");

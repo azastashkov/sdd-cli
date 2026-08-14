@@ -28,6 +28,7 @@ import sdd.cli.implement.RepoStepResolver;
 import sdd.cli.implement.Resume;
 import sdd.cli.implement.RunState;
 import sdd.cli.implement.RunStore;
+import sdd.core.config.ConfigException;
 import sdd.core.config.ConfigLoader;
 import sdd.core.config.ModelEndpoint;
 import sdd.core.config.SddConfig;
@@ -170,6 +171,23 @@ public final class ImplementCommand implements Callable<Integer> {
             }
             SddConfig config = ConfigLoader.load(workspace);
             lastConfig = config;
+            // Preflight, before ANY mutating call below (Database.open here is read-only — the
+            // .sdd/index.db existence check above already guarantees it exists — but store.create,
+            // writePropagation, MavenLocalInit.write and the resume path's store.acquireLock are
+            // not). ConfigLoader defers an unset api_key ${VAR} instead of failing the whole config
+            // load, so a read-only command never needs a credential it will never touch — but
+            // sdd implement WILL touch every escalation-ladder tier, and relying solely on
+            // HttpChatModel's own constructor check (further down, inside the run-dir-creation
+            // block) means a missing credential is only discovered after the run dir, its lock,
+            // plan.json, spec.md and propagation.json are already on disk. Check every tier this
+            // run could reach right here instead, so a missing credential leaves zero filesystem
+            // side effects — HttpChatModel's own check stays in place too, as a backstop.
+            for (String tier : config.run().escalationLadder()) {
+                String apiKeyError = config.models().get(tier).apiKeyError();
+                if (apiKeyError != null) {
+                    throw new ConfigException(apiKeyError);
+                }
+            }
             try (Database db = Database.open(workspace)) {
                 Jdbi jdbi = db.jdbi();
                 Map<String, Path> paths = new HashMap<>();

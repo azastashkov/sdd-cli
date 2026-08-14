@@ -50,6 +50,19 @@ public final class IndexCommand implements Callable<Integer> {
             spec.commandLine().getErr().println("error: " + e.getMessage());
             return 1;
         }
+        // Preflight, before Database.open: on a workspace with no prior .sdd/index.db, open()
+        // creates .sdd and the meta table as a side effect. ConfigLoader defers an unset api_key
+        // ${VAR} rather than failing the whole config load, but --no-cards aside, this command
+        // WILL construct an HttpChatModel against coder below — check it here instead of letting
+        // that construction (deep inside the try) be the first thing to notice, after the db
+        // already exists on disk.
+        if (!noCards) {
+            String apiKeyError = config.models().get("coder").apiKeyError();
+            if (apiKeyError != null) {
+                spec.commandLine().getErr().println("error: " + apiKeyError);
+                return 1;
+            }
+        }
         try (Database db = Database.open(workspace)) {
             IndexService service;
             if (noCards) {

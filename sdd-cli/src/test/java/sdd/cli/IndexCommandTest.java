@@ -80,4 +80,28 @@ class IndexCommandTest {
         assertThat(run.out()).contains("cards: 0 generated, 0 cached, 0 failed");
         assertThat(run.exitCode()).isZero();
     }
+
+    @Test
+    void unresolvedCoderApiKeyFailsBeforeCreatingTheIndexDb() throws Exception {
+        // coder's api_key references an env var this test process never sets. Cards are enabled
+        // by default, so IndexCommand would eventually construct an HttpChatModel against coder —
+        // but that must not happen only AFTER Database.open has already created .sdd/index.db.
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner:
+                    base_url: http://127.0.0.1:1/v1
+                    model: deepseek-v4-flash
+                  coder:
+                    base_url: http://127.0.0.1:1/v1
+                    model: qwen
+                    api_key: "${SDD_LIVE_FIXES_TEST_UNSET_API_KEY}"
+                """);
+
+        Run run = index(ws); // no --no-cards
+
+        assertThat(run.exitCode()).isEqualTo(1);
+        assertThat(run.out()).contains("error:").contains("models.coder.api_key: environment "
+                + "variable SDD_LIVE_FIXES_TEST_UNSET_API_KEY is not set");
+        assertThat(ws.resolve(".sdd/index.db")).doesNotExist();
+    }
 }
