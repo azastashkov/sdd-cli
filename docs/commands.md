@@ -84,7 +84,7 @@ model. (`IndexCommand.java:23-116`)
 
 | Code | Meaning |
 |---|---|
-| `0` | at least one repo indexed (even if some failed) |
+| `0` | no repo was scanned, or at least one repo did not fail — `allFailed` requires a non-empty result list whose every entry is `FAILED`, so an empty workspace exits 0 too (`IndexCommand.java:109-111`) |
 | `1` | config failed to load, `--no-cards` is absent and the `coder` endpoint's API key is unresolved, every scanned repo's status was `FAILED`, or an unhandled exception (`IndexCommand.java:50-52, 61-64, 109-115`) |
 
 **Writes:** `.sdd/index.db` (schema tables for repos, modules, deps, REST
@@ -281,11 +281,17 @@ rebuilt.
 
 **Writes:** `.sdd/runs/<runId>/review/report.md` and one
 `review/<repo>.diff` per `SUCCEEDED` repo with a resolvable checkpoint
-(`RunContext.java:84-103, 111-127`). `report.md`'s sections, verified against
-the renderer: Release runbook, Summary, Repos, Rebuild failures, Contract
-re-check, Staging failures, Checkpoint drift, Branch restore failures, Diff
-failures, Propagation (`ReviewReport.java:76, 93, 233, 291, 324, 370, 386,
-399, 411, 425`). If `--interactive` records any decision, it also writes
+(`RunContext.java:84-103, 111-127`). `report.md`'s sections, in the order they
+appear in the document: Summary, Staging failures, Checkpoint drift, Repos,
+Rebuild failures, Contract re-check, Branch restore failures, Diff failures,
+Propagation, Release runbook (`ReviewReport.java:93, 370, 386, 233, 291, 324,
+399, 411, 425, 76`). Summary, Repos and Release runbook always render; the
+other six are omitted when they have nothing to report. The order is
+load-bearing rather than
+incidental: staging failures and checkpoint drift precede Repos deliberately,
+because both invalidate what Repos says and a reader who meets "rebuild: OK"
+first has already formed a verdict by the time the caveat arrives
+(`ReviewReport.java:64-65`). If `--interactive` records any decision, it also writes
 whatever `approve`/`reject`/`redo` write (below) for each decided repo, and
 re-renders `report.md` once at the end of the walk
 (`InteractiveReview.java:158-162`).

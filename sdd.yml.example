@@ -40,7 +40,9 @@ models:
     max_tokens: 32768
 
   # Local alternative for `coder` (Apple Silicon, ~40 GB): run scripts/serve-qwen.sh
-  # and point the tier at it instead. Keeps every token on the machine.
+  # and REPLACE the `coder:` block above with the one below — do not uncomment it
+  # here, or `models:` ends up with two `coder:` keys. Keeps every token on the
+  # machine.
   # coder:
   #   base_url: http://127.0.0.1:8080/v1
   #   model: mlx-community/Qwen3.6-35B-A3B-8bit
