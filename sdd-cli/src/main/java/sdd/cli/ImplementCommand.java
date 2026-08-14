@@ -28,6 +28,7 @@ import sdd.cli.implement.RepoStepResolver;
 import sdd.cli.implement.Resume;
 import sdd.cli.implement.RunState;
 import sdd.cli.implement.RunStore;
+import sdd.cli.review.Shas;
 import sdd.core.config.ConfigException;
 import sdd.core.config.ConfigLoader;
 import sdd.core.config.ModelEndpoint;
@@ -232,7 +233,8 @@ public final class ImplementCommand implements Callable<Integer> {
                     for (RepoRun r : persisted.repos()) {
                         if (retrySet.contains(r.repo()) && r.state() == RepoState.SUCCEEDED) {
                             out.println("warn: " + r.repo() + ": retrying discards its checkpoint "
-                                    + shortSha(r.checkpointSha()) + " — the branch will be reset to the plan base");
+                                    + Shas.shortSha(r.checkpointSha())
+                                    + " — the branch will be reset to the plan base");
                         }
                     }
                     Resume.Prep prep = Resume.prepare(persisted, steps, retrySet);
@@ -410,10 +412,6 @@ public final class ImplementCommand implements Callable<Integer> {
                         + "(kept as acceptance prose): " + nonAllowlisted);
             }
         }
-    }
-
-    private static String shortSha(String sha) {
-        return sha == null ? "" : sha.substring(0, Math.min(7, sha.length()));
     }
 
     private static String sanitize(String id) {

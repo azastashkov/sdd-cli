@@ -260,7 +260,7 @@ public final class ContractRecheck {
 
     private static boolean restSamePathAnyVerb(String missingMember, String unresolvedEntry) {
         int space = unresolvedEntry.indexOf(' ');
-        if (space < 0 || !"ANY".equals(unresolvedEntry.substring(0, space))) {
+        if (space < 0 || !ContractActualizer.REST_ANY_VERB.equals(unresolvedEntry.substring(0, space))) {
             return false;
         }
         String unresolvedPath = unresolvedEntry.substring(space + 1);

@@ -45,8 +45,10 @@ public final class ContractActualizer {
     private static final String KAFKA_UNRESOLVED = "DYNAMIC";
     /** The verb {@code RestEndpointExtractor.mappingsOf} writes for a verbless method-level {@code
      *  @RequestMapping} (no {@code method} attribute) — a value {@code DeclaredContract}'s
-     *  REST_METHODS grammar cannot legally declare in the first place. */
-    private static final String REST_ANY_VERB = "ANY";
+     *  REST_METHODS grammar cannot legally declare in the first place. Shared with
+     *  {@code ContractRecheck} the same way {@link #UNRESOLVED_MARKER} is: this class marks the
+     *  shape, that one matches it, and the two halves of one protocol must not drift apart. */
+    public static final String REST_ANY_VERB = "ANY";
 
     private ContractActualizer() {
     }
