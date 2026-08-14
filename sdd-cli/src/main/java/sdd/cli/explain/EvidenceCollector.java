@@ -3,6 +3,7 @@ package sdd.cli.explain;
 import org.jdbi.v3.core.Jdbi;
 import sdd.core.kb.EntityKind;
 import sdd.core.kb.EntityMatch;
+import sdd.core.kb.KbEntities;
 import sdd.core.kb.KbStatus;
 import sdd.core.kb.Resolution;
 import sdd.core.retrieve.Retriever;
@@ -11,27 +12,85 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * The deterministic-fetch half of {@code sdd explain}'s interpret -&gt; deterministic fetch -&gt;
  * narrate shape. No model participates here: every {@link Section} is built from SQL run against
- * the same KB call 1 validated its entities against. Dispatches on {@link Intent}; this task
- * implements {@code DESCRIBE}, {@code DEPENDENCY_PATH} and {@code SEARCH} — {@code CONSUMERS} and
- * {@code IMPACT} are Task 5's, added to this {@code switch} without touching this file's existing
- * cases.
+ * the same KB call 1 validated its entities against. Dispatches on {@link Intent}; Task 4
+ * implemented {@code DESCRIBE}, {@code DEPENDENCY_PATH} and {@code SEARCH}. Task 5 adds
+ * {@code CONSUMERS} and {@code IMPACT}, plus the mandatory absence-guard caveat
+ * ({@link AbsenceGuard}) that both of those two intents — and only those two — carry: "nothing
+ * consumes X" is never something the KB can assert as fact (spec Amendment 2026-08-14, rule 2).
  */
 public final class EvidenceCollector {
     private EvidenceCollector() {
     }
 
     public static Evidence collect(Jdbi jdbi, Retriever retriever, RetrievalRequest request) {
-        List<Section> sections = switch (request.intent()) {
-            case DESCRIBE -> RepoFacts.of(jdbi, request);
-            case DEPENDENCY_PATH -> DependencyFacts.of(jdbi, request);
-            case SEARCH -> SearchFacts.of(jdbi, retriever, request);
-            case CONSUMERS, IMPACT -> List.of();
-        };
-        return new Evidence(KbStatus.provenance(jdbi), request, sections, List.of());
+        List<Section> sections;
+        List<String> caveats = List.of();
+        switch (request.intent()) {
+            case DESCRIBE -> sections = RepoFacts.of(jdbi, request);
+            case DEPENDENCY_PATH -> sections = DependencyFacts.of(jdbi, request);
+            case SEARCH -> sections = SearchFacts.of(jdbi, retriever, request);
+            case CONSUMERS -> {
+                Collected collected = consumers(jdbi, request);
+                sections = collected.sections();
+                caveats = List.of(AbsenceGuard.caveat(jdbi, collected.reposInPlay()));
+            }
+            case IMPACT -> {
+                Collected collected = impact(jdbi, request);
+                sections = collected.sections();
+                caveats = List.of(AbsenceGuard.caveat(jdbi, collected.reposInPlay()));
+            }
+            default -> throw new IllegalStateException("unreachable: " + request.intent());
+        }
+        return new Evidence(KbStatus.provenance(jdbi), request, sections, caveats);
+    }
+
+    /** Sections built so far, plus the repos the absence-guard caveat should be scoped to. */
+    private record Collected(List<Section> sections, Set<String> reposInPlay) {
+    }
+
+    /**
+     * Loops the request's entities exactly like {@code RepoFacts.of}/{@code DependencyFacts.of}
+     * do: resolve, cite non-repo kinds, dispatch to {@link ConsumerFacts#of}. The caveat's scope
+     * is every repo any asked-about entity resolved to — the repos this specific answer is about.
+     */
+    private static Collected consumers(Jdbi jdbi, RetrievalRequest request) {
+        List<Section> sections = new ArrayList<>();
+        LinkedHashSet<String> reposInPlay = new LinkedHashSet<>();
+        for (EntityRef entity : request.entities()) {
+            Resolution resolution = KbEntities.resolve(jdbi, entity.kind(), entity.value());
+            if (entity.kind() != EntityKind.REPO) {
+                sections.add(citation(entity, resolution, false));
+            }
+            reposInPlay.addAll(resolution.repos());
+            sections.addAll(ConsumerFacts.of(jdbi, resolution));
+        }
+        return new Collected(sections, reposInPlay);
+    }
+
+    /**
+     * Roots come from resolving every entity in the request — {@link ImpactFacts#of} does the
+     * rest via {@code Closure.expand}. The caveat's scope is
+     * {@link ImpactFacts.Result#affectedRepos()}: roots union {@code added}, not the roots alone
+     * (which would under-report once the closure has grown) and not the whole estate (noise).
+     */
+    private static Collected impact(Jdbi jdbi, RetrievalRequest request) {
+        List<Section> sections = new ArrayList<>();
+        LinkedHashSet<String> roots = new LinkedHashSet<>();
+        for (EntityRef entity : request.entities()) {
+            Resolution resolution = KbEntities.resolve(jdbi, entity.kind(), entity.value());
+            if (entity.kind() != EntityKind.REPO) {
+                sections.add(citation(entity, resolution, false));
+            }
+            roots.addAll(resolution.repos());
+        }
+        ImpactFacts.Result result = ImpactFacts.of(jdbi, roots);
+        sections.addAll(result.sections());
+        return new Collected(sections, result.affectedRepos());
     }
 
     /**

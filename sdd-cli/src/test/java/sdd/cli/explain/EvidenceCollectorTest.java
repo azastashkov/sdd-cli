@@ -5,9 +5,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import sdd.core.db.Database;
 import sdd.core.kb.EntityKind;
+import sdd.core.llm.ChatMessage;
+import sdd.core.llm.ChatRequest;
+import sdd.core.llm.ChatResponse;
+import sdd.core.llm.Usage;
 import sdd.core.retrieve.FtsRetriever;
 import sdd.core.retrieve.Hit;
 import sdd.core.retrieve.Retriever;
+import sdd.core.testing.ScriptedChatModel;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -241,5 +246,273 @@ class EvidenceCollectorTest {
                 List.of(), "Why does svc-orders depend on lib-core?", List.of(), false);
 
         assertThat(collect(request)).isEqualTo(collect(request));
+    }
+
+    // --- consumers: repo ------------------------------------------------------------------------
+
+    @Test
+    void consumersOnRepoHitsInboundGradleAndApiUsageEdges() {
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.REPO, ExplainFixture.LIB_API, false)),
+                List.of(), "What consumes lib-api?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        assertThat(texts(section(evidence, "Consumers via Gradle: " + ExplainFixture.LIB_API)))
+                .containsExactly(ExplainFixture.SVC_ORDERS);
+        assertThat(texts(section(evidence, "Consumers via API usage: " + ExplainFixture.LIB_API)))
+                .containsExactly(ExplainFixture.SVC_ORDERS + " uses " + ExplainFixture.PRICE_API_FQCN + " (IMPORT)");
+    }
+
+    @Test
+    void consumersOnRepoHitsRestAndKafkaContractEdgesViaContractEdges() {
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.REPO, ExplainFixture.SVC_ORDERS, false)),
+                List.of(), "What consumes svc-orders?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        assertThat(texts(section(evidence, "Consumers via Gradle: " + ExplainFixture.SVC_ORDERS))).isEmpty();
+        assertThat(texts(section(evidence, "Consumers via API usage: " + ExplainFixture.SVC_ORDERS))).isEmpty();
+        assertThat(texts(section(evidence, "Consumers via REST (contract): " + ExplainFixture.SVC_ORDERS)))
+                .containsExactly(ExplainFixture.SVC_BILLING + " calls GET /orders/{} on " + ExplainFixture.SVC_ORDERS
+                        + " (confidence=HIGH, matched_by=FEIGN_NAME_PATH)");
+        assertThat(texts(section(evidence, "Consumers via Kafka (contract): " + ExplainFixture.SVC_ORDERS)))
+                .containsExactly(ExplainFixture.SVC_ORDERS + " produces " + ExplainFixture.ORDERS_TOPIC
+                        + " consumed by " + ExplainFixture.SVC_NOTIFY);
+    }
+
+    // --- consumers: endpoint ---------------------------------------------------------------------
+
+    @Test
+    void consumersOnEndpointYieldsRestCallEdgeRowsWithVerbPathConfidenceAndMatchedBy() {
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.ENDPOINT, ExplainFixture.ORDERS_ENDPOINT, false)),
+                List.of(), "What calls GET /orders/{id}?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        assertThat(texts(section(evidence, "Consumers of endpoint: " + ExplainFixture.ORDERS_ENDPOINT)))
+                .containsExactly(ExplainFixture.SVC_BILLING + " calls GET /orders/{} on " + ExplainFixture.SVC_ORDERS
+                        + " (confidence=HIGH, matched_by=FEIGN_NAME_PATH)");
+        assertThat(evidence.sections()).noneMatch(s -> s.title().startsWith("Endpoint match is ambiguous"));
+    }
+
+    @Test
+    void consumersOnAmbiguousEndpointYieldsEveryMatchPlusAnExplicitAmbiguityFact() {
+        // a second repo (lib-core) happens to expose the exact same verb+path — Routes.templatesMatch
+        // can legitimately do this — so the resolved endpoint value is genuinely ambiguous.
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO rest_endpoint(module_id, class_fqcn, method_name, http_method, path_template, norm_path) "
+                    + "VALUES (1,'OrdersControllerV2','get','GET','/orders/{id}','/orders/{}')");
+            h.execute("INSERT INTO rest_client(module_id, kind, class_fqcn, method_or_site, http_method, uri_template, norm_path, target_hint, resolution, raw_expr) "
+                    + "VALUES (5,'FEIGN','LibCoreOrdersClient','site','GET','/orders/{id}','/orders/{}','orders','LITERAL','raw2')");
+            h.execute("INSERT INTO rest_call_edge(client_id, endpoint_id, confidence, matched_by) VALUES (2,2,'MEDIUM','PATH_ONLY')");
+        });
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.ENDPOINT, ExplainFixture.ORDERS_ENDPOINT, false)),
+                List.of(), "What calls GET /orders/{id}?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        Section ambiguity = section(evidence, "Endpoint match is ambiguous: '" + ExplainFixture.ORDERS_ENDPOINT + "'");
+        assertThat(ambiguity.facts()).singleElement().satisfies(f -> assertThat(f.text())
+                .contains("matched 2 distinct repos")
+                .contains(ExplainFixture.LIB_CORE).contains(ExplainFixture.SVC_ORDERS));
+        // every match's consumers are rendered — never a silently chosen one
+        assertThat(texts(section(evidence, "Consumers of endpoint: " + ExplainFixture.ORDERS_ENDPOINT)))
+                .containsExactlyInAnyOrder(
+                        ExplainFixture.SVC_NOTIFY + " calls GET /orders/{} on " + ExplainFixture.LIB_CORE
+                                + " (confidence=MEDIUM, matched_by=PATH_ONLY)",
+                        ExplainFixture.SVC_BILLING + " calls GET /orders/{} on " + ExplainFixture.SVC_ORDERS
+                                + " (confidence=HIGH, matched_by=FEIGN_NAME_PATH)");
+    }
+
+    // --- consumers: class, topic, artifact --------------------------------------------------------
+
+    @Test
+    void consumersOnClassYieldsApiUsageGroupedByConsumerWithRefKind() {
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.CLASS, ExplainFixture.PRICE_API_FQCN, false)),
+                List.of(), "What uses PriceApi?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        assertThat(texts(section(evidence, "Consumers of class: " + ExplainFixture.PRICE_API_FQCN)))
+                .containsExactly(ExplainFixture.SVC_ORDERS + " uses " + ExplainFixture.PRICE_API_FQCN + " (IMPORT)");
+    }
+
+    @Test
+    void consumersOnTopicYieldsBothRolesWithGroupIdAndPayloadTypeWhenPresent() {
+        db.jdbi().useHandle(h -> h.execute(
+                "UPDATE kafka_role SET group_id='notify-group', payload_type='OrderEvent' WHERE module_id = "
+                        + "(SELECT id FROM module WHERE repo_id = (SELECT id FROM repo WHERE name = '"
+                        + ExplainFixture.SVC_NOTIFY + "'))"));
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.TOPIC, ExplainFixture.ORDERS_TOPIC, false)),
+                List.of(), "Who produces and consumes orders.events?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        // both roles, ordered by repo name: svc-notify sorts before svc-orders
+        assertThat(texts(section(evidence, "Topic roles: " + ExplainFixture.ORDERS_TOPIC))).containsExactly(
+                ExplainFixture.SVC_NOTIFY + " (CONSUMER), group_id=notify-group, payload_type=OrderEvent",
+                ExplainFixture.SVC_ORDERS + " (PRODUCER)");
+    }
+
+    @Test
+    void consumersOnArtifactYieldsDepEdgeRowsByGroupAndName() {
+        db.jdbi().useHandle(h -> h.execute(
+                "INSERT INTO artifact(grp, name, module_id) VALUES ('com.acme','lib-api',2)"));
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.ARTIFACT, "com.acme:lib-api", false)),
+                List.of(), "What depends on com.acme:lib-api?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        assertThat(texts(section(evidence, "Consumers of artifact: com.acme:lib-api"))).containsExactly(
+                ExplainFixture.SVC_ORDERS + " depends on com.acme:lib-api "
+                        + "(configuration=compileClasspath, declared_version=null, mode=BOM_MANAGED)");
+    }
+
+    // --- impact -------------------------------------------------------------------------------------
+
+    @Test
+    void impactRendersRootsExplicitlyThenAddedThenCyclesThenWarnings() {
+        RetrievalRequest request = new RetrievalRequest(Intent.IMPACT,
+                List.of(new EntityRef(EntityKind.REPO, ExplainFixture.LIB_CORE, false)),
+                List.of(), "What breaks if lib-core changes?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        // the regression this guards against: Closure.expand's `added` never includes the roots
+        // it was seeded with, so an impact answer that skips rendering roots explicitly would
+        // never name the very repo the question was about.
+        assertThat(texts(section(evidence, "Impact: root repo(s)"))).containsExactly(ExplainFixture.LIB_CORE);
+        List<String> added = texts(section(evidence, "Impact: affected repos"));
+        assertThat(added).noneMatch(t -> t.startsWith(ExplainFixture.LIB_CORE + " —"));
+        assertThat(added)
+                .anySatisfy(t -> assertThat(t).contains(ExplainFixture.LIB_API).contains("dependent/BUMP_REBUILD_ONLY"))
+                .anySatisfy(t -> assertThat(t).contains(ExplainFixture.SVC_ORDERS).contains("dependent/CODE_CHANGE_LIKELY"))
+                .anySatisfy(t -> assertThat(t).contains(ExplainFixture.PLATFORM).contains("bom-site/BOM_DECLARATION_SITE"))
+                .anySatisfy(t -> assertThat(t).contains(ExplainFixture.SVC_BILLING).contains("contract/PENDING_CONTRACT")
+                        .contains("GET /orders/{}"))
+                .anySatisfy(t -> assertThat(t).contains(ExplainFixture.SVC_NOTIFY).contains("contract/PENDING_CONTRACT")
+                        .contains(ExplainFixture.ORDERS_TOPIC));
+        assertThat(texts(section(evidence, "Impact: dependency cycles"))).isEmpty();
+        assertThat(texts(section(evidence, "Impact: warnings")))
+                .anySatisfy(t -> assertThat(t).contains(ExplainFixture.SVC_ORDERS).contains("DEGRADED"));
+
+        List<String> titles = evidence.sections().stream().map(Section::title).toList();
+        int rootsIdx = titles.indexOf("Impact: root repo(s)");
+        int addedIdx = titles.indexOf("Impact: affected repos");
+        int cyclesIdx = titles.indexOf("Impact: dependency cycles");
+        int warningsIdx = titles.indexOf("Impact: warnings");
+        assertThat(rootsIdx).isGreaterThanOrEqualTo(0).isLessThan(addedIdx);
+        assertThat(addedIdx).isLessThan(cyclesIdx);
+        assertThat(cyclesIdx).isLessThan(warningsIdx);
+    }
+
+    // --- absence guard --------------------------------------------------------------------------
+
+    @Test
+    void absenceCaveatIsAlwaysPresentEvenWithZeroCounts() {
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.REPO, ExplainFixture.LIB_CORE, false)),
+                List.of(), "What consumes lib-core?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        assertThat(evidence.caveats()).singleElement().satisfies(c -> assertThat(c)
+                .contains("0 rest_client row(s)").contains("0 kafka_topic row(s)")
+                .contains(ExplainFixture.LIB_CORE));
+    }
+
+    @Test
+    void absenceCaveatForConsumersFiresWithRealCountsScopedToTheAskedAboutRepo() {
+        db.jdbi().useHandle(h -> {
+            // in scope: svc-orders is the repo actually being asked about
+            h.execute("INSERT INTO rest_client(module_id, kind, class_fqcn, method_or_site, http_method, uri_template, norm_path, target_hint, resolution, raw_expr) "
+                    + "VALUES (3,'FEIGN','MysteryClient','site','GET',NULL,NULL,NULL,'DYNAMIC','svcOrders.mystery()')");
+            h.execute("INSERT INTO kafka_topic(name, resolution) VALUES ('mystery.orders','DYNAMIC')");
+            h.execute("INSERT INTO kafka_role(module_id, topic_id, role) VALUES (3,2,'PRODUCER')");
+            // out of scope: svc-billing was never asked about here — a whole-estate scope would
+            // wrongly count this too
+            h.execute("INSERT INTO rest_client(module_id, kind, class_fqcn, method_or_site, http_method, uri_template, norm_path, target_hint, resolution, raw_expr) "
+                    + "VALUES (4,'FEIGN','OutOfScopeClient','site','GET',NULL,NULL,NULL,'DYNAMIC','svcBilling.mystery()')");
+        });
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.REPO, ExplainFixture.SVC_ORDERS, false)),
+                List.of(), "What consumes svc-orders?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        assertThat(evidence.caveats()).singleElement().satisfies(c -> assertThat(c)
+                .contains("1 rest_client row(s)")
+                .contains("1 kafka_topic row(s)")
+                .contains(ExplainFixture.SVC_ORDERS)
+                .doesNotContain(ExplainFixture.SVC_BILLING));
+    }
+
+    @Test
+    void absenceCaveatForImpactIsScopedToRootsUnionAddedNotJustRootsNorTheWholeEstate() {
+        // roots = {lib-api}: Closure.expand pulls in svc-orders (dependent), platform (bom-site),
+        // svc-billing and svc-notify (contracts on svc-orders) — everything except lib-core, which
+        // is a pure leaf nothing here depends *from*, so it never enters the affected set. That
+        // makes lib-core the deliberate "out of scope" repo below, distinguishing "affected set"
+        // scoping (this) from "the whole estate" (would count it too).
+        db.jdbi().useHandle(h -> {
+            // in scope: svc-orders is in the affected set (added as a dependent) even though it
+            // is not itself a root — this is what distinguishes "affected set" from "roots only".
+            h.execute("INSERT INTO rest_client(module_id, kind, class_fqcn, method_or_site, http_method, uri_template, norm_path, target_hint, resolution, raw_expr) "
+                    + "VALUES (3,'FEIGN','MysteryClient','site','GET',NULL,NULL,NULL,'DYNAMIC','svcOrders.mystery()')");
+            h.execute("INSERT INTO kafka_topic(name, resolution) VALUES ('mystery.orders','DYNAMIC')");
+            h.execute("INSERT INTO kafka_role(module_id, topic_id, role) VALUES (3,2,'PRODUCER')");
+            // out of scope: lib-core is never in the affected set for roots {lib-api} — a
+            // whole-estate scope would wrongly count this too.
+            h.execute("INSERT INTO rest_client(module_id, kind, class_fqcn, method_or_site, http_method, uri_template, norm_path, target_hint, resolution, raw_expr) "
+                    + "VALUES (1,'FEIGN','OutOfScopeClient','site','GET',NULL,NULL,NULL,'DYNAMIC','libCore.mystery()')");
+            h.execute("INSERT INTO kafka_topic(name, resolution) VALUES ('mystery.core','DYNAMIC')");
+            h.execute("INSERT INTO kafka_role(module_id, topic_id, role) VALUES (1,3,'CONSUMER')");
+        });
+        RetrievalRequest request = new RetrievalRequest(Intent.IMPACT,
+                List.of(new EntityRef(EntityKind.REPO, ExplainFixture.LIB_API, false)),
+                List.of(), "What breaks if lib-api changes?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        assertThat(evidence.caveats()).singleElement().satisfies(c -> assertThat(c)
+                .contains("1 rest_client row(s)")
+                .contains("1 kafka_topic row(s)")
+                .contains(ExplainFixture.LIB_API).contains(ExplainFixture.SVC_ORDERS)
+                .doesNotContain(ExplainFixture.LIB_CORE));
+    }
+
+    // --- no third model call ---------------------------------------------------------------------
+
+    @Test
+    void impactCollectionAddsNoModelCallBetweenInterpretationAndNarration() {
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                new ChatResponse(ChatMessage.assistant("""
+                        {"intent":"impact","restatement":"What breaks if lib-core changes?",
+                         "entities":[{"kind":"repo","value":"lib-core"}],"search_terms":[]}"""),
+                        "stop", new Usage(1, 1)),
+                new ChatResponse(ChatMessage.assistant("a narrated answer"), "stop", new Usage(1, 1))));
+
+        // call 1: interpretation
+        RetrievalRequest request = QuestionInterpreter.interpret(db.jdbi(), "what breaks if lib-core changes",
+                model, "m", 512);
+        assertThat(request.intent()).isEqualTo(Intent.IMPACT);
+        assertThat(model.requests()).hasSize(1);
+
+        // the deterministic fetch: Closure.expand and everything else here is plain SQL
+        Evidence evidence = collect(request);
+        assertThat(model.requests()).hasSize(1); // unchanged — collect() never touched the model
+        assertThat(evidence.sections()).isNotEmpty();
+
+        // stand-in for call 2 (AnswerNarrator, a later task) — proves the total never exceeds two:
+        // no third call snuck in between interpretation and narration.
+        model.complete(new ChatRequest("m", List.of(ChatMessage.user("narrate this evidence")), List.of(), 512, 0.2));
+        assertThat(model.requests()).hasSize(2);
     }
 }
