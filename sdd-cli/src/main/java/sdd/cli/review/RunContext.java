@@ -112,8 +112,11 @@ public record RunContext(String runId, Path runDir, RunStore store, PlanModel pl
      *  artifact a human hands to a colleague reflects the run as it stands now, not a pre-decision
      *  snapshot — which is also why the decisions it renders are re-read from disk here rather than
      *  threaded in: every caller has just persisted them, and disk is the one shared truth any
-     *  other process reading this run also sees. (That is not a concurrency guarantee — the
-     *  decision commands assume a single writer at a time; see {@link DecisionCommand}.) */
+     *  other process reading this run also sees. (That is not a concurrency guarantee: the decision
+     *  commands write {@code decisions.json} through an optimistic retry, but their {@code
+     *  state.json} write-back is an unguarded read-modify-write of a snapshot taken at command
+     *  start — see {@link DecisionCommand}'s class javadoc for exactly what is and is not safe to
+     *  run concurrently.) */
     public Path writeReport(Diffs diffs, Map<String, EstateRebuild.Result> rebuilds,
                             List<String> notLocallyVerified, List<String> stagingFailures,
                             List<String> restoreFailures, List<ContractRecheck.Finding> contracts,

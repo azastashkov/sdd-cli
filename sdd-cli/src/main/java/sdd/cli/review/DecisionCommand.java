@@ -37,6 +37,17 @@ import java.util.function.BiFunction;
  * can still land in the gap between the fingerprint check and the rename, but that is caught on the
  * NEXT read, not silently lost. See {@code RunStore.writeDecisions}'s javadoc for exactly what that
  * guarantees.
+ *
+ * <p><b>That guarantee covers {@code decisions.json} and nothing else.</b> {@code approve}'s
+ * post-squash write-back in {@link #squashAndRecord} is an unguarded read-modify-write of
+ * {@code state.json}: {@link RunContext#load} snapshots the whole {@link
+ * sdd.cli.implement.RunState} at command start, one repo's checkpoint sha is mutated on that
+ * snapshot, and the entire document is republished. Two approves running at once therefore lose
+ * one repo's new checkpoint — the loser's {@code state.json} still names the pre-squash sha, whose
+ * branch head has moved, and the next {@code sdd implement --resume/--retry} hard-fails in
+ * {@code Resume.prepare} with exit 4. That is a documented carried item, not a fixed one: it fails
+ * loudly rather than lying, and fingerprinting a second file is a design change. Deciding two repos
+ * of one run concurrently is safe for the verdicts; it is not safe for the checkpoints.
  */
 public abstract class DecisionCommand implements Callable<Integer> {
     /** Only for {@code --workspace}, which is declared {@code scope = INHERIT} on the parent. */

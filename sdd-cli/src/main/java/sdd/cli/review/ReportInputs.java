@@ -13,8 +13,15 @@ import java.util.Map;
  * below: {@code notLocallyVerified}, {@code stagingFailures}, {@code restoreFailures} and
  * {@code diffFailures} sat side by side in {@code render}'s old signature with nothing but
  * argument order distinguishing them, so a transposition compiled cleanly and produced a report
- * that confidently misfiled one failure kind as another. Named components make that transposition
- * a compile error at every call site that uses this record's accessors instead of a raw list.
+ * that confidently misfiled one failure kind as another. Naming them fixes that for every READER:
+ * {@code ReviewReport} and its helpers now take {@code inputs.stagingFailures()} rather than
+ * whichever list arrived third, so a mix-up inside the renderer no longer compiles.
+ *
+ * <p>What it does NOT fix is the construction site. This record's canonical constructor still takes
+ * the same four {@code List<String>} positionally, and {@link RunContext#writeReport} — the one
+ * caller that builds it — takes three of them positionally in turn from its own three callers. The
+ * transposition hazard is narrowed to those frames, not eliminated; a builder or per-kind wrapper
+ * types would be what eliminates it. See the phase 5C-2 plan's Known carried items.
  *
  * @param runId              the run this report describes
  * @param plan               the frozen plan the run was executed against
