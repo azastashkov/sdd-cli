@@ -9,6 +9,7 @@ import sdd.plan.impact.ImpactResult;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -102,6 +103,37 @@ class ExecutionOrderTest {
         assertThat(order).hasSize(2);
         assertThat(order.get(0).repos()).containsExactly("lib-api", "lib-core");
         assertThat(order.get(1).repos()).containsExactly("svc-orders");
+    }
+
+    @Test
+    void edgesDedupsMultipleContractDetailsBetweenTheSameRepoPair() {
+        // ContractEdges.rest/kafka project detail columns (verb/path/confidence/matched_by,
+        // topic) that are DISTINCT over, so two different endpoints (or topics) between the same
+        // repo pair now yield two rows, not one -- edges() must collapse them back to one
+        // [provider, consumer] pair itself; PlanValidator relies on that to avoid printing the
+        // same "execution order violates dependency" line once per contract detail.
+        db.jdbi().useHandle(h -> {
+            // second REST endpoint svc-orders exposes, also called by svc-billing
+            h.execute("INSERT INTO rest_endpoint(module_id, class_fqcn, method_name, http_method, path_template, norm_path) "
+                    + "VALUES (3,'InvoicesController','get','GET','/invoices/{id}','/invoices/{}')");
+            h.execute("INSERT INTO rest_client(module_id, kind, class_fqcn, method_or_site, http_method, uri_template, norm_path, target_hint, resolution, raw_expr) "
+                    + "VALUES (4,'FEIGN','InvoicesClient','site','GET','/invoices/{id}','/invoices/{}','invoices','LITERAL','raw2')");
+            h.execute("INSERT INTO rest_call_edge(client_id, endpoint_id, confidence, matched_by) VALUES (2,2,'HIGH','FEIGN_NAME_PATH')");
+            // two kafka topics, same producer/consumer repo pair
+            h.execute("INSERT INTO kafka_topic(name, resolution) VALUES ('billing.events.a','LITERAL')");
+            h.execute("INSERT INTO kafka_role(module_id, topic_id, role) VALUES (3,1,'PRODUCER')");
+            h.execute("INSERT INTO kafka_role(module_id, topic_id, role) VALUES (4,1,'CONSUMER')");
+            h.execute("INSERT INTO kafka_topic(name, resolution) VALUES ('billing.events.b','LITERAL')");
+            h.execute("INSERT INTO kafka_role(module_id, topic_id, role) VALUES (3,2,'PRODUCER')");
+            h.execute("INSERT INTO kafka_role(module_id, topic_id, role) VALUES (4,2,'CONSUMER')");
+        });
+        Set<String> affected = Set.of("svc-orders", "svc-billing");
+
+        List<String[]> edges = ExecutionOrder.edges(db.jdbi(), affected);
+
+        long restPairs = edges.stream()
+                .filter(e -> e[0].equals("svc-orders") && e[1].equals("svc-billing")).count();
+        assertThat(restPairs).isEqualTo(1);
     }
 
     @Test

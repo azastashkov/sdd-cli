@@ -1,6 +1,8 @@
 package sdd.plan.impact;
 
 import org.jdbi.v3.core.Jdbi;
+import sdd.core.kb.ContractEdges;
+import sdd.core.kb.KbStatus;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -129,42 +131,17 @@ public final class Closure {
         record Contract(String consumerRepo, String reason) {
         }
         List<Contract> contracts = new ArrayList<>();
-        List<Map<String, Object>> restRows = jdbi.withHandle(h -> h.createQuery("""
-                        SELECT DISTINCT rc.name AS client_repo, rp.name AS provider_repo,
-                               e.http_method AS verb, e.norm_path AS norm, ce.confidence AS confidence
-                        FROM rest_call_edge ce
-                        JOIN rest_client c ON c.id = ce.client_id
-                        JOIN module mc ON mc.id = c.module_id
-                        JOIN repo rc ON rc.id = mc.repo_id
-                        JOIN rest_endpoint e ON e.id = ce.endpoint_id
-                        JOIN module mp ON mp.id = e.module_id
-                        JOIN repo rp ON rp.id = mp.repo_id
-                        WHERE rc.name <> rp.name
-                        ORDER BY rc.name, rp.name""")
-                .mapToMap().list());
-        for (Map<String, Object> row : restRows) {
-            if (affected.contains(String.valueOf(row.get("provider_repo")))) {
-                contracts.add(new Contract(String.valueOf(row.get("client_repo")),
-                        "calls " + row.get("verb") + " " + row.get("norm") + " on "
-                                + row.get("provider_repo") + " (" + row.get("confidence") + ")"));
+        for (ContractEdges.RestEdge edge : ContractEdges.rest(jdbi)) {
+            if (affected.contains(edge.providerRepo())) {
+                contracts.add(new Contract(edge.consumerRepo(),
+                        "calls " + edge.verb() + " " + edge.normPath() + " on "
+                                + edge.providerRepo() + " (" + edge.confidence() + ")"));
             }
         }
-        List<Map<String, Object>> kafkaRows = jdbi.withHandle(h -> h.createQuery("""
-                        SELECT DISTINCT rp.name AS producer_repo, rc.name AS consumer_repo, t.name AS topic
-                        FROM kafka_role prod
-                        JOIN kafka_topic t ON t.id = prod.topic_id
-                        JOIN module mp ON mp.id = prod.module_id
-                        JOIN repo rp ON rp.id = mp.repo_id
-                        JOIN kafka_role cons ON cons.topic_id = prod.topic_id AND cons.role = 'CONSUMER'
-                        JOIN module mc ON mc.id = cons.module_id
-                        JOIN repo rc ON rc.id = mc.repo_id
-                        WHERE prod.role = 'PRODUCER' AND rp.name <> rc.name
-                        ORDER BY rp.name, rc.name""")
-                .mapToMap().list());
-        for (Map<String, Object> row : kafkaRows) {
-            if (affected.contains(String.valueOf(row.get("producer_repo")))) {
-                contracts.add(new Contract(String.valueOf(row.get("consumer_repo")),
-                        "consumes topic " + row.get("topic") + " produced by " + row.get("producer_repo")));
+        for (ContractEdges.KafkaEdge edge : ContractEdges.kafka(jdbi)) {
+            if (affected.contains(edge.producerRepo())) {
+                contracts.add(new Contract(edge.consumerRepo(),
+                        "consumes topic " + edge.topic() + " produced by " + edge.producerRepo()));
             }
         }
         for (Contract contract : contracts) {
@@ -267,22 +244,6 @@ public final class Closure {
     }
 
     private static void statusWarnings(Jdbi jdbi, Set<String> affected, List<String> warnings) {
-        List<Map<String, Object>> rows = jdbi.withHandle(h -> h.createQuery("""
-                        SELECT name, gradle_status, parse_status FROM repo
-                        WHERE (gradle_status IN ('DEGRADED','FAILED','STALE_OK')
-                               OR parse_status IN ('DEGRADED','FAILED','STALE_OK'))
-                        ORDER BY name""")
-                .mapToMap().list());
-        for (Map<String, Object> row : rows) {
-            String name = String.valueOf(row.get("name"));
-            if (affected.contains(name)) {
-                String status = row.get("gradle_status") != null
-                        && !"OK".equals(row.get("gradle_status"))
-                        ? String.valueOf(row.get("gradle_status"))
-                        : String.valueOf(row.get("parse_status"));
-                warnings.add("affected repo " + name + " indexed with status " + status
-                        + " — downgrade confidence in its facts");
-            }
-        }
+        warnings.addAll(KbStatus.warnings(jdbi, affected));
     }
 }
