@@ -488,6 +488,12 @@ git commit -m "feat: render plan conformance in the Gate-2 report"
 - **Report failure codes** are `RepoState` + `run.detail()` free text rather than spec line 141's ladder.
 - **`kafka` declarations are untested against a real estate** — the trading estate has no Kafka (Phase-0 spike #4 confirmed a true negative), so that kind's grammar is fixture-proven only.
 - **Divergence does not block approval.** `Decisions.approve` is untouched; a human may approve a diverged repo.
+- **The conformance axis cannot say "unresolved", so it says "diverged".** Spec line 42's planner rule is **unresolved ≠ nonexistent**, but `Conformance` has no value for it: a declared member whose actual counterpart could not be *resolved* by extraction is simply absent from the canonicalized actual set, and containment reports `DIVERGED_FROM_PLAN` — the same verdict a genuinely wrong implementation gets. Three known shapes, all reachable on a real estate:
+  - a `@Value`/property-driven Kafka topic — `KafkaExtractor` (`KafkaExtractor.java:78`) falls back to the raw expression as the topic when `ValueResolver` cannot resolve it, and `topicPattern` is always `DYNAMIC`, so the actual member reads `consumes ${orders.topic}` and no honest declaration can match it;
+  - an unresolvable REST path — `RestEndpointExtractor.resolvePaths` (`:83`) substitutes `""` for an unresolved path expression, so the endpoint actualizes as `GET ` and the declared path is reported missing;
+  - a method-level `@RequestMapping` with no `method` attribute, which extracts as the verb `ANY` (`RestEndpointExtractor.java:62`) — a value `DeclaredContract`'s `REST_METHODS` cannot legally declare, so such an endpoint can only ever be reported as diverged.
+
+  Fixing this needs a fifth conformance value (or a per-member "unresolved" reason plumbed through `missingFrom`) plus a resolution signal on the actual side — `SpringModel.KafkaUse` already carries `resolution()`, but `ContractActualizer`'s body is flat text that drops it. Out of scope here: the trading estate has no Kafka and no unresolved REST paths, so nothing in this phase's verification would have exercised it. **Recorded so the first `DYNAMIC` topic on a real estate is not diagnosed as a divergence by someone who assumes it was considered.**
 
 ## Self-Review (completed at write time)
 
