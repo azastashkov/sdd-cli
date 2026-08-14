@@ -194,6 +194,64 @@ class ContractActualizerTest {
     }
 
     @Test
+    void aValueDrivenKafkaTopicThatDoesNotResolveIsMarkedUnresolvedAndALiteralTopicIsNot()
+            throws Exception {
+        javaFile("src/main/java/com/acme/svc/OrderListener.java", """
+                package com.acme.svc;
+                import org.springframework.kafka.annotation.KafkaListener;
+                public class OrderListener {
+                    @KafkaListener(topics = "${orders.topic}")
+                    public void onOrder(String order) { }
+                    @KafkaListener(topics = "t.shipped")
+                    public void onShipped(String order) { }
+                }
+                """);
+        // no application.properties/yml in the fixture, so "orders.topic" never resolves
+        PlanModel.PlanContract contract = new PlanModel.PlanContract("c9", "kafka", "svc",
+                List.of(), "consumes some.topic", null, List.of());
+
+        Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
+
+        assertThat(actual.get("c9"))
+                .contains("t.shipped").doesNotContain("t.shipped" + ContractActualizer.UNRESOLVED_MARKER)
+                .contains(ContractActualizer.UNRESOLVED_MARKER);
+        // exactly one of the two lines is marked — the dynamic one, not the literal one
+        long markedLines = actual.get("c9").lines()
+                .filter(l -> l.contains(ContractActualizer.UNRESOLVED_MARKER)).count();
+        assertThat(markedLines).isEqualTo(1);
+        assertThat(actual.get("c9").lines()
+                .filter(l -> l.contains(ContractActualizer.UNRESOLVED_MARKER)).findFirst().orElseThrow())
+                .doesNotContain("t.shipped");
+    }
+
+    @Test
+    void aVerblessRequestMappingIsMarkedUnresolvedAndAVerbedOneIsNot() throws Exception {
+        javaFile("src/main/java/com/acme/svc/OrderController.java", """
+                package com.acme.svc;
+                import org.springframework.web.bind.annotation.*;
+                @RestController
+                public class OrderController {
+                    @RequestMapping("/orders")
+                    public String orders() { return ""; }
+                    @GetMapping("/spreads")
+                    public String spreads() { return ""; }
+                }
+                """);
+        PlanModel.PlanContract contract = new PlanModel.PlanContract("c10", "rest", "svc",
+                List.of(), "GET /orders", null, List.of());
+
+        Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
+
+        assertThat(actual.get("c10")).contains("ANY /orders").contains(ContractActualizer.UNRESOLVED_MARKER);
+        assertThat(actual.get("c10").lines()
+                .filter(l -> l.contains("/orders")).findFirst().orElseThrow())
+                .endsWith(ContractActualizer.UNRESOLVED_MARKER);
+        assertThat(actual.get("c10").lines()
+                .filter(l -> l.contains("/spreads")).findFirst().orElseThrow())
+                .doesNotContain(ContractActualizer.UNRESOLVED_MARKER);
+    }
+
+    @Test
     void oversizedSurfacesAreCappedWithATruncationTail() throws Exception {
         StringBuilder src = new StringBuilder("package com.acme.lib;\npublic class Huge {\n");
         for (int i = 0; i < 200; i++) {

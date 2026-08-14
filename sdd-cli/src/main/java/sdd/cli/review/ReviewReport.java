@@ -192,7 +192,8 @@ public final class ReviewReport {
                 .append(counts.getOrDefault(ContractRecheck.Conformance.DECLARED_MET, 0L)).append(" met, ")
                 .append(counts.getOrDefault(ContractRecheck.Conformance.DIVERGED_FROM_PLAN, 0L)).append(" diverged, ")
                 .append(counts.getOrDefault(ContractRecheck.Conformance.NOT_DECLARED, 0L)).append(" undeclared, ")
-                .append(counts.getOrDefault(ContractRecheck.Conformance.NOT_COMPARABLE, 0L)).append(" not comparable")
+                .append(counts.getOrDefault(ContractRecheck.Conformance.NOT_COMPARABLE, 0L)).append(" not comparable, ")
+                .append(counts.getOrDefault(ContractRecheck.Conformance.NOT_RESOLVED, 0L)).append(" not resolved")
                 .append('\n');
     }
 
@@ -294,13 +295,16 @@ public final class ReviewReport {
         // already computed a specific, correct reason (malformed declaration, nothing extracted to
         // compare) and staying silent on a MATCHES-status finding would throw that reason away,
         // leaving only a directionless tally in the Summary — a human can't act on "1 not
-        // comparable" alone. NOT_DECLARED deliberately does NOT get the same treatment: it is the
-        // expected default for every pre-5C plan, so opening the section for it would make the
-        // common case noisy while flagging nothing actionable.
+        // comparable" alone. NOT_RESOLVED joins them for the same reason — the human should still
+        // see which declared members extraction could not see, even on an otherwise-clean status.
+        // NOT_DECLARED deliberately does NOT get the same treatment: it is the expected default
+        // for every pre-5C plan, so opening the section for it would make the common case noisy
+        // while flagging nothing actionable.
         List<ContractRecheck.Finding> notable = contracts.stream()
                 .filter(f -> f.status() != ContractRecheck.Status.MATCHES
                         || f.conformance() == ContractRecheck.Conformance.DIVERGED_FROM_PLAN
-                        || f.conformance() == ContractRecheck.Conformance.NOT_COMPARABLE)
+                        || f.conformance() == ContractRecheck.Conformance.NOT_COMPARABLE
+                        || f.conformance() == ContractRecheck.Conformance.NOT_RESOLVED)
                 .toList();
         if (notable.isEmpty()) {
             return;
@@ -333,6 +337,12 @@ public final class ReviewReport {
             // individually rather than joined into one line so a human can act on each separately.
             for (String missing : finding.missing()) {
                 md.append("  - declared but not found: ").append(missing).append('\n');
+            }
+            // Populated by both DIVERGED_FROM_PLAN (partially excused) and NOT_RESOLVED (fully
+            // excused) — named separately from `missing` so a human can see why a member could not
+            // be judged, distinct from a member that genuinely diverged (Finding's own invariant).
+            for (String unresolved : finding.unresolved()) {
+                md.append("  - declared but not resolved by extraction: ").append(unresolved).append('\n');
             }
         }
         md.append('\n');

@@ -91,6 +91,32 @@ public record DeclaredContract(String kind, List<String> members, List<String> p
         return members.isEmpty();
     }
 
+    /** Marks an actual line whose value the actualizer could not resolve — see the 2026-08-14
+     *  "unresolved extraction" amendment. Mirrors {@code
+     *  sdd.cli.implement.ContractActualizer.UNRESOLVED_MARKER} exactly; sdd-core cannot depend on
+     *  sdd-cli, so the literal is duplicated here the same way {@link #KAFKA_ROLES} already
+     *  duplicates {@code KafkaExtractor}'s PRODUCER/CONSUMER vocabulary from sdd-index. */
+    private static final String UNRESOLVED_MARKER = " [unresolved]";
+
+    /** The canonical members of lines the actualizer marked {@link #UNRESOLVED_MARKER}, in the
+     *  same space {@link #missingFrom} compares against. A declared member missing only because
+     *  the matching actual entry is on this list is {@code NOT_RESOLVED} rather than
+     *  {@code DIVERGED_FROM_PLAN} — extraction could not see it, which is not the same as it not
+     *  existing. {@code java-api} has no unresolved shape (type extraction either sees a member
+     *  or does not), so this is always empty for that kind. */
+    public List<String> unresolvedMembers(String actualBody) {
+        if (actualBody == null || actualBody.isBlank() || !ContractKinds.declarable(kind)) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        switch (kind) {
+            case ContractKinds.REST -> unresolvedRestMembers(actualBody, out);
+            case ContractKinds.KAFKA -> unresolvedKafkaMembers(actualBody, out);
+            default -> { } // java-api: no unresolved shape exists
+        }
+        return out;
+    }
+
     // -- java-api ------------------------------------------------------------------------------
 
     private static void parseJavaApiLine(String line, List<String> members, List<String> problems) {
@@ -200,6 +226,23 @@ public record DeclaredContract(String kind, List<String> members, List<String> p
         }
     }
 
+    /** Only the verbless-{@code @RequestMapping} shape reaches here today: the verb {@code ANY},
+     *  which {@link #REST_METHODS} can never legally declare, so it is unmatchable by
+     *  {@link #missingFrom} on purpose. The marker sits after the {@code " -> "} handler suffix,
+     *  so this still uses the same before-the-arrow canonical form {@link #canonicalizeRestActual}
+     *  produces. */
+    private static void unresolvedRestMembers(String body, List<String> out) {
+        for (String raw : body.split("\n", -1)) {
+            String line = raw.strip();
+            if (line.isEmpty() || line.startsWith("#") || !line.endsWith(UNRESOLVED_MARKER)) {
+                continue;
+            }
+            String stripped = line.substring(0, line.length() - UNRESOLVED_MARKER.length());
+            int arrow = stripped.indexOf(" -> ");
+            out.add(arrow >= 0 ? stripped.substring(0, arrow) : stripped);
+        }
+    }
+
     // -- kafka -----------------------------------------------------------------------------------
 
     /** The declared roles, and the {@code SpringModel.KafkaUse.role()} literals {@code KafkaExtractor}
@@ -249,6 +292,24 @@ public record DeclaredContract(String kind, List<String> members, List<String> p
             String[] parts = line.split("\\s+");
             String role = parts.length == 2 ? KAFKA_ROLES.get(parts[0].toLowerCase(Locale.ROOT)) : null;
             out.add(role == null ? line : role + " " + parts[1]);
+        }
+    }
+
+    /** Only the {@code @Value}/property-driven topic shape reaches here today: role is a hardcoded
+     *  {@code PRODUCER}/{@code CONSUMER} literal {@code KafkaExtractor} writes itself, never a
+     *  resolved value, so a role can never be the unresolved half of a kafka entry. Splits and
+     *  re-normalizes independently of {@link #canonicalizeKafkaActual} because the trailing marker
+     *  changes the token count that method's {@code parts.length == 2} check relies on. */
+    private static void unresolvedKafkaMembers(String body, List<String> out) {
+        for (String raw : body.split("\n", -1)) {
+            String line = raw.strip();
+            if (line.isEmpty() || line.startsWith("#") || !line.endsWith(UNRESOLVED_MARKER)) {
+                continue;
+            }
+            String stripped = line.substring(0, line.length() - UNRESOLVED_MARKER.length());
+            String[] parts = stripped.split("\\s+");
+            String role = parts.length == 2 ? KAFKA_ROLES.get(parts[0].toLowerCase(Locale.ROOT)) : null;
+            out.add(role == null ? stripped : role + " " + parts[1]);
         }
     }
 }

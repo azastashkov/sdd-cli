@@ -6,6 +6,7 @@ import sdd.cli.implement.RepoState;
 import sdd.cli.implement.RunGit;
 import sdd.cli.implement.RunState;
 import sdd.cli.implement.RunStore;
+import sdd.core.contract.ContractKinds;
 import sdd.core.contract.DeclaredContract;
 
 import java.nio.file.Path;
@@ -28,7 +29,7 @@ public final class ContractRecheck {
      * {@code DRIFTED} <em>and</em> {@code DIVERGED_FROM_PLAN} at once — the two axes are computed
      * independently and neither short-circuits the other.
      */
-    public enum Conformance { DECLARED_MET, DIVERGED_FROM_PLAN, NOT_DECLARED, NOT_COMPARABLE }
+    public enum Conformance { DECLARED_MET, DIVERGED_FROM_PLAN, NOT_DECLARED, NOT_COMPARABLE, NOT_RESOLVED }
 
     /**
      * {@code extractedFrom} is the provider's {@code RunGit.currentBranch} at extraction time
@@ -36,13 +37,18 @@ public final class ContractRecheck {
      * under {@code --no-rebuild} nothing is checked out first, so it's whatever branch the human
      * was standing on — recording it turns an otherwise-inexplicable DRIFTED into something
      * adjudicable. {@code missing} is empty unless {@code conformance} is
-     * {@code DIVERGED_FROM_PLAN}.
+     * {@code DIVERGED_FROM_PLAN}. {@code unresolved} is the declared members {@code missing}
+     * would otherwise have counted, excused because the actual side has a named unresolved entry
+     * that could plausibly be them (the 2026-08-14 "unresolved extraction" amendment) — non-empty
+     * for both {@code NOT_RESOLVED} (every missing member excused) and {@code DIVERGED_FROM_PLAN}
+     * (some excused, some not); empty for every other verdict.
      */
     public record Finding(String contractId, String provider, String kind, Status status,
                           String detail, String extractedFrom,
-                          Conformance conformance, List<String> missing) {
+                          Conformance conformance, List<String> missing, List<String> unresolved) {
         public Finding {
             missing = List.copyOf(missing);
+            unresolved = List.copyOf(unresolved);
         }
     }
 
@@ -57,7 +63,8 @@ public final class ContractRecheck {
      *  duplicate it verbatim in the report. Every other verdict (malformed declaration, no body
      *  extracted, truncation) has no structured field to carry its reason, so it keeps explaining
      *  itself in prose here. */
-    private record ConformanceResult(Conformance conformance, List<String> missing, String detail) {
+    private record ConformanceResult(Conformance conformance, List<String> missing,
+                                     List<String> unresolved, String detail) {
     }
 
     private ContractRecheck() {
@@ -94,7 +101,7 @@ public final class ContractRecheck {
                         Status.NOT_EXTRACTABLE,
                         combineDetail("provider " + contract.provider()
                                 + " has no checkout path in the knowledge base", conformance.detail()),
-                        null, conformance.conformance(), conformance.missing()));
+                        null, conformance.conformance(), conformance.missing(), conformance.unresolved()));
                 continue;
             }
             String extractedFrom = extractedFromByProvider.get(contract.provider());
@@ -110,14 +117,14 @@ public final class ContractRecheck {
                         Status.NOT_EXTRACTABLE,
                         combineDetail("nothing extractable for kind " + contract.kind()
                                 + " in " + contract.provider(), conformance.detail()),
-                        extractedFrom, conformance.conformance(), conformance.missing()));
+                        extractedFrom, conformance.conformance(), conformance.missing(), conformance.unresolved()));
             } else if (recorded == null) {
                 ConformanceResult conformance = conformanceOf(contract, fresh, true);
                 findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
                         Status.MISSING_RECORD,
                         combineDetail("no actualized contract was recorded for this provider",
                                 conformance.detail()),
-                        extractedFrom, conformance.conformance(), conformance.missing()));
+                        extractedFrom, conformance.conformance(), conformance.missing(), conformance.unresolved()));
             } else {
                 List<String> freshNorm = normalize(fresh);
                 List<String> recordedNorm = normalize(recorded);
@@ -134,12 +141,12 @@ public final class ContractRecheck {
                                     ? "bodies match up to the 4000-char actualization cap"
                                             + " — drift beyond the cap cannot be detected"
                                     : "", conformance.detail()),
-                            extractedFrom, conformance.conformance(), conformance.missing()));
+                            extractedFrom, conformance.conformance(), conformance.missing(), conformance.unresolved()));
                 } else {
                     findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
                             Status.DRIFTED, combineDetail(summarize(recordedNorm, freshNorm),
                                     conformance.detail()),
-                            extractedFrom, conformance.conformance(), conformance.missing()));
+                            extractedFrom, conformance.conformance(), conformance.missing(), conformance.unresolved()));
                 }
             }
         }
@@ -163,35 +170,86 @@ public final class ContractRecheck {
             // a list yet declares nothing, and containment over zero members is vacuously satisfied
             // — that reported DECLARED_MET, a silent false pass indistinguishable from a genuinely
             // verified contract. A hand-edit must make Gate 2 degrade, not lie.
-            return new ConformanceResult(Conformance.NOT_DECLARED, List.of(), "");
+            return new ConformanceResult(Conformance.NOT_DECLARED, List.of(), List.of(), "");
         }
         if (!declared.problems().isEmpty()) {
             // Carried finding: all-malformed declared lines are NOT the same as nothing declared —
             // that would be a quiet lie in the very section this phase adds.
-            return new ConformanceResult(Conformance.NOT_COMPARABLE, List.of(),
+            return new ConformanceResult(Conformance.NOT_COMPARABLE, List.of(), List.of(),
                     "declared contract is malformed: " + String.join("; ", declared.problems()));
         }
         if (!extracted) {
-            return new ConformanceResult(Conformance.NOT_COMPARABLE, List.of(),
+            return new ConformanceResult(Conformance.NOT_COMPARABLE, List.of(), List.of(),
                     "no actual body was extracted to compare against the declared contract");
         }
         String actual = fresh == null || fresh.isBlank() ? "" : fresh;
         List<String> missing = declared.missingFrom(actual);
         if (missing.isEmpty()) {
-            return new ConformanceResult(Conformance.DECLARED_MET, List.of(), "");
+            return new ConformanceResult(Conformance.DECLARED_MET, List.of(), List.of(), "");
         }
         if (actual.endsWith(ContractActualizer.TRUNCATION_MARKER)) {
             // Same reasoning as TRUNCATED_MATCH on the drift axis: a missing declared member may
             // simply be sitting past the 4000-char cut, so a verdict of divergence would be a lie.
             // An empty actual body (extraction found nothing at all) can never satisfy this — it is
             // never truncated — so this branch cannot swallow the "found nothing" case above.
-            return new ConformanceResult(Conformance.NOT_COMPARABLE, List.of(),
+            return new ConformanceResult(Conformance.NOT_COMPARABLE, List.of(), List.of(),
                     "declared member(s) not found before the 4000-char actualization cap"
                             + " — divergence beyond the cap cannot be detected");
         }
+        // Partition: a missing member is excused only when the actual side names a specific
+        // unresolved entry that could plausibly be it (design line 42's amendment — unresolved is
+        // not the same as nonexistent). Divergence wins whenever even one missing member has no
+        // such excuse; NOT_RESOLVED only when every one of them does.
+        List<String> unresolvedActual = declared.unresolvedMembers(actual);
+        List<String> stillMissing = new ArrayList<>();
+        List<String> excused = new ArrayList<>();
+        for (String member : missing) {
+            if (explainedByUnresolved(contract.kind(), member, unresolvedActual)) {
+                excused.add(member);
+            } else {
+                stillMissing.add(member);
+            }
+        }
+        if (stillMissing.isEmpty()) {
+            return new ConformanceResult(Conformance.NOT_RESOLVED, List.of(), excused, "");
+        }
         // No prose: the missing list itself is the explanation, and ReviewReport renders it as
         // indented bullets — see the ConformanceResult javadoc for why this branch is silent.
-        return new ConformanceResult(Conformance.DIVERGED_FROM_PLAN, missing, "");
+        return new ConformanceResult(Conformance.DIVERGED_FROM_PLAN, stillMissing, excused, "");
+    }
+
+    /** Same kind-specific key as the declared member, ignoring exactly the part the actual side
+     *  could not resolve — the partition rule the 2026-08-14 amendment specifies. Only the
+     *  reachable half of each kind's symmetric rule is implemented: {@code rest}'s "same verb with
+     *  an empty path" branch is intentionally absent because {@code ContractActualizer} does not
+     *  mark that shape at all (see its {@code rest()} javadoc for why), and kafka's "same topic
+     *  with an unresolved role" branch can never fire because a role is a hardcoded literal
+     *  {@code KafkaExtractor} writes itself, never a resolved value. */
+    private static boolean explainedByUnresolved(String kind, String missingMember, List<String> unresolvedActual) {
+        return switch (kind) {
+            case ContractKinds.REST -> unresolvedActual.stream().anyMatch(u -> restSamePathAnyVerb(missingMember, u));
+            case ContractKinds.KAFKA -> unresolvedActual.stream().anyMatch(u -> kafkaSameRole(missingMember, u));
+            default -> false; // java-api: no unresolved shape exists
+        };
+    }
+
+    private static boolean restSamePathAnyVerb(String missingMember, String unresolvedEntry) {
+        int space = unresolvedEntry.indexOf(' ');
+        if (space < 0 || !"ANY".equals(unresolvedEntry.substring(0, space))) {
+            return false;
+        }
+        String unresolvedPath = unresolvedEntry.substring(space + 1);
+        int missingSpace = missingMember.indexOf(' ');
+        String missingPath = missingSpace >= 0 ? missingMember.substring(missingSpace + 1) : "";
+        return unresolvedPath.equals(missingPath);
+    }
+
+    private static boolean kafkaSameRole(String missingMember, String unresolvedEntry) {
+        int space = unresolvedEntry.indexOf(' ');
+        String unresolvedRole = space >= 0 ? unresolvedEntry.substring(0, space) : unresolvedEntry;
+        int missingSpace = missingMember.indexOf(' ');
+        String missingRole = missingSpace >= 0 ? missingMember.substring(0, missingSpace) : missingMember;
+        return unresolvedRole.equals(missingRole);
     }
 
     private static String combineDetail(String statusDetail, String conformanceDetail) {

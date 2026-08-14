@@ -194,4 +194,42 @@ class DeclaredContractTest {
                   items(): List<? extends String>
                 """)).isEmpty();
     }
+
+    // -- unresolvedMembers (2026-08-14 amendment: unresolved extraction is its own verdict) -----
+
+    @Test
+    void unresolvedMembersReturnsTheCanonicalMemberOfAMarkedRestLineAndIgnoresUnmarkedOnes() {
+        DeclaredContract declared = DeclaredContract.parse("rest", "GET /admin/spreads");
+        String actual = "GET /admin/spreads -> com.x.C#a\n"
+                + "ANY /orders -> com.x.C#b [unresolved]\n";
+        assertThat(declared.unresolvedMembers(actual)).containsExactly("ANY /orders");
+    }
+
+    @Test
+    void unresolvedMembersReturnsTheCanonicalMemberOfAMarkedKafkaLineWithTheRoleSpellingNormalized() {
+        // The marked line still carries the extractor's own PRODUCER/CONSUMER spelling; the
+        // canonical member must come back normalized onto produces/consumes exactly like a
+        // resolved actual line already does — the human reading `unresolved` should never see a
+        // spelling that could never appear in `declared.members()`.
+        DeclaredContract declared = DeclaredContract.parse("kafka", "consumes orders.topic");
+        String actual = "PRODUCER other.topic\n"
+                + "CONSUMER routes.orders [unresolved]\n";
+        assertThat(declared.unresolvedMembers(actual)).containsExactly("consumes routes.orders");
+    }
+
+    @Test
+    void unresolvedMembersIsEmptyWhenNothingIsMarked() {
+        DeclaredContract declared = DeclaredContract.parse("rest", "GET /admin/spreads");
+        assertThat(declared.unresolvedMembers("GET /admin/spreads -> com.x.C#a\n")).isEmpty();
+    }
+
+    @Test
+    void javaApiHasNoUnresolvedShapeSoUnresolvedMembersIsAlwaysEmpty() {
+        DeclaredContract declared = DeclaredContract.parse("java-api",
+                "com.acme.Api#f(int): int");
+        assertThat(declared.unresolvedMembers("""
+                com.acme.Api
+                  f(int): int [unresolved]
+                """)).isEmpty();
+    }
 }

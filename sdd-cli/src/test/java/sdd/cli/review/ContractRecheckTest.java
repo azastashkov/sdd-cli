@@ -489,4 +489,126 @@ class ContractRecheckTest {
         assertThat(finding.conformance()).isEqualTo(ContractRecheck.Conformance.DIVERGED_FROM_PLAN);
         assertThat(finding.missing()).containsExactly("com.acme.Ghost#foo():void");
     }
+
+    // -- NOT_RESOLVED (2026-08-14 amendment: unresolved extraction is its own conformance verdict)
+
+    private Path libWithDynamicKafkaTopic() throws Exception {
+        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme/svc"));
+        Files.writeString(root.resolve("OrderListener.java"), """
+                package com.acme.svc;
+                import org.springframework.kafka.annotation.KafkaListener;
+                public class OrderListener {
+                    @KafkaListener(topics = "${orders.topic}")
+                    public void onOrder(String order) { }
+                }
+                """);
+        return ws.resolve("lib");   // no application.properties: "orders.topic" never resolves
+    }
+
+    @Test
+    void aDynamicKafkaTopicIsNotResolvedNotDiverged() throws Exception {
+        Path lib = libWithDynamicKafkaTopic();
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "kafka", "lib",
+                List.of("svc"), "consumes orders.topic", null, List.of("consumes orders.topic"));
+        String actual = ContractActualizer.actualize(lib, List.of(c)).get("c1");
+        assertThat(actual).contains("[unresolved]");   // sanity: the fixture is genuinely unresolved
+        store.writeContract(runDir, "c1", actual);
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        ContractRecheck.Finding finding = findings.get(0);
+        assertThat(finding.conformance()).isEqualTo(ContractRecheck.Conformance.NOT_RESOLVED);
+        assertThat(finding.missing()).isEmpty();
+        assertThat(finding.unresolved()).containsExactly("consumes orders.topic");
+    }
+
+    private Path libWithVerblessRequestMapping() throws Exception {
+        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme/svc"));
+        Files.writeString(root.resolve("OrderController.java"), """
+                package com.acme.svc;
+                import org.springframework.web.bind.annotation.*;
+                @RestController
+                public class OrderController {
+                    @RequestMapping("/orders")
+                    public String orders() { return ""; }
+                }
+                """);
+        return ws.resolve("lib");
+    }
+
+    @Test
+    void aVerblessRequestMappingIsNotResolvedNotDiverged() throws Exception {
+        Path lib = libWithVerblessRequestMapping();
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "rest", "lib",
+                List.of("svc"), "GET /orders", null, List.of("GET /orders"));
+        String actual = ContractActualizer.actualize(lib, List.of(c)).get("c1");
+        assertThat(actual).contains("[unresolved]");   // sanity: the fixture is genuinely unresolved
+        store.writeContract(runDir, "c1", actual);
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        ContractRecheck.Finding finding = findings.get(0);
+        assertThat(finding.conformance()).isEqualTo(ContractRecheck.Conformance.NOT_RESOLVED);
+        assertThat(finding.missing()).isEmpty();
+        assertThat(finding.unresolved()).containsExactly("GET /orders");
+    }
+
+    @Test
+    void aRealDivergenceAlongsideAnUnresolvedMemberStillReportsDiverged() throws Exception {
+        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme/svc"));
+        Files.writeString(root.resolve("OrderController.java"), """
+                package com.acme.svc;
+                import org.springframework.web.bind.annotation.*;
+                @RestController
+                public class OrderController {
+                    @RequestMapping("/orders")
+                    public String orders() { return ""; }
+                    @GetMapping("/spreads")
+                    public String spreads() { return ""; }
+                }
+                """);
+        Path lib = ws.resolve("lib");
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        // "GET /orders" is excused by the verbless @RequestMapping on the same path; "POST
+        // /spreads" is a genuine divergence — /spreads really is exposed, but as GET, not POST.
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "rest", "lib",
+                List.of("svc"), "GET /orders and POST /spreads", null,
+                List.of("GET /orders", "POST /spreads"));
+        store.writeContract(runDir, "c1", ContractActualizer.actualize(lib, List.of(c)).get("c1"));
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        ContractRecheck.Finding finding = findings.get(0);
+        assertThat(finding.conformance()).isEqualTo(ContractRecheck.Conformance.DIVERGED_FROM_PLAN);
+        assertThat(finding.missing()).containsExactly("POST /spreads");
+        assertThat(finding.unresolved()).containsExactly("GET /orders");   // named separately
+    }
+
+    @Test
+    void aFullyResolvedSurfaceMissingAMemberIsStillDiverged() throws Exception {
+        // The regression guard: nothing in the actual surface is marked unresolved, so a missing
+        // declared member must stay real divergence, never be swallowed into NOT_RESOLVED.
+        Path lib = libWithRestController();   // GET /admin/spreads only, fully resolved
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "rest", "lib",
+                List.of("svc"), "GET /admin/other", null, List.of("GET /admin/other"));
+        store.writeContract(runDir, "c1", ContractActualizer.actualize(lib, List.of(c)).get("c1"));
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        ContractRecheck.Finding finding = findings.get(0);
+        assertThat(finding.conformance()).isEqualTo(ContractRecheck.Conformance.DIVERGED_FROM_PLAN);
+        assertThat(finding.missing()).containsExactly("GET /admin/other");
+        assertThat(finding.unresolved()).isEmpty();
+    }
 }

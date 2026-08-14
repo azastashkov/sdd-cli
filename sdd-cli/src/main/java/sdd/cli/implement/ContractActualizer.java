@@ -32,6 +32,21 @@ public final class ContractActualizer {
     /** Marks a body cut off at MAX_BODY; shared with ContractRecheck so it can spot a match that
      *  is only a match because both sides were truncated at the same cap. */
     public static final String TRUNCATION_MARKER = "…(truncated)";
+    /** Marks an actual line whose value extraction could not resolve — the 2026-08-14 "unresolved
+     *  extraction" amendment (design line 42: unresolved is not the same as nonexistent). Appended
+     *  at the very end of the line so it never disturbs the canonical member text {@code
+     *  DeclaredContract} matches on. Mirrored (not referenced — sdd-core cannot depend on sdd-cli)
+     *  as a private literal in {@code DeclaredContract.unresolvedMembers}. */
+    public static final String UNRESOLVED_MARKER = " [unresolved]";
+    /** The literal {@code KafkaExtractor} writes into {@code KafkaUse.resolution()} — {@code
+     *  ValueResolver.Resolution.DYNAMIC.name()} — whenever a topic (or topic pattern) expression
+     *  could not be resolved and the topic field falls back to the raw source expression instead
+     *  of a literal value. Grepped from KafkaExtractor, not guessed. */
+    private static final String KAFKA_UNRESOLVED = "DYNAMIC";
+    /** The verb {@code RestEndpointExtractor.mappingsOf} writes for a verbless method-level {@code
+     *  @RequestMapping} (no {@code method} attribute) — a value {@code DeclaredContract}'s
+     *  REST_METHODS grammar cannot legally declare in the first place. */
+    private static final String REST_ANY_VERB = "ANY";
 
     private ContractActualizer() {
     }
@@ -114,7 +129,24 @@ public final class ContractActualizer {
             for (SpringModel.EndpointInfo endpoint : RestEndpointExtractor.extract(module.session(), props)) {
                 body.append(endpoint.httpMethod()).append(' ').append(endpoint.pathTemplate())
                         .append(" -> ").append(endpoint.classFqcn()).append('#')
-                        .append(endpoint.methodName()).append('\n');
+                        .append(endpoint.methodName());
+                // Only the verbless shape is marked here. The other named shape — an unresolvable
+                // path expression — is NOT marked: RestEndpointExtractor.resolvePaths substitutes
+                // "" on failure, but Routes.join(base, path) floors any all-empty join to "/", and
+                // a bare @GetMapping with no path attribute at all *also* joins to "/" by the exact
+                // same path (resolvePaths' exprs.isEmpty() branch, never touching the substitution
+                // line). EndpointInfo carries no field that tells these two apart, so pathTemplate
+                // alone cannot distinguish "unresolved" from "no path was ever declared" — verified
+                // empirically, not assumed. Marking on pathTemplate=="/" would also mark every
+                // genuine bare-root endpoint, and the partition rule this amendment specifies
+                // ("same verb with an empty path") ignores the missing member's path entirely, so
+                // it would excuse ANY missing declared member sharing that verb — silently turning
+                // real divergences into NOT_RESOLVED. Left unmarked pending a ruling; see the task
+                // report for the empirical trace.
+                if (REST_ANY_VERB.equals(endpoint.httpMethod())) {
+                    body.append(UNRESOLVED_MARKER);
+                }
+                body.append('\n');
             }
         }
         return body.toString();
@@ -127,8 +159,13 @@ public final class ContractActualizer {
                     ConfigFileParser.parseModuleConfig(repoRoot, module.moduleDir()).entries());
             KafkaExtractor.KafkaResult kafka = KafkaExtractor.extract(module.session(), props,
                     List.of(), props.keySet());
-            kafka.uses().forEach(use -> body.append(use.role()).append(' ')
-                    .append(use.topic()).append('\n'));
+            kafka.uses().forEach(use -> {
+                body.append(use.role()).append(' ').append(use.topic());
+                if (KAFKA_UNRESOLVED.equals(use.resolution())) {
+                    body.append(UNRESOLVED_MARKER);
+                }
+                body.append('\n');
+            });
         }
         return body.toString();
     }
