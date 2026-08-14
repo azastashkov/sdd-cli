@@ -81,9 +81,9 @@ class ReviewReportTest {
         PlanModel plan = planWithContracts(2);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "interface",
-                        ContractRecheck.Status.MATCHES, "", "main"),
+                        ContractRecheck.Status.MATCHES, "", "main", ContractRecheck.Conformance.NOT_DECLARED, List.of()),
                 new ContractRecheck.Finding("contract-1", "lib", "interface",
-                        ContractRecheck.Status.MATCHES, "", "main"));
+                        ContractRecheck.Status.MATCHES, "", "main", ContractRecheck.Conformance.NOT_DECLARED, List.of()));
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
@@ -101,9 +101,9 @@ class ReviewReportTest {
         PlanModel plan = planWithContracts(2);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "interface",
-                        ContractRecheck.Status.MATCHES, "", "main"),
+                        ContractRecheck.Status.MATCHES, "", "main", ContractRecheck.Conformance.NOT_DECLARED, List.of()),
                 new ContractRecheck.Finding("contract-1", "lib", "interface",
-                        ContractRecheck.Status.DRIFTED, "bodies differ", "main"));
+                        ContractRecheck.Status.DRIFTED, "bodies differ", "main", ContractRecheck.Conformance.NOT_DECLARED, List.of()));
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
@@ -121,11 +121,11 @@ class ReviewReportTest {
         PlanModel plan = planWithContracts(3);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "interface",
-                        ContractRecheck.Status.MATCHES, "", "main"),
+                        ContractRecheck.Status.MATCHES, "", "main", ContractRecheck.Conformance.NOT_DECLARED, List.of()),
                 new ContractRecheck.Finding("contract-1", "lib", "interface",
-                        ContractRecheck.Status.DRIFTED, "bodies differ", "main"),
+                        ContractRecheck.Status.DRIFTED, "bodies differ", "main", ContractRecheck.Conformance.NOT_DECLARED, List.of()),
                 new ContractRecheck.Finding("contract-2", "lib", "interface",
-                        ContractRecheck.Status.MISSING_RECORD, "no record", "main"));
+                        ContractRecheck.Status.MISSING_RECORD, "no record", "main", ContractRecheck.Conformance.NOT_DECLARED, List.of()));
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
@@ -204,9 +204,9 @@ class ReviewReportTest {
         PlanModel plan = planWithContracts(2);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "interface",
-                        ContractRecheck.Status.DRIFTED, "bodies differ", "sdd/SPEC-1-v1/lib"),
+                        ContractRecheck.Status.DRIFTED, "bodies differ", "sdd/SPEC-1-v1/lib", ContractRecheck.Conformance.NOT_DECLARED, List.of()),
                 new ContractRecheck.Finding("contract-1", "lib", "interface",
-                        ContractRecheck.Status.NOT_EXTRACTABLE, "no checkout path", null));
+                        ContractRecheck.Status.NOT_EXTRACTABLE, "no checkout path", null, ContractRecheck.Conformance.NOT_DECLARED, List.of()));
         RunState state = new RunState("SPEC-1-v1", List.of(
                 new RepoRun("lib", RepoState.SUCCEEDED, "b", "sha", "")), null, 0L);
 
@@ -265,7 +265,7 @@ class ReviewReportTest {
         List<String> stagingFailures = List.of("lib: checkout refused");
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "interface",
-                        ContractRecheck.Status.MATCHES, "", "main"));
+                        ContractRecheck.Status.MATCHES, "", "main", ContractRecheck.Conformance.NOT_DECLARED, List.of()));
         PlanModel plan = planWithEdge(List.of(new PlanModel.PlanContract(
                 "contract-0", "interface", "lib", List.of("svc"), "body", "source", List.of())));
 
@@ -313,7 +313,7 @@ class ReviewReportTest {
                 new RepoRun("lib", RepoState.SUCCEEDED, "b", "sha", "")), null, 0L);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "interface",
-                        ContractRecheck.Status.MATCHES, "", "main"));
+                        ContractRecheck.Status.MATCHES, "", "main", ContractRecheck.Conformance.NOT_DECLARED, List.of()));
 
         String report = ReviewReport.render("SPEC-1-v1", planWithContracts(1), state, Map.of(),
                 Map.of(), List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),

@@ -223,4 +223,137 @@ class ContractRecheckTest {
         assertThat(findings).hasSize(1);
         assertThat(findings.get(0).extractedFrom()).isEqualTo("unknown");
     }
+
+    // -- conformance axis (Gate-2 plan-conformance) -------------------------------------------
+
+    @Test
+    void aContractWhoseImplementationMatchesTheDeclarationIsDeclaredMet() throws Exception {
+        Path lib = libWith("public int f(int x) { return x; }");
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "java-api", "lib",
+                List.of("svc"), "Api.f", null, List.of("com.acme.Api#f(int): int"));
+        store.writeContract(runDir, "c1", ContractActualizer.actualize(lib, List.of(c)).get("c1"));
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        assertThat(findings.get(0).conformance()).isEqualTo(ContractRecheck.Conformance.DECLARED_MET);
+        assertThat(findings.get(0).missing()).isEmpty();
+    }
+
+    private Path libWithTierResolver() throws Exception {
+        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/trading/pricing/core"));
+        Files.writeString(root.resolve("TierResolver.java"), """
+                package com.trading.pricing.core;
+                public class TierResolver {
+                    public Tier tierFor(String account) { return null; }
+                }
+                """);
+        return ws.resolve("lib");
+    }
+
+    @Test
+    void aWrongReturnTypeIsDivergedFromPlanEvenWhenItMatchesWhatTheRunRecorded() throws Exception {
+        // The core case: fresh == recorded, so the drift axis says MATCHES — the implementation
+        // returns Tier where the declared contract says Optional<Tier>, and it has been wrong
+        // since implement time. The conformance axis must still say DIVERGED_FROM_PLAN.
+        Path lib = libWithTierResolver();
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "java-api", "lib",
+                List.of("svc"), "TierResolver.tierFor", null,
+                List.of("com.trading.pricing.core.TierResolver#tierFor(String): Optional<Tier>"));
+        store.writeContract(runDir, "c1", ContractActualizer.actualize(lib, List.of(c)).get("c1"));
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        ContractRecheck.Finding finding = findings.get(0);
+        assertThat(finding.status()).isEqualTo(ContractRecheck.Status.MATCHES);
+        assertThat(finding.conformance()).isEqualTo(ContractRecheck.Conformance.DIVERGED_FROM_PLAN);
+        assertThat(finding.missing())
+                .containsExactly("com.trading.pricing.core.TierResolver#tierFor(String):Optional<Tier>");
+    }
+
+    @Test
+    void aContractWithNoDeclarationsIsNotDeclaredRatherThanMet() throws Exception {
+        Path lib = libWith("public int f(int x) { return x; }");
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "java-api", "lib",
+                List.of("svc"), "Api.f", null, List.of());   // pre-5C plan: no declared block
+        store.writeContract(runDir, "c1", ContractActualizer.actualize(lib, List.of(c)).get("c1"));
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        assertThat(findings.get(0).conformance()).isEqualTo(ContractRecheck.Conformance.NOT_DECLARED);
+    }
+
+    @Test
+    void aMissingMemberBeyondTheTruncationCapIsNotComparableNotDiverged() throws Exception {
+        Path lib = hugeLib("String");
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        // declares the very last method (past the 4000-char actualization cap) with a return type
+        // that never appears anywhere in the actual tree
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "java-api", "lib",
+                List.of("svc"), "Huge", null,
+                List.of("com.acme.Huge#method199(String): long"));
+        String recorded = ContractActualizer.actualize(lib, List.of(c)).get("c1");
+        assertThat(recorded).endsWith("…(truncated)");   // sanity: this fixture is over the cap
+        store.writeContract(runDir, "c1", recorded);
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        assertThat(findings.get(0).conformance()).isEqualTo(ContractRecheck.Conformance.NOT_COMPARABLE);
+        assertThat(findings.get(0).missing()).isEmpty();
+    }
+
+    @Test
+    void aFindingCanBeBothDriftedAndDiverged() throws Exception {
+        Path lib = libWith("public int f(int x) { return x; }");
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "java-api", "lib",
+                List.of("svc"), "Api.f", null, List.of("com.acme.Api#f(int): int"));
+        store.writeContract(runDir, "c1", ContractActualizer.actualize(lib, List.of(c)).get("c1"));
+        // the tree changes after the run recorded its contract, AND diverges from the plan's
+        // declared contract (int -> long) — both axes must fire independently
+        Files.writeString(lib.resolve("src/main/java/com/acme/Api.java"),
+                "package com.acme;\npublic class Api { public long f(int x) { return x; } }\n");
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        ContractRecheck.Finding finding = findings.get(0);
+        assertThat(finding.status()).isEqualTo(ContractRecheck.Status.DRIFTED);
+        assertThat(finding.conformance()).isEqualTo(ContractRecheck.Conformance.DIVERGED_FROM_PLAN);
+        assertThat(finding.missing()).containsExactly("com.acme.Api#f(int):int");
+    }
+
+    @Test
+    void aMalformedDeclaredContractIsNotComparableNotNotDeclared() throws Exception {
+        // Carried finding from Task 1's review: DeclaredContract.isEmpty() only checks members, so
+        // a contract whose declared lines are all malformed looks identical to one that declared
+        // nothing. A hand-edited plan.json can carry this even though `sdd plan approve` blocks it.
+        // Reporting NOT_DECLARED here would be a quiet lie — it must surface as NOT_COMPARABLE with
+        // the grammar problem visible in the finding's detail.
+        Path lib = libWith("public int f(int x) { return x; }");
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "java-api", "lib",
+                List.of("svc"), "Api.f", null, List.of("this is not a valid declaration line"));
+        store.writeContract(runDir, "c1", ContractActualizer.actualize(lib, List.of(c)).get("c1"));
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        ContractRecheck.Finding finding = findings.get(0);
+        assertThat(finding.conformance()).isEqualTo(ContractRecheck.Conformance.NOT_COMPARABLE);
+        assertThat(finding.missing()).isEmpty();
+        assertThat(finding.detail()).contains("malformed java-api declaration");
+    }
 }

@@ -6,6 +6,7 @@ import sdd.cli.implement.RepoState;
 import sdd.cli.implement.RunGit;
 import sdd.cli.implement.RunState;
 import sdd.cli.implement.RunStore;
+import sdd.core.contract.DeclaredContract;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -22,14 +23,33 @@ public final class ContractRecheck {
     public enum Status { MATCHES, TRUNCATED_MATCH, DRIFTED, MISSING_RECORD, NOT_EXTRACTABLE }
 
     /**
+     * Answers a different question than {@link Status}: not "did the implementation change since
+     * the run recorded it" but "does it match what Gate 1 approved". A finding can be
+     * {@code DRIFTED} <em>and</em> {@code DIVERGED_FROM_PLAN} at once — the two axes are computed
+     * independently and neither short-circuits the other.
+     */
+    public enum Conformance { DECLARED_MET, DIVERGED_FROM_PLAN, NOT_DECLARED, NOT_COMPARABLE }
+
+    /**
      * {@code extractedFrom} is the provider's {@code RunGit.currentBranch} at extraction time
      * ({@code "detached:<sha>"} when empty). Under a rebuild pass it's the checkpoint branch;
      * under {@code --no-rebuild} nothing is checked out first, so it's whatever branch the human
      * was standing on — recording it turns an otherwise-inexplicable DRIFTED into something
-     * adjudicable.
+     * adjudicable. {@code missing} is empty unless {@code conformance} is
+     * {@code DIVERGED_FROM_PLAN}.
      */
     public record Finding(String contractId, String provider, String kind, Status status,
-                          String detail, String extractedFrom) {
+                          String detail, String extractedFrom,
+                          Conformance conformance, List<String> missing) {
+        public Finding {
+            missing = List.copyOf(missing);
+        }
+    }
+
+    /** The conformance axis's own verdict plus whatever explanatory text it wants folded into the
+     *  finding's shared {@code detail} — kept separate from {@code Finding} itself so {@link #check}
+     *  can compose it with the (independently derived) status detail before construction. */
+    private record ConformanceResult(Conformance conformance, List<String> missing, String detail) {
     }
 
     private ContractRecheck() {
@@ -59,27 +79,35 @@ public final class ContractRecheck {
                 continue;
             }
             if (repoPaths.get(contract.provider()) == null) {
+                ConformanceResult conformance = conformanceOf(contract, null);
                 findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
                         Status.NOT_EXTRACTABLE,
-                        "provider " + contract.provider() + " has no checkout path in the knowledge base",
-                        null));
+                        combineDetail("provider " + contract.provider()
+                                + " has no checkout path in the knowledge base", conformance.detail()),
+                        null, conformance.conformance(), conformance.missing()));
                 continue;
             }
             String extractedFrom = extractedFromByProvider.get(contract.provider());
             String fresh = freshByProvider.get(contract.provider()).get(contract.id());
             String recorded = store.readContract(runDir, contract.id());
             if (fresh == null || fresh.isBlank()) {
+                ConformanceResult conformance = conformanceOf(contract, fresh);
                 findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
                         Status.NOT_EXTRACTABLE,
-                        "nothing extractable for kind " + contract.kind() + " in " + contract.provider(),
-                        extractedFrom));
+                        combineDetail("nothing extractable for kind " + contract.kind()
+                                + " in " + contract.provider(), conformance.detail()),
+                        extractedFrom, conformance.conformance(), conformance.missing()));
             } else if (recorded == null) {
+                ConformanceResult conformance = conformanceOf(contract, fresh);
                 findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
                         Status.MISSING_RECORD,
-                        "no actualized contract was recorded for this provider", extractedFrom));
+                        combineDetail("no actualized contract was recorded for this provider",
+                                conformance.detail()),
+                        extractedFrom, conformance.conformance(), conformance.missing()));
             } else {
                 List<String> freshNorm = normalize(fresh);
                 List<String> recordedNorm = normalize(recorded);
+                ConformanceResult conformance = conformanceOf(contract, fresh);
                 if (freshNorm.equals(recordedNorm)) {
                     // Both sides pass through ContractActualizer's shared 4000-char cap. Equal
                     // truncated bodies don't prove the real interfaces match — a real change
@@ -88,18 +116,65 @@ public final class ContractRecheck {
                             && endsWithTruncationMarker(recordedNorm);
                     findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
                             truncated ? Status.TRUNCATED_MATCH : Status.MATCHES,
-                            truncated
+                            combineDetail(truncated
                                     ? "bodies match up to the 4000-char actualization cap"
                                             + " — drift beyond the cap cannot be detected"
-                                    : "",
-                            extractedFrom));
+                                    : "", conformance.detail()),
+                            extractedFrom, conformance.conformance(), conformance.missing()));
                 } else {
                     findings.add(new Finding(contract.id(), contract.provider(), contract.kind(),
-                            Status.DRIFTED, summarize(recordedNorm, freshNorm), extractedFrom));
+                            Status.DRIFTED, combineDetail(summarize(recordedNorm, freshNorm),
+                                    conformance.detail()),
+                            extractedFrom, conformance.conformance(), conformance.missing()));
                 }
             }
         }
         return findings;
+    }
+
+    /** Computes the conformance axis independently of {@link Status} — it is purely a function of
+     *  what Gate 1 declared and the freshly re-extracted body, never of what the run recorded. A
+     *  {@code null} fresh body means extraction never happened at all (no checkout, or an
+     *  unsupported/unextractable kind), which is {@code NOT_COMPARABLE} whenever something was
+     *  declared, distinct from a declared member genuinely absent from an extracted-but-empty body. */
+    private static ConformanceResult conformanceOf(PlanModel.PlanContract contract, String fresh) {
+        if (contract.declared().isEmpty()) {
+            return new ConformanceResult(Conformance.NOT_DECLARED, List.of(), "");
+        }
+        DeclaredContract declared = DeclaredContract.parse(contract.kind(), String.join("\n", contract.declared()));
+        if (!declared.problems().isEmpty()) {
+            // Carried finding: all-malformed declared lines are NOT the same as nothing declared —
+            // that would be a quiet lie in the very section this phase adds.
+            return new ConformanceResult(Conformance.NOT_COMPARABLE, List.of(),
+                    "declared contract is malformed: " + String.join("; ", declared.problems()));
+        }
+        if (fresh == null) {
+            return new ConformanceResult(Conformance.NOT_COMPARABLE, List.of(),
+                    "no actual body was extracted to compare against the declared contract");
+        }
+        List<String> missing = declared.missingFrom(fresh);
+        if (missing.isEmpty()) {
+            return new ConformanceResult(Conformance.DECLARED_MET, List.of(), "");
+        }
+        if (fresh.endsWith(ContractActualizer.TRUNCATION_MARKER)) {
+            // Same reasoning as TRUNCATED_MATCH on the drift axis: a missing declared member may
+            // simply be sitting past the 4000-char cut, so a verdict of divergence would be a lie.
+            return new ConformanceResult(Conformance.NOT_COMPARABLE, List.of(),
+                    "declared member(s) not found before the 4000-char actualization cap"
+                            + " — divergence beyond the cap cannot be detected");
+        }
+        return new ConformanceResult(Conformance.DIVERGED_FROM_PLAN, missing,
+                "diverges from the declared contract — missing: " + String.join(", ", missing));
+    }
+
+    private static String combineDetail(String statusDetail, String conformanceDetail) {
+        if (statusDetail.isEmpty()) {
+            return conformanceDetail;
+        }
+        if (conformanceDetail.isEmpty()) {
+            return statusDetail;
+        }
+        return statusDetail + "; " + conformanceDetail;
     }
 
     /** Mirrors the rebuild pass's {@code originalPositions} convention exactly, so a finding's

@@ -54,6 +54,24 @@ class ContractActualizerTest {
     }
 
     @Test
+    void declaredTypesSelectTheExtractionAndSuppressTheWholeSurfaceFallback() throws Exception {
+        // A declared type that does not exist anywhere in the tree is the strongest divergence
+        // signal there is; with declarations present, the whole-surface fallback must never kick
+        // in to paper over it with a large, healthy-looking body.
+        javaFile("src/main/java/com/acme/lib/Alpha.java",
+                "package com.acme.lib;\npublic class Alpha { public void a() {} }\n");
+        javaFile("src/main/java/com/acme/lib/Beta.java",
+                "package com.acme.lib;\npublic class Beta { public void b() {} }\n");
+        PlanModel.PlanContract contract = new PlanModel.PlanContract("c1", "java-api", "lib",
+                List.of(), "something about Gamma", null,
+                List.of("com.acme.lib.Ghost#ghost():void"));
+
+        Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
+
+        assertThat(actual.get("c1")).isNull();   // no whole-surface dump; nothing declared exists
+    }
+
+    @Test
     void actualizesARestContract() throws Exception {
         javaFile("src/main/java/com/acme/svc/SpreadController.java", """
                 package com.acme.svc;

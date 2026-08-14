@@ -1,5 +1,7 @@
 package sdd.cli.implement;
 
+import sdd.core.contract.ContractKinds;
+import sdd.core.contract.DeclaredContract;
 import sdd.index.source.ApiSurfaceExtractor;
 import sdd.index.source.SourceModel;
 import sdd.index.source.SourceParser;
@@ -13,8 +15,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Re-extracts a green provider's REAL interface surface into actualized contract bodies
@@ -48,7 +52,7 @@ public final class ContractActualizer {
         Map<String, String> result = new LinkedHashMap<>();
         for (PlanModel.PlanContract contract : provided) {
             String body = switch (contract.kind()) {
-                case "java-api" -> javaApi(sessions, contract.body());
+                case "java-api" -> javaApi(sessions, contract.body(), contract.declared());
                 case "rest" -> rest(repoRoot, sessions);
                 case "kafka" -> kafka(repoRoot, sessions);
                 default -> "";
@@ -64,16 +68,34 @@ public final class ContractActualizer {
     private record ModuleSession(Path moduleDir, SourceParser.Session session) {
     }
 
-    private static String javaApi(List<ModuleSession> sessions, String draftedBody) {
+    private static String javaApi(List<ModuleSession> sessions, String draftedBody, List<String> declared) {
         List<SourceModel.TypeInfo> all = new ArrayList<>();
         for (ModuleSession module : sessions) {
             all.addAll(ApiSurfaceExtractor.extract(module.session(), true));
         }
-        List<SourceModel.TypeInfo> relevant = all.stream()
-                .filter(type -> draftedBody.contains(type.fqcn()) || draftedBody.contains(simple(type.fqcn())))
-                .toList();
+        List<String> declaredMembers = DeclaredContract.parse(ContractKinds.JAVA_API,
+                String.join("\n", declared)).members();
+        List<SourceModel.TypeInfo> selected;
+        if (declaredMembers.isEmpty()) {
+            // No usable declaration (nothing declared, or every line was malformed): behavior must
+            // stay byte-for-byte what it was before declarations existed.
+            List<SourceModel.TypeInfo> relevant = all.stream()
+                    .filter(type -> draftedBody.contains(type.fqcn()) || draftedBody.contains(simple(type.fqcn())))
+                    .toList();
+            selected = relevant.isEmpty() ? all : relevant;
+        } else {
+            // A declared block is the strongest selector there is — no whole-surface fallback.
+            // "none of the declared types exist" must produce a small body that fails containment
+            // loudly, not a large healthy-looking dump that hides the divergence.
+            Set<String> declaredFqcns = new LinkedHashSet<>();
+            for (String member : declaredMembers) {
+                int hash = member.indexOf('#');
+                declaredFqcns.add(hash >= 0 ? member.substring(0, hash) : member);
+            }
+            selected = all.stream().filter(type -> declaredFqcns.contains(type.fqcn())).toList();
+        }
         StringBuilder body = new StringBuilder();
-        for (SourceModel.TypeInfo type : relevant.isEmpty() ? all : relevant) {
+        for (SourceModel.TypeInfo type : selected) {
             body.append(type.fqcn()).append('\n');
             for (SourceModel.MemberInfo member : type.members()) {
                 body.append("  ").append(member.signature()).append(": ")
