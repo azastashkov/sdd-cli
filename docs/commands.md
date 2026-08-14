@@ -204,6 +204,114 @@ Mermaid, either to stdout or to a file. (`GraphCommand.java:17-62`)
 **Writes:** `--out`'s target file, if given; otherwise nothing (prints to
 stdout).
 
+## `sdd explain <question>`
+
+**What it does:** answers a plain-English question about the estate from
+`.sdd/index.db` in three steps — interpret, deterministic fetch, narrate. A
+`planner` model call (`MODEL_KEY = "planner"`, `ExplainCommand.java:71`) turns
+the question into a validated retrieval request (an intent plus entities,
+each checked against the KB); plain SQL then fetches the matching facts with
+no model involved; a second `planner` call narrates prose over exactly those
+facts. Read-only like `graph`/`plan`'s validate path — it never writes
+anything unless `--out` is given, and the `.sdd/index.db` existence check
+runs before `Database.open` so opening the database is never itself the
+thing that creates a KB this command is about to report as missing.
+(`ExplainCommand.java:36-55, 73-144`)
+
+The string the narrator is shown and the printed `## Evidence` section are
+the same value: `EvidenceRenderer.render(evidence)` is called once to build
+the call-2 user message (`AnswerNarrator.java:52`) and again, unmodified, to
+print the report (`ExplainReport.java:80`) — an answer can only be grounded
+in facts its reader can also see.
+
+**Flags**
+
+| Flag | Default | Description | Verified |
+|---|---|---|---|
+| `--workspace <dir>` | `.` | Workspace directory | `ExplainCommand.java:58-59` |
+| `--out <path>` | stdout | Write the explanation to a file instead of stdout | `ExplainCommand.java:61-62` |
+| `<question>` (positional, arity `0..*`) | — | The question; words are joined with single spaces | `ExplainCommand.java:64-65, 78` |
+
+**Exit codes**
+
+| Code | Meaning |
+|---|---|
+| `0` | an answer was produced and printed — including a thin answer, a "no facts in the knowledge base match this question" report, or an "answer unavailable" report when the model couldn't be reached; `explain` reports, it never judges, so it never returns anything but `0`/`1` |
+| `1` | the question is blank/missing, the knowledge base is missing or has zero repos (`.sdd/index.db` absent, or `SELECT count(*) FROM repo` is `0`), or an unhandled exception (`ExplainCommand.java:78-82, 84-94, 140-143`) |
+
+**Writes:** nothing, unless `--out <path>` is given, in which case the
+rendered report is written there instead of printed
+(`ExplainCommand.java:128-138`).
+
+**The two model calls, and what runs between them:**
+
+- **Call 1 — interpret** (`QuestionInterpreter.interpret`,
+  `ExplainCommand.java:98-101`): the model is shown the question plus the
+  KB's known repo and topic names (`QuestionInterpreter.java:93-97`) and
+  returns one JSON object naming an intent (`describe`, `consumers`,
+  `dependency_path`, `impact`, or `search`) and the entities the question
+  refers to. Every named entity is resolved against the KB and dropped —
+  with a reason appended to the request's `notes()` — if it does not exist
+  (`QuestionInterpreter.java:144-153`); the model is never trusted to have
+  named something real just because it said so. If no model is configured
+  (`sdd.yml` missing, `models.planner` absent, or an `api_key` env var
+  unresolved) or the call itself fails, interpretation falls back to literal
+  whole-word matching of known repo/topic names plus regex-shaped class and
+  endpoint candidates in the question text — never inference from keywords
+  (`QuestionInterpreter.java:291-352`, `ExplainCommand.java:159-171`).
+- **Deterministic fetch, between the two calls**
+  (`EvidenceCollector.collect`, `ExplainCommand.java:103-104`): plain SQL
+  against `.sdd/index.db`, dispatched on the interpreted intent — repo,
+  module, endpoint, Kafka-role and dependency facts for `describe`, a
+  full-text search over `fts_symbol` for `search`, and so on. No model call
+  happens anywhere in this step (`EvidenceCollector.java:26-50`).
+- **Call 2 — narrate** (`AnswerNarrator.narrate`, `ExplainCommand.java:112-113`):
+  the model is shown the rendered evidence string — and only that string —
+  and told to answer from it alone, never naming a repo, topic, endpoint or
+  class absent from it (`AnswerNarrator.java:26-46`). Skipped entirely when
+  the fetch found zero facts: a narrator handed nothing is exactly where
+  invention happens, so there is no call 2 to make in that case
+  (`ExplainCommand.java:108-125`).
+
+**Grounding check, and what it cannot catch:** after a narrated answer,
+`AnswerAudit.check` loads every `repo.name` and `kafka_topic.name` from the
+KB and flags any that appear, whole-word, in the answer but not in the
+evidence it was shown (`AnswerAudit.java:49-58`). **This is a hallucination
+smoke alarm, not a correctness check: it can only ever catch an invented
+name, never an invented relationship.** An answer asserting a false
+dependency between two repos that are both individually, legitimately
+present in the evidence — e.g. "svc-billing calls svc-notify" when the
+evidence never states that edge, but both names appear elsewhere in
+unrelated sections — passes the audit silently, because neither name is
+itself absent from the evidence (`AnswerAudit.java:18-24`). A clean audit is
+not proof the answer is correct.
+
+**Absence is never asserted as fact:** `consumers` and `impact` answers
+always carry a caveat counting unresolved REST clients and dynamically-named
+Kafka topics among the repos in play, because the KB cannot prove a negative
+— an unresolved caller is invisible to these queries, not absent from the
+estate (`AbsenceGuard.java:9-26`; the narrator is told the same rule,
+`AnswerNarrator.java:39-43`).
+
+**Staleness is not checked:** nothing compares `repo.head_commit` to the
+working tree at read time, so an answer can be arbitrarily behind the real
+estate while reading as current. Every answer states
+`Provenance: N repos indexed; indexed <earliest> to <latest>`
+(`KbStatus.provenance`, `EvidenceRenderer.java:166-178`,
+`EvidenceCollector.java:49`); an `impact` answer additionally surfaces
+index-status warnings for degraded/failed/stale repos in its closure, via
+`Closure.expand`'s own status check (`ImpactFacts.java:79-82`,
+`KbStatus.java:19-39`).
+
+**`retrieval: embeddings` in `sdd.yml` is accepted but not honored by this
+command:** `ConfigLoader` validates `retrieval` as `fts` or `embeddings`
+(`ConfigLoader.java:38-41, 56-58`), but `explain` always constructs an
+`FtsRetriever` regardless of that setting (`ExplainCommand.java:103`) — no
+`EmbeddingsRetriever` exists and nothing reads `SddConfig.retrieval`
+anywhere in the codebase. The search section's `[fts_symbol (bm25)]` label
+states what actually answered rather than silently implying the configured
+backend ran (`SearchFacts.java:14-17, 43`).
+
 ## `sdd implement <spec>.plan.json`
 
 **What it does:** executes an approved `plan.json` across the estate,
