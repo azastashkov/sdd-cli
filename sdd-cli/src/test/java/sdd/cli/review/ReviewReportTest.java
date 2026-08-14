@@ -349,6 +349,33 @@ class ReviewReportTest {
     }
 
     @Test
+    void aNotComparableFindingNamesTheContractAndItsReason() {
+        // ContractRecheck has already computed a specific, correct reason for this verdict — a
+        // MATCHES-status finding must not throw it away and leave only a directionless tally in
+        // the Summary. The malformed-declaration shape is the reason a human most needs, since it
+        // points at their own plan.md rather than at the implementation.
+        RunState state = new RunState("SPEC-1-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);
+        PlanModel plan = planWithContracts(1);
+        String reason = "declared contract is malformed: malformed java-api declaration "
+                + "'this is not a valid declaration line'; expected <fqcn>#<signature>: <returnType>";
+        List<ContractRecheck.Finding> findings = List.of(
+                new ContractRecheck.Finding("contract-0", "lib", "java-api",
+                        ContractRecheck.Status.MATCHES, reason, "main",
+                        ContractRecheck.Conformance.NOT_COMPARABLE, List.of()));
+
+        String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+                List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
+                "runbook", RebuildScope.estate());
+
+        assertThat(report).contains("## Contract re-check");
+        assertThat(report).contains("`contract-0`").contains("(lib, java-api)")
+                .contains("NOT_COMPARABLE").contains(reason);
+        // The reason lives only in detail() — the conformance suffix is a label, not a second copy.
+        assertThat(report).containsOnlyOnce(reason);
+    }
+
+    @Test
     void theSummaryCountsEveryConformanceState() {
         RunState state = new RunState("SPEC-1-v1", List.of(
                 new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);

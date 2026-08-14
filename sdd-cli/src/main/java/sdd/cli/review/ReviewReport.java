@@ -300,10 +300,17 @@ public final class ReviewReport {
         // the trading-product-a case (Tier shipped where the contract said Optional<Tier>) is
         // Status.MATCHES precisely because the implementation has been wrong since implement time.
         // Without the second half of this OR, that finding would fold into "0 mismatches" with no
-        // detail section at all.
+        // detail section at all. NOT_COMPARABLE joins it for the same reason: ContractRecheck has
+        // already computed a specific, correct reason (malformed declaration, nothing extracted to
+        // compare) and staying silent on a MATCHES-status finding would throw that reason away,
+        // leaving only a directionless tally in the Summary — a human can't act on "1 not
+        // comparable" alone. NOT_DECLARED deliberately does NOT get the same treatment: it is the
+        // expected default for every pre-5C plan, so opening the section for it would make the
+        // common case noisy while flagging nothing actionable.
         List<ContractRecheck.Finding> notable = contracts.stream()
                 .filter(f -> f.status() != ContractRecheck.Status.MATCHES
-                        || f.conformance() == ContractRecheck.Conformance.DIVERGED_FROM_PLAN)
+                        || f.conformance() == ContractRecheck.Conformance.DIVERGED_FROM_PLAN
+                        || f.conformance() == ContractRecheck.Conformance.NOT_COMPARABLE)
                 .toList();
         if (notable.isEmpty()) {
             return;
