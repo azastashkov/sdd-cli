@@ -272,6 +272,28 @@ class EvidenceRendererTest {
     }
 
     @Test
+    void aSurvivingEntityValueLongerThanItsCapIsTruncatedWithAStatedMarker() {
+        // ENDPOINT, deliberately: Routes.normalize collapses any {...} segment (any length) to the
+        // 2-char token "{}" before templatesMatch runs, so this value can legitimately pass
+        // KbEntities.resolve against a real "GET /api/{id}" endpoint despite being enormous -- the
+        // fifth path, and the one where resolving successfully is a red herring, not evidence of a
+        // bounded value. QuestionInterpreter stores the RAW value on EntityRef, never the normalized
+        // one, and EvidenceRenderer renders that raw value.
+        String hugeSegment = "x".repeat(1000);
+        String hugeEndpointValue = "GET /api/{" + hugeSegment + "}";
+        RetrievalRequest req = new RetrievalRequest(Intent.DESCRIBE,
+                List.of(new EntityRef(EntityKind.ENDPOINT, hugeEndpointValue, false)),
+                List.of(), "What calls this endpoint?", List.of(), false);
+        Evidence ev = evidence(req, List.of(), List.of());
+
+        String out = EvidenceRenderer.render(ev);
+
+        assertThat(out).doesNotContain(hugeSegment);
+        assertThat(out).contains("[truncated to 200 of " + hugeEndpointValue.length() + " chars]");
+        assertThat(out).contains("endpoint 'GET /api/{");
+    }
+
+    @Test
     void farMoreNotesThanTheLimitAreCappedByCountWithAStatedOmission() {
         // Mirrors QuestionInterpreter's actual failure mode: one drop-note per entity the model
         // named, appended BEFORE MAX_ENTITIES truncation runs -- so a response naming far more

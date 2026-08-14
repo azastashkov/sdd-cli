@@ -29,8 +29,8 @@ import java.util.Locale;
  * <p><b>What {@link #EVIDENCE_CAP} actually bounds:</b> {@link Section} blocks only — see
  * {@link #appendCapped}. {@code Provenance} and {@code Interpretation} always render in full, and
  * {@code Caveats} always renders in full once non-empty (see {@link #render}'s comment on why). For
- * the bound to hold against any input despite that, every field of {@link RetrievalRequest} that can
- * carry model-authored, upstream-unbounded text has its own independent cap here:
+ * the bound to hold against any input despite that, <b>every model-authored field on
+ * {@link RetrievalRequest} is capped, with no exemptions</b>:
  * <ul>
  *   <li>{@code restatement} — length-capped by {@link #capField} at {@link #RESTATEMENT_CAP}.</li>
  *   <li>{@code notes} — each entry length-capped at {@link #NOTE_CAP}, and the list itself
@@ -40,17 +40,25 @@ import java.util.Locale;
  *       entities produces a thousand notes regardless of how few ultimately survive.</li>
  *   <li>{@code searchTerms} — each term length-capped at {@link #SEARCH_TERM_CAP}, composing with
  *       {@code QuestionInterpreter}'s {@code MAX_TERMS} count cap exactly the way length and count
- *       compose for {@code notes}: {@code MAX_TERMS} bounds how many terms survive, never how long
- *       one term is, since a term is unvalidated model text (never checked against
- *       {@code KbEntities.resolve}).</li>
- *   <li>{@code entities} carries no separate cap here — deliberately exempt, not overlooked: every
- *       surviving {@link EntityRef#value()} already passed {@code KbEntities.resolve}, so unlike
- *       {@code restatement}/{@code notes}/{@code searchTerms} it is a real KB identifier, not
- *       attacker-chosen text, and {@code MAX_ENTITIES = 4} already bounds how many render.</li>
+ *       compose for {@code notes}.</li>
+ *   <li>{@code entities} — each surviving {@link EntityRef#value()} length-capped at
+ *       {@link #ENTITY_VALUE_CAP}, composing with {@code MAX_ENTITIES}. Earlier revisions of this
+ *       class exempted {@code entities} on the theory that a value which passed
+ *       {@code KbEntities.resolve} must be a real, bounded KB identifier — that theory is false for
+ *       two kinds: an {@code ENDPOINT} value is normalized by {@code Routes.normalize} before
+ *       matching (any {@code {...}} segment, of any length, collapses to the 2-char token
+ *       {@code "{}"}), and a dotless {@code CLASS} value is bound into a raw SQL {@code LIKE}
+ *       pattern (repeated {@code %} collapses to {@code %.%}), so in both cases the *raw* value
+ *       {@code QuestionInterpreter} stores and this class renders can be attacker-chosen and
+ *       arbitrarily long despite resolving successfully. There is no field left with a similar
+ *       "trust the upstream check" argument, which is why the invariant above is stated without a
+ *       carve-out rather than with one: a carve-out asks every future reader to re-derive whether it
+ *       still holds, and this entry is the proof that such re-derivation can fail quietly.</li>
  * </ul>
- * A renderer that advertises a cap but trusts part of its input to stay short (or few) is not
- * actually enforcing one — this list exists so the next field added to {@link RetrievalRequest} is
- * checked against it rather than becoming a fifth undiscovered path around {@link #EVIDENCE_CAP}.
+ * {@code intent} is an enum and {@code modelUnavailable} a boolean, so neither needs a cap. A
+ * renderer that advertises a cap but trusts part of its input to stay short (or few) is not actually
+ * enforcing one — this list exists so the next field added to {@link RetrievalRequest} is checked
+ * against it rather than becoming an undiscovered path around {@link #EVIDENCE_CAP}.
  */
 public final class EvidenceRenderer {
 
@@ -82,6 +90,15 @@ public final class EvidenceRenderer {
 
     /** Per-term cap on each {@code searchTerms()} entry — see the class Javadoc's note on why this exists. */
     private static final int SEARCH_TERM_CAP = 100;
+
+    /**
+     * Per-entity cap on {@link EntityRef#value()} as rendered in the {@code Entities:} line — see
+     * the class Javadoc's note on why a surviving entity is not exempt. Render-site only: this never
+     * touches the {@link EntityRef} itself or the value {@code EvidenceCollector} already used to
+     * resolve and build citation {@link Section}s upstream, so it cannot change any lookup or dedup
+     * behaviour, only what this one display line shows.
+     */
+    private static final int ENTITY_VALUE_CAP = 200;
 
     private EvidenceRenderer() {
     }
@@ -156,8 +173,9 @@ public final class EvidenceRenderer {
      * wrong answer. Every note (dropped entity, downgrade, truncation) from call 1's validation is
      * listed too, up to {@link #NOTES_LIMIT} of them, each capped at {@link #NOTE_CAP} characters —
      * the two caps compose, so neither an unusually long note nor an unusually large number of them
-     * can defeat the other. Never silently absorbed either way: both truncations are stated. Search
-     * terms are length-capped per term the same way (see the class Javadoc's field-by-field list).
+     * can defeat the other. Never silently absorbed either way: both truncations are stated. Every
+     * surviving entity's value and every search term is length-capped the same way (see the class
+     * Javadoc's field-by-field list — no field here is exempt).
      */
     private static String renderInterpretation(RetrievalRequest request) {
         StringBuilder sb = new StringBuilder();
@@ -168,7 +186,7 @@ public final class EvidenceRenderer {
             boolean withRole = request.intent() == Intent.DEPENDENCY_PATH;
             List<String> parts = new ArrayList<>();
             for (EntityRef entity : request.entities()) {
-                String part = kindLabel(entity.kind()) + " '" + sanitize(entity.value()) + "'";
+                String part = kindLabel(entity.kind()) + " '" + capField(entity.value(), ENTITY_VALUE_CAP) + "'";
                 if (withRole) {
                     part += entity.object() ? " (object)" : " (subject)";
                 }
@@ -222,12 +240,12 @@ public final class EvidenceRenderer {
 
     /**
      * {@link Fact}/{@code RetrievalRequest} carry no flag distinguishing deterministic KB text from
-     * model-authored prose — a dropped entity's {@code value} in particular never passed
-     * {@code KbEntities.resolve}, so unlike a surviving {@link EntityRef} it is exactly as
-     * unconstrained as {@code repo_card.card_md}. Rather than track provenance per-string,
-     * {@link Markdown#neutralizeFences} — cheap and idempotent — is applied to every piece of free
-     * text that flows into the rendered markdown, so the anti-forgery property holds regardless of
-     * which collector, note, or entity value produced it.
+     * model-authored prose, and — per the class Javadoc's note on the {@code entities} cap —
+     * "passed {@code KbEntities.resolve}" is not by itself proof that a value is safely bounded
+     * either. Rather than track provenance per-string, {@link Markdown#neutralizeFences} — cheap and
+     * idempotent — is applied to every piece of free text that flows into the rendered markdown, so
+     * the anti-forgery property holds regardless of which collector, note, or entity value produced
+     * it.
      */
     private static String sanitize(String text) {
         return Markdown.neutralizeFences(text == null ? "" : text);
@@ -237,9 +255,11 @@ public final class EvidenceRenderer {
      * Sanitizes, then truncates to {@code limit} characters with a stated marker — the character-
      * level counterpart to {@link Section#capped}'s fact-list truncation, for every
      * {@code Interpretation} field ({@code restatement}, each {@code notes} entry, each
-     * {@code searchTerms} entry) that is model-authored prose with no upstream length bound (see the
-     * class Javadoc's field-by-field list). Sanitizing before truncating, never after, so a cut can
-     * never land inside an unneutralized {@code ```} and leave a fence fragment at the boundary.
+     * {@code searchTerms} entry, each surviving entity's {@code value}) that carries model-authored
+     * or attacker-influenceable text with no reliable upstream length bound (see the class Javadoc's
+     * field-by-field list — deliberately with no exemptions). Sanitizing before truncating, never
+     * after, so a cut can never land inside an unneutralized {@code ```} and leave a fence fragment
+     * at the boundary.
      */
     private static String capField(String text, int limit) {
         String s = sanitize(text);
