@@ -449,8 +449,17 @@ public final class Orchestrator {
         }
     }
 
-    /** Caller must hold lock. failureCode defaults to null — the repo either never ran or its
-     *  final attempt was SUCCESS. */
+    /** Caller must hold lock. failureCode defaults to null, which does NOT mean "the repo never ran
+     *  or its final attempt was SUCCESS": it means no {@code StepResult} name describes this
+     *  transition. Alongside the benign transitions (IN_PROGRESS, SUCCEEDED, SKIPPED_UPSTREAM_FAILED)
+     *  four post-agent failure paths deliberately come through here — FAILED on a failed maven-local
+     *  publish and FAILED on binary-incompatible japicmp drift, both AFTER the agent's own last
+     *  attempt returned SUCCESS; PAUSED_INFRA when that publish failure is infrastructural; and
+     *  PAUSED_ENDPOINT, where the model call never produced a result at all. None of those reasons
+     *  exists in {@code StepResult}'s vocabulary, and inventing a code for them would be worse than
+     *  leaving the field absent (design 4C amendment; see {@link RepoRun#failureCode()}) — so an
+     *  absent code in {@code state.json} or in the Gate-2 report means "not attributable to a step
+     *  result", never "nothing failed". */
     private void transitionLocked(Path runDir, RunState state, String repo, RepoState to,
                                   String branch, String sha, String detail) {
         transitionLocked(runDir, state, repo, to, branch, sha, detail, null);
