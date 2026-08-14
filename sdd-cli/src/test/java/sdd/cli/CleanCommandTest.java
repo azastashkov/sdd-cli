@@ -174,20 +174,27 @@ class CleanCommandTest {
     }
 
     @Test
-    void aRunWhereEverySingleRepoIsApprovedHasNothingToCleanAndKeepsTheRunDir() throws Exception {
+    void aFullyApprovedRunKeepsItsRunDirAndSaysSoRatherThanNothingToClean() throws Exception {
         Fixture f = fixture();
         decide(f.runDir(), Map.of(
                 "lib", new DecisionRecord(Decision.APPROVED, ""),
                 "svc", new DecisionRecord(Decision.APPROVED, ""),
                 "aux", new DecisionRecord(Decision.APPROVED, "")));
 
+        // The run dir is the only record of what was approved — report, diffs, contracts, runbook,
+        // events. Ratified (g)'s "plus the run dir" is about discarding an abandoned run, not
+        // shredding the audit trail of a successful one, so it stays; only the wording changes,
+        // because "nothing to clean" tells a human there was nothing there.
         Invocation dryRun = exec("--workspace", ws.toString(), f.planPath().toString());
         assertThat(dryRun.exit()).isZero();
-        assertThat(dryRun.out()).contains("nothing to clean");
+        assertThat(dryRun.out()).contains(RUN_ID).contains("fully approved").contains("run dir kept")
+                .contains(f.runDir().toString());
+        assertThat(dryRun.out()).doesNotContain("nothing to clean");
 
         Invocation forced = exec("--workspace", ws.toString(), "--force", f.planPath().toString());
         assertThat(forced.exit()).isZero();
-        assertThat(forced.out()).contains("nothing to clean");
+        assertThat(forced.out()).contains("fully approved").contains("run dir kept");
+        assertThat(forced.out()).doesNotContain("nothing to clean");
         assertThat(f.runDir()).exists();
         assertThat(RunGit.branchHead(f.svc().path(), SVC_BRANCH)).isNotEmpty();
     }
@@ -373,6 +380,41 @@ class CleanCommandTest {
         // conservatively lumped in with it.
         assertThat(RunGit.branchHead(f.aux().path(), AUX_BRANCH)).isEmpty();
         // The run dir survives: it is not fully cleaned while svc's status is still ambiguous.
+        assertThat(f.runDir()).exists();
+    }
+
+    @Test
+    void aStateJsonNamingABranchOutsideThisRunIsRefusedRatherThanObeyed() throws Exception {
+        Fixture f = fixture();
+        // Ruling 8 hardened decisions.json against hand edits; state.json had no equivalent guard,
+        // and this is the one genuinely irreversible command in the phase. A corrupted or
+        // hand-edited record naming "main" would have had --force delete main.
+        RunStore.system().writeState(f.runDir(), new RunState(RUN_ID, List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, LIB_BRANCH, f.lib().headSha(), "ok"),
+                new RepoRun("svc", RepoState.SUCCEEDED, "main", f.svc().headSha(), "ok"),
+                new RepoRun("aux", RepoState.SUCCEEDED, AUX_BRANCH, f.aux().headSha(), "ok"))
+                , null, 0L));
+        decide(f.runDir(), Map.of(
+                "lib", new DecisionRecord(Decision.APPROVED, ""),
+                "svc", new DecisionRecord(Decision.REJECTED, ""),
+                "aux", new DecisionRecord(Decision.REJECTED, "")));
+
+        Invocation dryRun = exec("--workspace", ws.toString(), f.planPath().toString());
+        assertThat(dryRun.exit()).isEqualTo(2);
+        assertThat(dryRun.err()).contains("svc").contains("refusing to delete");
+        assertThat(dryRun.out()).doesNotContain("  svc  main");
+
+        Invocation forced = exec("--workspace", ws.toString(), "--force", f.planPath().toString());
+
+        assertThat(forced.exit()).isEqualTo(2);
+        assertThat(forced.err()).contains("svc").contains("refusing to delete").contains("main");
+        // main is intact — the whole point.
+        assertThat(RunGit.branchHead(f.svc().path(), "main")).isNotEmpty();
+        // aux, whose record names a genuine run branch, is still deleted: one repo's refusal must
+        // not strand its siblings.
+        assertThat(RunGit.branchHead(f.aux().path(), AUX_BRANCH)).isEmpty();
+        // Something was skipped, so the run stays findable — same shape as Ruling 8's unparseable
+        // decision token.
         assertThat(f.runDir()).exists();
     }
 

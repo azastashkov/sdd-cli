@@ -40,6 +40,10 @@ import java.util.stream.Stream;
  * unrecognized token to PENDING for {@code review} (a safe default — PENDING just means "ask
  * again"), but the identical default would be unsafe here, where PENDING means "eligible for
  * deletion" — so this reads the raw tokens itself and refuses to touch one it cannot parse.
+ *
+ * <p>Both hand-editable files are treated with the same suspicion. {@code state.json}'s branch
+ * name is what a forced delete is pointed at, so a record naming anything outside this run's own
+ * {@code sdd/<runId>/} namespace — {@code main}, most alarmingly — is refused rather than obeyed.
  */
 @Command(name = "clean",
         description = "Delete unapproved run branches and their run dir",
@@ -120,9 +124,10 @@ public final class CleanCommand implements Callable<Integer> {
     }
 
     /**
-     * One run's worth of cleaning. Returns whether it had anything to clean at all — a fully
-     * APPROVED run (with no unparseable decisions either) is silent and untouched, its run dir left
-     * exactly where it is. Every repo's branch delete is individually try/caught into
+     * One run's worth of cleaning. Returns whether this run was reported on at all — a fully
+     * APPROVED run is untouched, its run dir left exactly where it is, but it still says so: it is
+     * a run that existed and was decided, which is not the same thing as the workspace-level
+     * "nothing to clean". Every repo's branch delete is individually try/caught into
      * {@code failures} (per-repo isolation): one repo's failure never strands the run's other
      * repos, and one run's failure never strands another run.
      */
@@ -150,6 +155,7 @@ public final class CleanCommand implements Callable<Integer> {
         List<String> neverReviewed = new ArrayList<>();
         List<Candidate> candidates = new ArrayList<>();
         List<String> corrupted = new ArrayList<>();
+        List<String> foreign = new ArrayList<>();
         for (String repo : Scheduler.sequence(plan.order())) {
             String token = tokens.get(repo);
             Decision decision;
@@ -174,16 +180,36 @@ public final class CleanCommand implements Callable<Integer> {
             }
             RepoRun repoRun = byName.get(repo);
             if (repoRun != null && repoRun.branch() != null) {
-                candidates.add(new Candidate(repo, repoRun.branch()));
+                // Same rule as the unparseable decision token above, applied to the OTHER
+                // hand-editable file: state.json's branch name is passed straight to a forced
+                // delete, so a corrupted or hand-edited record naming "main" would destroy main.
+                // Only a branch this very run minted is ever a candidate.
+                if (repoRun.branch().startsWith(runBranchPrefix(runId))) {
+                    candidates.add(new Candidate(repo, repoRun.branch()));
+                } else {
+                    foreign.add(repo + " (state.json names branch \"" + repoRun.branch() + "\", not a "
+                            + runBranchPrefix(runId) + "… branch of this run)");
+                }
             }
         }
         for (String c : corrupted) {
             failures.add(runId + "/" + c + " — refusing to delete a branch whose decision could not "
                     + "be parsed; leaving it and the run dir untouched");
         }
+        for (String c : foreign) {
+            failures.add(runId + "/" + c + " — refusing to delete a branch that is not this run's "
+                    + "own; leaving it and the run dir untouched");
+        }
         if (nonApproved.isEmpty()) {
-            return !corrupted.isEmpty();   // all-APPROVED (plus maybe an unparseable one) — the
-                                            // corrupted entries were already reported above
+            if (corrupted.isEmpty()) {
+                // Not "nothing to clean": there WAS a run here, all of it approved. Its dir is the
+                // only record of what was approved — report, diffs, contracts, runbook, events —
+                // and ratified (g)'s "plus the run dir" is about discarding an abandoned run, not
+                // shredding the audit trail of a successful one. So it stays, and says so.
+                out.println(runId + " is fully approved — nothing to delete, run dir kept: " + runDir);
+            }
+            return true;   // all-APPROVED (plus maybe an unparseable one) — the corrupted entries
+                            // were already reported above
         }
 
         if (!neverReviewed.isEmpty()) {
@@ -200,9 +226,10 @@ public final class CleanCommand implements Callable<Integer> {
             return true;
         }
 
-        // A repo whose decision we could not parse blocks the run dir the same way a failed branch
-        // delete does — the run is not fully cleaned while something in it is still ambiguous.
-        boolean allDeleted = corrupted.isEmpty();
+        // A repo whose decision we could not parse — or whose recorded branch is not this run's —
+        // blocks the run dir the same way a failed branch delete does: the run is not fully
+        // cleaned while something in it is still ambiguous or deliberately left alone.
+        boolean allDeleted = corrupted.isEmpty() && foreign.isEmpty();
         for (Candidate candidate : candidates) {
             Path root = repoPaths.get(candidate.repo());
             try {
@@ -271,6 +298,14 @@ public final class CleanCommand implements Callable<Integer> {
         }
         Files.deleteIfExists(stateJson);
         Files.delete(dir);
+    }
+
+    /** Every branch {@code sdd implement} mints is {@code Orchestrator}'s
+     *  {@code "sdd/" + runId + "/" + slug(repo)}. Matching the run id as well as the {@code sdd/}
+     *  namespace means a state.json borrowed or edited from a DIFFERENT run cannot get this run's
+     *  {@code --force} to delete a branch that run is still using. */
+    private static String runBranchPrefix(String runId) {
+        return "sdd/" + runId + "/";
     }
 
     private static String shortSha(String sha) {
