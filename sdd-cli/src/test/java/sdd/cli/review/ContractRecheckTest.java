@@ -567,6 +567,48 @@ class ContractRecheckTest {
         assertThat(finding.unresolved()).isEmpty();
     }
 
+    private Path libWithUnrelatedKafkaTopicPatternListener() throws Exception {
+        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme/svc"));
+        Files.writeString(root.resolve("AuditListener.java"), """
+                package com.acme.svc;
+                import org.springframework.kafka.annotation.KafkaListener;
+                public class AuditListener {
+                    @KafkaListener(topicPattern = "audit.*")
+                    public void onAudit(String event) { }
+                }
+                """);
+        return ws.resolve("lib");
+    }
+
+    @Test
+    void aTopicPatternListenerDoesNotExcuseAnUnrelatedMissingConsumesMember() throws Exception {
+        // The kafka mirror of aRootEndpointDoesNotExcuseAnUnrelatedMissingMemberOfTheSameVerb.
+        // KafkaExtractor marks EVERY topicPattern listener DYNAMIC, so this fully resolved
+        // "audit.*" listener carries UNRESOLVED_MARKER even though extraction saw it perfectly.
+        // Matching on the role alone would then let that one entry excuse every missing declared
+        // `consumes` member — two genuinely absent topics would vanish out of `missing` and the
+        // report would claim "extraction could not see this" about a surface it read exactly.
+        // A different topic is not the reason a member is missing.
+        Path lib = libWithUnrelatedKafkaTopicPatternListener();
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "kafka", "lib",
+                List.of("svc"), "consumes orders.created and payments.settled", null,
+                List.of("consumes orders.created", "consumes payments.settled"));
+        String actual = ContractActualizer.actualize(lib, List.of(c)).get("c1");
+        assertThat(actual).contains(ContractActualizer.UNRESOLVED_MARKER);   // sanity: marked
+        store.writeContract(runDir, "c1", actual);
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        ContractRecheck.Finding finding = findings.get(0);
+        assertThat(finding.conformance()).isEqualTo(ContractRecheck.Conformance.DIVERGED_FROM_PLAN);
+        assertThat(finding.missing())
+                .containsExactly("consumes orders.created", "consumes payments.settled");
+        assertThat(finding.unresolved()).isEmpty();
+    }
+
     private Path libWithVerblessRequestMapping() throws Exception {
         Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme/svc"));
         Files.writeString(root.resolve("OrderController.java"), """

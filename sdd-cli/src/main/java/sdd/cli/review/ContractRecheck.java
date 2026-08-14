@@ -14,6 +14,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * Gate-2 contract re-check (design line 66): re-extract each green provider's real interface and
@@ -219,16 +221,20 @@ public final class ContractRecheck {
     }
 
     /** Same kind-specific key as the declared member, ignoring exactly the part the actual side
-     *  could not resolve — the partition rule the 2026-08-14 amendment specifies. Only the
-     *  reachable half of each kind's symmetric rule is implemented: {@code rest}'s "same verb with
-     *  an empty path" branch is intentionally absent because {@code ContractActualizer} does not
-     *  mark that shape at all (see its {@code rest()} javadoc for why), and kafka's "same topic
-     *  with an unresolved role" branch can never fire because a role is a hardcoded literal
-     *  {@code KafkaExtractor} writes itself, never a resolved value. */
+     *  could not resolve — the partition rule the 2026-08-14 amendment specifies. An unresolved
+     *  entry excuses a missing member only when it could plausibly BE that member; sharing the
+     *  entry's coarse half (rest's verb, kafka's role) is never enough on its own, or one marked
+     *  line would excuse every missing member of the same verb/role and silently turn real
+     *  divergence into NOT_RESOLVED. Only the reachable half of each kind's symmetric rule is
+     *  implemented: {@code rest}'s "same verb with an empty path" branch is intentionally absent
+     *  because {@code ContractActualizer} does not mark that shape at all (see its {@code rest()}
+     *  javadoc for why), and kafka's "same topic with an unresolved role" branch can never fire
+     *  because a role is a hardcoded literal {@code KafkaExtractor} writes itself, never a
+     *  resolved value. */
     private static boolean explainedByUnresolved(String kind, String missingMember, List<String> unresolvedActual) {
         return switch (kind) {
             case ContractKinds.REST -> unresolvedActual.stream().anyMatch(u -> restSamePathAnyVerb(missingMember, u));
-            case ContractKinds.KAFKA -> unresolvedActual.stream().anyMatch(u -> kafkaSameRole(missingMember, u));
+            case ContractKinds.KAFKA -> unresolvedActual.stream().anyMatch(u -> kafkaExplains(missingMember, u));
             default -> false; // java-api: no unresolved shape exists
         };
     }
@@ -244,12 +250,52 @@ public final class ContractRecheck {
         return unresolvedPath.equals(missingPath);
     }
 
+    /** The role must match AND the unresolved entry's topic must plausibly cover the missing one.
+     *  Role alone is not enough: {@code KafkaExtractor} writes {@code resolution() == "DYNAMIC"}
+     *  for EVERY {@code topicPattern} listener, resolved or not, so a perfectly readable
+     *  {@code @KafkaListener(topicPattern = "audit.*")} arrives here marked unresolved — and a
+     *  role-only rule would let it excuse every missing declared {@code consumes} member on the
+     *  contract, reporting NOT_RESOLVED about a surface extraction read exactly. That is the same
+     *  false-negative shape the REST {@code pathTemplate == "/"} heuristic was rejected for.
+     *
+     *  <p>So: an identical topic is the member; a value extraction genuinely could not resolve
+     *  ({@code ${…}} / {@code #{…}} left in the raw expression) could have been anything, so it
+     *  still excuses; otherwise the entry is treated as the pattern it is and excuses only the
+     *  topics it actually matches. That last step is a heuristic over the pattern TEXT — Java
+     *  regex semantics, not Spring's own topic-pattern matching — so it is deliberately narrow and
+     *  a syntactically invalid pattern excuses nothing rather than everything. */
+    private static boolean kafkaExplains(String missingMember, String unresolvedEntry) {
+        if (!kafkaSameRole(missingMember, unresolvedEntry)) {
+            return false;
+        }
+        String unresolvedTopic = kafkaTopic(unresolvedEntry);
+        String missingTopic = kafkaTopic(missingMember);
+        if (unresolvedTopic.equals(missingTopic)) {
+            return true;
+        }
+        if (unresolvedTopic.contains("${") || unresolvedTopic.contains("#{")) {
+            return true;
+        }
+        try {
+            return Pattern.compile(unresolvedTopic).matcher(missingTopic).matches();
+        } catch (PatternSyntaxException e) {
+            return false;
+        }
+    }
+
     private static boolean kafkaSameRole(String missingMember, String unresolvedEntry) {
         int space = unresolvedEntry.indexOf(' ');
         String unresolvedRole = space >= 0 ? unresolvedEntry.substring(0, space) : unresolvedEntry;
         int missingSpace = missingMember.indexOf(' ');
         String missingRole = missingSpace >= 0 ? missingMember.substring(0, missingSpace) : missingMember;
         return unresolvedRole.equals(missingRole);
+    }
+
+    /** Everything after the role on a canonical {@code <role> <topic>} line; empty when there is no
+     *  topic at all, which can never equal or match a declared member's topic. */
+    private static String kafkaTopic(String member) {
+        int space = member.indexOf(' ');
+        return space >= 0 ? member.substring(space + 1).strip() : "";
     }
 
     private static String combineDetail(String statusDetail, String conformanceDetail) {

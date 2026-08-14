@@ -301,9 +301,13 @@ public record DeclaredContract(String kind, List<String> members, List<String> p
         }
     }
 
-    /** Only the {@code @Value}/property-driven topic shape reaches here today: role is a hardcoded
-     *  {@code PRODUCER}/{@code CONSUMER} literal {@code KafkaExtractor} writes itself, never a
-     *  resolved value, so a role can never be the unresolved half of a kafka entry. Shares
+    /** Two shapes reach here: a {@code @Value}/property-driven topic that genuinely did not
+     *  resolve, and — because {@code KafkaExtractor} hardcodes {@code resolution() == "DYNAMIC"}
+     *  for every {@code topicPattern} listener — a topic pattern whose text resolved perfectly
+     *  well. A consumer of this list must therefore not treat an entry as "could have been any
+     *  topic" (see {@code ContractRecheck.kafkaExplains}). The role half is never the unresolved
+     *  one: it is a hardcoded {@code PRODUCER}/{@code CONSUMER} literal {@code KafkaExtractor}
+     *  writes itself, never a resolved value. Shares
      *  {@link #canonicalizeKafkaLine} with {@link #canonicalizeKafkaActual} — the only difference
      *  is which lines pass the filter: every content line there, only marked ones here. */
     private static void unresolvedKafkaMembers(String body, List<String> out) {
