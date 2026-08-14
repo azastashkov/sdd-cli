@@ -114,4 +114,35 @@ class DeclaredContractTest {
         assertThat(DeclaredContract.parse("grpc", "whatever").problems())
                 .singleElement().asString().contains("grpc");
     }
+
+    @Test
+    void aDeclaredVarargsParameterMatchesTheBareComponentTypeTheExtractorEmits() {
+        DeclaredContract declared = DeclaredContract.parse("java-api",
+                "com.trading.audit.Log#write(String, Object...): void");
+        assertThat(declared.members()).containsExactly("com.trading.audit.Log#write(String,Object):void");
+        assertThat(declared.missingFrom("""
+                com.trading.audit.Log
+                  write(String, Object): void
+                """)).isEmpty();
+    }
+
+    @Test
+    void aDeclaredArrayParameterMatchesTheBareComponentTypeTheExtractorEmits() {
+        DeclaredContract declared = DeclaredContract.parse("java-api",
+                "com.trading.audit.Log#write(java.lang.String[]): void");
+        assertThat(declared.missingFrom("""
+                com.trading.audit.Log
+                  write(String[]): void
+                """)).isEmpty();
+    }
+
+    @Test
+    void aDeclaredWildcardInAGenericReturnTypeMatchesTheActualForm() {
+        DeclaredContract declared = DeclaredContract.parse("java-api",
+                "com.trading.audit.Log#items(): java.util.List<? extends java.lang.String>");
+        assertThat(declared.missingFrom("""
+                com.trading.audit.Log
+                  items(): List<? extends String>
+                """)).isEmpty();
+    }
 }

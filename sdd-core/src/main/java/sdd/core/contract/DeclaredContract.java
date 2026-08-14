@@ -136,7 +136,12 @@ public record DeclaredContract(String kind, List<String> members, List<String> p
 
     /** Reduces every dotted type token to its simple name (including inside generics) and strips
      *  all whitespace, so {@code java.util.Optional<com.trading.model.Tier>} and
-     *  {@code Optional<Tier>} canonicalize identically. */
+     *  {@code Optional<Tier>} canonicalize identically. A trailing Java varargs ellipsis is
+     *  stripped before the dot-reduction: {@code ApiSurfaceExtractor} (and so
+     *  {@code ContractActualizer}) emits a varargs parameter as its bare component type with no
+     *  {@code ...}, so a declared {@code String...} must canonicalize to the same {@code String}
+     *  the actual side produces — otherwise a correctly implemented varargs method is reported as
+     *  a false MISSING purely because a human wrote the parameter the conventional Java way. */
     private static String normalizeTypes(String s) {
         Matcher matcher = TYPE_TOKEN.matcher(s);
         StringBuilder sb = new StringBuilder();
@@ -144,6 +149,9 @@ public record DeclaredContract(String kind, List<String> members, List<String> p
         while (matcher.find()) {
             sb.append(s, last, matcher.start());
             String token = matcher.group();
+            if (token.endsWith("...")) {
+                token = token.substring(0, token.length() - 3);
+            }
             int dot = token.lastIndexOf('.');
             sb.append(dot >= 0 ? token.substring(dot + 1) : token);
             last = matcher.end();
