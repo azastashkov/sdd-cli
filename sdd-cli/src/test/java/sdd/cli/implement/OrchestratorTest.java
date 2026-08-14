@@ -594,14 +594,44 @@ class OrchestratorTest {
     }
 
     @Test
+    void finalAttemptsStepResultPersistsAsTheRepoFailureCode() throws Exception {
+        FixtureRepo alib = repoWith("alib", "exit 1");   // verify always fails -> VERIFY_FAILED
+        FixtureRepo blib = repoWith("blib", "exit 0");   // verify always passes -> SUCCEEDED
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("alib", step("alib", alib.path()),
+                "blib", step("blib", blib.path()));
+        // Both repos land in the same layer and run concurrently — a single scripted response
+        // reused by both is safe since it is a fixed message with no shared mutable state, unlike
+        // ScriptedChatModel's stateful cursor.
+        ChatModel alwaysDone = req -> call("x", "done", "{\"result\":\"success\",\"summary\":\"ok\"}");
+        Orchestrator single = orchestrator(List.of(new Orchestrator.ModelTier(alwaysDone, "qwen")),
+                Map.of(), 30_000_000L);
+
+        Orchestrator.RunResult result = single.run(runDir,
+                planTwoIndependent(alib.headSha(), blib.headSha()), steps);
+
+        RepoRun a = result.state().repos().stream().filter(r -> r.repo().equals("alib"))
+                .findFirst().orElseThrow();
+        RepoRun b = result.state().repos().stream().filter(r -> r.repo().equals("blib"))
+                .findFirst().orElseThrow();
+        assertThat(a.state()).isEqualTo(RepoState.FAILED);
+        assertThat(a.failureCode()).isEqualTo("VERIFY_FAILED");
+        assertThat(b.state()).isEqualTo(RepoState.SUCCEEDED);
+        assertThat(b.failureCode()).isNull();
+        // Persisted, not just held in memory.
+        assertThat(Files.readString(runDir.resolve("state.json")))
+                .contains("\"failure_code\" : \"VERIFY_FAILED\"");
+    }
+
+    @Test
     void aResumedWalkReskipsDownstreamOfAPersistedFailure() throws Exception {
         FixtureRepo lib = repoWith("lib", "exit 0");
         FixtureRepo svc = repoWith("svc", "exit 0");
         Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
         Map<String, RepoStep> steps = Map.of("lib", step("lib", lib.path()), "svc", step("svc", svc.path()));
         RunState persisted = new RunState("S-v1", List.of(
-                new RepoRun("lib", RepoState.FAILED, "sdd/S-v1/lib", null, "VERIFY_FAILED: x"),
-                new RepoRun("svc", RepoState.PENDING, null, null, "")), null, 0L);
+                new RepoRun("lib", RepoState.FAILED, "sdd/S-v1/lib", null, "VERIFY_FAILED: x", null),
+                new RepoRun("svc", RepoState.PENDING, null, null, "", null)), null, 0L);
         ScriptedChatModel model = new ScriptedChatModel(List.of());   // nothing may run
 
         Orchestrator.RunResult result = orchestrator(model)

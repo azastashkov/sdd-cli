@@ -119,9 +119,9 @@ class InteractiveReviewTest {
         Path runDir = store.create(ws, RUN_ID, planJson, "");
         store.releaseLock(runDir);
         store.writeState(runDir, new RunState(RUN_ID, List.of(
-                new RepoRun("a", RepoState.SUCCEEDED, A_BRANCH, aCheckpoint, "ok"),
-                new RepoRun("b", RepoState.SUCCEEDED, B_BRANCH, bCheckpoint, "ok"),
-                new RepoRun("c", RepoState.SUCCEEDED, C_BRANCH, cCheckpoint, "ok")), null, 12L));
+                new RepoRun("a", RepoState.SUCCEEDED, A_BRANCH, aCheckpoint, "ok", null),
+                new RepoRun("b", RepoState.SUCCEEDED, B_BRANCH, bCheckpoint, "ok", null),
+                new RepoRun("c", RepoState.SUCCEEDED, C_BRANCH, cCheckpoint, "ok", null)), null, 12L));
 
         return new Fixture(a, b, c, aBase, planPath, runDir);
     }

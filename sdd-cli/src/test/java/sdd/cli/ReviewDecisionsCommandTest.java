@@ -116,8 +116,8 @@ class ReviewDecisionsCommandTest {
         Path runDir = store.create(ws, RUN_ID, planJson, Files.readString(ws.resolve("s.md")));
         store.releaseLock(runDir);   // mirrors real state: implement's finally already released it
         store.writeState(runDir, new RunState(RUN_ID, List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, LIB_BRANCH, libCheckpoint, "ok"),
-                new RepoRun("svc", RepoState.SUCCEEDED, SVC_BRANCH, svcCheckpoint, "ok")), null, 21L));
+                new RepoRun("lib", RepoState.SUCCEEDED, LIB_BRANCH, libCheckpoint, "ok", null),
+                new RepoRun("svc", RepoState.SUCCEEDED, SVC_BRANCH, svcCheckpoint, "ok", null)), null, 21L));
 
         return new Fixture(lib, svc, libBase, svcBase, libCheckpoint, svcCheckpoint, originalBranch,
                 planPath, runDir);
@@ -340,8 +340,8 @@ class ReviewDecisionsCommandTest {
         // allSucceeded), redo's exit code is computed from staging/restore alone, so this used to
         // print a green verdict and exit 0.
         RunStore.system().writeState(f.runDir(), new RunState(RUN_ID, List.of(
-                new RepoRun("lib", RepoState.FAILED, LIB_BRANCH, f.libCheckpoint(), "boom"),
-                new RepoRun("svc", RepoState.SUCCEEDED, SVC_BRANCH, f.svcCheckpoint(), "ok")),
+                new RepoRun("lib", RepoState.FAILED, LIB_BRANCH, f.libCheckpoint(), "boom", null),
+                new RepoRun("svc", RepoState.SUCCEEDED, SVC_BRANCH, f.svcCheckpoint(), "ok", null)),
                 null, 21L));
 
         Invocation redo = exec("--workspace", ws.toString(), "redo", "lib", f.planPath().toString());

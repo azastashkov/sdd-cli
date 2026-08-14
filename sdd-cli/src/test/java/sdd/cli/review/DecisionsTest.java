@@ -25,9 +25,9 @@ class DecisionsTest {
 
     private static RunState allGreen() {
         return new RunState("S-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", "aaa", ""),
-                new RepoRun("svc", RepoState.SUCCEEDED, "sdd/S-v1/svc", "bbb", ""),
-                new RepoRun("app", RepoState.SUCCEEDED, "sdd/S-v1/app", "ccc", "")), null, 0L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", "aaa", "", null),
+                new RepoRun("svc", RepoState.SUCCEEDED, "sdd/S-v1/svc", "bbb", "", null),
+                new RepoRun("app", RepoState.SUCCEEDED, "sdd/S-v1/app", "ccc", "", null)), null, 0L);
     }
 
     @Test
@@ -38,7 +38,7 @@ class DecisionsTest {
         assertThat(d.of("lib")).isEqualTo(Decision.APPROVED);
 
         RunState failed = new RunState("S-v1", List.of(
-                new RepoRun("svc", RepoState.FAILED, null, null, "boom")), null, 0L);
+                new RepoRun("svc", RepoState.FAILED, null, null, "boom", null)), null, 0L);
         Decisions.Outcome notGreen = d.approve("svc", plan(), failed);
         assertThat(notGreen.applied()).isFalse();
         assertThat(notGreen.message()).contains("FAILED").contains("only SUCCEEDED");
@@ -47,7 +47,7 @@ class DecisionsTest {
     @Test
     void aRepoMissingFromTheRunStateIsReportedByName() {
         RunState partial = new RunState("S-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "b", "aaa", "")), null, 0L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "b", "aaa", "", null)), null, 0L);
 
         Decisions.Outcome outcome = Decisions.empty().approve("app", plan(), partial);
 

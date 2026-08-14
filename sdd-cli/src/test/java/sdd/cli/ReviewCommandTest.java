@@ -88,7 +88,7 @@ class ReviewCommandTest {
         Path runDir = store.create(ws, "SPEC-9-v1", planJson, Files.readString(ws.resolve("s.md")));
         store.releaseLock(runDir);   // mirrors real state: implement's finally already released it
         RunState state = new RunState("SPEC-9-v1",
-                List.of(new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok")), null, 15L);
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok", null)), null, 15L);
         store.writeState(runDir, state);
 
         ReviewCommand cmd = new ReviewCommand();
@@ -158,7 +158,7 @@ class ReviewCommandTest {
         Path runDir = store.create(ws, "SPEC-9-v1", planJson, Files.readString(ws.resolve("s.md")));
         store.releaseLock(runDir);
         RunState state = new RunState("SPEC-9-v1",
-                List.of(new RepoRun("lib", RepoState.FAILED, null, null, "boom")), null, 0L);
+                List.of(new RepoRun("lib", RepoState.FAILED, null, null, "boom", null)), null, 0L);
         store.writeState(runDir, state);
 
         ReviewCommand cmd = new ReviewCommand();
@@ -244,7 +244,7 @@ class ReviewCommandTest {
         // the object was gc'd. The diff/diffstat pass must not be allowed to abort the whole review.
         String missingSha = "0000000000000000000000000000000000000000";
         RunState state = new RunState("SPEC-9-v1",
-                List.of(new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/lib", missingSha, "ok")), null, 5L);
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/lib", missingSha, "ok", null)), null, 5L);
         store.writeState(runDir, state);
 
         ReviewCommand cmd = new ReviewCommand();
@@ -331,7 +331,7 @@ class ReviewCommandTest {
         Path runDir = store.create(ws, "SPEC-9-v1", planJson, Files.readString(ws.resolve("s.md")));
         store.releaseLock(runDir);
         store.writeState(runDir, new RunState("SPEC-9-v1",
-                List.of(new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok")), null, 3L));
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok", null)), null, 3L));
 
         int exit = new CommandLine(new ReviewCommand())
                 .execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
@@ -409,7 +409,7 @@ class ReviewCommandTest {
         Path runDir = store.create(ws, "SPEC-9-v1", planJson, Files.readString(ws.resolve("s.md")));
         store.releaseLock(runDir);
         RunState state = new RunState("SPEC-9-v1",
-                List.of(new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok")), null, 15L);
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok", null)), null, 15L);
         store.writeState(runDir, state);
 
         ReviewCommand cmd = new ReviewCommand();
@@ -457,7 +457,7 @@ class ReviewCommandTest {
         Path runDir = store.create(ws, "SPEC-9-v1", planJson, "");
         store.releaseLock(runDir);
         store.writeState(runDir, new RunState("SPEC-9-v1",
-                List.of(new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/lib", baseSha, "ok")), null, 0L));
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/lib", baseSha, "ok", null)), null, 0L));
         // Our own pid is provably alive, so RunStore.isLockHeld sees a live lock, not a stale one.
         Files.writeString(runDir.resolve("lock"), Long.toString(ProcessHandle.current().pid()));
 
@@ -514,7 +514,7 @@ class ReviewCommandTest {
         Path runDir = store.create(ws, "SPEC-9-v1", planJson, "");
         store.releaseLock(runDir);
         store.writeState(runDir, new RunState("SPEC-9-v1",
-                List.of(new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok")), null, 0L));
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok", null)), null, 0L));
 
         ReviewCommand cmd = new ReviewCommand();
         cmd.interactive = true;
@@ -588,7 +588,7 @@ class ReviewCommandTest {
                 ContractActualizer.actualize(lib.path(), List.of(contract)).get("c1"));
         store.releaseLock(runDir);
         store.writeState(runDir, new RunState("SPEC-9-v1",
-                List.of(new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/lib", baseSha, "ok")),
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/lib", baseSha, "ok", null)),
                 null, 0L));
 
         int exit = review(new StringWriter(), new StringWriter(), "--no-rebuild", planPath.toString());
@@ -642,7 +642,7 @@ class ReviewCommandTest {
         Path runDir = store.create(ws, "SPEC-9-v1", planJson, "");
         store.releaseLock(runDir);
         store.writeState(runDir, new RunState("SPEC-9-v1",
-                List.of(new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok")), null, 5L));
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok", null)), null, 5L));
 
         return new Fixture(lib, runBranch, checkpointSha, originalBranch, planPath, runDir);
     }

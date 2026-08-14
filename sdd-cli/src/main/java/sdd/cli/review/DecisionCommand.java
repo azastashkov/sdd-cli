@@ -249,7 +249,8 @@ public abstract class DecisionCommand implements Callable<Integer> {
         // head differs from its recorded checkpoint with exit 4, so without this write-back the
         // very "sdd implement --retry" that redo prints would hard-fail once any sibling had
         // been approved. Written before the count is printed so nothing can lose it.
-        run.state().set(repo, repoRun.state(), repoRun.branch(), result.sha(), repoRun.detail());
+        run.state().set(repo, repoRun.state(), repoRun.branch(), result.sha(), repoRun.detail(),
+                repoRun.failureCode());
         run.store().writeState(run.runDir(), run.state());
         // Counted against the PRE-squash checkpoint, whose objects are still resolvable (the
         // squash only moved the branch ref); SquashApprove made the identical call moments ago.

@@ -110,6 +110,48 @@ class RunStoreTest {
     }
 
     @Test
+    void readStateRoundTripsAFailureCode() {
+        Path runDir = store.create(ws, "R", "{}");
+        RunState state = new RunState("R", List.of("lib"));
+        state.set("lib", RepoState.FAILED, "b", null, "boom", "VERIFY_FAILED");
+        store.writeState(runDir, state);
+
+        RunState read = store.readState(runDir);
+
+        assertThat(read.repos().get(0).failureCode()).isEqualTo("VERIFY_FAILED");
+    }
+
+    @Test
+    void readStateToleratesAPreExistingStateJsonWithNoFailureCodeKey() throws Exception {
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}");
+        // A literal pre-5C-2 state.json — no "failure_code" key at all. NOT round-tripped through
+        // today's writer: that would only prove today's code reads its own output, not that a real
+        // frozen estate run (SPEC-101-v1/v2) from before this key existed still loads.
+        Files.writeString(runDir.resolve("state.json"), """
+                {
+                  "runId" : "S-v1",
+                  "pausedReason" : null,
+                  "tokensSpent" : 0,
+                  "repos" : [ {
+                    "repo" : "lib",
+                    "state" : "SUCCEEDED",
+                    "branch" : "sdd/S-v1/lib",
+                    "checkpointSha" : "abc1234",
+                    "detail" : "done"
+                  } ]
+                }
+                """);
+
+        RunState read = store.readState(runDir);
+
+        RepoRun lib = read.repos().get(0);
+        assertThat(lib.state()).isEqualTo(RepoState.SUCCEEDED);
+        assertThat(lib.checkpointSha()).isEqualTo("abc1234");
+        assertThat(lib.failureCode()).isNull();
+    }
+
+    @Test
     void appendRunEventWritesARunScopedLine() throws Exception {
         RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
         Path runDir = store.create(ws, "S-v1", "{}", "");

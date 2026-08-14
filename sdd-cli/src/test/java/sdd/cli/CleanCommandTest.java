@@ -95,9 +95,9 @@ class CleanCommandTest {
         Path runDir = store.create(ws, RUN_ID, planJson, "");
         store.releaseLock(runDir);
         store.writeState(runDir, new RunState(RUN_ID, List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, LIB_BRANCH, libCheckpoint, "ok"),
-                new RepoRun("svc", RepoState.SUCCEEDED, SVC_BRANCH, svcCheckpoint, "ok"),
-                new RepoRun("aux", RepoState.SUCCEEDED, AUX_BRANCH, auxCheckpoint, "ok")), null, 0L));
+                new RepoRun("lib", RepoState.SUCCEEDED, LIB_BRANCH, libCheckpoint, "ok", null),
+                new RepoRun("svc", RepoState.SUCCEEDED, SVC_BRANCH, svcCheckpoint, "ok", null),
+                new RepoRun("aux", RepoState.SUCCEEDED, AUX_BRANCH, auxCheckpoint, "ok", null)), null, 0L));
 
         return new Fixture(lib, svc, aux, libBaseSha, svcBaseSha, auxBaseSha, planPath, runDir);
     }
@@ -285,7 +285,7 @@ class CleanCommandTest {
         Path runDir = store.create(ws, "SPEC-10-v1", planJson, "");
         store.releaseLock(runDir);
         store.writeState(runDir, new RunState("SPEC-10-v1",
-                List.of(new RepoRun("other", RepoState.SUCCEEDED, branch, otherCheckpoint, "ok")), null, 0L));
+                List.of(new RepoRun("other", RepoState.SUCCEEDED, branch, otherCheckpoint, "ok", null)), null, 0L));
         decide(runDir, Map.of("other", new DecisionRecord(Decision.REJECTED, "")));
 
         // Broken AFTER decisions are written, so repoPaths() — built once per invocation — simply
@@ -390,9 +390,9 @@ class CleanCommandTest {
         // and this is the one genuinely irreversible command in the phase. A corrupted or
         // hand-edited record naming "main" would have had --force delete main.
         RunStore.system().writeState(f.runDir(), new RunState(RUN_ID, List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, LIB_BRANCH, f.lib().headSha(), "ok"),
-                new RepoRun("svc", RepoState.SUCCEEDED, "main", f.svc().headSha(), "ok"),
-                new RepoRun("aux", RepoState.SUCCEEDED, AUX_BRANCH, f.aux().headSha(), "ok"))
+                new RepoRun("lib", RepoState.SUCCEEDED, LIB_BRANCH, f.lib().headSha(), "ok", null),
+                new RepoRun("svc", RepoState.SUCCEEDED, "main", f.svc().headSha(), "ok", null),
+                new RepoRun("aux", RepoState.SUCCEEDED, AUX_BRANCH, f.aux().headSha(), "ok", null))
                 , null, 0L));
         decide(f.runDir(), Map.of(
                 "lib", new DecisionRecord(Decision.APPROVED, ""),

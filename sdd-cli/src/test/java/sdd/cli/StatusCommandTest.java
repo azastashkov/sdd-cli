@@ -55,9 +55,9 @@ class StatusCommandTest {
         Path runDir = store.create(ws, RUN_ID, planJson, "");
         store.releaseLock(runDir);
         store.writeState(runDir, new RunState(RUN_ID, List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/lib", "abc1234", "ok"),
-                new RepoRun("svc", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/svc", "def5678", "ok"),
-                new RepoRun("aux", RepoState.FAILED, "sdd/SPEC-9-v1/aux", null, "verify failed")),
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/lib", "abc1234", "ok", null),
+                new RepoRun("svc", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/svc", "def5678", "ok", null),
+                new RepoRun("aux", RepoState.FAILED, "sdd/SPEC-9-v1/aux", null, "verify failed", null)),
                 null, 42L));
         return planPath;
     }
@@ -81,7 +81,7 @@ class StatusCommandTest {
         Path runDir = store.create(ws, runId, planJson, "");
         store.releaseLock(runDir);
         store.writeState(runDir, new RunState(runId, List.of(
-                new RepoRun("only", RepoState.SUCCEEDED, "sdd/" + runId + "/only", "cafe123", "ok")),
+                new RepoRun("only", RepoState.SUCCEEDED, "sdd/" + runId + "/only", "cafe123", "ok", null)),
                 null, 0L));
         return runDir;
     }

@@ -39,7 +39,7 @@ class ContractRecheckTest {
 
     private static RunState succeeded() {
         return new RunState("S-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", "abc", "ok")), null, 0L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", "abc", "ok", null)), null, 0L);
     }
 
     @Test
@@ -94,7 +94,7 @@ class ContractRecheckTest {
                         .isEqualTo(ContractRecheck.Status.MISSING_RECORD));
 
         RunState failed = new RunState("S-v1", List.of(
-                new RepoRun("lib", RepoState.FAILED, null, null, "x")), null, 0L);
+                new RepoRun("lib", RepoState.FAILED, null, null, "x", null)), null, 0L);
         assertThat(ContractRecheck.check(plan(c), failed, Map.of("lib", lib), store, runDir)).isEmpty();
     }
 
@@ -191,8 +191,8 @@ class ContractRecheckTest {
                         new PlanModel.PlanRepo("other", "dependent", "X", "patch", "b")),
                 List.of(List.of("lib"), List.of("other")), List.of(), List.of(c1, c2), List.of());
         RunState state = new RunState("S-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", "abc", "ok"),
-                new RepoRun("other", RepoState.SUCCEEDED, "sdd/S-v1/other", "def", "ok")), null, 0L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", "abc", "ok", null),
+                new RepoRun("other", RepoState.SUCCEEDED, "sdd/S-v1/other", "def", "ok", null)), null, 0L);
 
         // "other" has no entry in repoPaths — no checkout in the knowledge base
         List<ContractRecheck.Finding> findings = ContractRecheck.check(plan, state,

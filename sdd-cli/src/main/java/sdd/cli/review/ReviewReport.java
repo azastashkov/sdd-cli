@@ -262,6 +262,11 @@ public final class ReviewReport {
                             .append(" was not staged at its checkpoint)");
                 }
             }
+            // Machine-readable reason before the free-text prose — a human (or a script) that stops
+            // reading after the first token still learns why, rather than needing the whole paragraph.
+            if (run != null && run.failureCode() != null && repoState != RepoState.SUCCEEDED) {
+                md.append(" [").append(run.failureCode()).append(']');
+            }
             if (run != null && run.detail() != null && !run.detail().isBlank()) {
                 md.append(" — ").append(run.detail());
             }

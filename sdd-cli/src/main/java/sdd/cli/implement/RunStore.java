@@ -106,11 +106,16 @@ public final class RunStore {
                     JSON.readTree(Files.readString(runDir.resolve("state.json")));
             List<RepoRun> repos = new java.util.ArrayList<>();
             for (com.fasterxml.jackson.databind.JsonNode node : root.path("repos")) {
+                // Pre-5C-2 state.json has no "failure_code" key at all; path() returns a MissingNode
+                // for that, which isNull() alone would NOT catch (isNull() is false for a merely
+                // absent field) — same absent-key-tolerant idiom as pausedReason below.
+                com.fasterxml.jackson.databind.JsonNode failureCode = node.path("failure_code");
                 repos.add(new RepoRun(node.path("repo").asText(),
                         RepoState.valueOf(node.path("state").asText()),
                         node.path("branch").isNull() ? null : node.path("branch").asText(),
                         node.path("checkpointSha").isNull() ? null : node.path("checkpointSha").asText(),
-                        node.path("detail").asText("")));
+                        node.path("detail").asText(""),
+                        failureCode.isMissingNode() || failureCode.isNull() ? null : failureCode.asText()));
             }
             com.fasterxml.jackson.databind.JsonNode paused = root.path("pausedReason");
             return new RunState(root.path("runId").asText(), repos,

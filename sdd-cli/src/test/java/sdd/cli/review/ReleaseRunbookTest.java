@@ -23,8 +23,8 @@ class ReleaseRunbookTest {
     @Test
     void pinnedConsumersRequireAMergeStep() {
         RunState state = new RunState("S-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", "aaaaaaa1", "ok"),
-                new RepoRun("svc", RepoState.SUCCEEDED, "sdd/S-v1/svc", "bbbbbbb2", "ok")), null, 0L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", "aaaaaaa1", "ok", null),
+                new RepoRun("svc", RepoState.SUCCEEDED, "sdd/S-v1/svc", "bbbbbbb2", "ok", null)), null, 0L);
 
         String md = ReleaseRunbook.render(plan("PINNED"), state);
 
@@ -36,8 +36,8 @@ class ReleaseRunbookTest {
     @Test
     void snapshotConsumersPickUpOnRepublishAndFailedReposAreNotReleasable() {
         RunState state = new RunState("S-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", "aaaaaaa1", "ok"),
-                new RepoRun("svc", RepoState.FAILED, null, null, "boom")), null, 0L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", "aaaaaaa1", "ok", null),
+                new RepoRun("svc", RepoState.FAILED, null, null, "boom", null)), null, 0L);
 
         String md = ReleaseRunbook.render(plan("SNAPSHOT"), state);
 

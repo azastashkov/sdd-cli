@@ -14,7 +14,7 @@ public final class RunState {
     public RunState(String runId, List<String> repoNames) {
         this.runId = runId;
         for (String repo : repoNames) {
-            repos.put(repo, new RepoRun(repo, RepoState.PENDING, null, null, ""));
+            repos.put(repo, new RepoRun(repo, RepoState.PENDING, null, null, "", null));
         }
     }
 
@@ -48,7 +48,15 @@ public final class RunState {
     }
 
     public void set(String repo, RepoState state, String branch, String checkpointSha, String detail) {
-        repos.put(repo, new RepoRun(repo, state, branch, checkpointSha, detail));
+        set(repo, state, branch, checkpointSha, detail, null);
+    }
+
+    /** Like {@link #set(String, RepoState, String, String, String)}, but also records the
+     *  {@code StepResult} name of the repo's final agent attempt (null for SUCCESS or a repo that
+     *  never ran) — see {@link RepoRun#failureCode()}. */
+    public void set(String repo, RepoState state, String branch, String checkpointSha, String detail,
+                    String failureCode) {
+        repos.put(repo, new RepoRun(repo, state, branch, checkpointSha, detail, failureCode));
     }
 
     public RepoState stateOf(String repo) {

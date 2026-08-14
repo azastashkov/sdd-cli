@@ -30,7 +30,7 @@ class SquashApproveTest {
     }
 
     private static RepoRun runOn(Path repo, String branch) {
-        return new RepoRun("lib", RepoState.SUCCEEDED, branch, RunGit.branchHead(repo, branch), "");
+        return new RepoRun("lib", RepoState.SUCCEEDED, branch, RunGit.branchHead(repo, branch), "", null);
     }
 
     @Test
@@ -177,7 +177,7 @@ class SquashApproveTest {
         RunGit.startBranch(repo.path(), "sdd/S-v1/lib", base);
         Files.writeString(repo.path().resolve("A.java"), "class A { int x; }\n");
         RunGit.commitAll(repo.path(), "sdd: change");
-        RepoRun stale = new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", base, "");
+        RepoRun stale = new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", base, "", null);
 
         SquashApprove.Result result = SquashApprove.approve(repo.path(), "lib", "S-v1", "SPEC-9",
                 stale, base);

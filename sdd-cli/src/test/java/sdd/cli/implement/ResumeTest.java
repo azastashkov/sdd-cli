@@ -29,9 +29,9 @@ class ResumeTest {
         RunGit.startBranch(lib.path(), "sdd/S-v1/lib", lib.headSha());
         String checkpoint = RunGit.commitAll(lib.path(), "checkpoint");
         RunState state = persisted(
-                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", checkpoint, "done"),
-                new RepoRun("svc", RepoState.PAUSED_ENDPOINT, "sdd/S-v1/svc", null, "outage"),
-                new RepoRun("app", RepoState.SKIPPED_UPSTREAM_FAILED, null, null, "upstream failed"));
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", checkpoint, "done", null),
+                new RepoRun("svc", RepoState.PAUSED_ENDPOINT, "sdd/S-v1/svc", null, "outage", null),
+                new RepoRun("app", RepoState.SKIPPED_UPSTREAM_FAILED, null, null, "upstream failed", null));
 
         Resume.Prep prep = Resume.prepare(state, Map.of("lib", step("lib", lib.path())));
 
@@ -45,7 +45,7 @@ class ResumeTest {
 
     @Test
     void failedReposStayFailed() {
-        RunState state = persisted(new RepoRun("lib", RepoState.FAILED, "sdd/S-v1/lib", null, "VERIFY_FAILED"));
+        RunState state = persisted(new RepoRun("lib", RepoState.FAILED, "sdd/S-v1/lib", null, "VERIFY_FAILED", null));
 
         Resume.Prep prep = Resume.prepare(state, Map.of());
 
@@ -58,7 +58,7 @@ class ResumeTest {
         FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n").commit("base");
         RunGit.startBranch(lib.path(), "sdd/S-v1/lib", lib.headSha());
         RunState state = persisted(
-                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", "0000000000000000000000000000000000000000", "done"));
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", "0000000000000000000000000000000000000000", "done", null));
 
         Resume.Prep prep = Resume.prepare(state, Map.of("lib", step("lib", lib.path())));
 
@@ -74,7 +74,7 @@ class ResumeTest {
         RunGit.startBranch(lib.path(), "sdd/S-v1/lib", lib.headSha());
         RunState state = persisted(
                 new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib",
-                        "0000000000000000000000000000000000000000", "done"));
+                        "0000000000000000000000000000000000000000", "done", null));
 
         Resume.Prep prep = Resume.prepare(state, Map.of("lib", step("lib", lib.path())), Set.of("lib"));
 
@@ -88,7 +88,7 @@ class ResumeTest {
 
     @Test
     void retryingAFailedRepoResetsToPending() {
-        RunState state = persisted(new RepoRun("lib", RepoState.FAILED, "sdd/S-v1/lib", null, "VERIFY_FAILED"));
+        RunState state = persisted(new RepoRun("lib", RepoState.FAILED, "sdd/S-v1/lib", null, "VERIFY_FAILED", null));
 
         Resume.Prep prep = Resume.prepare(state, Map.of(), Set.of("lib"));
 
@@ -102,9 +102,9 @@ class ResumeTest {
         RunGit.startBranch(lib.path(), "sdd/S-v1/lib", lib.headSha());
         String checkpoint = RunGit.commitAll(lib.path(), "checkpoint");
         RunState state = persisted(
-                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", checkpoint, "done"),
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", checkpoint, "done", null),
                 new RepoRun("svc", RepoState.SUCCEEDED, "sdd/S-v1/svc",
-                        "0000000000000000000000000000000000000000", "done"));
+                        "0000000000000000000000000000000000000000", "done", null));
 
         // Retry targets "svc", not "lib" — lib must still be verified against its checkpoint.
         Resume.Prep prep = Resume.prepare(state, Map.of("lib", step("lib", lib.path())), Set.of("svc"));

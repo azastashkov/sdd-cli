@@ -49,9 +49,9 @@ class ReviewReportTest {
 
     private static RunState threeSucceeded() {
         return new RunState("SPEC-1-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-1-v1/lib", "sha", ""),
-                new RepoRun("svc", RepoState.SUCCEEDED, "sdd/SPEC-1-v1/svc", "sha", ""),
-                new RepoRun("tool", RepoState.SUCCEEDED, "sdd/SPEC-1-v1/tool", "sha", "")), null, 10L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-1-v1/lib", "sha", "", null),
+                new RepoRun("svc", RepoState.SUCCEEDED, "sdd/SPEC-1-v1/svc", "sha", "", null),
+                new RepoRun("tool", RepoState.SUCCEEDED, "sdd/SPEC-1-v1/tool", "sha", "", null)), null, 10L);
     }
 
     /** The no-frills call: no diffs, no rebuilds, no failures, no decisions. */
@@ -64,7 +64,7 @@ class ReviewReportTest {
     @Test
     void summaryIncludesContractRecheckLineWhenNoContracts() {
         RunState state = new RunState("SPEC-1-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok", null)), null, 10L);
         PlanModel plan = planNoContracts();
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
@@ -77,7 +77,7 @@ class ReviewReportTest {
     @Test
     void summaryIncludesContractRecheckLineWithAllMatches() {
         RunState state = new RunState("SPEC-1-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok", null)), null, 10L);
         PlanModel plan = planWithContracts(2);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "interface",
@@ -97,7 +97,7 @@ class ReviewReportTest {
     @Test
     void summaryIncludesContractRecheckLineWithOneMismatch() {
         RunState state = new RunState("SPEC-1-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok", null)), null, 10L);
         PlanModel plan = planWithContracts(2);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "interface",
@@ -117,7 +117,7 @@ class ReviewReportTest {
     @Test
     void summaryIncludesContractRecheckLineWithMultipleMismatches() {
         RunState state = new RunState("SPEC-1-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok", null)), null, 10L);
         PlanModel plan = planWithContracts(3);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "interface",
@@ -162,7 +162,7 @@ class ReviewReportTest {
         assertThat(withEdges).contains("- svc -> lib: SNAPSHOT/INCLUDE_BUILD");
 
         String withoutEdges = render(planNoContracts(), new RunState("SPEC-1-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "b", "sha", "")), null, 0L));
+                new RepoRun("lib", RepoState.SUCCEEDED, "b", "sha", "", null)), null, 0L));
 
         assertThat(withoutEdges).doesNotContain("## Propagation");
     }
@@ -208,7 +208,7 @@ class ReviewReportTest {
                 new ContractRecheck.Finding("contract-1", "lib", "interface",
                         ContractRecheck.Status.NOT_EXTRACTABLE, "no checkout path", null, ContractRecheck.Conformance.NOT_DECLARED, List.of(), List.of()));
         RunState state = new RunState("SPEC-1-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "b", "sha", "")), null, 0L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "b", "sha", "", null)), null, 0L);
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
@@ -296,7 +296,7 @@ class ReviewReportTest {
     @Test
     void aPlanWithContractsThatWereNotRecheckedDoesNotClaimThePlanHasNone() {
         RunState state = new RunState("SPEC-1-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "b", "sha", "")), null, 0L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "b", "sha", "", null)), null, 0L);
 
         String report = ReviewReport.render("SPEC-1-v1", planWithContracts(2), state, Map.of(),
                 Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(), RunContext.Checkpoints.none(),
@@ -310,7 +310,7 @@ class ReviewReportTest {
     @Test
     void aReviewWithoutAnEstateRebuildSaysTheContractsWereReadUnstaged() {
         RunState state = new RunState("SPEC-1-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "b", "sha", "")), null, 0L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "b", "sha", "", null)), null, 0L);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "interface",
                         ContractRecheck.Status.MATCHES, "", "main", ContractRecheck.Conformance.NOT_DECLARED, List.of(), List.of()));
@@ -330,7 +330,7 @@ class ReviewReportTest {
         // (fresh == recorded, so the drift axis says MATCHES), yet it diverges from what Gate 1
         // approved. Without this test, "0 mismatches" would hide a real interface violation.
         RunState state = new RunState("SPEC-1-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok", null)), null, 10L);
         PlanModel plan = planWithContracts(1);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "java-api",
@@ -356,7 +356,7 @@ class ReviewReportTest {
         // the Summary. The malformed-declaration shape is the reason a human most needs, since it
         // points at their own plan.md rather than at the implementation.
         RunState state = new RunState("SPEC-1-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok", null)), null, 10L);
         PlanModel plan = planWithContracts(1);
         String reason = "declared contract is malformed: malformed java-api declaration "
                 + "'this is not a valid declaration line'; expected <fqcn>#<signature>: <returnType>";
@@ -385,7 +385,7 @@ class ReviewReportTest {
         // assertion pins the full line (through the trailing newline) so a future segment landing
         // silently would break this test again instead of being absorbed by it.
         RunState state = new RunState("SPEC-1-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok", null)), null, 10L);
         PlanModel plan = planWithContracts(5);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "java-api",
@@ -421,7 +421,7 @@ class ReviewReportTest {
         // in the Summary alone), and Finding.unresolved() must render as its own bullet, distinct
         // from `missing`'s "declared but not found:" bullet.
         RunState state = new RunState("SPEC-1-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok", null)), null, 10L);
         PlanModel plan = planWithContracts(1);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "kafka",
@@ -442,7 +442,7 @@ class ReviewReportTest {
     @Test
     void anUndeclaredContractSaysSoRatherThanClaimingConformance() {
         RunState state = new RunState("SPEC-1-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);
+                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok", null)), null, 10L);
         PlanModel plan = planWithContracts(1);
         // Already shown for another reason (DRIFTED on the status axis) — proves that once shown,
         // an undeclared contract's conformance is stated explicitly rather than left blank (which
@@ -470,5 +470,21 @@ class ReviewReportTest {
 
         assertThat(report).contains("- **lib**: UNKNOWN, decision: PENDING, 2 files changed (+10/-3)");
         assertThat(report).contains("- Total tokens spent: 7");
+    }
+
+    @Test
+    void repoLineShowsTheFailureCodeBeforeTheFreeTextDetail() {
+        RunState state = new RunState("SPEC-1-v1", List.of(
+                new RepoRun("lib", RepoState.FAILED, "sdd/SPEC-1-v1/lib", null, "boom", "VERIFY_FAILED"),
+                new RepoRun("svc", RepoState.SUCCEEDED, "sdd/SPEC-1-v1/svc", "sha", "ok", null)), null, 0L);
+
+        String report = render(planWithEdge(), state);
+
+        String libLine = report.lines().filter(l -> l.contains("**lib**")).findFirst().orElseThrow();
+        String svcLine = report.lines().filter(l -> l.contains("**svc**")).findFirst().orElseThrow();
+        assertThat(libLine).contains("VERIFY_FAILED").contains("boom");
+        assertThat(libLine.indexOf("VERIFY_FAILED")).isLessThan(libLine.indexOf("boom"));
+        // A SUCCEEDED repo carries no failure code at all — not even an empty marker.
+        assertThat(svcLine).doesNotContain("VERIFY_FAILED");
     }
 }

@@ -36,7 +36,7 @@ public final class Resume {
         List<RepoRun> reconciled = new ArrayList<>();
         for (RepoRun repo : persisted.repos()) {
             if (retry.contains(repo.repo())) {
-                reconciled.add(new RepoRun(repo.repo(), RepoState.PENDING, repo.branch(), null, ""));
+                reconciled.add(new RepoRun(repo.repo(), RepoState.PENDING, repo.branch(), null, "", null));
                 continue;
             }
             switch (repo.state()) {
@@ -52,7 +52,7 @@ public final class Resume {
                     reconciled.add(repo);
                 }
                 case FAILED -> reconciled.add(repo);
-                default -> reconciled.add(new RepoRun(repo.repo(), RepoState.PENDING, repo.branch(), null, ""));
+                default -> reconciled.add(new RepoRun(repo.repo(), RepoState.PENDING, repo.branch(), null, "", null));
             }
         }
         return new Prep(new RunState(persisted.runId(), reconciled, null, persisted.tokensSpent()), problems);

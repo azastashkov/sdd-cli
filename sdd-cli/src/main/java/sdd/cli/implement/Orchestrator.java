@@ -329,13 +329,13 @@ public final class Orchestrator {
                 pauseLocked(runDir, state, "infrastructure failure in " + repo
                         + " — fix the environment and resume");
                 transitionLocked(runDir, state, repo, RepoState.PAUSED_INFRA, branch, null,
-                        attemptTag + outcome.summary());
+                        attemptTag + outcome.summary(), outcome.result().name());
             }
             return false;
         } else {
             synchronized (lock) {
                 transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
-                        attemptTag + outcome.result() + ": " + outcome.summary());
+                        attemptTag + outcome.result() + ": " + outcome.summary(), outcome.result().name());
             }
         }
         return true;
@@ -446,11 +446,20 @@ public final class Orchestrator {
         }
     }
 
-    /** Caller must hold lock. */
+    /** Caller must hold lock. failureCode defaults to null — the repo either never ran or its
+     *  final attempt was SUCCESS. */
     private void transitionLocked(Path runDir, RunState state, String repo, RepoState to,
                                   String branch, String sha, String detail) {
+        transitionLocked(runDir, state, repo, to, branch, sha, detail, null);
+    }
+
+    /** Caller must hold lock. failureCode is the {@code StepResult} name of the repo's final
+     *  attempt (design 4C amendment; see {@link RepoRun#failureCode()}), or null when there was
+     *  none to report. */
+    private void transitionLocked(Path runDir, RunState state, String repo, RepoState to,
+                                  String branch, String sha, String detail, String failureCode) {
         RepoState from = state.stateOf(repo);
-        state.set(repo, to, branch, sha, detail);
+        state.set(repo, to, branch, sha, detail, failureCode);
         store.appendEvent(runDir, repo, from, to, detail);
         store.writeState(runDir, state);
     }

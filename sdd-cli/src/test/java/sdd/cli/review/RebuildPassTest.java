@@ -97,8 +97,8 @@ class RebuildPassTest {
                 List.of(List.of("lib"), List.of("other")), List.of(), List.of(contract), List.of());
 
         RunState state = new RunState("SPEC-9-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, libRunBranch, libCheckpoint, "ok"),
-                new RepoRun("other", RepoState.SUCCEEDED, otherRunBranch, otherCheckpoint, "ok")), null, 0L);
+                new RepoRun("lib", RepoState.SUCCEEDED, libRunBranch, libCheckpoint, "ok", null),
+                new RepoRun("other", RepoState.SUCCEEDED, otherRunBranch, otherCheckpoint, "ok", null)), null, 0L);
 
         RunStore store = RunStore.system();
         Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
@@ -159,8 +159,8 @@ class RebuildPassTest {
                 List.of(List.of("lib"), List.of("other")), List.of(), List.of(), List.of());
 
         RunState state = new RunState("SPEC-9-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, libRunBranch, libCheckpoint, "ok"),
-                new RepoRun("other", RepoState.SUCCEEDED, otherRunBranch, otherCheckpoint, "ok")), null, 0L);
+                new RepoRun("lib", RepoState.SUCCEEDED, libRunBranch, libCheckpoint, "ok", null),
+                new RepoRun("other", RepoState.SUCCEEDED, otherRunBranch, otherCheckpoint, "ok", null)), null, 0L);
 
         RunStore store = RunStore.system();
         Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
@@ -228,8 +228,8 @@ class RebuildPassTest {
                 List.of(new PlanModel.PlanEdge("svc", "lib", "SNAPSHOT", "INCLUDE_BUILD")),
                 List.of(), List.of());
         RunState state = new RunState("SPEC-9-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, libRunBranch, libCheckpoint, "ok"),
-                new RepoRun("svc", RepoState.SUCCEEDED, svcRunBranch, svcCheckpoint, "ok")), null, 0L);
+                new RepoRun("lib", RepoState.SUCCEEDED, libRunBranch, libCheckpoint, "ok", null),
+                new RepoRun("svc", RepoState.SUCCEEDED, svcRunBranch, svcCheckpoint, "ok", null)), null, 0L);
 
         RunStore store = RunStore.system();
         Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
@@ -304,8 +304,8 @@ class RebuildPassTest {
                 List.of(new PlanModel.PlanEdge("svc", "lib", "SNAPSHOT", "INCLUDE_BUILD")),
                 List.of(), List.of());
         RunState state = new RunState("SPEC-9-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, libRunBranch, libCheckpoint, "ok"),
-                new RepoRun("svc", RepoState.SUCCEEDED, svcRunBranch, svcCheckpoint, "ok")), null, 0L);
+                new RepoRun("lib", RepoState.SUCCEEDED, libRunBranch, libCheckpoint, "ok", null),
+                new RepoRun("svc", RepoState.SUCCEEDED, svcRunBranch, svcCheckpoint, "ok", null)), null, 0L);
 
         RunStore store = RunStore.system();
         Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
@@ -375,8 +375,8 @@ class RebuildPassTest {
         // lib FAILED with its branch still on record: RebuildPass's state filter skips it before it
         // ever looks at the branch, so nothing stages it and nothing said so.
         RunState state = new RunState("SPEC-9-v1", List.of(
-                new RepoRun("lib", RepoState.FAILED, libRunBranch, libCheckpoint, "boom"),
-                new RepoRun("svc", RepoState.SUCCEEDED, svcRunBranch, svcCheckpoint, "ok")), null, 0L);
+                new RepoRun("lib", RepoState.FAILED, libRunBranch, libCheckpoint, "boom", null),
+                new RepoRun("svc", RepoState.SUCCEEDED, svcRunBranch, svcCheckpoint, "ok", null)), null, 0L);
 
         RunStore store = RunStore.system();
         Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
@@ -422,8 +422,8 @@ class RebuildPassTest {
         // SUCCEEDED but branchless — a hand-edited or truncated state.json. The pass used to skip
         // it just as silently as the FAILED case above.
         RunState state = new RunState("SPEC-9-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, null, null, "ok"),
-                new RepoRun("svc", RepoState.SUCCEEDED, svcRunBranch, svcCheckpoint, "ok")), null, 0L);
+                new RepoRun("lib", RepoState.SUCCEEDED, null, null, "ok", null),
+                new RepoRun("svc", RepoState.SUCCEEDED, svcRunBranch, svcCheckpoint, "ok", null)), null, 0L);
 
         RunStore store = RunStore.system();
         Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
@@ -482,8 +482,8 @@ class RebuildPassTest {
                 List.of(List.of("lib"), List.of("other")), List.of(), List.of(contract), List.of());
 
         RunState state = new RunState("SPEC-9-v1", List.of(
-                new RepoRun("lib", RepoState.SUCCEEDED, libRunBranch, libCheckpoint, "ok"),
-                new RepoRun("other", RepoState.SUCCEEDED, otherRunBranch, otherCheckpoint, "ok")), null, 0L);
+                new RepoRun("lib", RepoState.SUCCEEDED, libRunBranch, libCheckpoint, "ok", null),
+                new RepoRun("other", RepoState.SUCCEEDED, otherRunBranch, otherCheckpoint, "ok", null)), null, 0L);
 
         RunStore store = RunStore.system();
         Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
