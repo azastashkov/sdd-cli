@@ -22,15 +22,16 @@ import java.util.Set;
  * {@code api_usage} evidence between each hop's modules, and contract edges (REST/Kafka) touching
  * either side.
  *
- * <p><strong>No path is always an explicit fact, never a fabricated reason.</strong> BFS marks
- * every subject repo visited before it explores a single edge, so a target reached only by
- * starting there (the subject and object resolve to the same repo — a repo trivially has no
- * dependency path to itself) is never mistaken for a zero-hop "path": a node is only accepted as
- * the destination when it is discovered by <em>following an edge into it</em>, never at the
- * moment it is seeded as a start. The graph is a plain repo dependency structure that can
- * genuinely contain cycles (the estate has SCCs — see {@code Closure}'s Tarjan pass) but BFS with
- * a single shared {@code visited} set is cycle-safe by construction: each repo is enqueued at
- * most once, so a cycle just stops the walk from revisiting it rather than looping.
+ * <p><strong>No path is always an explicit fact, never a fabricated reason.</strong> A node is
+ * only ever accepted as the destination when it is discovered by <em>following an edge into
+ * it</em>, never at the moment it is seeded as a start — see {@link #bfs}'s Javadoc for how the
+ * initial {@code visited} seed handles a source repo that is also a target, so a
+ * single-source self-path (the subject and object resolve to the same repo — a repo trivially
+ * has no dependency path to itself) is never mistaken for a zero-hop "path" while a genuine edge
+ * from a *different* source into that same repo still is. The graph is a plain repo dependency
+ * structure that can genuinely contain cycles (the estate has SCCs — see {@code Closure}'s Tarjan
+ * pass) but BFS with a single shared {@code visited} set is cycle-safe by construction: each repo
+ * is enqueued at most once, so a cycle just stops the walk from revisiting it rather than looping.
  */
 final class DependencyFacts {
     private DependencyFacts() {
@@ -82,16 +83,25 @@ final class DependencyFacts {
      * Multi-source BFS over the repo-level dependency graph (consumer -&gt; provider). Sources
      * are seeded in {@code fromRepos}' order (already sorted by {@link Resolution#repos()}) and
      * every adjacency list is sorted by neighbor name, so ties resolve deterministically. Returns
-     * {@code null} when no target repo is reachable — including when {@code fromRepos} and
-     * {@code toRepos} overlap, since a start node is only ever accepted as a destination via an
-     * incoming edge, never by being a start node itself.
+     * {@code null} when no target repo is reachable — including when a source repo is itself one
+     * of the targets, since a start node is only ever accepted as a destination via an incoming
+     * edge, never by being a start node itself.
+     *
+     * <p>A source that is also a target is deliberately left out of the initial {@code visited}
+     * seed (it is still enqueued, so BFS explores outward from it): seeding it would make it
+     * permanently unreachable, which is correct for a single-source self-path (nothing else marks
+     * it visited, so it is simply never rediscovered) but wrong when {@code fromRepos} has
+     * multiple entries — a genuine edge from a <em>different</em> source into that same repo must
+     * still be found, not suppressed because the repo happened to also be a start.
      */
     private static List<String> bfs(Handle h, List<String> fromRepos, Set<String> toRepos) {
         Map<String, List<String>> adjacency = adjacency(h);
         Set<String> visited = new HashSet<>();
         Deque<List<String>> queue = new ArrayDeque<>();
         for (String start : fromRepos) {
-            if (visited.add(start)) {
+            if (toRepos.contains(start)) {
+                queue.addLast(List.of(start));
+            } else if (visited.add(start)) {
                 queue.addLast(List.of(start));
             }
         }

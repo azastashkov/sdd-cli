@@ -55,17 +55,23 @@ public final class EvidenceCollector {
 
     /**
      * Loops the request's entities exactly like {@code RepoFacts.of}/{@code DependencyFacts.of}
-     * do: resolve, cite non-repo kinds, dispatch to {@link ConsumerFacts#of}. The caveat's scope
-     * is every repo any asked-about entity resolved to — the repos this specific answer is about.
+     * do: resolve, cite, dispatch to {@link ConsumerFacts#of}. The caveat's scope is every repo
+     * any asked-about entity resolved to — the repos this specific answer is about.
+     *
+     * <p>Unlike {@code RepoFacts.of}/{@code DependencyFacts.of}, this cites REPO-kind entities
+     * too rather than skipping them as a "redundant echo": {@link ConsumerFacts}' four
+     * repo-consumer sections (Gradle, API usage, REST, Kafka) can all legitimately be empty for a
+     * repo nobody depends on, and without a citation fact that makes {@link Evidence#isEmpty()}
+     * read exactly like "this repo is not in the knowledge base" — the confusion {@code sdd
+     * explain} exists to prevent. Citing unconditionally keeps repo and non-repo kinds symmetric
+     * here instead of special-casing only the zero-consumers case.
      */
     private static Collected consumers(Jdbi jdbi, RetrievalRequest request) {
         List<Section> sections = new ArrayList<>();
         LinkedHashSet<String> reposInPlay = new LinkedHashSet<>();
         for (EntityRef entity : request.entities()) {
             Resolution resolution = KbEntities.resolve(jdbi, entity.kind(), entity.value());
-            if (entity.kind() != EntityKind.REPO) {
-                sections.add(citation(entity, resolution, false));
-            }
+            sections.add(citation(entity, resolution, false));
             reposInPlay.addAll(resolution.repos());
             sections.addAll(ConsumerFacts.of(jdbi, resolution));
         }
@@ -99,8 +105,12 @@ public final class EvidenceCollector {
      * that it was. {@code matches()} is additive over {@code repos()} and, for {@code TOPIC} and
      * {@code CLASS}, can carry duplicate identical rows (no {@code DISTINCT} in those two
      * queries) — collapsed here before rendering, since this is the first view built on it.
-     * {@code REPO}-kind entities are never passed here: their citation (a repo matching itself)
-     * would be a redundant echo of the entity value, so callers skip it for that kind.
+     * {@code REPO}-kind entities are, for {@code DESCRIBE}/{@code IMPACT}/{@code DEPENDENCY_PATH},
+     * skipped by their callers: a repo's citation (a repo matching itself) would be a redundant
+     * echo of the entity value there, since those intents always emit at least one other fact
+     * about the repo regardless (describe's own {@code Repo:} row, impact's roots section, the
+     * dependency-path fact itself). {@code CONSUMERS} is the one caller that passes REPO-kind
+     * entities through anyway — see {@link #consumers}'s Javadoc for why.
      *
      * <p>{@code withRoleSuffix} appends "(subject)"/"(object)" to the title — meaningful only for
      * {@code DEPENDENCY_PATH}, where the subject/object distinction is the whole point of the

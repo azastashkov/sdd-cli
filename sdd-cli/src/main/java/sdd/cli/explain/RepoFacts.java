@@ -88,12 +88,17 @@ final class RepoFacts {
         List<Fact> facts = new ArrayList<>();
         facts.add(new Fact("card_line (model-generated summary, repo_card.card_line): "
                 + row.get("card_line")));
-        String cardMd = String.valueOf(row.get("card_md"));
-        String capped = cardMd.length() > CARD_MD_CAP
-                ? cardMd.substring(0, CARD_MD_CAP) + " [truncated]"
-                : cardMd;
-        facts.add(new Fact("card_md (model-generated summary, repo_card.card_md, capped to "
-                + CARD_MD_CAP + " chars): " + capped));
+        Object cardMdRaw = row.get("card_md");
+        if (cardMdRaw == null) {
+            facts.add(new Fact("card_md (model-generated summary, repo_card.card_md): none recorded"));
+        } else {
+            String cardMd = String.valueOf(cardMdRaw);
+            String capped = cardMd.length() > CARD_MD_CAP
+                    ? cardMd.substring(0, CARD_MD_CAP) + " [truncated]"
+                    : cardMd;
+            facts.add(new Fact("card_md (model-generated summary, repo_card.card_md, capped to "
+                    + CARD_MD_CAP + " chars): " + capped));
+        }
         return Section.of("Summary: " + repo, "repo_card", facts);
     }
 

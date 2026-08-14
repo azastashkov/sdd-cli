@@ -74,6 +74,26 @@ class EvidenceCollectorTest {
     }
 
     @Test
+    void describeSummaryDoesNotRenderTheLiteralStringNullWhenCardMdIsMissing() {
+        // card_line is guaranteed non-null (RepoFacts.card returns early otherwise), but card_md
+        // itself is nullable -- String.valueOf(row.get("card_md")) on a null Object renders the
+        // 4-character string "null", which reads as if the KB literally stored that text rather
+        // than recording that no card_md exists.
+        db.jdbi().useHandle(h -> h.createUpdate(
+                        "UPDATE repo_card SET card_md = NULL WHERE repo_id = "
+                                + "(SELECT id FROM repo WHERE name = :r)")
+                .bind("r", ExplainFixture.SVC_ORDERS).execute());
+        RetrievalRequest request = new RetrievalRequest(Intent.DESCRIBE,
+                List.of(new EntityRef(EntityKind.REPO, ExplainFixture.SVC_ORDERS, false)),
+                List.of(), "What is svc-orders?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        assertThat(texts(section(evidence, "Summary: " + ExplainFixture.SVC_ORDERS)))
+                .noneMatch(t -> t.endsWith(": null"));
+    }
+
+    @Test
     void describeOnAClassEntityAddsADeduplicatedCitationSection() {
         // Insert a second, identical java_type row so resolveClass's non-DISTINCT query would
         // otherwise surface the same repo/detail/source pair twice.
@@ -184,6 +204,27 @@ class EvidenceCollectorTest {
                         + " to " + ExplainFixture.SVC_ORDERS + " in the knowledge base"));
     }
 
+    @Test
+    void dependencyPathMultiSourceOverlapWithTargetStillFindsTheGenuineEdgeFromTheOtherSource() {
+        // The topic orders.events resolves to BOTH svc-orders (producer) and svc-notify
+        // (consumer), so the subject's fromRepos = {svc-notify, svc-orders} while the object
+        // (repo svc-orders) is ALSO one of those sources. svc-notify has a genuine Gradle
+        // dependency on svc-orders; a BFS that pre-seeds every source into `visited` (including
+        // ones that are also targets) skips that real edge entirely and wrongly reports no path.
+        db.jdbi().useHandle(h -> h.execute(
+                "INSERT INTO dep_edge(from_module_id, to_grp, to_name, configuration, declared_version, declared_via, mode, is_internal, to_module_id) "
+                        + "VALUES (5,'com.acme','svc-orders','compileClasspath','1.0','DIRECT','PINNED',1,3)"));
+        RetrievalRequest request = new RetrievalRequest(Intent.DEPENDENCY_PATH,
+                List.of(new EntityRef(EntityKind.TOPIC, ExplainFixture.ORDERS_TOPIC, false),
+                        new EntityRef(EntityKind.REPO, ExplainFixture.SVC_ORDERS, true)),
+                List.of(), "Why does orders.events relate to svc-orders?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        assertThat(texts(section(evidence, "Dependency path"))).containsExactly(
+                ExplainFixture.SVC_NOTIFY + " -> " + ExplainFixture.SVC_ORDERS);
+    }
+
     // --- search ---------------------------------------------------------------------------------
 
     @Test
@@ -280,6 +321,27 @@ class EvidenceCollectorTest {
         assertThat(texts(section(evidence, "Consumers via Kafka (contract): " + ExplainFixture.SVC_ORDERS)))
                 .containsExactly(ExplainFixture.SVC_ORDERS + " produces " + ExplainFixture.ORDERS_TOPIC
                         + " consumed by " + ExplainFixture.SVC_NOTIFY);
+    }
+
+    @Test
+    void consumersOnARepoWithZeroConsumersIsDistinguishableFromTheRepoNotBeingInTheKb() {
+        // lib-legacy is genuinely indexed but has no gradle/api-usage/rest/kafka consumers at
+        // all, so every ConsumerFacts section is empty -- without a citation fact for the repo
+        // itself, Evidence.isEmpty() reads exactly like "lib-legacy is not in the KB", which is
+        // the confusion sdd explain exists to prevent (non-repo kinds never have this problem:
+        // their citation section always carries at least one fact).
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO repo(name, path, kind) VALUES ('lib-legacy','/w/7','LIBRARY')");
+            h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (7,':','UNKNOWN')");
+        });
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.REPO, "lib-legacy", false)),
+                List.of(), "what consumes lib-legacy?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        assertThat(evidence.isEmpty()).isFalse();
+        assertThat(texts(section(evidence, "Resolved repo 'lib-legacy'"))).isNotEmpty();
     }
 
     // --- consumers: endpoint ---------------------------------------------------------------------
