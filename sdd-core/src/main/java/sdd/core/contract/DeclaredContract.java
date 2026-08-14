@@ -4,6 +4,8 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -187,21 +189,36 @@ public record DeclaredContract(String kind, List<String> members, List<String> p
 
     // -- kafka -----------------------------------------------------------------------------------
 
+    /** The declared roles, and the {@code SpringModel.KafkaUse.role()} literals {@code KafkaExtractor}
+     *  actually emits for each — the only two values that field ever takes. Both spellings are
+     *  accepted on the declared side and canonicalize to the human one; the actual side is mapped
+     *  onto the same space in {@link #canonicalizeKafkaActual}. Without this mapping every declared
+     *  kafka contract compares {@code produces <topic>} against {@code PRODUCER <topic>} and reports
+     *  DIVERGED_FROM_PLAN no matter how correct the implementation is. */
+    private static final Map<String, String> KAFKA_ROLES = Map.of(
+            "produces", "produces", "producer", "produces",
+            "consumes", "consumes", "consumer", "consumes");
+
     private static void parseKafkaLine(String line, List<String> members, List<String> problems) {
         String[] parts = line.split("\\s+");
-        if (parts.length != 2) {
-            problems.add("malformed kafka declaration '" + line + "'; expected <role> <topic>");
+        String role = parts.length == 2 ? KAFKA_ROLES.get(parts[0].toLowerCase(Locale.ROOT)) : null;
+        if (role == null) {
+            problems.add("malformed kafka declaration '" + line
+                    + "'; expected <role> <topic> with role one of [produces, consumes]");
             return;
         }
-        members.add(parts[0] + " " + parts[1]);
+        members.add(role + " " + parts[1]);
     }
 
     private static void canonicalizeKafkaActual(String body, List<String> out) {
         for (String raw : body.split("\n", -1)) {
             String line = raw.strip();
-            if (!line.isEmpty()) {
-                out.add(line);
+            if (line.isEmpty() || line.startsWith("#")) {
+                continue; // the "# actualized (kafka)" header
             }
+            String[] parts = line.split("\\s+");
+            String role = parts.length == 2 ? KAFKA_ROLES.get(parts[0].toLowerCase(Locale.ROOT)) : null;
+            out.add(role == null ? line : role + " " + parts[1]);
         }
     }
 }

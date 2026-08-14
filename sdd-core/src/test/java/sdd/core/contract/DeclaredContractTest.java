@@ -82,6 +82,41 @@ class DeclaredContractTest {
     }
 
     @Test
+    void aKafkaDeclarationMatchesTheExtractorsOwnProducerConsumerVocabulary() {
+        // KafkaExtractor only ever writes the literals PRODUCER/CONSUMER into KafkaUse.role(), and
+        // ContractActualizer.kafka() emits that field verbatim. A declared "consumes <topic>" that
+        // did not canonicalize onto it would report DIVERGED_FROM_PLAN for every correct kafka
+        // implementation there is.
+        DeclaredContract declared = DeclaredContract.parse("kafka", "consumes t.orders");
+        assertThat(declared.problems()).isEmpty();
+        assertThat(declared.missingFrom("# actualized (kafka)\nCONSUMER t.orders\n")).isEmpty();
+        assertThat(DeclaredContract.parse("kafka", "produces t.orders")
+                .missingFrom("# actualized (kafka)\nPRODUCER t.orders\n")).isEmpty();
+        // and the roles still do not cross: a declared producer is not met by a consumer
+        assertThat(DeclaredContract.parse("kafka", "produces t.orders")
+                .missingFrom("# actualized (kafka)\nCONSUMER t.orders\n"))
+                .containsExactly("produces t.orders");
+    }
+
+    @Test
+    void aKafkaDeclarationMayAlsoBeWrittenInTheExtractorsSpelling() {
+        // Both spellings are accepted and canonicalize to one, so a human who copied a role out of
+        // an actualized body is not punished for it.
+        DeclaredContract declared = DeclaredContract.parse("kafka", "PRODUCER t.orders");
+        assertThat(declared.problems()).isEmpty();
+        assertThat(declared.members()).containsExactly("produces t.orders");
+        assertThat(declared.missingFrom("PRODUCER t.orders\n")).isEmpty();
+    }
+
+    @Test
+    void anUnknownKafkaRoleIsAProblemNotAnUnmatchableMember() {
+        DeclaredContract declared = DeclaredContract.parse("kafka", "reads t.orders");
+        assertThat(declared.members()).isEmpty();
+        assertThat(declared.problems()).singleElement().asString()
+                .contains("reads t.orders").contains("produces").contains("consumes");
+    }
+
+    @Test
     void blankDeclaredTextIsEmptyAndNotAProblem() {
         DeclaredContract declared = DeclaredContract.parse("java-api", "   \n\n  ");
         assertThat(declared.isEmpty()).isTrue();

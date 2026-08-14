@@ -78,7 +78,7 @@ Signatures below were read from the code; the literals in the task blocks compil
 |---|---|---|---|
 | `java-api` | `com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier` | `com.trading.pricing.core.JdbcTierResolver` + `  resolveTier(String): ClientTier` | `com.trading.pricing.core.JdbcTierResolver#resolveTier(String):ClientTier` |
 | `rest` | `GET /api/admin/tier-spreads` | `GET /api/admin/tier-spreads -> com.x.C#m` | `GET /api/admin/tier-spreads` |
-| `kafka` | `produces orders.v1` | `produces orders.v1` | `produces orders.v1` |
+| `kafka` | `produces orders.v1` (or the extractor's own `PRODUCER orders.v1`) | `PRODUCER orders.v1` — `KafkaExtractor` only ever emits the literals `PRODUCER`/`CONSUMER` | `produces orders.v1` |
 
 **Type normalization (java-api only):** every type token is reduced to its simple name, *including inside generics*, because `ApiSurfaceExtractor` emits simple names — `java.util.Optional<com.trading.model.Tier>` and `Optional<Tier>` must compare equal. Reduce each maximal run of `[A-Za-z0-9_.$]` by keeping the text after its last `.`. Whitespace is collapsed and spaces around `<`, `>`, `,`, `:` removed.
 

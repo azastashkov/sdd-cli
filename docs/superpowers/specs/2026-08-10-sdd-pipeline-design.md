@@ -160,7 +160,12 @@ check that cannot check. Per kind:
   extractor's `-> <fqcn>#<method>` is an implementation detail no one approves at Gate 1, so it is
   excluded from both the declaration and the comparison. Status codes and response types are not
   extracted today and therefore stay in prose.
-- `kafka` — `<role> <topic>`, e.g. `produces orders.v1`.
+- `kafka` — `<role> <topic>` with role `produces` or `consumes`, e.g. `produces orders.v1`. This is the
+  one kind where the *normalized* half of the rule does real work: `KafkaExtractor` writes the role as
+  the literal `PRODUCER`/`CONSUMER` and the actualizer emits that field verbatim, so both sides are
+  canonicalized onto the human spelling (`PRODUCER` → `produces`, `CONSUMER` → `consumes`) and a
+  declaration may be written either way. Those two are the only role values the extractor ever
+  produces, so any other role is a grammar error at Gate 1 rather than a member that can never match.
 
 Prose keeps its place alongside the block: it carries intent and the constraints no extractor sees.
 

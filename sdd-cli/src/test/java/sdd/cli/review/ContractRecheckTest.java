@@ -357,6 +357,51 @@ class ContractRecheckTest {
         assertThat(finding.detail()).contains("malformed java-api declaration");
     }
 
+    // -- conformance through the REAL actualizer, per kind ------------------------------------
+    //
+    // Every other conformance case here is java-api. A containment check whose two sides are both
+    // hand-written proves only that the grammar agrees with itself — which is exactly how the
+    // kafka vocabulary mismatch (declared "consumes" vs the extractor's literal "CONSUMER")
+    // survived review. These two derive the ACTUAL side from ContractActualizer.actualize against
+    // a real fixture tree, so the declared grammar is pinned to what Gate 2 can genuinely extract.
+
+    private Path libWithKafkaListener() throws Exception {
+        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme/svc"));
+        Files.writeString(root.resolve("OrderListener.java"), """
+                package com.acme.svc;
+                import org.springframework.kafka.annotation.KafkaListener;
+                @KafkaListener(topics = "t.orders")
+                public class OrderListener {
+                }
+                """);
+        return ws.resolve("lib");
+    }
+
+    @Test
+    void aKafkaContractIsComparedAgainstWhatTheActualizerReallyEmits() throws Exception {
+        Path lib = libWithKafkaListener();
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract met = new PlanModel.PlanContract("c1", "kafka", "lib",
+                List.of("svc"), "consumes t.orders", null, List.of("consumes t.orders"));
+        store.writeContract(runDir, "c1", ContractActualizer.actualize(lib, List.of(met)).get("c1"));
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(met), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        assertThat(findings.get(0).status()).isEqualTo(ContractRecheck.Status.MATCHES);
+        assertThat(findings.get(0).conformance()).isEqualTo(ContractRecheck.Conformance.DECLARED_MET);
+        assertThat(findings.get(0).missing()).isEmpty();
+
+        // ...and the check still has teeth: the same tree against the opposite role diverges.
+        PlanModel.PlanContract wrongRole = new PlanModel.PlanContract("c1", "kafka", "lib",
+                List.of("svc"), "produces t.orders", null, List.of("produces t.orders"));
+        ContractRecheck.Finding diverged = ContractRecheck.check(plan(wrongRole), succeeded(),
+                Map.of("lib", lib), store, runDir).get(0);
+        assertThat(diverged.conformance()).isEqualTo(ContractRecheck.Conformance.DIVERGED_FROM_PLAN);
+        assertThat(diverged.missing()).containsExactly("produces t.orders");
+    }
+
     @Test
     void everyDeclaredTypeMissingFromExtractionIsDivergedNotNotComparable() throws Exception {
         // Extraction genuinely ran (the provider has a real checkout) but found zero matches for
