@@ -325,6 +325,73 @@ class ReviewReportTest {
     }
 
     @Test
+    void aDivergedContractNamesEveryMissingMemberInTheReport() {
+        // The case that must be visible: the implementation has been wrong since implement time
+        // (fresh == recorded, so the drift axis says MATCHES), yet it diverges from what Gate 1
+        // approved. Without this test, "0 mismatches" would hide a real interface violation.
+        RunState state = new RunState("SPEC-1-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);
+        PlanModel plan = planWithContracts(1);
+        List<ContractRecheck.Finding> findings = List.of(
+                new ContractRecheck.Finding("contract-0", "lib", "java-api",
+                        ContractRecheck.Status.MATCHES, "", "main",
+                        ContractRecheck.Conformance.DIVERGED_FROM_PLAN,
+                        List.of("com.trading.pricing.core.TierResolver#tierFor(String):Optional<Tier>")));
+
+        String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+                List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
+                "runbook", RebuildScope.estate());
+
+        assertThat(report).contains("## Contract re-check");
+        assertThat(report).contains("DIVERGED_FROM_PLAN")
+                .contains("declared but not found: "
+                        + "com.trading.pricing.core.TierResolver#tierFor(String):Optional<Tier>");
+    }
+
+    @Test
+    void theSummaryCountsEveryConformanceState() {
+        RunState state = new RunState("SPEC-1-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);
+        PlanModel plan = planWithContracts(3);
+        List<ContractRecheck.Finding> findings = List.of(
+                new ContractRecheck.Finding("contract-0", "lib", "java-api",
+                        ContractRecheck.Status.MATCHES, "", "main",
+                        ContractRecheck.Conformance.DECLARED_MET, List.of()),
+                new ContractRecheck.Finding("contract-1", "lib", "java-api",
+                        ContractRecheck.Status.MATCHES, "", "main",
+                        ContractRecheck.Conformance.DIVERGED_FROM_PLAN, List.of("com.acme.Api#f():int")),
+                new ContractRecheck.Finding("contract-2", "lib", "java-api",
+                        ContractRecheck.Status.MATCHES, "", "main",
+                        ContractRecheck.Conformance.NOT_DECLARED, List.of()));
+
+        String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+                List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
+                "runbook", RebuildScope.estate());
+
+        assertThat(report).contains("- Plan conformance: 1 met, 1 diverged, 1 undeclared, 0 not comparable");
+    }
+
+    @Test
+    void anUndeclaredContractSaysSoRatherThanClaimingConformance() {
+        RunState state = new RunState("SPEC-1-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);
+        PlanModel plan = planWithContracts(1);
+        // Already shown for another reason (DRIFTED on the status axis) — proves that once shown,
+        // an undeclared contract's conformance is stated explicitly rather than left blank (which
+        // would read as nothing-to-report) or mislabeled as met.
+        List<ContractRecheck.Finding> findings = List.of(
+                new ContractRecheck.Finding("contract-0", "lib", "java-api",
+                        ContractRecheck.Status.DRIFTED, "bodies differ", "main",
+                        ContractRecheck.Conformance.NOT_DECLARED, List.of()));
+
+        String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+                List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
+                "runbook", RebuildScope.estate());
+
+        assertThat(report).contains("NOT_DECLARED").doesNotContain("DECLARED_MET");
+    }
+
+    @Test
     void diffStatsAndUnknownStateStillRenderAsBefore() {
         RunState state = new RunState("SPEC-1-v1", List.of(), null, 7L);
         Map<String, RunGit.DiffStat> stats = Map.of("lib", new RunGit.DiffStat(2, 10, 3));

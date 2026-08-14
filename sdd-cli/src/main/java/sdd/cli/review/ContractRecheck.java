@@ -48,7 +48,15 @@ public final class ContractRecheck {
 
     /** The conformance axis's own verdict plus whatever explanatory text it wants folded into the
      *  finding's shared {@code detail} — kept separate from {@code Finding} itself so {@link #check}
-     *  can compose it with the (independently derived) status detail before construction. */
+     *  can compose it with the (independently derived) status detail before construction.
+     *
+     *  <p>{@code DIVERGED_FROM_PLAN} is the one verdict that carries no prose here: its explanation
+     *  <em>is</em> the {@code missing} list, and {@code ReviewReport} renders that list directly as
+     *  indented bullets once a finding's conformance is shown separately from {@code detail}
+     *  (Phase 5C-1 task 5). A prose summary of the same list folded into {@code detail} would
+     *  duplicate it verbatim in the report. Every other verdict (malformed declaration, no body
+     *  extracted, truncation) has no structured field to carry its reason, so it keeps explaining
+     *  itself in prose here. */
     private record ConformanceResult(Conformance conformance, List<String> missing, String detail) {
     }
 
@@ -176,8 +184,9 @@ public final class ContractRecheck {
                     "declared member(s) not found before the 4000-char actualization cap"
                             + " — divergence beyond the cap cannot be detected");
         }
-        return new ConformanceResult(Conformance.DIVERGED_FROM_PLAN, missing,
-                "diverges from the declared contract — missing: " + String.join(", ", missing));
+        // No prose: the missing list itself is the explanation, and ReviewReport renders it as
+        // indented bullets — see the ConformanceResult javadoc for why this branch is silent.
+        return new ConformanceResult(Conformance.DIVERGED_FROM_PLAN, missing, "");
     }
 
     private static String combineDetail(String statusDetail, String conformanceDetail) {

@@ -13,6 +13,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Renders the Gate-2 review report (design line 67): estate-wide state, per-repo diffstats, human
@@ -187,6 +188,22 @@ public final class ReviewReport {
                     + "branch it was checked out at");
         }
         md.append('\n');
+        appendConformanceCounts(md, contracts);
+    }
+
+    /** The second, independent axis (design amendment 2026-08-14): not "did the implementation
+     *  change since the run recorded it" but "does it match what Gate 1 approved". Counted
+     *  separately from the mismatch total above — a {@code MATCHES}-status finding can still be
+     *  {@code DIVERGED_FROM_PLAN}, so this line is the only place that count is visible at all. */
+    private static void appendConformanceCounts(StringBuilder md, List<ContractRecheck.Finding> contracts) {
+        Map<ContractRecheck.Conformance, Long> counts = contracts.stream()
+                .collect(Collectors.groupingBy(ContractRecheck.Finding::conformance, Collectors.counting()));
+        md.append("- Plan conformance: ")
+                .append(counts.getOrDefault(ContractRecheck.Conformance.DECLARED_MET, 0L)).append(" met, ")
+                .append(counts.getOrDefault(ContractRecheck.Conformance.DIVERGED_FROM_PLAN, 0L)).append(" diverged, ")
+                .append(counts.getOrDefault(ContractRecheck.Conformance.NOT_DECLARED, 0L)).append(" undeclared, ")
+                .append(counts.getOrDefault(ContractRecheck.Conformance.NOT_COMPARABLE, 0L)).append(" not comparable")
+                .append('\n');
     }
 
     private static void appendDecisionCounts(StringBuilder md, PlanModel plan,
@@ -278,13 +295,21 @@ public final class ReviewReport {
 
     private static void appendContracts(StringBuilder md, List<ContractRecheck.Finding> contracts,
                                         Set<String> unstaged) {
-        List<ContractRecheck.Finding> nonMatches = contracts.stream()
-                .filter(f -> f.status() != ContractRecheck.Status.MATCHES).toList();
-        if (nonMatches.isEmpty()) {
+        // Either axis can make a finding worth a human's attention: a non-MATCHES status (the
+        // original condition), OR a MATCHES status that still diverges from what Gate 1 approved —
+        // the trading-product-a case (Tier shipped where the contract said Optional<Tier>) is
+        // Status.MATCHES precisely because the implementation has been wrong since implement time.
+        // Without the second half of this OR, that finding would fold into "0 mismatches" with no
+        // detail section at all.
+        List<ContractRecheck.Finding> notable = contracts.stream()
+                .filter(f -> f.status() != ContractRecheck.Status.MATCHES
+                        || f.conformance() == ContractRecheck.Conformance.DIVERGED_FROM_PLAN)
+                .toList();
+        if (notable.isEmpty()) {
             return;
         }
         md.append("## Contract re-check\n\n");
-        for (ContractRecheck.Finding finding : nonMatches) {
+        for (ContractRecheck.Finding finding : notable) {
             md.append("- `").append(finding.contractId()).append("` (").append(finding.provider())
                     .append(", ").append(finding.kind()).append("): ").append(finding.status());
             if (finding.detail() != null && !finding.detail().isBlank()) {
@@ -299,7 +324,19 @@ public final class ReviewReport {
                 md.append(" — pre-run code: ").append(finding.provider())
                         .append(" could not be staged at its checkpoint");
             }
+            // DECLARED_MET is the clean outcome on this axis — silent, the same idiom as a MATCHES
+            // status never being spelled out. Every other value is stated explicitly: NOT_DECLARED
+            // must never read as a pass, and NOT_COMPARABLE must never read as either a pass or a
+            // failure, so both are named rather than left for the reader to infer from silence.
+            if (finding.conformance() != ContractRecheck.Conformance.DECLARED_MET) {
+                md.append(", conformance: ").append(finding.conformance());
+            }
             md.append('\n');
+            // Only DIVERGED_FROM_PLAN ever populates this (Finding's own invariant) — named
+            // individually rather than joined into one line so a human can act on each separately.
+            for (String missing : finding.missing()) {
+                md.append("  - declared but not found: ").append(missing).append('\n');
+            }
         }
         md.append('\n');
     }

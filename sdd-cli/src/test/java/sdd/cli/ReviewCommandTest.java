@@ -3,6 +3,8 @@ package sdd.cli;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
+import sdd.cli.implement.ContractActualizer;
+import sdd.cli.implement.PlanModel;
 import sdd.cli.implement.RepoRun;
 import sdd.cli.implement.RepoState;
 import sdd.cli.implement.RunGit;
@@ -532,6 +534,70 @@ class ReviewCommandTest {
         assertThat(RunStore.system().readDecisions(runDir).get("lib").decision())
                 .isEqualTo(Decision.APPROVED);   // the decision stands; only the squash was refused
         assertThat(Files.readString(lib.path().resolve("A.java"))).isEqualTo("class A { int mine; }\n");
+    }
+
+    @Test
+    void divergenceDoesNotChangeTheExitCode() throws Exception {
+        // The real-estate case (design line 66: "mismatches = report warnings, human adjudicates"):
+        // trading-product-a shipped Tier where the contract said Optional<Tier>. The implementation
+        // has been wrong since implement time (fresh == recorded, so the drift axis is MATCHES),
+        // but it diverges from what Gate 1 approved. A human adjudicates it in the report — it must
+        // never fail the review on its own.
+        FixtureRepo lib = FixtureRepo.in(ws, "lib").file(
+                "src/main/java/com/trading/pricing/core/TierResolver.java", """
+                package com.trading.pricing.core;
+                public class TierResolver {
+                    public Tier tierFor(String account) { return null; }
+                }
+                """);
+        lib.commit("base");
+        String baseSha = lib.headSha();
+
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')",
+                    lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+        String planJson = """
+                { "spec_id":"SPEC-9","plan_version":1,"spec_sha256":"z","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],
+                  "contracts":[{"id":"c1","kind":"java-api","provider":"lib","consumers":[],
+                    "body":"TierResolver.tierFor","compat":null,
+                    "declared":["com.trading.pricing.core.TierResolver#tierFor(String): Optional<Tier>"]}],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["TierResolver.java"],"verification":[],"sub_spec":"Add TierResolver."}] }
+                """.formatted(baseSha);
+        Path planPath = ws.resolve("s.plan.json");
+        Files.writeString(planPath, planJson);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", planJson, "");
+        // The recorded contract matches what a real "sdd implement" run would have actualized from
+        // this exact (wrong) source — fresh will equal recorded, pinning Status.MATCHES so the
+        // divergence can only be visible via the conformance axis, never the drift axis.
+        PlanModel.PlanContract contract = new PlanModel.PlanContract("c1", "java-api", "lib",
+                List.of(), "TierResolver.tierFor", null,
+                List.of("com.trading.pricing.core.TierResolver#tierFor(String): Optional<Tier>"));
+        store.writeContract(runDir, "c1",
+                ContractActualizer.actualize(lib.path(), List.of(contract)).get("c1"));
+        store.releaseLock(runDir);
+        store.writeState(runDir, new RunState("SPEC-9-v1",
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/lib", baseSha, "ok")),
+                null, 0L));
+
+        int exit = review(new StringWriter(), new StringWriter(), "--no-rebuild", planPath.toString());
+
+        assertThat(exit).isZero();
+        String report = Files.readString(runDir.resolve("review/report.md"));
+        assertThat(report).contains("DIVERGED_FROM_PLAN")
+                .contains("declared but not found: "
+                        + "com.trading.pricing.core.TierResolver#tierFor(String):Optional<Tier>");
     }
 
     /** A one-repo estate whose run branch carries one checkpoint commit and is left restored to the
