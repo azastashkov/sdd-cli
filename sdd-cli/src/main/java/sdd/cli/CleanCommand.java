@@ -67,12 +67,13 @@ public final class CleanCommand implements Callable<Integer> {
         try {
             List<Path> runDirs;
             if (planJsonPath == null) {
-                runDirs = allRunDirs();
+                runDirs = RunDirs.all(workspace);
             } else {
-                runDirs = oneRunDir(err);
-                if (runDirs == null) {
-                    return 4;   // oneRunDir already explained why
+                Path runDir = RunDirs.one(workspace, planJsonPath, "clean", err);
+                if (runDir == null) {
+                    return 4;   // RunDirs.one already explained why
                 }
+                runDirs = List.of(runDir);
             }
             if (runDirs.isEmpty()) {
                 out.println("nothing to clean");
@@ -235,34 +236,6 @@ public final class CleanCommand implements Callable<Integer> {
         return true;
     }
 
-    private List<Path> allRunDirs() throws IOException {
-        Path runsDir = workspace.resolve(".sdd/runs");
-        if (!Files.isDirectory(runsDir)) {
-            return List.of();
-        }
-        try (Stream<Path> children = Files.list(runsDir)) {
-            return children.filter(p -> Files.exists(p.resolve("state.json"))).sorted().toList();
-        }
-    }
-
-    /** Null means "the caller should exit 4" (already explained to err) — an explicitly named plan
-     *  with no run dir is a hard error, unlike scanning the whole workspace and finding nothing. */
-    private List<Path> oneRunDir(PrintWriter err) throws IOException {
-        String name = planJsonPath.getFileName().toString();
-        if (!name.endsWith(".plan.json")) {
-            err.println("error: clean expects a .plan.json file");
-            return null;
-        }
-        PlanModel plan = PlanJsonReader.read(Files.readString(planJsonPath));
-        String runId = sanitize(plan.specId()) + "-v" + plan.planVersion();
-        Path runDir = workspace.resolve(".sdd/runs/" + runId);
-        if (!Files.exists(runDir.resolve("state.json"))) {
-            err.println("error: no run to clean at " + runDir);
-            return null;
-        }
-        return List.of(runDir);
-    }
-
     private Map<String, Path> repoPaths() {
         Map<String, Path> paths = new HashMap<>();
         if (!Files.exists(workspace.resolve(".sdd/index.db"))) {
@@ -298,11 +271,6 @@ public final class CleanCommand implements Callable<Integer> {
         }
         Files.deleteIfExists(stateJson);
         Files.delete(dir);
-    }
-
-    private static String sanitize(String id) {
-        String cleaned = id == null ? "" : id.replaceAll("[^A-Za-z0-9._-]", "-");
-        return cleaned.isBlank() ? "run" : cleaned;
     }
 
     private static String shortSha(String sha) {

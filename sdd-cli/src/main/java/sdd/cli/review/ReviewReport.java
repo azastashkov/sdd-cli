@@ -191,15 +191,22 @@ public final class ReviewReport {
 
     private static void appendDecisionCounts(StringBuilder md, PlanModel plan,
                                              Map<String, DecisionRecord> decisions) {
+        md.append(decisionsSummaryLine(plan, decisions)).append('\n');
+    }
+
+    /** The report's {@code "- Decisions: N approved, N rejected, N redo, N pending"} line (no
+     *  trailing newline) — the one place this wording is built, so {@code sdd status} can print it
+     *  identically rather than hand-syncing a second copy of the format string. */
+    public static String decisionsSummaryLine(PlanModel plan, Map<String, DecisionRecord> decisions) {
         Map<Decision, Integer> counts = new LinkedHashMap<>();
         for (String repo : Scheduler.sequence(plan.order())) {
             counts.merge(decisionOf(decisions, repo), 1, Integer::sum);
         }
-        md.append("- Decisions: ").append(counts.getOrDefault(Decision.APPROVED, 0))
-                .append(" approved, ").append(counts.getOrDefault(Decision.REJECTED, 0))
-                .append(" rejected, ").append(counts.getOrDefault(Decision.REDO, 0))
-                .append(" redo, ").append(counts.getOrDefault(Decision.PENDING, 0))
-                .append(" pending\n");
+        return "- Decisions: " + counts.getOrDefault(Decision.APPROVED, 0)
+                + " approved, " + counts.getOrDefault(Decision.REJECTED, 0)
+                + " rejected, " + counts.getOrDefault(Decision.REDO, 0)
+                + " redo, " + counts.getOrDefault(Decision.PENDING, 0)
+                + " pending";
     }
 
     private static void appendRepos(StringBuilder md, PlanModel plan, Map<String, RepoRun> byName,
