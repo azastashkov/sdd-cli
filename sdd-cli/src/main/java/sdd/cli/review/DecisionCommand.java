@@ -25,8 +25,14 @@ import java.util.concurrent.Callable;
  * persisting it, recording the event, and re-rendering {@code report.md} so the artifact reflects
  * the decision rather than a pre-decision snapshot.
  *
- * <p>No lock is taken: {@code RunStore.writeDecisions} is a temp+atomic-rename write precisely so
- * two humans deciding different repos concurrently cannot lose each other's verdicts.
+ * <p><b>Single writer at a time.</b> No lock is taken beyond the run lock {@code sdd implement}
+ * holds, and none of what happens below is atomic as a whole: the decisions map is read
+ * ({@code readDecisions}), edited, and written back in full. {@code RunStore.writeDecisions}
+ * publishes through an atomic rename, so a reader never sees a half-written file and two writers
+ * cannot corrupt each other's staging file — but that is all it buys. Two humans deciding the same
+ * run concurrently can still lose a verdict: the later write simply wins, and a lost APPROVED
+ * record is indistinguishable from "never decided" to {@code sdd clean}. Serialising that needs a
+ * lock spanning the whole read-modify-write, which this command does not have.
  */
 public abstract class DecisionCommand implements Callable<Integer> {
     /** Only for {@code --workspace}, which is declared {@code scope = INHERIT} on the parent. */
@@ -179,7 +185,7 @@ public abstract class DecisionCommand implements Callable<Integer> {
             // The decision stands; only the squash was refused (dirty tree, or the branch moved
             // off its checkpoint). Exit 2 so a script notices the repo still needs attention.
             err.println("squash refused: " + result.message());
-            return Followup.exiting(2);
+            return afterRestore(result, 2, err);
         }
         if (!result.squashed()) {
             // Either the branch already was one commit or its range was a net no-op — in both
@@ -188,7 +194,7 @@ public abstract class DecisionCommand implements Callable<Integer> {
             // no net change since <base>"), and SquashApprove already knows which one fired —
             // so print its message rather than flattening both into one re-derived line.
             out.println(result.message());
-            return Followup.none();
+            return afterRestore(result, 0, err);
         }
         // Load-bearing, not bookkeeping: Resume.prepare fails any SUCCEEDED repo whose branch
         // head differs from its recorded checkpoint with exit 4, so without this write-back the
@@ -200,7 +206,31 @@ public abstract class DecisionCommand implements Callable<Integer> {
         // squash only moved the branch ref); SquashApprove made the identical call moments ago.
         out.println("squashed " + RunGit.commitsBetween(root, baseSha, repoRun.checkpointSha())
                 + " commits into " + shortSha(result.sha()));
-        return Followup.none();
+        return afterRestore(result, 0, err);
+    }
+
+    /**
+     * Turns {@link SquashApprove}'s restore failure into the {@link Followup} the caller returns.
+     * Deliberately called only AFTER the {@code state.json} write-back above: the restore used to
+     * throw out of {@code approve}'s own {@code finally}, which replaced the {@code Result} and with
+     * it the write-back — leaving the branch squashed while {@code state.json} still named the old
+     * checkpoint. That residue is invisible afterwards ({@link RunContext#checkpoints} excludes
+     * APPROVED repos from drift, because approve legitimately rewrites the checkpoint) and hard-fails
+     * the next {@code sdd implement --resume/--retry} in {@code Resume.prepare}. A stranded repo
+     * still forces a non-zero exit, exactly as before — it just no longer costs the write-back to
+     * say so, and it now reaches {@code report.md} through the same restore-failures section
+     * {@link RebuildPass}'s findings use.
+     */
+    private static Followup afterRestore(SquashApprove.Result result, int exitCode, PrintWriter err) {
+        if (result.restoreFailure() == null) {
+            return exitCode == 0 ? Followup.none() : Followup.exiting(exitCode);
+        }
+        err.println("warn: could not restore " + result.restoreFailure()
+                + " — it is left on its run branch");
+        return new Followup(Math.max(exitCode, 2),
+                new RebuildPass.Outcome(Map.of(), List.of(), List.of(),
+                        List.of(result.restoreFailure()), List.of()),
+                RebuildScope.none(), List.of());
     }
 
     @Command(name = "reject", description = "Reject a repo's run branch", exitCodeOnInvalidInput = 4)

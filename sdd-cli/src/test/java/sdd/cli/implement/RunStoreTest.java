@@ -9,8 +9,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -207,6 +212,77 @@ class RunStoreTest {
                 "{\"lib\":{\"decision\":\"BLESSED\",\"reason\":\"\"}}");
 
         assertThat(store.readDecisions(runDir).get("lib").decision()).isEqualTo(Decision.PENDING);
+    }
+
+    /**
+     * The temp file each writer publishes through must be unique to that writer. With one shared
+     * fixed name ({@code decisions.json.tmp} / {@code state.json.tmp}) two concurrent writers
+     * clobber each other's staging file: A can publish B's half-written bytes, and B's own
+     * {@code Files.move} then fails {@code NoSuchFileException} — surfacing as exit 4 on a
+     * decision a human already gave. The atomic rename never protected against that; it only ever
+     * guaranteed a reader sees no half-written file, which is what the second assertion pins.
+     *
+     * <p>This does NOT make concurrent deciding safe — {@code DecisionCommand} still does a
+     * read-modify-write of the whole map across two commands' worth of code, so two humans
+     * deciding the same run concurrently can still lose a verdict. It removes the corruption, not
+     * the lost update.
+     */
+    private static void hammer(int writers, int rounds, java.util.function.IntConsumer round)
+            throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(writers);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<?>> futures = new ArrayList<>();
+        try {
+            for (int w = 0; w < writers; w++) {
+                int id = w;
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    for (int i = 0; i < rounds; i++) {
+                        round.accept(id);
+                    }
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (Future<?> future : futures) {
+                future.get();   // rethrows whatever any writer threw
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void concurrentDecisionWritersNeitherCorruptTheFileNorFailOnASharedTempName() throws Exception {
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+
+        hammer(6, 60, id -> {
+            store.writeDecisions(runDir, Map.of("repo" + id,
+                    new DecisionRecord(Decision.APPROVED, "reason " + id)));
+            // A reader must never see a half-written file: readDecisions parses the whole
+            // document, so a torn read fails here rather than degrading silently.
+            assertThat(store.readDecisions(runDir)).hasSize(1);
+        });
+
+        assertThat(store.readDecisions(runDir)).hasSize(1);
+        assertThat(Files.list(store.reviewDir(runDir)).map(p -> p.getFileName().toString()).toList())
+                .containsExactly("decisions.json");   // every staging file cleaned up
+    }
+
+    @Test
+    void concurrentStateWritersNeitherCorruptTheFileNorFailOnASharedTempName() throws Exception {
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+
+        hammer(6, 60, id -> {
+            RunState state = new RunState("S-v1", List.of("lib"));
+            state.set("lib", RepoState.SUCCEEDED, "sdd/S-v1/lib", "sha" + id, "done");
+            store.writeState(runDir, state);
+            assertThat(store.readState(runDir).stateOf("lib")).isEqualTo(RepoState.SUCCEEDED);
+        });
+
+        assertThat(store.readState(runDir).runId()).isEqualTo("S-v1");
+        assertThat(Files.list(runDir).map(p -> p.getFileName().toString()))
+                .noneMatch(name -> name.endsWith(".tmp"));
     }
 
     @Test

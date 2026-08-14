@@ -200,6 +200,44 @@ class ReviewDecisionsCommandTest {
     }
 
     @Test
+    void aFailedRestoreAfterTheSquashStillWritesTheNewCheckpointBackToStateJson() throws Exception {
+        Fixture f = fixture();
+        // JGit's commit runs the repo's post-commit hook — the only point INSIDE SquashApprove at
+        // which a test can act. Deleting the branch the human was standing on simulates anything
+        // (another process, a colleague's `git branch -D`) that makes the restore checkout fail
+        // AFTER the squash has already moved the branch.
+        Path hooks = f.lib().path().resolve(".git/hooks");
+        Files.createDirectories(hooks);
+        Path hook = hooks.resolve("post-commit");
+        Files.writeString(hook, "#!/bin/sh\nrm -f .git/refs/heads/" + f.originalBranch() + "\n");
+        Files.setPosixFilePermissions(hook, PosixFilePermissions.fromString("rwxr-xr-x"));
+
+        Invocation r = exec("--workspace", ws.toString(), "approve", "lib", f.planPath().toString());
+
+        // A failed restore still forces a non-zero exit — the estate-safety contract is unchanged.
+        assertThat(r.exit()).isEqualTo(2);
+        assertThat(r.err()).contains("could not restore").contains("lib");
+
+        // The squash really happened...
+        String newHead = RunGit.branchHead(f.lib().path(), LIB_BRANCH);
+        assertThat(newHead).isNotEqualTo(f.libCheckpoint());
+        assertThat(commitsOnBranch(f.lib().path(), f.libBase(), LIB_BRANCH)).isEqualTo(1);
+        // ...so state.json MUST name the new sha. Without the write-back, Resume.prepare hard-fails
+        // `sdd implement --resume/--retry` with exit 4 over a checkpoint that is no longer HEAD,
+        // and nothing in a later `sdd review` can see it: RunContext.checkpoints excludes APPROVED
+        // repos from drift precisely because approve legitimately rewrites the checkpoint.
+        RunState reloaded = RunStore.system().readState(f.runDir());
+        assertThat(checkpointOf(reloaded, "lib")).isEqualTo(newHead);
+
+        // The verdict stands, and the stranded repo reaches the artifact a human reads, not just
+        // this invocation's stderr.
+        assertThat(RunStore.system().readDecisions(f.runDir()).get("lib").decision())
+                .isEqualTo(Decision.APPROVED);
+        assertThat(Files.readString(f.runDir().resolve("review/report.md")))
+                .contains("Branch restore failures").contains("lib");
+    }
+
+    @Test
     void aRejectedUpstreamRefusesItsDownstreamApprovalWithExitTwo() throws Exception {
         Fixture f = fixture();
 
@@ -275,6 +313,30 @@ class ReviewDecisionsCommandTest {
         assertThat(RunStore.system().readDecisions(f.runDir()).get("lib").decision())
                 .isEqualTo(Decision.REDO);
         assertThat(Files.readString(f.lib().path().resolve("A.java"))).isEqualTo("class A { int mine; }\n");
+    }
+
+    @Test
+    void aRedoWhoseProviderHasNoCheckpointToStageRefusesToReportACleanPass() throws Exception {
+        Fixture f = fixture();
+        // lib FAILED, its branch still on record. RebuildPass's SUCCEEDED filter skips it before it
+        // ever looks at the branch, so nothing stages it — but Propagation.includeBuildArgs still
+        // composes its path into svc's verification, so svc is built against lib's PRE-RUN tree.
+        // Unlike a full `sdd review` (where a non-SUCCEEDED repo already forces exit 2 through
+        // allSucceeded), redo's exit code is computed from staging/restore alone, so this used to
+        // print a green verdict and exit 0.
+        RunStore.system().writeState(f.runDir(), new RunState(RUN_ID, List.of(
+                new RepoRun("lib", RepoState.FAILED, LIB_BRANCH, f.libCheckpoint(), "boom"),
+                new RepoRun("svc", RepoState.SUCCEEDED, SVC_BRANCH, f.svcCheckpoint(), "ok")),
+                null, 21L));
+
+        Invocation redo = exec("--workspace", ws.toString(), "redo", "lib", f.planPath().toString());
+
+        assertThat(redo.exit()).isEqualTo(2);
+        assertThat(redo.err()).contains("could not stage").contains("lib")
+                .contains("not SUCCEEDED in this run");
+        assertThat(redo.out()).contains("re-verify svc:").contains("UNRELIABLE — upstream not staged");
+        assertThat(Files.readString(f.runDir().resolve("review/report.md")))
+                .contains("Staging failures").contains("lib");
     }
 
     @Test

@@ -98,6 +98,15 @@ public final class InteractiveReview {
                                 DecisionCommand.squashAndRecord(run, repo, out, err);
                         followup.trailer().forEach(out::println);
                         worst = Math.max(worst, followup.exitCode());
+                        // A squash whose restore failed strands the repo off its original branch.
+                        // A scripted `sdd review approve` puts that in its report; the walk's own
+                        // final re-render must carry it too, or the same failure is visible from
+                        // one entry point and silent from the other. It also supersedes whatever
+                        // the caller's own pass said about THIS repo, hence replaceForRepos.
+                        if (followup.rebuild() != null) {
+                            replaceForRepos(restoreFailures, List.of(repo),
+                                    followup.rebuild().restoreFailures());
+                        }
                         continue walk;
                     }
                     case "r" -> {
@@ -150,10 +159,13 @@ public final class InteractiveReview {
 
     /** Drops every {@code "<repo>: ..."} line whose repo is in {@code repos}, then appends the
      *  fresh ones — a redo's re-verify replaces its downstream subset's stale staging/restore
-     *  findings rather than accumulating duplicates across a session with more than one redo. */
+     *  findings rather than accumulating duplicates across a session with more than one redo.
+     *  Staging is estate-wide even when the rebuild is not, so {@code fresh} also re-reports repos
+     *  OUTSIDE the subset (a FAILED repo anywhere in the run, for one); those are re-stated, not
+     *  new, so an identical line is dropped rather than listed twice. */
     private static void replaceForRepos(List<String> lines, List<String> repos, List<String> fresh) {
         lines.removeIf(line -> repos.stream().anyMatch(r -> line.startsWith(r + ":")));
-        lines.addAll(fresh);
+        fresh.stream().filter(line -> !lines.contains(line)).forEach(lines::add);
     }
 
     private static String promptReason(BufferedReader in, PrintWriter out) throws IOException {

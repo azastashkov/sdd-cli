@@ -19,6 +19,11 @@ import java.util.Map;
 public final class RunStore {
     private static final ObjectMapper JSON = new ObjectMapper();
 
+    /** Makes {@link #publishAtomically}'s staging file unique among this JVM's threads; the PID
+     *  alongside it makes it unique among processes. */
+    private static final java.util.concurrent.atomic.AtomicLong TMP_SEQUENCE =
+            new java.util.concurrent.atomic.AtomicLong();
+
     private final InstantSource clock;
 
     public RunStore(InstantSource clock) {
@@ -137,6 +142,41 @@ public final class RunStore {
         }
     }
 
+    /**
+     * Publishes {@code json} at {@code target} by writing it to a fresh, uniquely-named temp file
+     * in the same directory and then renaming it over the target.
+     *
+     * <p>The rename is what a reader benefits from: it either sees the previous file or the whole
+     * new one, never a half-written one. The uniqueness of the temp name is what a concurrent
+     * WRITER benefits from: with one shared fixed name (this used to be {@code state.json.tmp} /
+     * {@code decisions.json.tmp}) two writers stage into the same path, so one can publish the
+     * other's partial bytes and the other's own rename then fails {@code NoSuchFileException}
+     * against a file the first has already consumed.
+     *
+     * <p>Neither property makes a read-modify-write of the whole document safe: two writers that
+     * each read, edit and rewrite still lose one update, and nothing here prevents that. This
+     * removes the corruption, not the lost update.
+     *
+     * <p>The name is built rather than taken from {@code Files.createTempFile} so the published
+     * file keeps the umask-derived permissions a plain write gave it (a JDK temp file is 0600).
+     * PID separates processes; the counter separates threads within one.
+     */
+    private static void publishAtomically(Path target, String json) throws IOException {
+        Path tmp = target.resolveSibling(target.getFileName() + "." + ProcessHandle.current().pid()
+                + "-" + TMP_SEQUENCE.incrementAndGet() + ".tmp");
+        try {
+            Files.writeString(tmp, json);
+            try {
+                Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(tmp);
+        }
+    }
+
     public void writeState(Path runDir, RunState state) {
         record Snapshot(String runId, String pausedReason, long tokensSpent, List<RepoRun> repos) {
         }
@@ -144,18 +184,7 @@ public final class RunStore {
             String json = JSON.writerWithDefaultPrettyPrinter()
                     .writeValueAsString(new Snapshot(state.runId(), state.pausedReason(),
                             state.tokensSpent(), state.repos()));
-            Path tmp = runDir.resolve("state.json.tmp");
-            Files.writeString(tmp, json);
-            try {
-                try {
-                    Files.move(tmp, runDir.resolve("state.json"),
-                            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-                    Files.move(tmp, runDir.resolve("state.json"), StandardCopyOption.REPLACE_EXISTING);
-                }
-            } finally {
-                Files.deleteIfExists(tmp);
-            }
+            publishAtomically(runDir.resolve("state.json"), json);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -375,9 +404,18 @@ public final class RunStore {
         }
     }
 
-    /** Concurrent {@code sdd review approve}/{@code reject} invocations on the same run are
-     *  explicitly supported, so this copies {@link #writeState}'s temp+atomic-rename idiom: a
-     *  plain write would lose one writer's update silently, or truncate the file on a crash. */
+    /**
+     * Replaces {@code decisions.json} wholesale with {@code decisions}, through
+     * {@link #publishAtomically}: a reader is guaranteed to see either the previous file or the
+     * whole new one, and two writers cannot corrupt each other's staging file.
+     *
+     * <p><b>This does NOT make concurrent deciding safe.</b> Every caller reads the map, edits it
+     * and writes it all back across two commands' worth of code, so two humans deciding the same
+     * run at the same time can still lose a verdict — the later write simply wins, and a lost
+     * APPROVED record is indistinguishable from "never decided" to {@code sdd clean}. The commands
+     * assume a single writer at a time; serialising them needs a lock spanning that whole
+     * read-modify-write, which this method cannot provide.
+     */
     public void writeDecisions(Path runDir, Map<String, DecisionRecord> decisions) {
         record Dto(String decision, String reason) {
         }
@@ -385,19 +423,8 @@ public final class RunStore {
             Path dir = Files.createDirectories(reviewDir(runDir));
             Map<String, Dto> dto = new java.util.TreeMap<>();
             decisions.forEach((repo, record) -> dto.put(repo, new Dto(record.decision().name(), record.reason())));
-            String json = JSON.writerWithDefaultPrettyPrinter().writeValueAsString(dto);
-            Path target = dir.resolve("decisions.json");
-            Path tmp = dir.resolve("decisions.json.tmp");
-            Files.writeString(tmp, json);
-            try {
-                try {
-                    Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-                    Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
-                }
-            } finally {
-                Files.deleteIfExists(tmp);
-            }
+            publishAtomically(dir.resolve("decisions.json"),
+                    JSON.writerWithDefaultPrettyPrinter().writeValueAsString(dto));
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

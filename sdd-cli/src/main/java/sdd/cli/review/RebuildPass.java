@@ -70,12 +70,23 @@ public final class RebuildPass {
             // Topo order matters twice over: a provider is staged before the consumer that
             // composes its working tree, and rebuilt before it too.
             for (String repo : Scheduler.sequence(plan.order())) {
+                // A repo with no checkpoint to stage is NOT a repo this pass may quietly skip.
+                // Propagation.includeBuildArgs composes every INCLUDE_BUILD provider's path
+                // unconditionally, whatever its run state, so its consumers are about to be
+                // verified against its PRE-RUN working tree — the identical finding a failed
+                // checkout produces below, and recorded the same way so unstagedRepos → voidedBy →
+                // the exit code pick it up. The "<repo>: " prefix is load-bearing: that is how
+                // ReviewReport and InteractiveReview.replaceForRepos parse these lines.
                 if (state.stateOf(repo) != RepoState.SUCCEEDED) {
+                    unstageable(repo, "not SUCCEEDED in this run, composed from its working tree",
+                            stagingFailures, err);
                     continue;
                 }
                 Path root = paths.get(repo);
                 RepoRun run = byName.get(repo);
                 if (root == null || run == null || run.branch() == null) {
+                    unstageable(repo, root == null ? "no repo path on record" : "no run branch on record",
+                            stagingFailures, err);
                     continue;
                 }
                 // A checkout can legitimately fail (uncommitted conflicting changes at review
@@ -141,6 +152,16 @@ public final class RebuildPass {
             }
         }
         return new Outcome(rebuilds, notLocallyVerified, stagingFailures, restoreFailures, contracts);
+    }
+
+    /** Records a repo that could not be staged because there was no checkpoint to stage it at — as
+     *  opposed to {@link #run}'s inline catch, which handles a checkout that was attempted and
+     *  failed. Both are staging failures: the consequence for every downstream verdict is identical. */
+    private static void unstageable(String repo, String reason, List<String> stagingFailures,
+                                    PrintWriter err) {
+        stagingFailures.add(repo + ": " + reason);
+        err.println("warn: could not stage " + repo + " at a checkpoint: " + reason
+                + " — verdicts for its consumers do not reflect this run's upstream code");
     }
 
     /** Mirrors {@code ImplementCommand}'s settingsFor verification-task resolution exactly. */

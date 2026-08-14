@@ -111,8 +111,9 @@ public record RunContext(String runId, Path runDir, RunStore store, PlanModel pl
     /** Renders and writes {@code report.md}, returning its path. Decisions re-run this so the
      *  artifact a human hands to a colleague reflects the run as it stands now, not a pre-decision
      *  snapshot — which is also why the decisions it renders are re-read from disk here rather than
-     *  threaded in: every caller has just persisted them, and disk is the one shared truth two
-     *  concurrently-deciding humans both see. */
+     *  threaded in: every caller has just persisted them, and disk is the one shared truth any
+     *  other process reading this run also sees. (That is not a concurrency guarantee — the
+     *  decision commands assume a single writer at a time; see {@link DecisionCommand}.) */
     public Path writeReport(Diffs diffs, Map<String, EstateRebuild.Result> rebuilds,
                             List<String> notLocallyVerified, List<String> stagingFailures,
                             List<String> restoreFailures, List<ContractRecheck.Finding> contracts,
