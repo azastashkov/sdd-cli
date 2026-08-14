@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JacksonException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jdbi.v3.core.Jdbi;
+import sdd.core.contract.Markdown;
 import sdd.core.llm.ChatMessage;
 import sdd.core.llm.ChatModel;
 import sdd.core.llm.ChatRequest;
@@ -254,11 +255,12 @@ public final class PlanDrafter {
                 notes, false);
     }
 
-    /** Mirrors PlanMdRenderer's fence neutralization (the established anti-forgery pattern) so a
-     *  declared line can never smuggle a ``` sequence into the rendered contract fence before a
-     *  human ever reviews the plan. Grammar checking is PlanValidator's job at approve time. */
+    /** Shares {@link Markdown#neutralizeFences} with {@code PlanMdRenderer} (the established
+     *  anti-forgery pattern) so a declared line can never smuggle a ``` sequence into the rendered
+     *  contract fence before a human ever reviews the plan. Grammar checking is PlanValidator's
+     *  job at approve time. */
     private static String sanitizeDeclaredLine(String raw) {
-        return raw.strip().replace("```", "'''");
+        return Markdown.neutralizeFences(raw.strip());
     }
 
     private static List<String> filtered(JsonNode node, String field, Set<String> allowed,

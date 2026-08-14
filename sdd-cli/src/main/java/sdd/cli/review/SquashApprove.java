@@ -90,7 +90,7 @@ public final class SquashApprove {
         }
         if (!RunGit.isAtCheckpoint(repoRoot, run.branch(), run.checkpointSha())) {
             return Result.refused(repo + " branch " + run.branch() + " is no longer at its checkpoint "
-                    + shortSha(run.checkpointSha()));
+                    + Shas.shortSha(run.checkpointSha()));
         }
         // Idempotence lives here, not in squashOnto: a second squash of a real delta would
         // legitimately mint a fresh sha, so "already squashed" must be caught by the commit
@@ -98,7 +98,7 @@ public final class SquashApprove {
         int commits = RunGit.commitsBetween(repoRoot, baseSha, run.checkpointSha());
         if (commits <= 1) {
             return new Result(true, false, run.checkpointSha(), repo + " is already "
-                    + (commits == 0 ? "at " : "a single commit past ") + shortSha(baseSha)
+                    + (commits == 0 ? "at " : "a single commit past ") + Shas.shortSha(baseSha)
                     + "; nothing to squash", null);
         }
         String message = "sdd: " + repo + " for " + specId + "\n\n"
@@ -112,13 +112,9 @@ public final class SquashApprove {
             // squashed=true here would tell the human (and Task 4's state.json rewrite) that a
             // squash happened when it did not — the existing head's message is still the last
             // checkpoint's, not this one.
-            return new Result(true, false, sha, repo + " had no net change since " + shortSha(baseSha)
-                    + "; branch left at its existing head " + shortSha(sha), null);
+            return new Result(true, false, sha, repo + " had no net change since " + Shas.shortSha(baseSha)
+                    + "; branch left at its existing head " + Shas.shortSha(sha), null);
         }
         return new Result(true, true, sha, message, null);
-    }
-
-    private static String shortSha(String sha) {
-        return sha == null ? "?" : sha.substring(0, Math.min(7, sha.length()));
     }
 }

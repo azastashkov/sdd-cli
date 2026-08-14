@@ -290,8 +290,9 @@ public final class Orchestrator {
                     // consumer's work order silently loses the actualized section that is supposed
                     // to supersede the drafted delta. Say it out loud instead.
                     events.add("contract " + contract.id() + " actualized to nothing — no "
-                            + contract.kind() + " surface matching its declared types was found in "
-                            + repo + "; consumers' work orders will not carry it");
+                            + contract.kind() + " surface"
+                            + (contract.declared().isEmpty() ? "" : " matching its declared types")
+                            + " was found in " + repo + "; consumers' work orders will not carry it");
                     continue;
                 }
                 store.writeContract(runDir, contract.id(), body);

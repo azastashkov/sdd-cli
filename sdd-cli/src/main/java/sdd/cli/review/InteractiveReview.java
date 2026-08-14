@@ -217,7 +217,7 @@ public final class InteractiveReview {
         StringBuilder line = new StringBuilder();
         line.append(repo).append(": ").append(state == null ? "UNKNOWN" : state);
         if (repoRun != null && repoRun.checkpointSha() != null) {
-            line.append(", checkpoint ").append(DecisionCommand.shortSha(repoRun.checkpointSha()));
+            line.append(", checkpoint ").append(Shas.shortSha(repoRun.checkpointSha()));
         }
         return line.toString();
     }

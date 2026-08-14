@@ -107,7 +107,10 @@ public final class ReviewReport {
                 + "staged at its checkpoint and restored, and no branch drifted; "
                 + "2 = a repo is not SUCCEEDED, a rebuild/checkout failed, a repo could not be "
                 + "staged at its checkpoint (which voids every verdict downstream of it), or a "
-                + "branch has moved off the checkpoint this report describes; "
+                + "branch has moved off the checkpoint this report describes — or, from "
+                + "sdd review approve/reject/redo (which re-renders this same report), the decision "
+                + "was refused by a cross-repo invariant, or approve applied the decision but the "
+                + "squash itself failed; "
                 + "4 = no report could be produced (unusable input, no run directory, or the run's "
                 + "lock is still held)\n");
         md.append('\n');
@@ -120,34 +123,21 @@ public final class ReviewReport {
         long failed = rebuilds.values().stream().filter(r -> !r.ok()).count();
         String totals = (rebuilds.size() - failed) + " passed, " + failed + " failed";
         List<String> reverified = rebuild.reverified();
-        md.append("- Estate rebuild: ");
-        switch (rebuild.kind()) {
-            case ESTATE -> {
-                md.append(totals);
-                if (!reverified.isEmpty()) {
-                    md.append(" (estate-wide, with ").append(subtreePhrase(reverified))
-                            .append(" re-verified again after a redo)");
-                }
-            }
-            case SKIPPED -> {
-                md.append("skipped (--no-rebuild)");
-                if (!reverified.isEmpty()) {
-                    md.append("; only ").append(subtreePhrase(reverified))
-                            .append(" was re-verified after a redo: ").append(totals);
-                }
-            }
-            case NONE -> {
-                if (reverified.isEmpty()) {
-                    md.append("not re-run in this invocation — this report carries no rebuild "
-                            + "verdicts (run sdd review for a fresh estate rebuild)");
-                } else {
-                    md.append("not re-run for the whole estate; only ").append(subtreePhrase(reverified))
-                            .append(" was re-verified after a redo: ").append(totals);
-                }
-            }
-            default -> throw new IllegalStateException("unhandled rebuild scope " + rebuild.kind());
-        }
-        md.append('\n');
+        // A switch EXPRESSION, not a statement with a default -> throw: RebuildScope.Kind is
+        // exhaustively covered by name, so a fourth kind fails the build instead of only this
+        // report at runtime.
+        String line = switch (rebuild.kind()) {
+            case ESTATE -> totals + (reverified.isEmpty() ? "" : " (estate-wide, with "
+                    + subtreePhrase(reverified) + " re-verified again after a redo)");
+            case SKIPPED -> "skipped (--no-rebuild)" + (reverified.isEmpty() ? "" : "; only "
+                    + subtreePhrase(reverified) + " was re-verified after a redo: " + totals);
+            case NONE -> reverified.isEmpty()
+                    ? "not re-run in this invocation — this report carries no rebuild "
+                            + "verdicts (run sdd review for a fresh estate rebuild)"
+                    : "not re-run for the whole estate; only " + subtreePhrase(reverified)
+                            + " was re-verified after a redo: " + totals;
+        };
+        md.append("- Estate rebuild: ").append(line).append('\n');
     }
 
     private static String subtreePhrase(List<String> repos) {

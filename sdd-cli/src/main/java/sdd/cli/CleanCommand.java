@@ -14,6 +14,7 @@ import sdd.cli.implement.RunState;
 import sdd.cli.implement.RunStore;
 import sdd.cli.implement.Scheduler;
 import sdd.cli.review.Decision;
+import sdd.cli.review.Shas;
 import sdd.core.db.Database;
 
 import java.io.IOException;
@@ -245,7 +246,7 @@ public final class CleanCommand implements Callable<Integer> {
                 RunGit.deleteBranch(root, candidate.branch());
                 out.println("deleted " + candidate.repo() + "  " + candidate.branch());
                 if (wasCheckedOut) {
-                    out.println("left " + candidate.repo() + " detached at " + shortSha(baseSha));
+                    out.println("left " + candidate.repo() + " detached at " + Shas.shortSha(baseSha));
                 }
             } catch (RuntimeException e) {
                 allDeleted = false;
@@ -306,9 +307,5 @@ public final class CleanCommand implements Callable<Integer> {
      *  {@code --force} to delete a branch that run is still using. */
     private static String runBranchPrefix(String runId) {
         return "sdd/" + runId + "/";
-    }
-
-    private static String shortSha(String sha) {
-        return sha == null ? "?" : sha.substring(0, Math.min(7, sha.length()));
     }
 }

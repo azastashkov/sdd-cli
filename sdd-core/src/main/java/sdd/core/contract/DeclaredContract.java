@@ -1,7 +1,9 @@
 package sdd.core.contract;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -190,8 +192,8 @@ public record DeclaredContract(String kind, List<String> members, List<String> p
     private static void canonicalizeRestActual(String body, List<String> out) {
         for (String raw : body.split("\n", -1)) {
             String line = raw.strip();
-            if (line.isEmpty()) {
-                continue;
+            if (line.isEmpty() || line.startsWith("#")) {
+                continue; // the "# actualized (rest)" header
             }
             int arrow = line.indexOf(" -> ");
             out.add(arrow >= 0 ? line.substring(0, arrow) : line);
@@ -206,16 +208,33 @@ public record DeclaredContract(String kind, List<String> members, List<String> p
      *  onto the same space in {@link #canonicalizeKafkaActual}. Without this mapping every declared
      *  kafka contract compares {@code produces <topic>} against {@code PRODUCER <topic>} and reports
      *  DIVERGED_FROM_PLAN no matter how correct the implementation is. */
-    private static final Map<String, String> KAFKA_ROLES = Map.of(
-            "produces", "produces", "producer", "produces",
-            "consumes", "consumes", "consumer", "consumes");
+    // A LinkedHashMap, not Map.of: iteration order below feeds KAFKA_ROLE_VOCAB, and Map.of's
+    // iteration order is salted per JVM run, which would make that message's wording
+    // nondeterministic between runs.
+    private static final Map<String, String> KAFKA_ROLES;
+    static {
+        Map<String, String> roles = new LinkedHashMap<>();
+        roles.put("produces", "produces");
+        roles.put("producer", "produces");
+        roles.put("consumes", "consumes");
+        roles.put("consumer", "consumes");
+        KAFKA_ROLES = Collections.unmodifiableMap(roles);
+    }
+    /** The canonical role vocabulary — {@code KAFKA_ROLES}' distinct values, in declaration order —
+     *  rendered into the error message the same way {@link #parseRestLine} renders
+     *  {@code REST_METHODS}, so the literal cannot drift from the map. */
+    private static final Set<String> KAFKA_ROLE_VOCAB = new LinkedHashSet<>(KAFKA_ROLES.values());
 
     private static void parseKafkaLine(String line, List<String> members, List<String> problems) {
         String[] parts = line.split("\\s+");
-        String role = parts.length == 2 ? KAFKA_ROLES.get(parts[0].toLowerCase(Locale.ROOT)) : null;
+        if (parts.length != 2) {
+            problems.add("malformed kafka declaration '" + line + "'; expected <role> <topic>");
+            return;
+        }
+        String role = KAFKA_ROLES.get(parts[0].toLowerCase(Locale.ROOT));
         if (role == null) {
             problems.add("malformed kafka declaration '" + line
-                    + "'; expected <role> <topic> with role one of [produces, consumes]");
+                    + "'; expected <role> <topic> with role one of " + KAFKA_ROLE_VOCAB);
             return;
         }
         members.add(role + " " + parts[1]);

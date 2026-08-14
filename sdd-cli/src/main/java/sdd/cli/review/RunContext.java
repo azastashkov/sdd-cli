@@ -188,8 +188,8 @@ public record RunContext(String runId, Path runDir, RunStore store, PlanModel pl
                     || (record != null && record.decision() == Decision.APPROVED)) {
                 continue;
             }
-            drift.add(repo + ": branch " + repoRun.branch() + " is at " + DecisionCommand.shortSha(head)
-                    + ", checkpoint was " + DecisionCommand.shortSha(repoRun.checkpointSha())
+            drift.add(repo + ": branch " + repoRun.branch() + " is at " + Shas.shortSha(head)
+                    + ", checkpoint was " + Shas.shortSha(repoRun.checkpointSha())
                     + " — diffs and runbook describe the checkpoint");
         }
         return new Checkpoints(drift, branchGone);

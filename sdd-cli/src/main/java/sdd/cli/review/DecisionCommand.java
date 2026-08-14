@@ -191,10 +191,6 @@ public abstract class DecisionCommand implements Callable<Integer> {
         }
     }
 
-    static String shortSha(String sha) {
-        return sha == null ? "?" : sha.substring(0, Math.min(7, sha.length()));
-    }
-
     @Command(name = "approve",
             description = "Approve a repo's run branch and squash it into the one reviewed commit",
             exitCodeOnInvalidInput = 4)
@@ -258,7 +254,7 @@ public abstract class DecisionCommand implements Callable<Integer> {
         // Counted against the PRE-squash checkpoint, whose objects are still resolvable (the
         // squash only moved the branch ref); SquashApprove made the identical call moments ago.
         out.println("squashed " + RunGit.commitsBetween(root, baseSha, repoRun.checkpointSha())
-                + " commits into " + shortSha(result.sha()));
+                + " commits into " + Shas.shortSha(result.sha()));
         return afterRestore(result, 0, err);
     }
 

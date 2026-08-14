@@ -1,5 +1,6 @@
 package sdd.plan.gen;
 
+import sdd.core.contract.Markdown;
 import sdd.plan.impact.AffectedRepo;
 import sdd.plan.impact.ImpactResult;
 import sdd.plan.impact.Seed;
@@ -91,7 +92,7 @@ public final class PlanMdRenderer {
                     md.append(" -> ").append(String.join(", ", contract.consumers()));
                 }
                 md.append('\n');
-                md.append("```yaml\n").append(contract.body().replace("```", "'''"))
+                md.append("```yaml\n").append(Markdown.neutralizeFences(contract.body()))
                         .append("\n```\n");
                 if (!contract.declared().isEmpty()) {
                     md.append("\n```contract\n").append(declaredFence(contract.declared()))
@@ -152,7 +153,7 @@ public final class PlanMdRenderer {
             if (i > 0) {
                 sb.append('\n');
             }
-            sb.append(declared.get(i).replace("```", "'''"));
+            sb.append(Markdown.neutralizeFences(declared.get(i)));
         }
         return sb.toString();
     }
@@ -165,9 +166,8 @@ public final class PlanMdRenderer {
 
     /** Sub-spec prose keeps its lines but loses structural markers the renderer owns. */
     private static String prose(String value) {
-        return value.replaceAll("(?m)^\\s*#+\\s*", "")
-                .replaceAll("(?m)^---\\s*$", "—")
-                .replace("```", "'''")
+        return Markdown.neutralizeFences(value.replaceAll("(?m)^\\s*#+\\s*", "")
+                .replaceAll("(?m)^---\\s*$", "—"))
                 .strip();
     }
 }
