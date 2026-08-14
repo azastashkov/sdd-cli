@@ -275,6 +275,13 @@ Every claim carries a `file:line` citation — the file's own standard. Document
 - **`OpenQuestions.disconnectedSeeds` keeps its own copy of the contract queries** (its projection is unfiltered by repo inequality). Noted rather than forced into `ContractEdges`.
 - **No conversational follow-up.** Each invocation is independent; there is no session or history.
 
+### Deferred by the final review (2026-08-15)
+
+Both were found by the whole-branch review, judged real, and deliberately not fixed in this phase.
+
+- **Small helpers duplicated inside `sdd.cli.explain`.** `kindLabel` is defined identically in `EvidenceCollector` and `EvidenceRenderer`; `mentionsWholeWord` identically in `AnswerAudit` and `QuestionInterpreter`; the `grp:name` split is duplicated between `KbEntities.resolveArtifact` and `ConsumerFacts.artifactConsumers`. *Trigger:* editing one copy. *Symptom:* the copies drift silently — neither has a test that would notice. *Ruling:* deferred; this phase's fix wave was already eight items on an approved branch. *Cost if wrong:* a little duplication to pay down, in a package that just finished paying down exactly this kind of debt.
+- **Two `rest_endpoint` rows in one repo with the same verb and path emit each caller fact twice.** `ConsumerFacts.endpointConsumers` calls `callersOf` once per `EntityMatch`; two rows differing only in `class_fqcn`/`method_name` produce identical `detail` strings, and the ambiguity check counts distinct *repos*, so no ambiguity section fires. *Trigger:* the same endpoint declared on two controller methods in one repo. *Symptom:* a duplicated caller line, with no explanation of why. *Cost if wrong:* the answer is redundant, never wrong — the facts are all true, one is just stated twice.
+
 ## Self-Review (completed at write time)
 
 1. **Spec coverage:** every clause of the 2026-08-12 amendment maps to a task (Verification 2); the three decisions it defers are resolved in Step 0 and implemented in T3 (retrieval), T6/T7 (output), T5 (impact without a model).
