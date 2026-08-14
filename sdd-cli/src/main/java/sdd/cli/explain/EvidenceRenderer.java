@@ -204,7 +204,11 @@ public final class EvidenceRenderer {
             }
             sb.append("Entities: ").append(String.join(", ", parts)).append('\n');
         }
-        if (!request.searchTerms().isEmpty()) {
+        // Only Intent.SEARCH ever reads searchTerms (EvidenceCollector.collect dispatches
+        // SearchFacts.of exclusively on that intent) -- QuestionInterpreter.fallback populates
+        // them regardless of intent, so printing this line on any other intent would tell the
+        // reader a full-text search ran when it did not (see fallback's Javadoc).
+        if (request.intent() == Intent.SEARCH && !request.searchTerms().isEmpty()) {
             List<String> terms = request.searchTerms().stream()
                     .map(term -> capField(term, SEARCH_TERM_CAP))
                     .toList();
@@ -230,7 +234,8 @@ public final class EvidenceRenderer {
 
     private static String renderSection(Section section) {
         StringBuilder sb = new StringBuilder();
-        sb.append("### [").append(section.source()).append("] ").append(sanitize(section.title())).append("\n\n");
+        sb.append("### [").append(sanitize(section.source())).append("] ")
+                .append(sanitize(section.title())).append("\n\n");
         for (Fact fact : section.facts()) {
             sb.append("- ").append(sanitize(fact.text())).append('\n');
         }

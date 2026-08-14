@@ -73,6 +73,33 @@ class EvidenceRendererTest {
     }
 
     @Test
+    void searchTermsLineIsOmittedOnANonSearchIntentSinceItNeverActuallySearched() {
+        // QuestionInterpreter.fallback populates searchTerms regardless of intent (e.g. DESCRIBE,
+        // once at least one entity is named), but EvidenceCollector.collect dispatches purely on
+        // intent -- only Intent.SEARCH ever reads them. Printing "Search terms:" on a DESCRIBE
+        // report tells the reader a search ran when it did not.
+        RetrievalRequest req = new RetrievalRequest(Intent.DESCRIBE,
+                List.of(new EntityRef(EntityKind.REPO, "svc-orders", false)),
+                List.of("orders", "billing"), "What is svc-orders?", List.of(), true);
+        Evidence ev = evidence(req, List.of(), List.of());
+
+        String out = EvidenceRenderer.render(ev);
+
+        assertThat(out).doesNotContain("Search terms:");
+    }
+
+    @Test
+    void searchTermsLineStillRendersOnASearchIntent() {
+        RetrievalRequest req = new RetrievalRequest(Intent.SEARCH, List.of(),
+                List.of("orders", "billing"), "tell me about orders and billing", List.of(), false);
+        Evidence ev = evidence(req, List.of(), List.of());
+
+        String out = EvidenceRenderer.render(ev);
+
+        assertThat(out).contains("Search terms:").contains("orders").contains("billing");
+    }
+
+    @Test
     void entitiesAreListedWithKindAndValue() {
         List<EntityRef> entities = List.of(new EntityRef(EntityKind.REPO, "svc-orders", false));
         Evidence ev = evidence(request(entities, List.of()), List.of(), List.of());
@@ -127,6 +154,20 @@ class EvidenceRendererTest {
         String out = EvidenceRenderer.render(ev);
 
         assertThat(out).doesNotContain("```").contains("'''yaml").contains("''' and more");
+    }
+
+    @Test
+    void sectionSourceContainingAFenceIsNeutralized() {
+        // section.title() is sanitized at the render site but section.source() was interpolated
+        // raw -- currently safe because every real caller passes a code literal, but the class
+        // Javadoc states the neutralization guarantee with no carve-out, so this must hold too.
+        Section section = new Section("Modules: svc-orders", "module```evil```",
+                List.of(new Fact(":app (SERVICE)")), 1);
+        Evidence ev = evidence(request(List.of(), List.of()), List.of(section), List.of());
+
+        String out = EvidenceRenderer.render(ev);
+
+        assertThat(out).doesNotContain("```").contains("module'''evil'''");
     }
 
     @Test
