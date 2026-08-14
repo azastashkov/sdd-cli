@@ -278,11 +278,24 @@ public final class Orchestrator {
                     return true;
                 }
             }
-            Map<String, String> actualized = ContractActualizer.actualize(step.repoRoot(),
-                    providedContracts(plan, repo));
-            for (Map.Entry<String, String> entry : actualized.entrySet()) {
-                store.writeContract(runDir, entry.getKey(), entry.getValue());
-                events.add("contract " + entry.getKey() + " actualized");
+            List<PlanModel.PlanContract> provided = providedContracts(plan, repo);
+            Map<String, String> actualized = ContractActualizer.actualize(step.repoRoot(), provided);
+            for (PlanModel.PlanContract contract : provided) {
+                String body = actualized.get(contract.id());
+                if (body == null) {
+                    // Extraction found nothing for this contract — with a declared block present
+                    // the whole-surface fallback is suppressed, so a declaration whose types do not
+                    // exist (renamed, typo'd, or not fully qualified) yields a blank body that
+                    // ContractActualizer drops. Nothing is written to contracts/, and every
+                    // consumer's work order silently loses the actualized section that is supposed
+                    // to supersede the drafted delta. Say it out loud instead.
+                    events.add("contract " + contract.id() + " actualized to nothing — no "
+                            + contract.kind() + " surface matching its declared types was found in "
+                            + repo + "; consumers' work orders will not carry it");
+                    continue;
+                }
+                store.writeContract(runDir, contract.id(), body);
+                events.add("contract " + contract.id() + " actualized");
             }
             if (compatGate) {
                 JarBuilder.Result candidate = buildJars(step, repo,

@@ -46,7 +46,9 @@ public final class PlanDrafter {
                             "declarations": [string, ...] (OPTIONAL — the machine-checkable \
             members this contract exposes, one exact line per member, no prose, using EXACTLY \
             this grammar for the contract's kind: java-api "<fqcn>#<signature>: <returnType>" \
-            e.g. "com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier"; \
+            e.g. "com.trading.pricing.core.JdbcTierResolver#resolveTier(String): ClientTier" \
+            (the type before '#' MUST be fully qualified — it is matched against the extracted \
+            type's full name); \
             rest "<METHOD> <path>" e.g. "GET /api/admin/tier-spreads"; kafka \
             "produces <topic>" or "consumes <topic>" e.g. "produces orders.v1". Omit this list, \
             or leave it empty, whenever you are not certain of the exact signature or path — an \

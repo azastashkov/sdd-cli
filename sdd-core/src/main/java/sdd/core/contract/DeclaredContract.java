@@ -107,6 +107,17 @@ public record DeclaredContract(String kind, List<String> members, List<String> p
             problems.add(malformedJavaApi(line));
             return;
         }
+        if (fqcn.indexOf('.') < 0) {
+            // ContractActualizer selects types by exact fqcn equality, so an unqualified name
+            // selects nothing at all: the actualized body comes back empty and Gate 2 reports the
+            // grossest divergence available for what is only a notation slip. Types elsewhere on
+            // the line deliberately compare by simple name, which makes the fqcn the single place a
+            // human must be exactly right — so say so here, at Gate 1, while it can still be fixed.
+            problems.add("java-api declaration '" + line + "': the type '" + fqcn
+                    + "' must be fully qualified (e.g. com.trading.pricing.core." + fqcn + ")"
+                    + " — it is matched against the extracted type's full name, not its simple name");
+            return;
+        }
         // fqcn is the type's identity and stays fully qualified; only the signature's argument
         // types and the return type are reduced to simple names, matching ApiSurfaceExtractor.
         members.add(fqcn + "#" + normalizeTypes(signature) + ":" + normalizeTypes(returnType));

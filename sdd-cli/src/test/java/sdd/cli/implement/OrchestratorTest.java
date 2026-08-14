@@ -614,13 +614,18 @@ class OrchestratorTest {
     }
 
     private static PlanModel planWithContract(String libBase, String svcBase, String compat) {
+        return planWithContract(libBase, svcBase, compat, List.of());
+    }
+
+    private static PlanModel planWithContract(String libBase, String svcBase, String compat,
+                                              List<String> declared) {
         return new PlanModel("S", 1, "", "",
                 List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", libBase),
                         new PlanModel.PlanRepo("svc", "dependent", "CODE_CHANGE_LIKELY", "patch", svcBase)),
                 List.of(List.of("lib"), List.of("svc")),
                 List.of(new PlanModel.PlanEdge("svc", "lib", "SNAPSHOT", "NONE")),
                 List.of(new PlanModel.PlanContract("c1", "java-api", "lib", List.of("svc"),
-                        "Api.f(int): int", compat, List.of())),
+                        "Api.f(int): int", compat, declared)),
                 List.of(new PlanModel.PlanStep("lib", List.of(), "minor", List.of("c1"), List.of(),
                                 List.of(), List.of(), "provider step"),
                         new PlanModel.PlanStep("svc", List.of(), "patch", List.of(), List.of("c1"),
@@ -761,6 +766,35 @@ class OrchestratorTest {
                 .map(m -> m.content() == null ? "" : m.content())
                 .reduce("", String::concat);
         assertThat(svcWorkOrder).contains("Actualized contracts").contains("com.acme.Api");
+    }
+
+    @Test
+    void aProvidedContractThatActualizesToNothingIsEvented() throws Exception {
+        // A declaration naming a type that does not exist in the tree (a typo, an unqualified name,
+        // a renamed class) selects nothing; with the whole-surface fallback deliberately suppressed
+        // the body is blank, ContractActualizer drops the contract, and every consumer's work order
+        // silently loses the actualized section that is supposed to supersede the drafted delta.
+        // Before declarations existed the java-api path always produced something, so this failure
+        // mode is new — it must leave a trace in the run's events.
+        FixtureRepo lib = repoWith("lib", "exit 0");
+        lib.file("src/main/java/com/acme/Api.java",
+                        "package com.acme;\npublic class Api { public int f(int x) { return x; } }\n")
+                .commit("api source");
+        FixtureRepo svc = repoWith("svc", "exit 0");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of(
+                "lib", new RepoStep("lib", lib.path(), "x", List.of(), List.of(), List.of(), List.of(), List.of()),
+                "svc", new RepoStep("svc", svc.path(), "x", List.of(), List.of(), List.of(), List.of(), List.of()));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"lib ok\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"svc ok\"}")));
+
+        orchestrator(model).run(runDir, planWithContract(lib.headSha(), svc.headSha(), null,
+                List.of("com.acme.Ghost#gone(): void")), steps);
+
+        assertThat(new RunStore(InstantSource.fixed(Instant.EPOCH)).readContract(runDir, "c1")).isNull();
+        assertThat(Files.readString(runDir.resolve("lib/agent-events.jsonl")))
+                .contains("contract c1 actualized to nothing");
     }
 
     @Test

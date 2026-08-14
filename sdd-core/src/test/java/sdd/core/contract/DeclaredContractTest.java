@@ -133,6 +133,20 @@ class DeclaredContractTest {
     }
 
     @Test
+    void anUnqualifiedFqcnIsAGrammarProblemNotASelectorThatMatchesNothing() {
+        // ContractActualizer selects types by EXACT fqcn equality, so an unqualified name selects
+        // nothing: the body comes back empty and Gate 2 reports the grossest divergence there is
+        // for what was only a notation slip. Note the asymmetry that makes this easy to trip over —
+        // parameter and return TYPES deliberately compare by simple name, so the fqcn is the one
+        // place a human must be exactly right, and nothing else tells them.
+        DeclaredContract declared = DeclaredContract.parse("java-api",
+                "TierResolver#tierFor(String): Tier");
+        assertThat(declared.members()).isEmpty();
+        assertThat(declared.problems()).singleElement().asString()
+                .contains("TierResolver#tierFor(String): Tier").contains("fully qualified");
+    }
+
+    @Test
     void commentAndBlankLinesAreIgnored() {
         DeclaredContract declared = DeclaredContract.parse("rest", """
                 # the admin surface

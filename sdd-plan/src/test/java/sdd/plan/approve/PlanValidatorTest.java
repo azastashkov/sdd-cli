@@ -95,6 +95,16 @@ class PlanValidatorTest {
     }
 
     @Test
+    void anUnqualifiedFqcnIsRejectedAtGateOneWhereAHumanCanStillFixIt() {
+        PlanValidator.Verdict verdict = PlanValidator.validate(db.jdbi(),
+                planWithDeclared("JdbcTierResolver#resolveTier(String): ClientTier"),
+                spec(), freshStates());
+
+        assertThat(verdict.problems()).anySatisfy(p ->
+                assertThat(p).contains("tier-resolver-api").contains("fully qualified"));
+    }
+
+    @Test
     void aDeclarationThatParsesToNothingWarnsExactlyLikeNoDeclarationAtAll() {
         // A comment-only or blank declared block carries no members and no grammar problems, so
         // testing the RAW list let it pass Gate 1 silently — and then read as DECLARED_MET at
