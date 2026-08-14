@@ -310,8 +310,10 @@ public final class ContractRecheck {
         return unresolvedRole.equals(missingRole);
     }
 
-    /** Everything after the role on a canonical {@code <role> <topic>} line; empty when there is no
-     *  topic at all, which can never equal or match a declared member's topic. */
+    /** Everything after the role on a canonical {@code <role> <topic>} line. Empty only for a line
+     *  with no space in it at all — which {@code DeclaredContract} cannot produce on the declared
+     *  side (its grammar requires both tokens) and which fails the role check above on the actual
+     *  side, so an empty topic never reaches a comparison. */
     private static String kafkaTopic(String member) {
         int space = member.indexOf(' ');
         return space >= 0 ? member.substring(space + 1).strip() : "";
