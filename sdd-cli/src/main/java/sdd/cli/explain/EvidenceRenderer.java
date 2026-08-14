@@ -25,6 +25,18 @@ import java.util.Locale;
  * caveat is empty — a reader must always be able to see what the question was understood to mean and
  * which named things were rejected and why (via {@link RetrievalRequest#notes()}), independent of
  * whether anything was found.
+ *
+ * <p><b>What {@link #EVIDENCE_CAP} actually bounds:</b> {@link Section} blocks only — see
+ * {@link #appendCapped}. {@code Provenance} and {@code Interpretation} always render in full, and
+ * {@code Caveats} always renders in full once non-empty (see {@link #render}'s comment on why). To
+ * keep the promised bound meaningful despite that, {@code Interpretation}'s two model-authored,
+ * length-unbounded fields — {@code restatement} and each {@code notes} entry — carry their own
+ * per-field cap ({@link #capField}) independent of {@link #EVIDENCE_CAP}: {@code QuestionInterpreter}
+ * only bounds how many entities/terms survive validation, never the length of a string a hostile or
+ * malfunctioning call-1 response could put in {@code restatement} or a rejected entity's {@code
+ * value} (which never passed KB validation, unlike a surviving {@link EntityRef}). A renderer that
+ * advertises a cap but trusts its input to stay short is not actually enforcing one, so the cap is
+ * applied here rather than relying solely on upstream discipline.
  */
 public final class EvidenceRenderer {
 
@@ -39,6 +51,12 @@ public final class EvidenceRenderer {
      * size, not to bound any single section's own content.
      */
     public static final int EVIDENCE_CAP = 12000;
+
+    /** Per-field cap on {@code restatement} — see the class Javadoc's note on why this exists. */
+    private static final int RESTATEMENT_CAP = 500;
+
+    /** Per-entry cap on each {@code notes()} string — see the class Javadoc's note on why this exists. */
+    private static final int NOTE_CAP = 300;
 
     private EvidenceRenderer() {
     }
@@ -116,7 +134,7 @@ public final class EvidenceRenderer {
     private static String renderInterpretation(RetrievalRequest request) {
         StringBuilder sb = new StringBuilder();
         sb.append("### Interpretation\n\n");
-        sb.append("Interpreted as: ").append(sanitize(request.restatement())).append('\n');
+        sb.append("Interpreted as: ").append(capField(request.restatement(), RESTATEMENT_CAP)).append('\n');
         sb.append("Intent: ").append(request.intent().name().toLowerCase(Locale.ROOT)).append('\n');
         if (!request.entities().isEmpty()) {
             boolean withRole = request.intent() == Intent.DEPENDENCY_PATH;
@@ -139,7 +157,7 @@ public final class EvidenceRenderer {
         if (!request.notes().isEmpty()) {
             sb.append("Notes:\n");
             for (String note : request.notes()) {
-                sb.append("- ").append(sanitize(note)).append('\n');
+                sb.append("- ").append(capField(note, NOTE_CAP)).append('\n');
             }
         }
         sb.append('\n');
@@ -148,7 +166,7 @@ public final class EvidenceRenderer {
 
     private static String renderSection(Section section) {
         StringBuilder sb = new StringBuilder();
-        sb.append("### [").append(section.source()).append("] ").append(section.title()).append("\n\n");
+        sb.append("### [").append(section.source()).append("] ").append(sanitize(section.title())).append("\n\n");
         for (Fact fact : section.facts()) {
             sb.append("- ").append(sanitize(fact.text())).append('\n');
         }
@@ -177,6 +195,22 @@ public final class EvidenceRenderer {
      */
     private static String sanitize(String text) {
         return Markdown.neutralizeFences(text == null ? "" : text);
+    }
+
+    /**
+     * Sanitizes, then truncates to {@code limit} characters with a stated marker — the character-
+     * level counterpart to {@link Section#capped}'s fact-list truncation, for the two
+     * {@code Interpretation} fields ({@code restatement}, each {@code notes} entry) that are
+     * model-authored prose with no upstream length bound (see the class Javadoc). Sanitizing before
+     * truncating, never after, so a cut can never land inside an unneutralized {@code ```} and leave
+     * a fence fragment at the boundary.
+     */
+    private static String capField(String text, int limit) {
+        String s = sanitize(text);
+        if (s.length() <= limit) {
+            return s;
+        }
+        return s.substring(0, limit) + " [truncated to " + limit + " of " + s.length() + " chars]";
     }
 
     private static String kindLabel(EntityKind kind) {

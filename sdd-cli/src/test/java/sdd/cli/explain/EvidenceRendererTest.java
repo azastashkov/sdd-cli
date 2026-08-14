@@ -199,13 +199,68 @@ class EvidenceRendererTest {
 
     @Test
     void outputIsByteIdenticalForIdenticalInput() {
-        Section section = Section.of("Modules: svc-orders", "module", List.of(new Fact(":app (SERVICE)")));
-        Evidence ev = evidence(request(List.of(new EntityRef(EntityKind.REPO, "svc-orders", false)),
-                List.of("a note")), List.of(section), List.of("a caveat"));
-
-        String first = EvidenceRenderer.render(ev);
-        String second = EvidenceRenderer.render(ev);
+        // Two SEPARATELY-CONSTRUCTED, structurally-equal Evidence instances, not the same object
+        // twice — the latter would pass even if render() took an identity-based shortcut (e.g.
+        // memoizing on object identity) rather than actually being a pure function of content.
+        String first = EvidenceRenderer.render(buildEquivalentEvidence());
+        String second = EvidenceRenderer.render(buildEquivalentEvidence());
 
         assertThat(first).isEqualTo(second);
+    }
+
+    private static Evidence buildEquivalentEvidence() {
+        Section section = Section.of("Modules: svc-orders", "module", List.of(new Fact(":app (SERVICE)")));
+        return evidence(request(List.of(new EntityRef(EntityKind.REPO, "svc-orders", false)),
+                List.of("a note")), List.of(section), List.of("a caveat"));
+    }
+
+    @Test
+    void sectionTitleContainingAFenceIsNeutralized() {
+        Section section = Section.of("Endpoint match is ambiguous: '```evil```'", "rest_endpoint",
+                List.of(new Fact("GET /orders/{id}")));
+        Evidence ev = evidence(request(List.of(), List.of()), List.of(section), List.of());
+
+        String out = EvidenceRenderer.render(ev);
+
+        assertThat(out).doesNotContain("```").contains("'''evil'''");
+    }
+
+    @Test
+    void restatementLongerThanItsCapIsTruncatedWithAStatedMarker() {
+        String huge = "x".repeat(1000);
+        RetrievalRequest req = new RetrievalRequest(Intent.SEARCH, List.of(), List.of(), huge, List.of(), false);
+        Evidence ev = evidence(req, List.of(), List.of());
+
+        String out = EvidenceRenderer.render(ev);
+
+        assertThat(out).doesNotContain(huge);
+        assertThat(out).contains("[truncated to 500 of 1000 chars]");
+        // The line is genuinely shorter, not just annotated as if it were.
+        assertThat(out).doesNotContain("x".repeat(600));
+    }
+
+    @Test
+    void aNoteLongerThanItsCapIsTruncatedWithAStatedMarker() {
+        String hugeNote = "model referenced repo '" + "y".repeat(1000) + "' — dropped";
+        RetrievalRequest req = new RetrievalRequest(Intent.SEARCH, List.of(), List.of(),
+                "irrelevant", List.of(hugeNote), false);
+        Evidence ev = evidence(req, List.of(), List.of());
+
+        String out = EvidenceRenderer.render(ev);
+
+        assertThat(out).doesNotContain(hugeNote);
+        assertThat(out).contains("[truncated to 300 of " + hugeNote.length() + " chars]");
+    }
+
+    @Test
+    void shortRestatementAndNotesAreNeverTruncated() {
+        RetrievalRequest req = new RetrievalRequest(Intent.SEARCH, List.of(), List.of(),
+                "What is svc-orders?", List.of("a short note"), false);
+        Evidence ev = evidence(req, List.of(), List.of());
+
+        String out = EvidenceRenderer.render(ev);
+
+        assertThat(out).doesNotContain("[truncated to");
+        assertThat(out).contains("Interpreted as: What is svc-orders?").contains("- a short note");
     }
 }
