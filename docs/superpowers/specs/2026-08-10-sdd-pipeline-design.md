@@ -215,9 +215,25 @@ that never changes an exit code.
 The signal travels differently per kind, because the extractors differ and this amendment deliberately
 does not change `sdd-index`:
 
-- `kafka` — `SpringModel.KafkaUse` already carries `resolution()`, and `KafkaExtractor` falls back to
-  the raw expression as the topic when `ValueResolver` cannot resolve it. `ContractActualizer` marks
-  such an entry rather than emitting it as if it were a literal topic.
+- `kafka` — `SpringModel.KafkaUse` already carries `resolution()`, and `ContractActualizer` marks an
+  entry whose `resolution()` is `DYNAMIC` rather than emitting it as if it were a literal topic.
+  *Correction (phase 5C-2, final review):* this bullet originally justified the marker as
+  "`KafkaExtractor` falls back to the raw expression as the topic when `ValueResolver` cannot resolve
+  it". That is only one of the two shapes the marker actually covers. `KafkaExtractor` also hardcodes
+  `resolution()` to `DYNAMIC` for **every** `@KafkaListener(topicPattern = …)`, whether or not the
+  pattern text itself resolved — so a plain literal pattern arrives at the conformance axis marked
+  unresolved even though extraction read it perfectly. The marker therefore means "this entry is not
+  a literal topic to compare for equality", not "extraction could not see this".
+  **Consequence for the partition rule:** an unresolved kafka entry excuses a missing declared member
+  only when it could plausibly *be* that member — the same topic, or a genuinely unresolvable
+  `${…}`/`#{…}` expression (which could have been anything), or a pattern that actually matches the
+  missing topic. Matching on the role alone would let one resolved `topicPattern` listener excuse
+  every missing declared `consumes` member on the contract, reporting `NOT_RESOLVED` about a surface
+  extraction read exactly — the identical false-negative shape the `rest` bullet below rejects the
+  `pathTemplate == "/"` heuristic for. The pattern step is a heuristic over the pattern text (Java
+  regex semantics, not Spring's own topic-pattern matching); an invalid pattern excuses nothing.
+  Fixing the root cause means giving `KafkaExtractor` a way to distinguish a resolved pattern from an
+  unresolved one, which is an `sdd-index` change 5C-2's global constraint forbids.
 - `rest` — `SpringModel.EndpointInfo` carries no resolution field, and adding one would reach into the
   indexed knowledge base. Only one degenerate shape is recognisable from the extractor's own output
   without that field: the verb `ANY` (a verbless `@RequestMapping`), which `DeclaredContract`'s
