@@ -49,7 +49,7 @@ public final class ExplainReport {
             out.append("no facts in the knowledge base match this question\n\n");
         } else if (answer.unavailable()) {
             String reason = answer.notes().isEmpty() ? "answer unavailable" : answer.notes().get(0);
-            out.append(reason).append(" — the facts below are complete\n\n");
+            out.append(Markdown.neutralizeFences(reason)).append(" — the facts below are complete\n\n");
         } else {
             out.append(Markdown.neutralizeFences(answer.prose())).append("\n\n");
             if (!auditNotes.isEmpty()) {

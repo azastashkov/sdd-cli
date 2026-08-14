@@ -79,6 +79,25 @@ class ExplainReportTest {
         assertThat(out).doesNotContain("Audit notes");
     }
 
+    @Test
+    void answerUnavailableReasonContainingAFenceIsNeutralized() {
+        // Mirrors a real failure mode: HttpChatModel builds ModelException's message from the raw
+        // HTTP response body ("HTTP " + status + ": " + resp.body()), which is provider-controlled
+        // and can contain a literal fence. That reason flows into AnswerNarrator's "answer
+        // unavailable: <reason>" note unmodified, so this line must be sanitized like every other
+        // free-text append in this class -- prose, audit notes, and the top-level restatement.
+        Evidence evidence = new Evidence(PROVENANCE, request("What is svc-orders?", false, List.of()),
+                List.of(moduleSection()), List.of());
+        Answer answer = new Answer("", List.of(
+                "answer unavailable: model error: HTTP 500: ```{\"error\":\"forged section\"}```"), true);
+
+        String out = ExplainReport.render(evidence, answer, List.of());
+
+        assertThat(out).doesNotContain("```");
+        assertThat(out).contains("'''{\"error\":\"forged section\"}'''");
+        assertThat(out).contains("the facts below are complete");
+    }
+
     // --- degraded shape: zero facts (call 2 never runs) -----------------------------------------
 
     @Test
