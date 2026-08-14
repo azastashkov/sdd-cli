@@ -3,6 +3,7 @@ package sdd.core.llm;
 import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+import sdd.core.config.ConfigException;
 import sdd.core.config.ModelEndpoint;
 
 import java.net.http.HttpClient;
@@ -84,6 +85,18 @@ class HttpChatModelTest {
         assertThatThrownBy(() -> model().complete(request()))
                 .isInstanceOf(ModelException.class);
         wm.verify(6, postRequestedFor(urlEqualTo("/v1/chat/completions")));
+    }
+
+    @Test
+    void constructingOnAnEndpointWithAnApiKeyErrorFailsWithTheExactDeferredMessage() {
+        ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "test-model", null,
+                256, 0.0, Duration.ofSeconds(5), Map.of(),
+                "models.flash.api_key: environment variable ROUTER_AI_API_KEY is not set");
+
+        assertThatThrownBy(() -> new HttpChatModel(ep))
+                .isInstanceOf(ConfigException.class)
+                .hasMessage("models.flash.api_key: environment variable ROUTER_AI_API_KEY is not set");
+        wm.verify(0, postRequestedFor(urlEqualTo("/v1/chat/completions")));   // failed before any call
     }
 
     @Test

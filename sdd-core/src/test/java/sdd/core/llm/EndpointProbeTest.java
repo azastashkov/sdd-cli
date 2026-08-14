@@ -43,4 +43,18 @@ class EndpointProbeTest {
         assertThat(r.ok()).isFalse();
         assertThat(r.detail()).isNotBlank();
     }
+
+    @Test
+    void anApiKeyErrorSurfacesAsAFailedProbeWithTheExactDeferredMessage() {
+        ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "m", null, 256, 0.0,
+                Duration.ofSeconds(5), Map.of(),
+                "models.flash.api_key: environment variable ROUTER_AI_API_KEY is not set");
+
+        EndpointProbe.ProbeResult r = EndpointProbe.probe(ep);
+
+        assertThat(r.ok()).isFalse();
+        assertThat(r.detail())
+                .isEqualTo("models.flash.api_key: environment variable ROUTER_AI_API_KEY is not set");
+        wm.verify(0, getRequestedFor(urlEqualTo("/v1/models")));   // failed before any call
+    }
 }

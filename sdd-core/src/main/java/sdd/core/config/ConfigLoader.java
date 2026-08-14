@@ -204,7 +204,20 @@ public final class ConfigLoader {
         String baseUrl = required(m, "base_url", name, env);
         String model = required(m, "model", name, env);
         Object rawKey = m.get("api_key");
-        String apiKey = rawKey == null ? null : str(rawKey, env, "models." + name + ".api_key");
+        String apiKey = null;
+        String apiKeyError = null;
+        // Unlike base_url/model (structural — a command cannot work around them), api_key is only
+        // ever consumed by HttpChatModel/EndpointProbe, both about to make a network call. An
+        // unset ${VAR} here must not block a read-only command that never touches a model: capture
+        // the message instead of throwing, and let the point of use raise it — byte-identical —
+        // if and when this endpoint is actually reached.
+        if (rawKey != null) {
+            try {
+                apiKey = str(rawKey, env, "models." + name + ".api_key");
+            } catch (ConfigException e) {
+                apiKeyError = e.getMessage();
+            }
+        }
         int maxTokens = m.get("max_tokens") == null
                 ? DEFAULT_MAX_TOKENS
                 : parseInt("models." + name + ".max_tokens", String.valueOf(m.get("max_tokens")));
@@ -215,7 +228,8 @@ public final class ConfigLoader {
                 ? DEFAULT_TIMEOUT
                 : Duration.ofSeconds(parseLong("models." + name + ".timeout_seconds", String.valueOf(m.get("timeout_seconds"))));
         Map<String, Object> extraBody = extraBody(m, name);
-        return new ModelEndpoint(baseUrl, model, apiKey, maxTokens, temperature, timeout, extraBody);
+        return new ModelEndpoint(baseUrl, model, apiKey, maxTokens, temperature, timeout, extraBody,
+                apiKeyError);
     }
 
     @SuppressWarnings("unchecked")

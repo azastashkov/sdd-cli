@@ -92,11 +92,65 @@ class ConfigLoaderTest {
                 .hasMessageContaining("sdd.yml");
     }
 
+    // Was against MINIMAL, whose only ${VAR} sits in api_key — exactly the field Fix 1 (below)
+    // intentionally stops failing eagerly on, since a read-only command may never touch a model at
+    // all. Moved to base_url, which stays structural and must still fail eagerly, to keep this
+    // test's original intent (unset var eager-fails, naming the var) honest.
     @Test
     void missingEnvVarFailsWithVarName() throws Exception {
-        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL), k -> null))
+        assertThatThrownBy(() -> ConfigLoader.load(write("""
+                models:
+                  planner:
+                    base_url: ${DEEPSEEK_API_KEY}
+                    model: deepseek-v4-flash
+                  coder:
+                    base_url: http://127.0.0.1:8080/v1
+                    model: mlx-community/Qwen3.6-35B-A3B-8bit
+                """), k -> null))
                 .isInstanceOf(ConfigException.class)
                 .hasMessageContaining("DEEPSEEK_API_KEY");
+    }
+
+    // --- unset api_key env var defers to point-of-use (read-only Gate-2 commands must not need
+    // credentials they will never touch) --------------------------------------------------------
+
+    @Test
+    void unsetApiKeyEnvVarLoadsSuccessfullyAndCarriesTheErrorOnTheEndpoint() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL), k -> null);   // no env var resolves
+        ModelEndpoint planner = c.models().get("planner");
+        assertThat(planner.apiKey()).isNull();
+        assertThat(planner.apiKeyError())
+                .isEqualTo("models.planner.api_key: environment variable DEEPSEEK_API_KEY is not set");
+    }
+
+    @Test
+    void unsetEnvVarInModelStillFailsEagerly() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write("""
+                models:
+                  planner:
+                    base_url: https://api.deepseek.com/v1
+                    model: ${MISSING_MODEL}
+                  coder:
+                    base_url: http://127.0.0.1:8080/v1
+                    model: mlx-community/Qwen3.6-35B-A3B-8bit
+                """), k -> null))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("MISSING_MODEL");
+    }
+
+    @Test
+    void resolvedApiKeyLeavesTheErrorNull() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL), ENV);
+        assertThat(c.models().get("planner").apiKey()).isEqualTo("sk-test-123");
+        assertThat(c.models().get("planner").apiKeyError()).isNull();
+    }
+
+    @Test
+    void absentApiKeyLeavesBothApiKeyAndErrorNull() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL), ENV);
+        ModelEndpoint coder = c.models().get("coder");   // MINIMAL's coder has no api_key at all
+        assertThat(coder.apiKey()).isNull();
+        assertThat(coder.apiKeyError()).isNull();
     }
 
     @Test

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import sdd.core.config.ConfigException;
 import sdd.core.config.ModelEndpoint;
 
 import java.io.IOException;
@@ -47,6 +48,14 @@ public final class HttpChatModel implements ChatModel {
     public HttpChatModel(ModelEndpoint endpoint, int maxAttempts, HttpClient client, Sleeper sleeper) {
         if (maxAttempts < 1) {
             throw new IllegalArgumentException("maxAttempts must be >= 1");
+        }
+        // Deferred from ConfigLoader (Fix 1): an unset api_key ${VAR} does not fail config
+        // loading, since a read-only command may never construct a chat model at all. A
+        // HttpChatModel IS about to make a network call against this endpoint, so this
+        // constructor is the earliest point to raise it — with the exact message ConfigLoader
+        // would have thrown eagerly before this change.
+        if (endpoint.apiKeyError() != null) {
+            throw new ConfigException(endpoint.apiKeyError());
         }
         this.endpoint = endpoint;
         this.maxAttempts = maxAttempts;

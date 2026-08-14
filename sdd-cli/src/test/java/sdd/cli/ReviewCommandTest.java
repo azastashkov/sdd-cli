@@ -687,4 +687,25 @@ class ReviewCommandTest {
         assertThat(report).doesNotContain("## Checkpoint drift");
         assertThat(report).contains("- **lib**: SUCCEEDED, decision: APPROVED");
     }
+
+    @Test
+    void reviewSucceedsWithEveryTiersApiKeyEnvVarUnset() throws Exception {
+        // sdd review calls no model at all — its contract re-check is deterministic JavaParser
+        // re-extraction, its rebuild is Gradle, its report is string building. A workspace whose
+        // sdd.yml declares model tiers must not need every tier's credential exported just to run
+        // this read-only Gate-2 command (the live defect this guards against exited 4 before any
+        // report was produced).
+        Fixture f = fixture();
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: "${SDD_LIVE_FIXES_TEST_UNSET_API_KEY}" }
+                  coder: { base_url: http://y/v1, model: qwen, api_key: "${SDD_LIVE_FIXES_TEST_UNSET_API_KEY}" }
+                """);
+
+        int exit = review(new StringWriter(), new StringWriter(), "--no-rebuild",
+                f.planPath().toString());
+
+        assertThat(exit).isZero();
+        assertThat(f.runDir().resolve("review/report.md")).exists();
+    }
 }

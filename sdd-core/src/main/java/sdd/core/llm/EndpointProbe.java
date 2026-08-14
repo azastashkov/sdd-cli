@@ -1,5 +1,6 @@
 package sdd.core.llm;
 
+import sdd.core.config.ConfigException;
 import sdd.core.config.ModelEndpoint;
 
 import java.net.URI;
@@ -17,6 +18,13 @@ public final class EndpointProbe {
 
     public static ProbeResult probe(ModelEndpoint ep) {
         try {
+            // Deferred from ConfigLoader (Fix 1): raise it here, as early as this class can — the
+            // generic catch below turns it into a failed ProbeResult carrying the exact deferred
+            // message, which is exactly what sdd doctor wants to show per model tier rather than
+            // aborting the whole probe loop.
+            if (ep.apiKeyError() != null) {
+                throw new ConfigException(ep.apiKeyError());
+            }
             HttpRequest.Builder builder = HttpRequest.newBuilder()
                     .uri(URI.create(ep.baseUrl() + "/models"))
                     .timeout(PROBE_TIMEOUT)
