@@ -282,11 +282,20 @@ public final class ContractRecheck {
                 && normalized.get(normalized.size() - 1).equals(ContractActualizer.TRUNCATION_MARKER);
     }
 
-    /** Header line and blank/trailing whitespace are formatting, not interface content. */
+    /** Header line and blank/trailing whitespace are formatting, not interface content — and so is
+     *  {@code UNRESOLVED_MARKER}. This axis compares interfaces (did the tree change since the run
+     *  recorded it); whether extraction could resolve a value is the conformance axis's business,
+     *  not this one's. Without stripping it, a run recorded before this marker existed would
+     *  re-check today as {@code DRIFTED} against unchanged source, purely because the fresh
+     *  extraction now annotates a line the recorded body never did. */
     private static List<String> normalize(String body) {
         List<String> lines = new ArrayList<>();
         for (String line : body.split("\n")) {
             String stripped = line.stripTrailing();
+            if (stripped.endsWith(ContractActualizer.UNRESOLVED_MARKER)) {
+                stripped = stripped.substring(0,
+                        stripped.length() - ContractActualizer.UNRESOLVED_MARKER.length());
+            }
             if (!stripped.isBlank() && !stripped.startsWith("# actualized")) {
                 lines.add(stripped);
             }

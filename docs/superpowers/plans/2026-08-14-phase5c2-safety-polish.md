@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - **Every conformance value is a warning.** Nothing in this phase changes an exit code. `Decisions.approve` stays untouched.
-- **`sdd-index` is not modified.** `EndpointInfo` gains no resolution field; REST's unresolved shapes are recognised from the extractor's existing output. A change reaching the indexed knowledge base is out of scope and a signal to stop and report.
+- **`sdd-index` is not modified.** `EndpointInfo` gains no resolution field. Only REST's verbless-`@RequestMapping` shape (verb `ANY`) is recognisable from the extractor's existing output without it; the unresolvable-path shape is not, and is dropped rather than approximated (see Known carried items). A change reaching the indexed knowledge base is out of scope and a signal to stop and report.
 - **Backward compatibility both directions:** a `state.json` written before this phase has no `failureCode` and must load with it null; a `state.json` written after must not break `sdd implement --resume` on a run started before it. The estate has two frozen runs (`SPEC-101-v1`, `SPEC-101-v2`) that must both still load.
 - **`NOT_RESOLVED` only when the reason a member is missing is a named unresolved shape on the actual side.** A member absent from a fully resolved surface stays `DIVERGED_FROM_PLAN`. Where a contract has both, divergence wins the verdict and unresolved members are named separately.
 - **Docs must describe what the code does, not what the plan hoped.** Every command, flag and exit code in the README is verified against the source before it is written. A wrong README is worse than none.
@@ -143,10 +143,15 @@ Also in this task, each a one-liner the reviews recorded:
 
 **Per kind, exactly as the amendment specifies:**
 - `kafka` — mark when `resolution()` is not the resolved value (grep `KafkaExtractor` for the literal it uses; do not guess).
-- `rest` — mark when the path template is empty (`RestEndpointExtractor.resolvePaths:83` substitutes `""`) or the verb is `ANY` (`:62`).
+- `rest` — mark when the verb is `ANY` (`RestEndpointExtractor.mappingsOf:62`, a verbless `@RequestMapping`).
+  *Correction (implementation, task 3): this bullet originally also said mark an empty path
+  template (`resolvePaths:83` substitutes `""`). That shape is not implemented: `RestEndpointExtractor.extract`
+  always joins the result through `Routes.join(base, path)`, whose floor guard means the joined
+  `pathTemplate` can never literally be `""` — it floors to `"/"` for every combination of empty
+  base and path, indistinguishable from a genuine bare-root endpoint. See Known carried items.*
 - `java-api` — no unresolved shape; nothing to mark.
 
-**The verdict rule:** compute `missingFrom` as today. Partition the missing members: a member is *unresolved-explained* when the actual side has a marked entry that could plausibly be it — same kind-specific key ignoring the unresolvable part (for `rest`, same verb with an empty path, or same path with verb `ANY`; for `kafka`, same topic with an unresolved role, or same role with an unresolved topic). If **every** missing member is unresolved-explained → `NOT_RESOLVED`. If any is not → `DIVERGED_FROM_PLAN`, with the unresolved ones still listed in `unresolved` so the human sees why the rest could not be judged. Divergence outranks unresolved; both outrank nothing.
+**The verdict rule:** compute `missingFrom` as today. Partition the missing members: a member is *unresolved-explained* when the actual side has a marked entry that could plausibly be it — same kind-specific key ignoring the unresolvable part (for `rest`, same path with verb `ANY` — the "same verb with an empty path" branch this rule also describes is not implemented, since that shape is never marked, per the correction above; for `kafka`, same topic with an unresolved role, or same role with an unresolved topic). If **every** missing member is unresolved-explained → `NOT_RESOLVED`. If any is not → `DIVERGED_FROM_PLAN`, with the unresolved ones still listed in `unresolved` so the human sees why the rest could not be judged. Divergence outranks unresolved; both outrank nothing.
 
 - [ ] **Step 1: Write the failing test.**
 
@@ -157,7 +162,8 @@ Also in this task, each a one-liner the reviews recorded:
 void aDynamicKafkaTopicIsNotResolvedNotDiverged() { /* @Value-driven topic → NOT_RESOLVED */ }
 
 @Test
-void anUnresolvableRestPathIsNotResolvedNotDiverged() { /* empty path template → NOT_RESOLVED */ }
+void anUnresolvableRestPathIsNotResolvedNotDiverged() { /* NOT IMPLEMENTED — dropped, not
+    distinguishable from a bare-root endpoint; see Known carried items */ }
 
 @Test
 void aVerblessRequestMappingIsNotResolvedNotDiverged() { /* verb ANY → NOT_RESOLVED */ }

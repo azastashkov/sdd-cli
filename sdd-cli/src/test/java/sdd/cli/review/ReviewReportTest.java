@@ -378,9 +378,15 @@ class ReviewReportTest {
 
     @Test
     void theSummaryCountsEveryConformanceState() {
+        // Round-2 review fix: this test's name claims full coverage, but its old body only had
+        // three findings and asserted a substring that was, unnoticed, a PREFIX of the real line
+        // once NOT_RESOLVED added a trailing segment — the test kept "passing" while covering
+        // nothing about the new state. All five Conformance values are now present, and the
+        // assertion pins the full line (through the trailing newline) so a future segment landing
+        // silently would break this test again instead of being absorbed by it.
         RunState state = new RunState("SPEC-1-v1", List.of(
                 new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);
-        PlanModel plan = planWithContracts(3);
+        PlanModel plan = planWithContracts(5);
         List<ContractRecheck.Finding> findings = List.of(
                 new ContractRecheck.Finding("contract-0", "lib", "java-api",
                         ContractRecheck.Status.MATCHES, "", "main",
@@ -391,13 +397,46 @@ class ReviewReportTest {
                         List.of()),
                 new ContractRecheck.Finding("contract-2", "lib", "java-api",
                         ContractRecheck.Status.MATCHES, "", "main",
-                        ContractRecheck.Conformance.NOT_DECLARED, List.of(), List.of()));
+                        ContractRecheck.Conformance.NOT_DECLARED, List.of(), List.of()),
+                new ContractRecheck.Finding("contract-3", "lib", "java-api",
+                        ContractRecheck.Status.MATCHES, "malformed", "main",
+                        ContractRecheck.Conformance.NOT_COMPARABLE, List.of(), List.of()),
+                new ContractRecheck.Finding("contract-4", "lib", "kafka",
+                        ContractRecheck.Status.MATCHES, "", "main",
+                        ContractRecheck.Conformance.NOT_RESOLVED, List.of(), List.of("consumes t.orders")));
 
         String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
                 List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
                 "runbook", RebuildScope.estate());
 
-        assertThat(report).contains("- Plan conformance: 1 met, 1 diverged, 1 undeclared, 0 not comparable");
+        assertThat(report).contains(
+                "- Plan conformance: 1 met, 1 diverged, 1 undeclared, 1 not comparable, 1 not resolved\n");
+    }
+
+    @Test
+    void aNotResolvedFindingOpensTheDetailSectionAndNamesTheUnresolvedMembers() {
+        // The three ReviewReport behaviors this task added had zero coverage: the notable filter
+        // must open ## Contract re-check for a MATCHES-status NOT_RESOLVED finding exactly like it
+        // already does for DIVERGED_FROM_PLAN/NOT_COMPARABLE (a human can't act on "1 not resolved"
+        // in the Summary alone), and Finding.unresolved() must render as its own bullet, distinct
+        // from `missing`'s "declared but not found:" bullet.
+        RunState state = new RunState("SPEC-1-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, "branch", "sha", "ok")), null, 10L);
+        PlanModel plan = planWithContracts(1);
+        List<ContractRecheck.Finding> findings = List.of(
+                new ContractRecheck.Finding("contract-0", "lib", "kafka",
+                        ContractRecheck.Status.MATCHES, "", "main",
+                        ContractRecheck.Conformance.NOT_RESOLVED, List.of(),
+                        List.of("consumes orders.topic")));
+
+        String report = ReviewReport.render("SPEC-1-v1", plan, state, Map.of(), Map.of(),
+                List.of(), List.of(), List.of(), List.of(), findings, Map.of(), RunContext.Checkpoints.none(),
+                "runbook", RebuildScope.estate());
+
+        assertThat(report).contains("## Contract re-check");
+        assertThat(report).contains("NOT_RESOLVED")
+                .contains("declared but not resolved by extraction: consumes orders.topic")
+                .doesNotContain("declared but not found:");
     }
 
     @Test

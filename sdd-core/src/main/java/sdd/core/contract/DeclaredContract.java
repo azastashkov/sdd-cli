@@ -283,33 +283,48 @@ public record DeclaredContract(String kind, List<String> members, List<String> p
         members.add(role + " " + parts[1]);
     }
 
+    /** The marker must be stripped before splitting on whitespace, not after: a marked line has
+     *  three tokens ({@code role}, {@code topic}, {@code [unresolved]}), and leaving it in would
+     *  make {@link #canonicalizeKafkaLine}'s {@code parts.length == 2} check see three, so
+     *  {@code role} would come back {@code null} and the entire raw line — marker included — would
+     *  go into the actual set as an unmatchable, uncanonicalized string. A declared {@code consumes
+     *  <topic>} would then never be satisfied even when the implementation is genuinely correct and
+     *  the marker is only present because {@code topicPattern} is unconditionally marked (see
+     *  {@code KafkaExtractor}). */
     private static void canonicalizeKafkaActual(String body, List<String> out) {
         for (String raw : body.split("\n", -1)) {
             String line = raw.strip();
             if (line.isEmpty() || line.startsWith("#")) {
                 continue; // the "# actualized (kafka)" header
             }
-            String[] parts = line.split("\\s+");
-            String role = parts.length == 2 ? KAFKA_ROLES.get(parts[0].toLowerCase(Locale.ROOT)) : null;
-            out.add(role == null ? line : role + " " + parts[1]);
+            out.add(canonicalizeKafkaLine(stripUnresolvedMarker(line)));
         }
     }
 
     /** Only the {@code @Value}/property-driven topic shape reaches here today: role is a hardcoded
      *  {@code PRODUCER}/{@code CONSUMER} literal {@code KafkaExtractor} writes itself, never a
-     *  resolved value, so a role can never be the unresolved half of a kafka entry. Splits and
-     *  re-normalizes independently of {@link #canonicalizeKafkaActual} because the trailing marker
-     *  changes the token count that method's {@code parts.length == 2} check relies on. */
+     *  resolved value, so a role can never be the unresolved half of a kafka entry. Shares
+     *  {@link #canonicalizeKafkaLine} with {@link #canonicalizeKafkaActual} — the only difference
+     *  is which lines pass the filter: every content line there, only marked ones here. */
     private static void unresolvedKafkaMembers(String body, List<String> out) {
         for (String raw : body.split("\n", -1)) {
             String line = raw.strip();
             if (line.isEmpty() || line.startsWith("#") || !line.endsWith(UNRESOLVED_MARKER)) {
                 continue;
             }
-            String stripped = line.substring(0, line.length() - UNRESOLVED_MARKER.length());
-            String[] parts = stripped.split("\\s+");
-            String role = parts.length == 2 ? KAFKA_ROLES.get(parts[0].toLowerCase(Locale.ROOT)) : null;
-            out.add(role == null ? stripped : role + " " + parts[1]);
+            out.add(canonicalizeKafkaLine(stripUnresolvedMarker(line)));
         }
+    }
+
+    private static String stripUnresolvedMarker(String line) {
+        return line.endsWith(UNRESOLVED_MARKER)
+                ? line.substring(0, line.length() - UNRESOLVED_MARKER.length())
+                : line;
+    }
+
+    private static String canonicalizeKafkaLine(String line) {
+        String[] parts = line.split("\\s+");
+        String role = parts.length == 2 ? KAFKA_ROLES.get(parts[0].toLowerCase(Locale.ROOT)) : null;
+        return role == null ? line : role + " " + parts[1];
     }
 }

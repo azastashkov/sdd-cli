@@ -525,6 +525,48 @@ class ContractRecheckTest {
         assertThat(finding.unresolved()).containsExactly("consumes orders.topic");
     }
 
+    private Path libWithKafkaTopicPatternListener() throws Exception {
+        Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme/svc"));
+        Files.writeString(root.resolve("OrderListener.java"), """
+                package com.acme.svc;
+                import org.springframework.kafka.annotation.KafkaListener;
+                public class OrderListener {
+                    @KafkaListener(topicPattern = "orders.*")
+                    public void onOrder(String order) { }
+                }
+                """);
+        return ws.resolve("lib");
+    }
+
+    @Test
+    void aTopicPatternListenerThatResolvedFineStillReportsDeclaredMet() throws Exception {
+        // Round-2 review fix: KafkaExtractor hardcodes resolution="DYNAMIC" for every
+        // topicPattern listener regardless of whether the pattern text itself resolved (a topic
+        // pattern is never a literal topic to compare for equality), so ContractActualizer marks
+        // the line even though "orders.*" here is a plain literal with nothing unresolved about
+        // it. That marker must not stop the line from canonicalizing normally: before the fix,
+        // canonicalizeKafkaActual's parts.length == 2 guard saw three tokens on the marked line,
+        // came back null, and the whole raw line (marker included) went into the actual set
+        // unmatchable — a contract that reported DECLARED_MET before the marker existed regressed
+        // to NOT_RESOLVED for no implementation reason at all.
+        Path lib = libWithKafkaTopicPatternListener();
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "kafka", "lib",
+                List.of("svc"), "consumes orders.*", null, List.of("consumes orders.*"));
+        String actual = ContractActualizer.actualize(lib, List.of(c)).get("c1");
+        assertThat(actual).contains(ContractActualizer.UNRESOLVED_MARKER);   // sanity: still marked
+        store.writeContract(runDir, "c1", actual);
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        ContractRecheck.Finding finding = findings.get(0);
+        assertThat(finding.conformance()).isEqualTo(ContractRecheck.Conformance.DECLARED_MET);
+        assertThat(finding.missing()).isEmpty();
+        assertThat(finding.unresolved()).isEmpty();
+    }
+
     private Path libWithVerblessRequestMapping() throws Exception {
         Path root = Files.createDirectories(ws.resolve("lib/src/main/java/com/acme/svc"));
         Files.writeString(root.resolve("OrderController.java"), """
@@ -557,6 +599,31 @@ class ContractRecheckTest {
         assertThat(finding.conformance()).isEqualTo(ContractRecheck.Conformance.NOT_RESOLVED);
         assertThat(finding.missing()).isEmpty();
         assertThat(finding.unresolved()).containsExactly("GET /orders");
+    }
+
+    @Test
+    void aPreMarkerRecordedBodyStillMatchesAFreshMarkedOneOnUnchangedSource() throws Exception {
+        // Round-2 review fix: a run whose recorded contracts/<id> body predates UNRESOLVED_MARKER
+        // holds an unmarked line for source that has not changed since. The drift axis (Status)
+        // answers "did the implementation change", not "how confident was extraction" — that is
+        // the conformance axis's business — so normalize() must not let the marker itself read as
+        // a change. The estate has two frozen pre-this-commit runs this exact shape applies to.
+        Path lib = libWithVerblessRequestMapping();
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "S-v1", "{}", "");
+        PlanModel.PlanContract c = new PlanModel.PlanContract("c1", "rest", "lib",
+                List.of("svc"), "GET /orders", null, List.of("GET /orders"));
+        String fresh = ContractActualizer.actualize(lib, List.of(c)).get("c1");
+        assertThat(fresh).contains(ContractActualizer.UNRESOLVED_MARKER);   // sanity
+        // simulate a pre-marker recording of the identical interface: the marker never applied
+        String preMarkerRecorded = fresh.replace(ContractActualizer.UNRESOLVED_MARKER, "");
+        assertThat(preMarkerRecorded).doesNotContain(ContractActualizer.UNRESOLVED_MARKER);
+        store.writeContract(runDir, "c1", preMarkerRecorded);
+
+        List<ContractRecheck.Finding> findings = ContractRecheck.check(plan(c), succeeded(),
+                Map.of("lib", lib), store, runDir);
+
+        assertThat(findings.get(0).status()).isEqualTo(ContractRecheck.Status.MATCHES);
     }
 
     @Test

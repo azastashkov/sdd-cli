@@ -141,8 +141,9 @@ public final class ContractActualizer {
                 // genuine bare-root endpoint, and the partition rule this amendment specifies
                 // ("same verb with an empty path") ignores the missing member's path entirely, so
                 // it would excuse ANY missing declared member sharing that verb — silently turning
-                // real divergences into NOT_RESOLVED. Left unmarked pending a ruling; see the task
-                // report for the empirical trace.
+                // real divergences into NOT_RESOLVED. Deliberately left unmarked — see the
+                // 2026-08-14 "unresolved extraction" amendment's `rest` bullet (design spec) for
+                // the ruling and the full trace of why this shape is not distinguishable.
                 if (REST_ANY_VERB.equals(endpoint.httpMethod())) {
                     body.append(UNRESOLVED_MARKER);
                 }
