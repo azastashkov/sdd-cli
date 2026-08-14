@@ -296,8 +296,14 @@ public final class QuestionInterpreter {
      * downgrade the model path applies, applied uniformly. Search terms are always populated
      * from the question's significant words, so a full-text search still runs alongside whatever
      * entities were found.
+     *
+     * <p>Public (rather than package-private) because Task 8's {@code ExplainCommand} calls it
+     * directly for the one failure {@link #interpret} cannot itself catch: never having had a
+     * {@code ChatModel} to call in the first place (missing {@code sdd.yml}, missing
+     * {@code models.planner}, or a deferred {@code api_key} failure surfacing at
+     * {@code HttpChatModel} construction time).
      */
-    static RetrievalRequest fallback(Jdbi jdbi, String question, String reason) {
+    public static RetrievalRequest fallback(Jdbi jdbi, String question, String reason) {
         List<String> notes = new ArrayList<>(List.of(
                 "interpreter unavailable: " + reason
                         + " — showing the facts about the entities named in your question"));

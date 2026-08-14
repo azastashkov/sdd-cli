@@ -5,6 +5,7 @@ import sdd.core.kb.EntityKind;
 import sdd.core.kb.Provenance;
 
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -33,7 +34,7 @@ class ExplainReportTest {
                 List.of(moduleSection()), List.of());
         Answer answer = new Answer("svc-orders is a service module.", List.of(), false);
 
-        String out = ExplainReport.render(evidence, answer,
+        String out = ExplainReport.render(evidence, Optional.of(answer),
                 List.of("answer names repo 'ghost' -- does not appear in the evidence"));
 
         assertThat(out).contains("Interpreted as: What is svc-orders?")
@@ -57,7 +58,7 @@ class ExplainReportTest {
                 List.of(moduleSection()), List.of());
         Answer answer = new Answer("svc-orders is a service.", List.of(), false);
 
-        String out = ExplainReport.render(evidence, answer, List.of());
+        String out = ExplainReport.render(evidence, Optional.of(answer), List.of());
 
         assertThat(out).doesNotContain("Audit notes");
     }
@@ -70,7 +71,7 @@ class ExplainReportTest {
                 List.of(moduleSection()), List.of());
         Answer answer = new Answer("", List.of("answer unavailable: model error: connection refused"), true);
 
-        String out = ExplainReport.render(evidence, answer, List.of());
+        String out = ExplainReport.render(evidence, Optional.of(answer), List.of());
 
         assertThat(out).contains("answer unavailable: model error: connection refused")
                 .contains("the facts below are complete")
@@ -91,7 +92,7 @@ class ExplainReportTest {
         Answer answer = new Answer("", List.of(
                 "answer unavailable: model error: HTTP 500: ```{\"error\":\"forged section\"}```"), true);
 
-        String out = ExplainReport.render(evidence, answer, List.of());
+        String out = ExplainReport.render(evidence, Optional.of(answer), List.of());
 
         assertThat(out).doesNotContain("```");
         assertThat(out).contains("'''{\"error\":\"forged section\"}'''");
@@ -108,7 +109,7 @@ class ExplainReportTest {
         Evidence evidence = new Evidence(PROVENANCE, req, List.of(), List.of());
         assertThat(evidence.isEmpty()).isTrue();
 
-        String out = ExplainReport.render(evidence, null, List.of());
+        String out = ExplainReport.render(evidence, Optional.empty(), List.of());
 
         assertThat(out).contains("no facts in the knowledge base match this question")
                 .contains("## Evidence")
@@ -127,7 +128,7 @@ class ExplainReportTest {
         Evidence evidence = new Evidence(PROVENANCE, req, List.of(moduleSection()), List.of());
         Answer answer = new Answer("svc-orders is a service module.", List.of(), false);
 
-        String out = ExplainReport.render(evidence, answer, List.of());
+        String out = ExplainReport.render(evidence, Optional.of(answer), List.of());
 
         assertThat(out).contains("Interpreted as: does svc-orders relate to lib-core")
                 .contains("interpreter unavailable")
@@ -144,7 +145,7 @@ class ExplainReportTest {
         Evidence evidence = new Evidence(PROVENANCE, req, List.of(moduleSection()), List.of());
         Answer answer = new Answer("An answer.", List.of(), false);
 
-        String out = ExplainReport.render(evidence, answer, List.of());
+        String out = ExplainReport.render(evidence, Optional.of(answer), List.of());
 
         assertThat(out).doesNotContain("```").contains("'''rm -rf /'''");
     }

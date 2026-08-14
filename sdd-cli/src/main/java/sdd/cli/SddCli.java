@@ -8,7 +8,8 @@ import picocli.CommandLine.Command;
         mixinStandardHelpOptions = true,
         version = "sdd 0.1.0",
         subcommands = {DoctorCommand.class, IndexCommand.class, PlanCommand.class, GraphCommand.class,
-                ImplementCommand.class, ReviewCommand.class, CleanCommand.class, StatusCommand.class})
+                ImplementCommand.class, ReviewCommand.class, CleanCommand.class, StatusCommand.class,
+                ExplainCommand.class})
 public final class SddCli {
     public static void main(String[] args) {
         System.exit(new CommandLine(new SddCli()).execute(args));
