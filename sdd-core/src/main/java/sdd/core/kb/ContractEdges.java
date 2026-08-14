@@ -52,6 +52,13 @@ public final class ContractEdges {
         return jdbi.withHandle(h -> h.createQuery("""
                         SELECT DISTINCT rp.name AS producer_repo, rc.name AS consumer_repo, t.name AS topic
                         FROM kafka_role prod
+                        -- Deliberate narrowing vs. the original ExecutionOrder query, which had no
+                        -- join to kafka_topic: the topic name is needed for sdd explain's evidence.
+                        -- kafka_role.topic_id is not FK-enforced (PRAGMA foreign_keys is never set
+                        -- anywhere in this codebase, and SQLite defaults it OFF), so an orphan
+                        -- topic_id would silently drop that role's edge here where it previously
+                        -- still produced one. Not expected in practice (kafka_role rows are only
+                        -- ever written alongside a resolved kafka_topic row), but worth naming.
                         JOIN kafka_topic t ON t.id = prod.topic_id
                         JOIN module mp ON mp.id = prod.module_id
                         JOIN repo rp ON rp.id = mp.repo_id
