@@ -54,6 +54,38 @@ class ClosureTest {
     }
 
     @Test
+    void repoPulledInByAContractEdgePropagatesOverBuildEdges() {
+        // Deliberately a Java-only estate: this is a pre-existing bug, not something multi-toolchain
+        // support introduced. expand() drained its BFS queue and only THEN called contracts(), which
+        // adds repos without re-enqueueing them — so a repo reached through a REST or Kafka contract
+        // never had its own consumers expanded, and the blast radius stopped one repo short.
+        //
+        // svc-billing calls svc-orders' endpoint (seeded above); svc-downstream depends on
+        // svc-billing the ordinary way. Changing svc-orders must reach both.
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO repo(name, path, kind) VALUES ('svc-downstream','/w/7','SERVICE')");
+            h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (7,':','UNKNOWN')");
+            h.execute("INSERT INTO dep_edge(from_module_id, to_grp, to_name, configuration, "
+                    + "declared_version, declared_via, mode, is_internal, to_module_id) "
+                    + "VALUES (7,'com.acme','svc-billing','compileClasspath','1.0','DIRECT','PINNED',1,4)");
+        });
+
+        Closure.Expansion expansion = Closure.expand(db.jdbi(), Set.of("svc-orders"));
+
+        assertThat(expansion.added()).extracting(AffectedRepo::repo)
+                .contains("svc-billing", "svc-downstream");
+        assertThat(expansion.added())
+                .filteredOn(r -> r.repo().equals("svc-downstream"))
+                .singleElement()
+                .satisfies(r -> {
+                    // It arrives as an ordinary build-edge dependent, not as a contract consumer:
+                    // the one-contract-hop rule still holds, and only build edges recurse.
+                    assertThat(r.role()).isEqualTo("dependent");
+                    assertThat(r.reasons()).anySatisfy(reason -> assertThat(reason).contains("svc-billing"));
+                });
+    }
+
+    @Test
     void expandsTransitivelyWithAnnotationsContractsAndBomSites() {
         Closure.Expansion expansion = Closure.expand(db.jdbi(), Set.of("lib-core"));
 

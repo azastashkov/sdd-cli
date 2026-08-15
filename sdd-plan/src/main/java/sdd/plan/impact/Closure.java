@@ -58,7 +58,31 @@ public final class Closure {
         Map<String, AffectedRepo> added = new LinkedHashMap<>();
         Set<String> affected = new LinkedHashSet<>(rootRepos);
         Set<String> bomConsumersSeen = new HashSet<>();
-        Deque<String> queue = new ArrayDeque<>(new TreeSet<>(rootRepos));
+        expandBuildEdges(jdbi, byProvider, rootRepos, affected, added, bomConsumersSeen, warnings);
+
+        // Contract edges add exactly one hop and never recurse into further contracts — but a repo
+        // reached that way is affected like any other, so its own build-edge consumers must still be
+        // expanded. Seeding a second build-edge pass from just those repos preserves the one-hop
+        // rule (contracts() is still called exactly once) while restoring transitivity: a backend
+        // whose endpoint changed reaches the SDK that calls it, and then everything built on that
+        // SDK. Without this the blast radius stops one repo short, silently.
+        Set<String> viaContracts = contracts(jdbi, affected, added, warnings);
+        expandBuildEdges(jdbi, byProvider, viaContracts, affected, added, bomConsumersSeen, warnings);
+        List<String> cycles = cycles(edges, affected, warnings);
+        statusWarnings(jdbi, affected, warnings);
+        return new Expansion(new ArrayList<>(added.values()), cycles, warnings);
+    }
+
+    /**
+     * Transitive expansion over build edges, provider -> consumer, from the given seeds. Shared by
+     * the initial pass over the changed repos and the follow-up pass over repos a contract edge
+     * pulled in.
+     */
+    private static void expandBuildEdges(Jdbi jdbi, Map<String, List<RepoEdge>> byProvider,
+                                         Set<String> seeds, Set<String> affected,
+                                         Map<String, AffectedRepo> added, Set<String> bomConsumersSeen,
+                                         List<String> warnings) {
+        Deque<String> queue = new ArrayDeque<>(new TreeSet<>(seeds));
         while (!queue.isEmpty()) {
             String provider = queue.removeFirst();
             for (RepoEdge edge : byProvider.getOrDefault(provider, List.of())) {
@@ -83,11 +107,6 @@ public final class Closure {
                 }
             }
         }
-
-        contracts(jdbi, affected, added, warnings);
-        List<String> cycles = cycles(edges, affected, warnings);
-        statusWarnings(jdbi, affected, warnings);
-        return new Expansion(new ArrayList<>(added.values()), cycles, warnings);
     }
 
     private static boolean usesApiOf(Jdbi jdbi, String consumerRepo, String providerRepo) {
@@ -126,7 +145,8 @@ public final class Closure {
         }
     }
 
-    private static void contracts(Jdbi jdbi, Set<String> affected, Map<String, AffectedRepo> added,
+    /** @return the repos this pass newly added, so their own build-edge consumers can be expanded */
+    private static Set<String> contracts(Jdbi jdbi, Set<String> affected, Map<String, AffectedRepo> added,
                                   List<String> warnings) {
         record Contract(String consumerRepo, String reason) {
         }
@@ -144,8 +164,10 @@ public final class Closure {
                         "consumes topic " + edge.topic() + " produced by " + edge.producerRepo()));
             }
         }
+        Set<String> newlyAdded = new LinkedHashSet<>();
         for (Contract contract : contracts) {
             if (affected.add(contract.consumerRepo())) {
+                newlyAdded.add(contract.consumerRepo());
                 added.put(contract.consumerRepo(), new AffectedRepo(contract.consumerRepo(),
                         "contract", "PENDING_CONTRACT", List.of(), List.of(contract.reason())));
             } else if (added.containsKey(contract.consumerRepo())) {
@@ -158,6 +180,7 @@ public final class Closure {
                 }
             }
         }
+        return newlyAdded;
     }
 
     /** Iterative Tarjan over the induced consumer->provider graph of affected repos. */
