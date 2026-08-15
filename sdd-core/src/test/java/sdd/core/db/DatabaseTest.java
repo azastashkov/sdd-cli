@@ -133,6 +133,12 @@ class DatabaseTest {
             // ...and rebuildFrom put back the identical row set, not an approximation of it. A
             // mismatch here is the silent degradation the rebuild exists to prevent.
             assertThat(symbolRows(db.jdbi())).isEqualTo(symbolsBefore);
+            // The new column is empty text, not NULL. Asserted because comments elsewhere have twice
+            // claimed the opposite: rebuildFrom passes "" and insert coalesces null to "", so a
+            // migrated workspace holds no NULL doc anywhere.
+            List<String> docTypes = db.jdbi().withHandle(h -> h.createQuery(
+                            "SELECT DISTINCT typeof(doc) FROM fts_symbol").mapTo(String.class).list());
+            assertThat(docTypes).containsExactly("text");
         }
     }
 

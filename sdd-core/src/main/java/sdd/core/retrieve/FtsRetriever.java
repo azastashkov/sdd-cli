@@ -107,8 +107,15 @@ public final class FtsRetriever implements Retriever {
     }
 
     /**
-     * Whether a highlighted column carries a match marker. Null-tolerant: rows written before the
-     * {@code doc} column was populated hold NULL there, and {@code highlight()} passes that through.
+     * Whether a highlighted column carries a match marker.
+     *
+     * <p>Null-tolerant defensively, not because any row this codebase writes is null.
+     * {@link FtsSymbolWriter} is the sole write path and binds every column on every insert,
+     * coalescing an absent {@code doc} to {@code ""} — {@code rebuildFrom} included, so a migrated
+     * workspace holds {@code ""} there rather than NULL. The guard is for a row written by
+     * something else: a hand-inserted one, or a database edited outside this tool.
+     * {@code highlight()} passes a NULL straight through, and a NULL has to read as "this column did
+     * not match" — not as a match, and not as an NPE.
      */
     private static boolean matched(String highlighted) {
         return highlighted != null && highlighted.indexOf(MATCH_OPEN) >= 0;

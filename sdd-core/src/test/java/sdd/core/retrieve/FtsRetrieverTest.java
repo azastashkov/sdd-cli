@@ -145,14 +145,16 @@ class FtsRetrieverTest {
     }
 
     @Test
-    void aRowWrittenBeforeTheDocColumnWasPopulatedIsNeverReportedDocOnly() {
-        // The state every existing workspace is in on day one: rebuildFrom cannot reach javadoc at
-        // the V2 migration, so its rows hold NULL rather than "" until a re-index. highlight()
-        // passes that NULL through, and a null must read as "this column did not match" — not as a
-        // match, and not as an NPE.
+    void aNullDocColumnReadsAsNoMatchRatherThanAMatchOrAnNpe() {
+        // No production path can produce a NULL doc: FtsSymbolWriter is the sole write path and
+        // binds the column on every insert, coalescing null to "" — rebuildFrom included, so even a
+        // migrated workspace holds "" there. What this pins is therefore the defensive guard in
+        // FtsRetriever.matched, against a row this codebase did not write: hand-inserted, or a
+        // database edited outside the tool. The seeded rows construct exactly that state, their raw
+        // INSERT omitting the column.
         Integer nullDocs = db.jdbi().withHandle(h -> h.createQuery(
                 "SELECT count(*) FROM fts_symbol WHERE doc IS NULL").mapTo(Integer.class).one());
-        assertThat(nullDocs).isEqualTo(3); // the seeded rows, written the pre-javadoc way
+        assertThat(nullDocs).isEqualTo(3); // the seeded rows, whose INSERT names no doc column
 
         List<Hit> hits = new FtsRetriever(db.jdbi()).search("loyalty tier order", 10);
 
