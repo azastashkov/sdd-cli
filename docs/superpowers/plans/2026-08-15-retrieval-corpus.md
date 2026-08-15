@@ -51,8 +51,10 @@ exact work"*.
 | `c5b0fcc`, `54e0a3e` | `retrieval: embeddings` is rejected at config load naming the remedy, rather than silently downgraded to FTS. The `SddConfig.retrieval` component is deleted; the YAML key is still validated, because snakeyaml would otherwise swallow the value in silence. |
 | `6de05cc` | `V2__fts_porter.sql` recreates `fts_symbol` with `tokenize = "porter unicode61 tokenchars '_$'"` and an unused `doc` column, repopulated by `FtsSymbolWriter.rebuildFrom`. First in-place migration this codebase has ever run. |
 | `141f3ac`, `c6b9ec9`, `4be4625` | `V3` adds `java_type.javadoc`; the extractor fills it; the indexer writes the type's javadoc summary into `fts_symbol.doc` at the lowest bm25 weight, and `Hit.docOnly` marks a hit whose javadoc was the only column that matched. |
+| `9063806` | Corrects what that lowest weight actually buys. Added *after* the measurement below falsified the comment the previous commit shipped — see carried item 12. |
 
-This document is the fourth: the measurement, and the embeddings decision it supports.
+This document is the fourth thing the branch produced: the measurement, and the embeddings decision it
+supports. It is also what caused the fifth, `9063806`.
 
 ---
 
@@ -60,11 +62,19 @@ This document is the fourth: the measurement, and the embeddings decision it sup
 
 ### Why it did not run against the user's estate
 
-The live KB at `~/projects/github/trading-estate/.sdd/index.db` is at `schema_version = 1` and two
-frozen production runs depend on it. Any command that opens a database applies pending migrations —
-including read-only `sdd status`, `sdd review` and `sdd graph` — so pointing this branch's binary at
-it would migrate it v1→v3 as a side effect of measuring. It was therefore never opened by the new
-binary; it was read with `sqlite3` only.
+The live KB at `~/projects/github/trading-estate/.sdd/index.db` is the user's real knowledge base and
+is at `schema_version = 1`. That alone is reason enough not to touch it, because **`Database.open`
+applies pending migrations, and it is reached by commands that only read** — `sdd graph`
+(`GraphCommand.java:36`) and `sdd review` (`review/RunContext.java:75`) both migrate a database they
+never write to. So pointing this branch's binary at the estate would have moved it v1→v3 as a side
+effect of measuring it. It was therefore never opened by the new binary; it was read with `sqlite3`
+only, and re-checked afterwards as still at `schema_version = 1`.
+
+`sdd status` is **not** in that set, though an earlier draft of this document and the branch plan's
+Risk #3 both said it was. It never opens the database at all: it is absent from every
+`Database.open` call site in `sdd-cli`, and returns at `StatusCommand.java:70` on "no runs found"
+before any KB access. Verified empirically — `sdd status` against a copy of the v1 estate left it at
+`schema_version = 1`, while `sdd graph` against the same copy migrated it to 3.
 
 The measurement ran instead in a throwaway probe workspace: the same six repo symlinks the estate
 uses, a copy of its `sdd.yml`, indexed with `--no-cards`. Repo cards need model credentials and cost
@@ -73,7 +83,7 @@ tokens, and `repo_card` has no bearing on an `fts_symbol` measurement.
 ### Why it is an A/B and not a before/after
 
 The "before" numbers in the diagnosis above were taken from the live v1 database. That database was
-indexed when every repo in the estate was checked out on an **agent-written commit from a frozen
+indexed when every repo in the estate was checked out on an **agent-written commit from an
 `sdd implement` run**, and none of those commits is reachable from its repo's current `main`:
 
 | repo | `repo.head_commit` in the v1 DB | current `main` | ancestor of `main`? |
@@ -85,11 +95,16 @@ indexed when every repo in the estate was checked out on an **agent-written comm
 | trading-product-a | `bc87e11` `sdd: SPEC-101-v2 trading-product-a` | `8c418eb` | no |
 | trading-product-b | `08a3cbd` `sdd: SPEC-101-v2 trading-product-b` | `683748b` | no |
 
-The estate has since absorbed a `feature/frontend-repo-split` merge in five of the six repos. Thirteen
-Java files differ. **One of them matters directly: `TierSpreadService` is gone.** It existed only on
-`bc87e11`, the agent-written commit the v1 DB indexed; it is not in current `main`, and neither are
-the `getTierSpreadBps`/`setTierSpreadBps` accessors that `TiersProperties` used to carry. In the
-estate as it stands today the only tier-spread code anywhere is the mock venue's `VenueProperties`.
+All six are unreachable from `main`, but for two different reasons, and the distinction is worth
+keeping. Five repos moved *forward*: they absorbed a `feature/frontend-repo-split` merge, and thirteen
+Java files differ across them. `trading-candles` moved not at all — its recorded commit sits directly
+on top of today's `main` and is **tree-identical to it**, so the agent's commit was simply abandoned
+and that repo's corpus is unchanged.
+
+**One difference matters directly: `TierSpreadService` is gone.** It existed only on `bc87e11`, the
+agent-written commit the v1 DB indexed; it is not in current `main`, and neither are the
+`getTierSpreadBps`/`setTierSpreadBps` accessors that `TiersProperties` used to carry. In the estate as
+it stands today the only tier-spread code anywhere is the mock venue's `VenueProperties`.
 
 Comparing a fresh index against the plan's original numbers would therefore have measured this
 branch's change *plus* the estate's drift, and reported the sum as the former. So both arms were run
@@ -142,6 +157,34 @@ no comment at all. This is source coverage, not an extraction gap. At file level
 sources carry a type-level javadoc block and **none carries javadoc only below the type level**,
 which is what makes the member-level gap (carried item 5) cheap to defer *for this estate* and says
 nothing about any other.
+
+### The migration, verified against real production data
+
+The A/B above measures a *freshly indexed* database. The other half of this branch's risk is the
+upgrade path: `V2` is **the first in-place migration this codebase has ever applied to an existing
+database**, and if `FtsSymbolWriter.rebuildFrom` fails to reproduce what the indexer originally wrote,
+search degrades silently for every pre-existing workspace and no test in `sdd-core` would notice.
+
+This was verified by the controller, on **two throwaway copies of the real v1 estate database** —
+never on the estate itself:
+
+- `sdd graph` against a copy moved it `schema_version` **1 → 3**, confirming that a read-only command
+  is enough to trigger the upgrade.
+- `java_type` kept all **258** rows; the `javadoc` column was added to `java_type` and the `doc`
+  column to `fts_symbol`.
+- **All 1227 `fts_symbol` rows are byte-identical across the migration** — a full
+  `identifier|fqcn|module_id` dump taken before and after and diffed in its entirety, not sampled.
+- Stemming is live on the migrated rows: `"tiers" OR "resolved"` returns `TierResolver`,
+  `resolveTier`, `tierResolver`, where the same query against the pre-migration table returned
+  `ResolvedField`, `resolvedFields`, `ResolvedMigration`.
+
+That row-identity check is the strongest evidence on this branch, because it holds `rebuildFrom`
+against **real production data** where the existing tests only hold it against fixtures — and the two
+are separate statements of one rule that cannot call each other across the module boundary.
+
+Its limit, stated plainly: this exercised the **migration path and row preservation**, and nothing
+downstream of them. It did not run `sdd explain` end to end and did not diff a `sdd plan` output,
+both of which need model spend that was not authorized for this work.
 
 ### Results
 
@@ -366,6 +409,10 @@ SHA-pins `plan.md` at approve time. Nothing in the output distinguishes the two 
 *Ruling:* documented, not fixed. Detecting it needs an index-time marker in `meta`, because
 `javadoc IS NULL` cannot distinguish "never re-indexed" from "this estate has no javadoc" — and 37
 of this estate's 256 types legitimately have none.
+*Cost to fix is lower than that ruling makes it sound:* `meta` is not new machinery. `Database`
+already stores and reads `schema_version` there, so the marker is another row in a table that is
+already written on every index and already read on every open — not a schema change, not a migration,
+and not a new concept for a reader to learn.
 *Cost if wrong:* two users over one estate get different approved plans and no signal that they
 should not have.
 
@@ -388,9 +435,12 @@ is the same recall-versus-noise trade the doc column already made once.
 
 *Trigger:* a doc comment describing behaviour the code no longer has.
 *Symptom:* the type is surfaced as a candidate for a question it no longer answers.
-*Ruling:* mitigated, not fixed. The weight floor keeps prose from dominating, the `docOnly` marker
-labels it in explain's output, and the fact firewall stops it becoming a claim — so the cost is a
-wasted candidate, not a wrong answer.
+*Ruling:* mitigated, not fixed — and note *how*, because item 12 narrowed it. The mitigation is the
+`docOnly` marker labelling the hit in explain's output plus the fact firewall stopping it from
+becoming a claim; the weight floor contributes only that a given term earns less in prose than in a
+name, which does **not** hold a stale comment below code in the ranking. So the cost is a wasted
+candidate rather than a wrong answer because of the labelling and the firewall, not because of the
+weights.
 *Cheapest real detection if it ever matters:* flag javadoc whose `{@link}`/`{@code}` targets no
 longer appear in the type's `api_member` rows. That is provable staleness and needs no model.
 *Cost if wrong:* a human reads a confident comment about code that has moved on.
@@ -437,26 +487,42 @@ corpus and these questions, and move Q4's answer marginally further down. Only t
 2.0 is shown to matter — it is the whole of the Q3 and Q4 improvement.
 *Ruling:* **no code change.** Retuning on five self-selected questions would be overfitting dressed
 as evidence, and it is a separate decision from this one.
-*What the numbers do suggest, on the record:* the `doc` weight may be slightly high relative to the
-design intent — see item 12 — but lowering it is not obviously safe, because `GroupDirectory` climbed
-from 42 to 1 on the strength of it. Any retune must re-run this A/B against a **larger and
-independently chosen** question set.
+*What the numbers do and do not suggest, on the record:* it is tempting to read item 12 as evidence
+that the `doc` weight is too high. **It is not**, and the reason matters for anyone who retunes.
+Column weights cannot order rows at all — bm25 aggregates term frequency, inverse document frequency
+and field-length normalisation over the whole row, so there is no value of the `doc` weight at which
+a prose row matching most of a query loses to an identifier row matching one term. Lowering it would
+not buy the property item 12 was about; it would only reduce what prose is worth, and
+`GroupDirectory` climbed from 42 to 1 on exactly that. Any retune must re-run this A/B against a
+**larger and independently chosen** question set, and must not be justified by item 12.
 
-### 12. `FtsRetriever`'s class javadoc claims a guarantee the measurement falsifies
+### 12. `FtsRetriever` claimed a ranking guarantee that does not exist — found here, **fixed** in `9063806`
 
-*Trigger:* reading `FtsRetriever`'s class comment as a specification.
-*Symptom:* it states that prose in the `doc` column *"breaks ties and surfaces types no identifier
-could reach, but it can never win against a code-derived match."* **It can.** bm25 weights scale a
-column's contribution; they do not cap it, so a long javadoc matching many query terms outscores a
-short identifier matching one even at 2.0 against 10.0. Two instances in five questions: on Q3
-`Action` (−15.13, doc-only) and `PayloadKeySpec` (−13.51, doc-only) both outrank `reachable` (−13.01,
-identifier and words matched); on Q4 `SessionRegistry` (−14.18, doc-only) outranks `AdminProperties`
-(−14.12, three columns matched).
-*Ruling:* recorded, not fixed — this task made no code changes. But it should be taken up, because a
-comment stating a false guarantee is this project's own governing rule violated one level down, and
-the same call was already made once on this branch (Task 3, minor #3). The fix is a choice between
-correcting the sentence and lowering the weight until it becomes true, and those have different
-consequences: the second would likely undo the Q3/Q4 wins.
+Recorded as a carried item because the finding shaped items 7, 11 and 13, not because it is still
+open. It is closed.
+
+*Symptom as found:* `FtsRetriever`'s class javadoc stated that prose in the `doc` column *"breaks ties
+and surfaces types no identifier could reach, but it can never win against a code-derived match."*
+**It can.** Two instances in five questions: on Q3 `Action` (−15.13, doc-only) and `PayloadKeySpec`
+(−13.51, doc-only) both outrank `reachable` (−13.01, identifier and words matched); on Q4
+`SessionRegistry` (−14.18, doc-only) outranks `AdminProperties` (−14.12, three columns matched).
+*Diagnosis:* **the claim was wrong, not the weights.** A column weight scales one column's
+contribution to one row's score; it cannot order rows, because bm25 aggregates term frequency,
+inverse document frequency and field-length normalisation across the whole row. A row matching most
+of a query in long prose outscores a row matching one term in a short identifier *at any weighting* —
+so no retune could have made the sentence true. The property that does hold is per-term and same-row:
+a given term earns less from `doc` than from `identifier` or `words`.
+*Ruling:* fixed rather than deferred, in `9063806`. `FtsRetriever` and `FtsSymbolWriter` now state the
+per-term property and say plainly that it is not a ranking guarantee. The existing test kept its
+assertion — it was testing something true — but lost its name:
+`anIdentifierMatchOutranksAProseOnlyMatchOnTheSameTerm` read as the general rule it never was, and is
+now `theSameTermIsWorthLessInProseThanInAnIdentifier`. A new test,
+`aProseHeavyRowCanOutrankAShortIdentifierMatch`, reproduces the measured case, so the limitation is
+asserted rather than only described. Weights unchanged, deliberately (item 11).
+*Why it was fixed and not carried:* a comment stating a false guarantee is this project's governing
+rule violated one level down, and the same call had already been made once on this branch (Task 3,
+minor #3). It is also the argument for `Hit.docOnly` existing at all — the reader is *told* a hit came
+from prose precisely because nothing can promise it came last.
 *Cost if wrong:* a future reader relies on a floor that does not exist.
 
 ### 13. `docOnly` reports *presence* provenance, not *rank* provenance — and the predicted proof did not appear
@@ -524,12 +590,23 @@ by `V2__fts_porter.sql:9` and **must be re-checked against it if that table is e
    and the one concrete consequence (`TierSpreadService` is gone, so Q5's expected answer cannot
    appear). The recall cost is given as a number, not a hedge. The parts of production not covered —
    `SearchFacts`' narrower query, and the whole two-call `explain` pipeline — are named.
-3. **Are the two negative findings recorded as prominently as the positive ones?** Items 12 and 13
-   are both failures of things this branch shipped, found by this measurement, and both are in the
-   carried-items list with the same Trigger/Symptom/Ruling/Cost treatment as the rest. Item 13
-   contradicts a prediction the plan made in writing, and says so.
-4. **Judgment calls for reviewers:** running the A/B in a probe workspace rather than the user's
+3. **Were the corrections to this document itself recorded, not quietly patched?** Yes, and they are
+   named in place rather than only in a commit message. Two claims in the first version were false and
+   are corrected above: that `sdd status` migrates a database (it never opens one) and that frozen
+   production runs depended on the estate KB (`.sdd/runs/` is empty; they were archived). Both were
+   inherited from the branch plan's Risk #3 and from stale memory, and both were repeated here without
+   being checked — which is the failure this document exists to argue against. A third was mine
+   alone: item 12 originally offered "lowering the weight until it becomes true" as an option, which
+   is impossible, since column weights cannot order rows at any value. Item 11 now says so explicitly
+   so the bad inference is not available to the next reader.
+4. **Are the two negative findings recorded as prominently as the positive ones?** Items 12 and 13
+   are both failures of things this branch shipped, found by this measurement. Item 12 was fixed in
+   `9063806` and is kept here anyway, because it is what narrowed items 7 and 11. Item 13 contradicts
+   a prediction the plan made in writing, is still open, and says so.
+5. **Judgment calls for reviewers:** running the A/B in a probe workspace rather than the user's
    estate; using the raw question as the query, which matches two of the three production call sites
    but not `SearchFacts`; adding the four-arm decomposition, which was not asked for but is the only
-   thing that attributes the improvement to a cause; and declining to retune the weights on the
-   evidence in hand.
+   thing that attributes the improvement to a cause; declining to retune the weights on the evidence
+   in hand; and recording the migration verification here on the controller's numbers rather than
+   re-running it, since it was performed on copies and its inputs (1227 `fts_symbol` rows, 258
+   `java_type` rows in the v1 estate) match what this measurement independently read.
