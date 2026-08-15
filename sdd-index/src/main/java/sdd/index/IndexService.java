@@ -9,7 +9,9 @@ import sdd.index.extract.BuildExtractor;
 import sdd.index.extract.BuildModel;
 import sdd.index.extract.GradleBuildExtractor;
 import sdd.index.gradle.ExtractionException;
+import sdd.core.ts.TsSidecar;
 import sdd.index.npm.NpmExtractor;
+import sdd.index.ts.TsExtraction;
 import sdd.index.report.CurationReport;
 import sdd.index.scan.RepoScan;
 import sdd.index.scan.WorkspaceScanner;
@@ -316,6 +318,15 @@ public final class IndexService {
         try {
             long repoId = jdbi.withHandle(h -> h.createQuery("SELECT id FROM repo WHERE name=:n")
                     .bind("n", scan.name()).mapTo(Long.class).one());
+            // Which reader a repo gets follows from its modules, not from its build system: the two
+            // happen to agree today, but the language is what decides whether JavaParser or the
+            // TypeScript compiler can say anything useful about a file.
+            boolean typescript = extract.modules().stream()
+                    .anyMatch(m -> "TYPESCRIPT".equals(m.language()));
+            if (typescript) {
+                return TsExtraction.extractRepo(jdbi, repoId, scan.name(), scan.path(), extract,
+                        TsSidecar.create(null));
+            }
             return SourceExtraction.extractRepo(jdbi, repoId, scan.name(), scan.path(), extract);
         } catch (RuntimeException | StackOverflowError e) {
             SourcePersistence.updateParseStatus(jdbi, scan.name(), "FAILED",

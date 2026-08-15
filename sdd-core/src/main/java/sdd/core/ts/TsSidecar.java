@@ -107,6 +107,23 @@ public final class TsSidecar {
                 .put("text", text));
     }
 
+    /**
+     * Every outbound HTTP call the given files make, as the compiler sees them.
+     *
+     * @param files the module's own sources; the sidecar builds a program from exactly these, and
+     *              resolves no bare specifier, so what comes back depends on the repo rather than
+     *              on what is installed
+     */
+    public Result httpCallSites(Path repoRoot, List<Path> files) {
+        com.fasterxml.jackson.databind.node.ObjectNode request = MAPPER.createObjectNode()
+                .put("version", PROTOCOL_VERSION)
+                .put("mode", "httpCallSites")
+                .put("repoRoot", repoRoot.toAbsolutePath().toString());
+        var array = request.putArray("files");
+        files.forEach(f -> array.add(f.toAbsolutePath().toString()));
+        return call(request);
+    }
+
     private Result call(JsonNode request) {
         Path requestFile = null;
         Path responseFile = null;
