@@ -9,6 +9,7 @@ import sdd.index.extract.BuildExtractor;
 import sdd.index.extract.BuildModel;
 import sdd.index.extract.GradleBuildExtractor;
 import sdd.index.gradle.ExtractionException;
+import sdd.index.npm.NpmExtractor;
 import sdd.index.report.CurationReport;
 import sdd.index.scan.RepoScan;
 import sdd.index.scan.WorkspaceScanner;
@@ -122,7 +123,7 @@ public final class IndexService {
         // frontend assets must stay a Gradle repo, so Gradle is offered every repo first.
         List<BuildExtractor> extractors = injectedExtractor != null
                 ? List.of(injectedExtractor)
-                : List.of(new GradleBuildExtractor(config.jdkHomes()));
+                : List.of(new GradleBuildExtractor(config.jdkHomes()), new NpmExtractor());
         List<RepoResult> results = new ArrayList<>();
         for (RepoScan scan : scans) {
             results.add(indexRepo(db.jdbi(), extractors, scan, force));

@@ -40,14 +40,20 @@ public final class ArtifactLinker {
                     WHERE EXISTS(SELECT 1 FROM artifact a
                                  WHERE a.grp=dep_edge.to_grp AND a.name=dep_edge.to_name)""");
 
-            // Re-derive modes from declared_version for all edges (idempotent)
-            record EdgeRow(long id, String declaredVersion) {}
-            List<EdgeRow> edges = h.createQuery("SELECT id, declared_version FROM dep_edge")
-                    .map((rs, ctx) -> new EdgeRow(rs.getLong("id"), rs.getString("declared_version")))
+            // Re-derive modes from declared_version for all edges (idempotent). The consuming
+            // module's language selects the grammar: the same specifier means different things in
+            // the two ecosystems, and reading an npm range with Maven rules silently calls every
+            // caret range PINNED. See IndexPersistence.classifyMode.
+            record EdgeRow(long id, String declaredVersion, String language) {}
+            List<EdgeRow> edges = h.createQuery("""
+                            SELECT e.id, e.declared_version, m.language
+                            FROM dep_edge e JOIN module m ON m.id = e.from_module_id""")
+                    .map((rs, ctx) -> new EdgeRow(rs.getLong("id"), rs.getString("declared_version"),
+                            rs.getString("language")))
                     .list();
             for (EdgeRow e : edges) {
                 h.createUpdate("UPDATE dep_edge SET mode=:m WHERE id=:id")
-                        .bind("m", ModeClassifier.classify(e.declaredVersion(), false).name())
+                        .bind("m", IndexPersistence.classifyMode(e.language(), e.declaredVersion()).name())
                         .bind("id", e.id())
                         .execute();
             }
@@ -59,6 +65,19 @@ public final class ArtifactLinker {
                                    module pm JOIN repo pr ON pr.id=pm.repo_id
                       WHERE cm.id=dep_edge.from_module_id AND pm.id=dep_edge.to_module_id
                         AND cr.included_builds LIKE '%"' || pr.path || '"%')""");
+
+            // npm's equivalent of an included build: a workspaces monorepo materialises a sibling
+            // package as a symlink into live source, so a dependency satisfied inside the same repo
+            // is composite regardless of the version range written down. Guarded on language so it
+            // cannot touch Gradle edges — sdd-init.gradle only ever emits ExternalDependency, so a
+            // same-repo Gradle edge does not exist and an unguarded rule would be a silent trap for
+            // whoever changes that.
+            h.execute("""
+                    UPDATE dep_edge SET mode='COMPOSITE'
+                    WHERE is_internal=1 AND EXISTS(
+                      SELECT 1 FROM module cm, module pm
+                      WHERE cm.id=dep_edge.from_module_id AND pm.id=dep_edge.to_module_id
+                        AND cm.repo_id = pm.repo_id AND cm.language='TYPESCRIPT')""");
             return h.createQuery("SELECT count(*) FROM dep_edge WHERE is_internal=1")
                     .mapTo(Integer.class).one();
         });

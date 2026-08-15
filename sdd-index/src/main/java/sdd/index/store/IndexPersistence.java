@@ -6,7 +6,9 @@ import org.jdbi.v3.core.Jdbi;
 import sdd.core.retrieve.FtsSymbolWriter;
 import sdd.index.gradle.CatalogReader;
 import sdd.index.extract.BuildModel;
+import sdd.index.gradle.ConsumptionMode;
 import sdd.index.gradle.ModeClassifier;
+import sdd.index.npm.NpmModeClassifier;
 import sdd.index.scan.RepoScan;
 
 import java.time.Instant;
@@ -128,7 +130,7 @@ public final class IndexPersistence {
                     .bind("m", moduleId).bind("g", d.group).bind("n", d.name).bind("cfg", d.configuration)
                     .bind("dv", d.declaredVersion).bind("rv", d.resolvedVersion)
                     .bind("via", ModeClassifier.declaredVia(d.declaredVersion, inCatalog))
-                    .bind("mode", ModeClassifier.classify(d.declaredVersion, false).name())
+                    .bind("mode", classifyMode(p.language(), d.declaredVersion).name())
                     .execute();
         }
     }
@@ -152,6 +154,18 @@ public final class IndexPersistence {
         h.createUpdate("INSERT INTO artifact(grp, name, module_id) VALUES (:g, :n, :m) "
                         + "ON CONFLICT(grp, name) DO UPDATE SET module_id=excluded.module_id")
                 .bind("g", grp).bind("n", name).bind("m", moduleId).execute();
+    }
+
+    /**
+     * Version-specifier grammar is per-ecosystem, and the two disagree on the same strings.
+     * {@code ^0.2.1} under Maven rules has no {@code +}, does not end {@code -SNAPSHOT} and does
+     * not start {@code [} or {@code (}, so the Gradle classifier calls it PINNED — the exact
+     * opposite of what it means. Every npm range in an estate would be mislabelled, with no error.
+     */
+    static ConsumptionMode classifyMode(String language, String declaredVersion) {
+        return "TYPESCRIPT".equals(language)
+                ? NpmModeClassifier.classify(declaredVersion, false)
+                : ModeClassifier.classify(declaredVersion, false);
     }
 
     private static String rollupKind(BuildModel.Extract extract) {
