@@ -9,7 +9,7 @@ import java.util.TreeSet;
 /**
  * The mandatory, deterministic absence guard (spec Amendment 2026-08-14, rule 2): "nothing
  * consumes X" is the single most dangerous sentence {@code sdd explain} can produce, and the KB
- * cannot support it — {@code rest_client.resolution} is not always {@code LITERAL} and
+ * cannot support it — a {@code rest_client} row may have no resolvable path and
  * {@code kafka_topic.resolution} can be {@code DYNAMIC}, so an unresolved caller is invisible to
  * every {@code consumers}/{@code impact} query rather than genuinely absent from the estate. This
  * is code, not a prompt instruction: {@link EvidenceCollector} calls {@link #caveat} on every
@@ -33,18 +33,30 @@ final class AbsenceGuard {
         int unresolvedClients = repos.isEmpty() ? 0 : countUnresolvedRestClients(jdbi, repos);
         int dynamicTopics = repos.isEmpty() ? 0 : countDynamicTopics(jdbi, repos);
         return "Absence is never proof here: " + unresolvedClients
-                + " rest_client row(s) with resolution not LITERAL and " + dynamicTopics
+                + " rest_client row(s) with no resolvable path and " + dynamicTopics
                 + " kafka_topic row(s) with resolution DYNAMIC among the repo(s) this answer covers ("
                 + (repos.isEmpty() ? "none" : String.join(", ", repos)) + ") are invisible to this "
                 + "query — a consumer that never shows up here is not proof none exists.";
     }
 
+    /**
+     * Counts the clients this query genuinely cannot see. The predicate is deliberately
+     * {@code norm_path IS NULL OR resolution = 'DYNAMIC'} — the same one the curation report uses
+     * for its "Unresolved REST clients" section, so the number here can be checked against that
+     * list — and NOT "resolution is not LITERAL".
+     *
+     * <p>The older predicate counted every non-LITERAL resolution, which swept in rows that ARE
+     * matchable: a constant folded from a nearby declaration, or a path template whose parameters
+     * occupy whole segments. Those are matched by the same rule Spring's own templates are matched
+     * by, so counting them meant the caveat's number grew as extraction got BETTER — the opposite
+     * of what a reader would conclude from it.
+     */
     private static int countUnresolvedRestClients(Jdbi jdbi, List<String> repos) {
         return jdbi.withHandle(h -> h.createQuery("""
                         SELECT count(*) FROM rest_client rc
                         JOIN module m ON m.id = rc.module_id
                         JOIN repo r ON r.id = m.repo_id
-                        WHERE r.name IN (<repos>) AND (rc.resolution IS NULL OR rc.resolution <> 'LITERAL')""")
+                        WHERE r.name IN (<repos>) AND (rc.norm_path IS NULL OR rc.resolution = 'DYNAMIC')""")
                 .bindList("repos", repos).mapTo(Integer.class).one());
     }
 
