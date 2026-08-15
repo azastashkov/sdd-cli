@@ -157,33 +157,21 @@ final class DependencyFacts {
                             ORDER BY e.to_grp, e.to_name, e.configuration, mf.gradle_path""")
                     .bind("from", from).bind("to", to).mapToMap().list();
             for (Map<String, Object> row : rows) {
+                // from_module is included because two modules of the same repo may each declare
+                // the same dependency: those are two genuine rows, and without the module they
+                // render as one sentence twice, which reads as a duplication bug rather than as
+                // the two facts it is. See Attributes.attributes for why NULLs are omitted rather
+                // than printed (declared_version is legitimately NULL for a BOM-managed dep).
                 facts.add(new Fact(from + " -> " + to + ": " + row.get("to_grp") + ":" + row.get("to_name")
-                        + " (" + attributes(row) + ")"));
+                        + " (" + Attributes.attributes(
+                                "from_module", row.get("from_module"),
+                                "configuration", row.get("configuration"),
+                                "declared_version", row.get("declared_version"),
+                                "declared_via", row.get("declared_via"),
+                                "mode", row.get("mode")) + ")"));
             }
         }
         return Section.capped("Dependency edges", "dep_edge", facts, Section.DEFAULT_LIMIT);
-    }
-
-    /**
-     * Renders a {@code dep_edge} row's attributes, skipping any that are NULL.
-     *
-     * <p>{@code from_module} is included because two modules of the same repo may each declare the
-     * same dependency: those are two genuine rows, and without the module they render as one
-     * sentence twice, which reads as a duplication bug rather than as the two facts it is.
-     *
-     * <p>NULL attributes are omitted rather than printed. {@code declared_version} is legitimately
-     * NULL for a BOM-managed dependency, and {@code String.valueOf} would render the literal
-     * "null" — the same misreading as a version actually named "null".
-     */
-    private static String attributes(Map<String, Object> row) {
-        List<String> parts = new ArrayList<>();
-        for (String key : List.of("from_module", "configuration", "declared_version", "declared_via", "mode")) {
-            Object value = row.get(key);
-            if (value != null) {
-                parts.add(key + "=" + value);
-            }
-        }
-        return String.join(", ", parts);
     }
 
     private static Section apiUsage(Handle h, List<String> path) {
@@ -203,7 +191,7 @@ final class DependencyFacts {
                     .bind("from", from).bind("to", to).mapToMap().list();
             for (Map<String, Object> row : rows) {
                 facts.add(new Fact(from + " -> " + to + ": " + row.get("target_fqcn")
-                        + " (" + row.get("ref_kind") + ")"));
+                        + Attributes.parenthetical(row.get("ref_kind"))));
             }
         }
         return Section.capped("API usage", "api_usage", facts, Section.MEMBER_LIMIT);
@@ -220,9 +208,15 @@ final class DependencyFacts {
         List<Fact> facts = new ArrayList<>();
         for (ContractEdges.RestEdge edge : ContractEdges.rest(jdbi)) {
             if (inPlay.contains(edge.consumerRepo()) && inPlay.contains(edge.providerRepo())) {
-                facts.add(new Fact(edge.consumerRepo() + " calls " + edge.verb() + " " + edge.normPath()
-                        + " on " + edge.providerRepo() + " (confidence=" + edge.confidence()
-                        + ", matched_by=" + edge.matchedBy() + ")"));
+                // verb (rest_endpoint.http_method) is structural to the sentence, not an optional
+                // attribute -- omitting it would leave "calls  /path" with a bare leading space --
+                // so a NULL one uses the same "ANY" marker KbEntities.resolveEndpoint already uses
+                // for the same column.
+                String verb = Attributes.orElse(edge.verb(), "ANY");
+                facts.add(new Fact(edge.consumerRepo() + " calls " + verb + " " + edge.normPath()
+                        + " on " + edge.providerRepo() + " ("
+                        + Attributes.attributes("confidence", edge.confidence(), "matched_by", edge.matchedBy())
+                        + ")"));
             }
         }
         return Section.capped("REST calls (contract)", "rest_call_edge", facts, Section.DEFAULT_LIMIT);

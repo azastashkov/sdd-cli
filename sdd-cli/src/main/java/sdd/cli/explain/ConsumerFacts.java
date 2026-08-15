@@ -74,7 +74,7 @@ final class ConsumerFacts {
                 .bind("r", repo).mapToMap().list());
         List<Fact> facts = rows.stream()
                 .map(row -> new Fact(row.get("consumer") + " uses " + row.get("target_fqcn")
-                        + " (" + row.get("ref_kind") + ")"))
+                        + Attributes.parenthetical(row.get("ref_kind"))))
                 .toList();
         return Section.capped("Consumers via API usage: " + repo, "api_usage", facts, Section.MEMBER_LIMIT);
     }
@@ -83,9 +83,14 @@ final class ConsumerFacts {
         List<Fact> facts = new ArrayList<>();
         for (ContractEdges.RestEdge edge : ContractEdges.rest(jdbi)) {
             if (edge.providerRepo().equals(repo)) {
-                facts.add(new Fact(edge.consumerRepo() + " calls " + edge.verb() + " " + edge.normPath()
-                        + " on " + edge.providerRepo() + " (confidence=" + edge.confidence()
-                        + ", matched_by=" + edge.matchedBy() + ")"));
+                // verb is structural to the sentence (see DependencyFacts.restEdges); confidence
+                // and matched_by are parenthesised attributes, omitted rather than printed when
+                // NULL.
+                String verb = Attributes.orElse(edge.verb(), "ANY");
+                facts.add(new Fact(edge.consumerRepo() + " calls " + verb + " " + edge.normPath()
+                        + " on " + edge.providerRepo() + " ("
+                        + Attributes.attributes("confidence", edge.confidence(), "matched_by", edge.matchedBy())
+                        + ")"));
             }
         }
         return Section.capped("Consumers via REST (contract): " + repo, "rest_call_edge", facts, Section.DEFAULT_LIMIT);
@@ -149,7 +154,8 @@ final class ConsumerFacts {
         List<Fact> facts = new ArrayList<>();
         for (Map<String, Object> row : rows) {
             facts.add(new Fact(row.get("consumer_repo") + " calls " + verb + " " + norm + " on " + providerRepo
-                    + " (confidence=" + row.get("confidence") + ", matched_by=" + row.get("matched_by") + ")"));
+                    + " (" + Attributes.attributes("confidence", row.get("confidence"),
+                            "matched_by", row.get("matched_by")) + ")"));
         }
         return facts;
     }
@@ -171,7 +177,8 @@ final class ConsumerFacts {
                             WHERE u.target_fqcn = :fqcn
                             ORDER BY r.name, u.ref_kind""")
                     .bind("fqcn", fqcn).mapToMap().list()).stream()
-                    .map(row -> new Fact(row.get("consumer") + " uses " + fqcn + " (" + row.get("ref_kind") + ")"))
+                    .map(row -> new Fact(row.get("consumer") + " uses " + fqcn
+                            + Attributes.parenthetical(row.get("ref_kind"))))
                     .toList());
         }
         return List.of(Section.capped("Consumers of class: " + resolution.value(), "api_usage",
@@ -215,11 +222,14 @@ final class ConsumerFacts {
                         WHERE e.to_grp = :g AND e.to_name = :n
                         ORDER BY r.name, e.configuration""")
                 .bind("g", grp).bind("n", name).mapToMap().list());
+        // Same dep_edge columns DependencyFacts.hopDetail renders, with the same NULL handling:
+        // declared_version is legitimately NULL for a BOM-managed dependency, so it (and any
+        // other NULL attribute) is omitted rather than printed as the literal "null".
         List<Fact> facts = rows.stream()
-                .map(row -> new Fact(row.get("consumer") + " depends on " + artifact
-                        + " (configuration=" + row.get("configuration")
-                        + ", declared_version=" + row.get("declared_version")
-                        + ", mode=" + row.get("mode") + ")"))
+                .map(row -> new Fact(row.get("consumer") + " depends on " + artifact + " ("
+                        + Attributes.attributes("configuration", row.get("configuration"),
+                                "declared_version", row.get("declared_version"),
+                                "mode", row.get("mode")) + ")"))
                 .toList();
         return List.of(Section.capped("Consumers of artifact: " + artifact, "dep_edge", facts, Section.DEFAULT_LIMIT));
     }

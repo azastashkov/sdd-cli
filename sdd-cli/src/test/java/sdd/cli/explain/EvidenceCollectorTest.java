@@ -94,6 +94,44 @@ class EvidenceCollectorTest {
     }
 
     @Test
+    void describeEndpointsRenderTheAnyMarkerRatherThanTheLiteralStringNullForAMissingHttpMethod() {
+        // rest_endpoint.http_method is nullable; KbEntities.resolveEndpoint already maps a NULL
+        // http_method to "ANY" for endpoint resolution -- RepoFacts.endpoints must render the same
+        // marker so the two agree, rather than a bare path with a leading space (if omitted) or
+        // the literal "null" (if concatenated raw).
+        db.jdbi().useHandle(h -> h.createUpdate("UPDATE rest_endpoint SET http_method = NULL WHERE id = 1")
+                .execute());
+        RetrievalRequest request = new RetrievalRequest(Intent.DESCRIBE,
+                List.of(new EntityRef(EntityKind.REPO, ExplainFixture.SVC_ORDERS, false)),
+                List.of(), "What is svc-orders?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        List<String> texts = texts(section(evidence, "Endpoints: " + ExplainFixture.SVC_ORDERS));
+        assertThat(texts).noneMatch(t -> t.contains("null"));
+        assertThat(texts).containsExactly("ANY /orders/{}");
+    }
+
+    @Test
+    void describeTopJavaTypesRenderTheUnknownMarkerRatherThanTheLiteralStringNullForAMissingKind() {
+        // java_type.kind is nullable; repo.kind/module.kind already use "UNKNOWN" as this schema's
+        // convention for an unclassified kind (V1__init.sql), so java_type.kind follows the same
+        // marker rather than the literal "null".
+        db.jdbi().useHandle(h -> h.createUpdate("UPDATE java_type SET kind = NULL WHERE fqcn = :fqcn")
+                .bind("fqcn", ExplainFixture.PRICE_API_FQCN).execute());
+        RetrievalRequest request = new RetrievalRequest(Intent.DESCRIBE,
+                List.of(new EntityRef(EntityKind.REPO, ExplainFixture.LIB_API, false)),
+                List.of(), "What is lib-api?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        List<String> texts = texts(section(evidence, "Top API types: " + ExplainFixture.LIB_API));
+        assertThat(texts).noneMatch(t -> t.contains("null"));
+        assertThat(texts).singleElement().satisfies(t -> assertThat(t)
+                .startsWith(ExplainFixture.PRICE_API_FQCN + " (UNKNOWN, is_api="));
+    }
+
+    @Test
     void describeOnAClassEntityAddsADeduplicatedCitationSection() {
         // Insert a second, identical java_type row so resolveClass's non-DISTINCT query would
         // otherwise surface the same repo/detail/source pair twice.
@@ -170,6 +208,26 @@ class EvidenceCollectorTest {
     }
 
     @Test
+    void dependencyPathApiUsageDoesNotRenderTheLiteralStringNullWhenRefKindIsMissing() {
+        // api_usage.ref_kind is nullable -- raw concatenation would render the literal "null",
+        // indistinguishable from a ref_kind actually named "null".
+        db.jdbi().useHandle(h -> h.createUpdate(
+                        "UPDATE api_usage SET ref_kind = NULL WHERE target_fqcn = :fqcn")
+                .bind("fqcn", ExplainFixture.PRICE_API_FQCN).execute());
+        RetrievalRequest request = new RetrievalRequest(Intent.DEPENDENCY_PATH,
+                List.of(new EntityRef(EntityKind.REPO, ExplainFixture.SVC_ORDERS, false),
+                        new EntityRef(EntityKind.REPO, ExplainFixture.LIB_CORE, true)),
+                List.of(), "Why does svc-orders depend on lib-core?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        List<String> texts = texts(section(evidence, "API usage"));
+        assertThat(texts).noneMatch(t -> t.contains("null"));
+        assertThat(texts).containsExactly(ExplainFixture.SVC_ORDERS + " -> " + ExplainFixture.LIB_API + ": "
+                + ExplainFixture.PRICE_API_FQCN);
+    }
+
+    @Test
     void dependencyPathWithNoPathEmitsAnExplicitFactAndFallsBackToContractEdges() {
         // svc-billing has no outgoing v_repo_dep_edge to svc-orders (only a REST contract call).
         RetrievalRequest request = new RetrievalRequest(Intent.DEPENDENCY_PATH,
@@ -188,6 +246,30 @@ class EvidenceCollectorTest {
                 .anySatisfy(t -> assertThat(t)
                         .contains(ExplainFixture.SVC_BILLING).contains(ExplainFixture.SVC_ORDERS)
                         .contains("GET").contains("/orders/{}").contains("confidence=HIGH"));
+    }
+
+    @Test
+    void dependencyPathRestEdgesDoNotRenderTheLiteralStringNullForNullVerbConfidenceOrMatchedBy() {
+        // rest_endpoint.http_method, rest_call_edge.confidence and .matched_by are all nullable.
+        // http_method is structural to the sentence ("calls VERB PATH"), so a NULL one becomes the
+        // "ANY" marker KbEntities.resolveEndpoint already uses for the same column; confidence and
+        // matched_by are parenthesised attributes, so a NULL one is simply omitted.
+        db.jdbi().useHandle(h -> {
+            h.createUpdate("UPDATE rest_endpoint SET http_method = NULL WHERE id = 1").execute();
+            h.createUpdate("UPDATE rest_call_edge SET confidence = NULL, matched_by = NULL "
+                    + "WHERE client_id = 1 AND endpoint_id = 1").execute();
+        });
+        RetrievalRequest request = new RetrievalRequest(Intent.DEPENDENCY_PATH,
+                List.of(new EntityRef(EntityKind.REPO, ExplainFixture.SVC_BILLING, false),
+                        new EntityRef(EntityKind.REPO, ExplainFixture.SVC_ORDERS, true)),
+                List.of(), "Why does svc-billing depend on svc-orders?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        List<String> texts = texts(section(evidence, "REST calls (contract)"));
+        assertThat(texts).noneMatch(t -> t.contains("null"));
+        assertThat(texts).containsExactly(ExplainFixture.SVC_BILLING + " calls ANY /orders/{} on "
+                + ExplainFixture.SVC_ORDERS + " ()");
     }
 
     @Test
@@ -332,6 +414,22 @@ class EvidenceCollectorTest {
     }
 
     @Test
+    void consumersViaApiUsageDoesNotRenderTheLiteralStringNullWhenRefKindIsMissing() {
+        db.jdbi().useHandle(h -> h.createUpdate(
+                        "UPDATE api_usage SET ref_kind = NULL WHERE target_fqcn = :fqcn")
+                .bind("fqcn", ExplainFixture.PRICE_API_FQCN).execute());
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.REPO, ExplainFixture.LIB_API, false)),
+                List.of(), "What consumes lib-api?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        List<String> texts = texts(section(evidence, "Consumers via API usage: " + ExplainFixture.LIB_API));
+        assertThat(texts).noneMatch(t -> t.contains("null"));
+        assertThat(texts).containsExactly(ExplainFixture.SVC_ORDERS + " uses " + ExplainFixture.PRICE_API_FQCN);
+    }
+
+    @Test
     void consumersOnRepoHitsRestAndKafkaContractEdgesViaContractEdges() {
         RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
                 List.of(new EntityRef(EntityKind.REPO, ExplainFixture.SVC_ORDERS, false)),
@@ -347,6 +445,25 @@ class EvidenceCollectorTest {
         assertThat(texts(section(evidence, "Consumers via Kafka (contract): " + ExplainFixture.SVC_ORDERS)))
                 .containsExactly(ExplainFixture.SVC_ORDERS + " produces " + ExplainFixture.ORDERS_TOPIC
                         + " consumed by " + ExplainFixture.SVC_NOTIFY);
+    }
+
+    @Test
+    void consumersViaRestContractDoNotRenderTheLiteralStringNullForNullVerbConfidenceOrMatchedBy() {
+        db.jdbi().useHandle(h -> {
+            h.createUpdate("UPDATE rest_endpoint SET http_method = NULL WHERE id = 1").execute();
+            h.createUpdate("UPDATE rest_call_edge SET confidence = NULL, matched_by = NULL "
+                    + "WHERE client_id = 1 AND endpoint_id = 1").execute();
+        });
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.REPO, ExplainFixture.SVC_ORDERS, false)),
+                List.of(), "What consumes svc-orders?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        List<String> texts = texts(section(evidence, "Consumers via REST (contract): " + ExplainFixture.SVC_ORDERS));
+        assertThat(texts).noneMatch(t -> t.contains("null"));
+        assertThat(texts).containsExactly(ExplainFixture.SVC_BILLING + " calls ANY /orders/{} on "
+                + ExplainFixture.SVC_ORDERS + " ()");
     }
 
     @Test
@@ -384,6 +501,24 @@ class EvidenceCollectorTest {
                 .containsExactly(ExplainFixture.SVC_BILLING + " calls GET /orders/{} on " + ExplainFixture.SVC_ORDERS
                         + " (confidence=HIGH, matched_by=FEIGN_NAME_PATH)");
         assertThat(evidence.sections()).noneMatch(s -> s.title().startsWith("Endpoint match is ambiguous"));
+    }
+
+    @Test
+    void consumersOnEndpointDoesNotRenderTheLiteralStringNullForNullConfidenceOrMatchedBy() {
+        db.jdbi().useHandle(h -> h.createUpdate(
+                        "UPDATE rest_call_edge SET confidence = NULL, matched_by = NULL "
+                                + "WHERE client_id = 1 AND endpoint_id = 1")
+                .execute());
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.ENDPOINT, ExplainFixture.ORDERS_ENDPOINT, false)),
+                List.of(), "What calls GET /orders/{id}?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        List<String> texts = texts(section(evidence, "Consumers of endpoint: " + ExplainFixture.ORDERS_ENDPOINT));
+        assertThat(texts).noneMatch(t -> t.contains("null"));
+        assertThat(texts).containsExactly(ExplainFixture.SVC_BILLING + " calls GET /orders/{} on "
+                + ExplainFixture.SVC_ORDERS + " ()");
     }
 
     @Test
@@ -431,6 +566,22 @@ class EvidenceCollectorTest {
     }
 
     @Test
+    void consumersOnClassDoesNotRenderTheLiteralStringNullWhenRefKindIsMissing() {
+        db.jdbi().useHandle(h -> h.createUpdate(
+                        "UPDATE api_usage SET ref_kind = NULL WHERE target_fqcn = :fqcn")
+                .bind("fqcn", ExplainFixture.PRICE_API_FQCN).execute());
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.CLASS, ExplainFixture.PRICE_API_FQCN, false)),
+                List.of(), "What uses PriceApi?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        List<String> texts = texts(section(evidence, "Consumers of class: " + ExplainFixture.PRICE_API_FQCN));
+        assertThat(texts).noneMatch(t -> t.contains("null"));
+        assertThat(texts).containsExactly(ExplainFixture.SVC_ORDERS + " uses " + ExplainFixture.PRICE_API_FQCN);
+    }
+
+    @Test
     void consumersOnTopicYieldsBothRolesWithGroupIdAndPayloadTypeWhenPresent() {
         db.jdbi().useHandle(h -> h.execute(
                 "UPDATE kafka_role SET group_id='notify-group', payload_type='OrderEvent' WHERE module_id = "
@@ -458,9 +609,34 @@ class EvidenceCollectorTest {
 
         Evidence evidence = collect(request);
 
+        // declared_version is NULL on this dep_edge row (a BOM-managed dependency, per the
+        // fixture) and is omitted rather than rendered as the literal "null" -- see
+        // Attributes.attributes / DependencyFacts.hopDetail's identical dep_edge NULL handling.
         assertThat(texts(section(evidence, "Consumers of artifact: com.acme:lib-api"))).containsExactly(
                 ExplainFixture.SVC_ORDERS + " depends on com.acme:lib-api "
-                        + "(configuration=compileClasspath, declared_version=null, mode=BOM_MANAGED)");
+                        + "(configuration=compileClasspath, mode=BOM_MANAGED)");
+    }
+
+    @Test
+    void consumersOnArtifactDoesNotRenderTheLiteralStringNullWhenConfigurationOrModeIsMissing() {
+        // lib-api -> lib-core's dep_edge row (module 2) has configuration/mode set; null them out
+        // to exercise the other two nullable dep_edge columns artifactConsumers renders (the
+        // fixture's only NULL dep_edge column, declared_version, is already covered above).
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO artifact(grp, name, module_id) VALUES ('com.acme','lib-core',1)");
+            h.createUpdate("UPDATE dep_edge SET configuration = NULL, mode = NULL "
+                    + "WHERE from_module_id = 2 AND to_grp = 'com.acme' AND to_name = 'lib-core'").execute();
+        });
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.ARTIFACT, "com.acme:lib-core", false)),
+                List.of(), "What depends on com.acme:lib-core?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        List<String> texts = texts(section(evidence, "Consumers of artifact: com.acme:lib-core"));
+        assertThat(texts).noneMatch(t -> t.contains("null"));
+        assertThat(texts).containsExactly(
+                ExplainFixture.LIB_API + " depends on com.acme:lib-core (declared_version=1.0)");
     }
 
     // --- impact -------------------------------------------------------------------------------------

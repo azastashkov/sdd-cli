@@ -121,8 +121,11 @@ final class RepoFacts {
                         JOIN repo r ON r.id = m.repo_id
                         WHERE r.name = :r ORDER BY re.norm_path, re.http_method""")
                 .bind("r", repo).mapToMap().list();
+        // http_method is structural to the sentence, not an optional attribute -- omitting it
+        // outright would leave a bare path with a leading space -- so a NULL one uses the same
+        // "ANY" marker KbEntities.resolveEndpoint already uses for the same column.
         List<Fact> facts = rows.stream()
-                .map(row -> new Fact(row.get("http_method") + " " + row.get("norm_path")))
+                .map(row -> new Fact(Attributes.orElse(row.get("http_method"), "ANY") + " " + row.get("norm_path")))
                 .toList();
         return Section.capped("Endpoints: " + repo, "rest_endpoint", facts, Section.DEFAULT_LIMIT);
     }
@@ -173,8 +176,11 @@ final class RepoFacts {
                         JOIN repo r ON r.id = m.repo_id
                         WHERE r.name = :r ORDER BY t.is_api DESC, t.fqcn""")
                 .bind("r", repo).mapToMap().list();
+        // kind is nullable; repo.kind and module.kind already use "UNKNOWN" as this schema's
+        // convention for an unclassified kind (V1__init.sql), so java_type.kind follows the same
+        // marker rather than the literal "null".
         List<Fact> facts = rows.stream()
-                .map(row -> new Fact(row.get("fqcn") + " (" + row.get("kind")
+                .map(row -> new Fact(row.get("fqcn") + " (" + Attributes.orElse(row.get("kind"), "UNKNOWN")
                         + ", is_api=" + row.get("is_api") + ")"))
                 .toList();
         return Section.capped("Top API types: " + repo, "java_type", facts, Section.MEMBER_LIMIT);
