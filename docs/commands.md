@@ -303,14 +303,13 @@ index-status warnings for degraded/failed/stale repos in its closure, via
 `Closure.expand`'s own status check (`ImpactFacts.java:79-82`,
 `KbStatus.java:19-39`).
 
-**`retrieval: embeddings` in `sdd.yml` is accepted but not honored by this
-command:** `ConfigLoader` validates `retrieval` as `fts` or `embeddings`
-(`ConfigLoader.java:38-41, 56-58`), but `explain` always constructs an
-`FtsRetriever` regardless of that setting (`ExplainCommand.java:103`) — no
-`EmbeddingsRetriever` exists and nothing reads `SddConfig.retrieval`
-anywhere in the codebase. The search section's `[fts_symbol (bm25)]` label
-states what actually answered rather than silently implying the configured
-backend ran (`SearchFacts.java:14-17, 43`).
+**FTS is the only retrieval backend:** `explain` always constructs an
+`FtsRetriever` (`ExplainCommand.java:101`) — no `EmbeddingsRetriever` exists.
+`sdd.yml`'s `retrieval` key accepts only `fts` (the default) or an absent
+key; `ConfigLoader` rejects `retrieval: embeddings` at load time, before it
+could be declared and then silently ignored (`ConfigLoader.java:38,
+rejectUnimplementedRetrieval`). The search section's `[fts_symbol (bm25)]`
+label states what actually answered (`SearchFacts.java:14-17, 43`).
 
 ## `sdd implement <spec>.plan.json`
 

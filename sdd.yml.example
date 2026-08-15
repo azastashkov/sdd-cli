@@ -1,9 +1,8 @@
 # Copy to <workspace>/sdd.yml — the directory containing all estate checkouts.
-retrieval: fts            # fts | embeddings — but `embeddings` is not implemented: it is
-                          # validated at load time (and demands a models.embeddings endpoint)
-                          # and then ignored. No EmbeddingsRetriever exists; every command
-                          # builds an FtsRetriever unconditionally, so setting it silently
-                          # gets you FTS. Leave this as `fts`.
+retrieval: fts             # fts is the only backend that exists — every command retrieves with
+                            # SQLite FTS5. `embeddings` is rejected at load time rather than
+                            # accepted and ignored: there is no embeddings backend to honor it.
+                            # This key can be omitted; fts is the default.
 
 # Every key under `models:` is an endpoint you can name in `run.escalation_ladder`.
 # `planner` is also used directly for impact seeding and Gate-1 plan drafting, and
