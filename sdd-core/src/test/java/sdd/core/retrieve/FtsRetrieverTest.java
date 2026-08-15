@@ -84,10 +84,13 @@ class FtsRetrieverTest {
     }
 
     @Test
-    void anIdentifierMatchOutranksAProseOnlyMatchOnTheSameTerm() {
-        // The weight floor, asserted rather than assumed: javadoc is unverified text, so it may
-        // surface a candidate no identifier could reach but must never come first when a real name
-        // matched the same term.
+    void theSameTermIsWorthLessInProseThanInAnIdentifier() {
+        // The weight floor, asserted rather than assumed — and only the property that actually
+        // holds. A bm25 column weight scales one column's contribution to ONE row's score, so
+        // between two rows that match the same single term and are alike in everything else, the
+        // one that matched in prose scores lower. That is per-term and same-row; it is not a
+        // general "identifiers beat prose" rule, and column weights cannot express one. See
+        // aProseHeavyRowCanOutrankAShortIdentifierMatch for the case that goes the other way.
         db.jdbi().useHandle(h -> {
             FtsSymbolWriter.insert(h, 1L, "Checkout", "com.acme.checkout.Checkout", "");
             FtsSymbolWriter.insert(h, 1L, "GroupDirectory", "com.acme.groups.GroupDirectory",
@@ -100,6 +103,30 @@ class FtsRetrieverTest {
         assertThat(hits).extracting(Hit::identifier).containsExactly("Checkout", "GroupDirectory");
         assertThat(hits.get(0).docOnly()).isFalse();
         assertThat(hits.get(1).docOnly()).isTrue();
+    }
+
+    @Test
+    void aProseHeavyRowCanOutrankAShortIdentifierMatch() {
+        // The boundary of the weight floor, pinned rather than only described. Measured on the real
+        // estate before it was written down here: a doc-only hit scoring -15.13 above an identifier
+        // hit at -13.01. bm25 aggregates term frequency, inverse document frequency and field
+        // length across the whole row, so a row matching most of the query in the doc column at 2.0
+        // beats a row matching one term in the identifier column at 10.0 — no weighting can prevent
+        // it, which is exactly why Hit.docOnly is reported to the reader instead.
+        db.jdbi().useHandle(h -> {
+            // one term, in the highest-weighted columns there are
+            FtsSymbolWriter.insert(h, 1L, "Reachable", "com.acme.graph.Reachable", "");
+            // several terms, all of them in the lowest-weighted column there is
+            FtsSymbolWriter.insert(h, 1L, "Action", "com.acme.audit.Action",
+                    "Records which reviewer decision closed a finding and what the follow-up was.");
+        });
+
+        List<Hit> hits = new FtsRetriever(db.jdbi())
+                .search("reachable which reviewer decision closed the follow up", 10);
+
+        assertThat(hits).extracting(Hit::identifier).containsSubsequence("Action", "Reachable");
+        assertThat(hits).filteredOn(hit -> hit.identifier().equals("Action")).singleElement()
+                .satisfies(hit -> assertThat(hit.docOnly()).isTrue());
     }
 
     @Test

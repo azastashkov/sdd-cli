@@ -21,8 +21,20 @@ import java.util.stream.Collectors;
  * asked for; the camel-split {@code words} column is the same evidence one step removed; the fqcn
  * matches on package fragments shared by many unrelated types, so it is worth less; and {@code doc}
  * — unverified javadoc prose, typically an order of magnitude longer than any identifier — sits at
- * the floor. Prose there breaks ties and surfaces types no identifier could reach, but it can never
- * win against a code-derived match.
+ * the floor.
+ *
+ * <p><strong>What that floor buys, and what it does not.</strong> A weight scales one column's
+ * contribution to one row's score. So for a given term, a row earns less by matching it in
+ * {@code doc} than in {@code identifier} or {@code words} — pinned by {@code FtsRetrieverTest
+ * .theSameTermIsWorthLessInProseThanInAnIdentifier}. That is a per-term, same-row property and
+ * nothing more. It is <strong>not</strong> a guarantee that a prose-matched row ranks below a
+ * code-matched one, and measured against a real estate it does not hold: bm25 aggregates term
+ * frequency, inverse document frequency and field-length normalisation over the whole row, so a row
+ * matching several query terms in long prose outscores a row matching one term in a short
+ * identifier however heavily that identifier is weighted ({@code FtsRetrieverTest
+ * .aProseHeavyRowCanOutrankAShortIdentifierMatch} reproduces it). Column weights cannot order rows;
+ * they only decide what a match is worth where it was found. {@link Hit#docOnly()} exists because of
+ * that gap — a reader is told a hit came from prose rather than promised it came last.
  */
 public final class FtsRetriever implements Retriever {
     /**

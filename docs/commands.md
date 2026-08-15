@@ -325,6 +325,11 @@ every identifier column (`bm25(fts_symbol, 10.0, 3.0, 8.0, 2.0, 0.0)`,
 tables — and a hit found *only* through prose is labelled
 `[matched on javadoc]` on its own fact line (`SearchFacts.java:42, 56`), so
 a stale comment can never reach a reader looking like code-derived evidence.
+That weighting is per-term, not a ranking guarantee: bm25 scores a whole row
+across term frequency, document frequency and field length, so a type whose
+javadoc matches most of the question does rank above one whose name matches a
+single word of it — measured, not hypothetical. The label, not the ordering,
+is what tells a reader where a hit came from.
 The narrator is given a rule for that label beside its `repo_card` one —
 offer such a hit as a candidate whose documentation matches, not as evidence
 of behaviour (`AnswerNarrator.java:46-49`).

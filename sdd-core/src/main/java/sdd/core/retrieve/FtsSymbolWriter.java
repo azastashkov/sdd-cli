@@ -14,11 +14,13 @@ public final class FtsSymbolWriter {
 
     /**
      * Writes one symbol row. {@code doc} is the type's javadoc summary — prose, not an identifier,
-     * and weighted far below the identifier columns at search time (see {@link FtsRetriever}) so a
-     * doc comment can make a type findable but never outrank a real name match. A symbol with no
-     * javadoc — every member row, and any type whose source carries no doc comment — passes null or
-     * {@code ""}; both are stored as {@code ""}, since fts5 indexes NULL and the empty string
-     * identically and one representation keeps dumps and comparisons uniform.
+     * and weighted at the floor at search time so the same term is worth less here than in a name;
+     * that makes a type findable through its documentation but does not hold prose below code in
+     * the ranking, which column weights cannot do at all (see {@link FtsRetriever}, which measures
+     * and states the limit). A symbol with no javadoc — every member row, and any type whose source
+     * carries no doc comment — passes null or {@code ""}; both are stored as {@code ""}, since fts5
+     * indexes NULL and the empty string identically and one representation keeps dumps and
+     * comparisons uniform.
      *
      * <p>{@code identifier} and {@code fqcn} are validated because a blank one produces a row that
      * can never be matched by name; {@code doc} is not, because "this type has no javadoc" is the
