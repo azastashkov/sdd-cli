@@ -1,10 +1,11 @@
 package sdd.core.db;
 
+import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.sqlite.SQLiteDataSource;
-import sdd.core.retrieve.FtsSymbolWriter;
+import sdd.core.retrieve.IdentifierWords;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -21,7 +22,7 @@ class DatabaseTest {
     void createsDbFileAndAppliesSchema() throws Exception {
         try (Database db = Database.open(ws)) {
             assertThat(Files.exists(ws.resolve(".sdd/index.db"))).isTrue();
-            assertThat(db.schemaVersion()).isEqualTo(2);
+            assertThat(db.schemaVersion()).isEqualTo(3);
             List<String> tables = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
                             .mapTo(String.class).list());
@@ -40,7 +41,7 @@ class DatabaseTest {
                     "INSERT INTO repo(name, path, kind) VALUES ('r1', '/x', 'SERVICE')"));
         }
         try (Database again = Database.open(ws)) {
-            assertThat(again.schemaVersion()).isEqualTo(2);
+            assertThat(again.schemaVersion()).isEqualTo(3);
             Integer count = again.jdbi().withHandle(h ->
                     h.createQuery("SELECT count(*) FROM repo").mapTo(Integer.class).one());
             assertThat(count).isEqualTo(1);
@@ -63,7 +64,7 @@ class DatabaseTest {
         // Simulate by opening a db, then attempting a second migrate with a bad script
         // via the package-visible seam.
         try (Database db = Database.open(ws)) {
-            assertThat(db.schemaVersion()).isEqualTo(2);
+            assertThat(db.schemaVersion()).isEqualTo(3);
         }
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                 Database.applyMigrationForTest(ws, "CREATE TABLE t_ok(id INTEGER);\n;\nCREATE BROKEN SYNTAX"))
@@ -99,16 +100,19 @@ class DatabaseTest {
             h.execute("INSERT INTO api_member(type_id, name, signature) VALUES (100, 'resolve', 'resolve(String)')");
             h.execute("INSERT INTO api_member(type_id, name, signature) VALUES (100, 'resolve', 'resolve(String,int)')");
             h.execute("INSERT INTO api_member(type_id, name, signature) VALUES (101, 'resolve', 'resolve()')");
-            // fts_symbol exactly as the v1 indexer left it, written through the same sole path.
-            FtsSymbolWriter.insert(h, 10L, "TierResolver", "com.acme.pricing.TierResolver");
-            FtsSymbolWriter.insert(h, 10L, "LoyaltyTier", "com.acme.pricing.LoyaltyTier");
-            FtsSymbolWriter.insert(h, 10L, "resolve", "com.acme.pricing.TierResolver");
-            FtsSymbolWriter.insert(h, 10L, "resolve", "com.acme.pricing.LoyaltyTier");
+            // fts_symbol exactly as the v1 indexer left it. Written raw rather than through
+            // FtsSymbolWriter.insert: that path now writes the doc column, which the v1 table does
+            // not have — the sole-write-path rule is about the current schema, and reconstructing
+            // an older one is precisely the case it cannot serve.
+            insertV1Symbol(h, "TierResolver", "com.acme.pricing.TierResolver");
+            insertV1Symbol(h, "LoyaltyTier", "com.acme.pricing.LoyaltyTier");
+            insertV1Symbol(h, "resolve", "com.acme.pricing.TierResolver");
+            insertV1Symbol(h, "resolve", "com.acme.pricing.LoyaltyTier");
         });
         List<String> symbolsBefore = symbolRows(v1);
 
         try (Database db = Database.open(ws)) {
-            assertThat(db.schemaVersion()).isEqualTo(2);
+            assertThat(db.schemaVersion()).isEqualTo(3);
             List<String> repos = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT name FROM repo ORDER BY id").mapTo(String.class).list());
             assertThat(repos).containsExactly("pricing");
@@ -136,6 +140,18 @@ class DatabaseTest {
                     h.createQuery("PRAGMA busy_timeout").mapTo(Integer.class).one());
             assertThat(timeout).isEqualTo(5000);
         }
+    }
+
+    /**
+     * One row in the v1 shape of fts_symbol — no doc column. Uses {@link IdentifierWords} for the
+     * words column because that split is what v1 wrote and what the rebuild must reproduce; only
+     * the column list is frozen at v1, not the derivation.
+     */
+    private static void insertV1Symbol(Handle h, String identifier, String fqcn) {
+        h.createUpdate("INSERT INTO fts_symbol(identifier, fqcn, words, module_id) "
+                        + "VALUES (:id, :fqcn, :words, 10)")
+                .bind("id", identifier).bind("fqcn", fqcn)
+                .bind("words", IdentifierWords.split(identifier)).execute();
     }
 
     /** Identity of every fts_symbol row, comparable across the v1 and v2 shapes of the table. */

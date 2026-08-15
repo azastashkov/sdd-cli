@@ -12,16 +12,29 @@ public final class FtsSymbolWriter {
     /** One prospective fts_symbol row, read out of java_type/api_member before anything is written. */
     private record Symbol(long moduleId, String identifier, String fqcn) {}
 
-    public static void insert(Handle handle, long moduleId, String identifier, String fqcn) {
+    /**
+     * Writes one symbol row. {@code doc} is the type's javadoc summary — prose, not an identifier,
+     * and weighted far below the identifier columns at search time (see {@link FtsRetriever}) so a
+     * doc comment can make a type findable but never outrank a real name match. A symbol with no
+     * javadoc — every member row, and any type whose source carries no doc comment — passes null or
+     * {@code ""}; both are stored as {@code ""}, since fts5 indexes NULL and the empty string
+     * identically and one representation keeps dumps and comparisons uniform.
+     *
+     * <p>{@code identifier} and {@code fqcn} are validated because a blank one produces a row that
+     * can never be matched by name; {@code doc} is not, because "this type has no javadoc" is the
+     * normal case, not an error.
+     */
+    public static void insert(Handle handle, long moduleId, String identifier, String fqcn, String doc) {
         if (identifier == null || identifier.isBlank() || fqcn == null || fqcn.isBlank()) {
             throw new IllegalArgumentException(
                     "identifier and fqcn must be non-blank (identifier=" + identifier + ", fqcn=" + fqcn + ")");
         }
-        handle.createUpdate("INSERT INTO fts_symbol(identifier, fqcn, words, module_id) "
-                        + "VALUES (:id, :fqcn, :words, :mod)")
+        handle.createUpdate("INSERT INTO fts_symbol(identifier, fqcn, words, doc, module_id) "
+                        + "VALUES (:id, :fqcn, :words, :doc, :mod)")
                 .bind("id", identifier)
                 .bind("fqcn", fqcn)
                 .bind("words", IdentifierWords.split(identifier))
+                .bind("doc", doc == null ? "" : doc)
                 .bind("mod", moduleId)
                 .execute();
     }
@@ -65,14 +78,28 @@ public final class FtsSymbolWriter {
      * <p>Limitation: these two tables are the whole source of truth. This class lives in sdd-core
      * and cannot call the indexer, so anything a future indexer derives from data it does not
      * persist would be lost by an upgrade — such a change has to persist its input, or accept
-     * that upgraded workspaces stay degraded until re-indexed. The {@code doc} column is left
-     * unwritten for the same reason: nothing in the schema holds javadoc yet.
+     * that upgraded workspaces stay degraded until re-indexed.
      *
-     * <p>Assumes fts_symbol is empty — it does not clear first, because its caller has just
-     * created the table. Every row it writes went through {@link #insert} once already at index
-     * time, so its argument validation cannot newly reject anything a real workspace holds.
+     * <p>The {@code doc} column is written as {@code ""} rather than from {@code
+     * java_type.javadoc}: the only migration that rebuilds is V2, and {@code java_type.javadoc}
+     * does not exist until V3, so selecting it here would break the very upgrade this method
+     * exists to complete. A workspace upgraded from V1 therefore searches identifiers only until
+     * it is re-indexed. <strong>Any future migration that recreates fts_symbol must both move
+     * {@code Database.FTS_REBUILD_VERSION} to itself and extend this method to carry
+     * {@code java_type.javadoc} across</strong> — otherwise that upgrade would silently drop every
+     * javadoc row an indexed workspace already had.
+     *
+     * <p>Clears fts_symbol before rebuilding rather than trusting the caller to hand over an empty
+     * table. The clear is free where it is actually used (the caller has just created the table),
+     * and it makes the method mean what its name says: afterwards the table <em>is</em> the
+     * reconstruction. The alternative — throwing on a non-empty table — would turn a recoverable
+     * situation into a failure in the middle of a migration transaction the user cannot influence,
+     * to guard against a caller this class can simply make impossible to get wrong. Every row it
+     * writes went through {@link #insert} once already at index time, so its argument validation
+     * cannot newly reject anything a real workspace holds.
      */
     public static void rebuildFrom(Handle handle) {
+        handle.createUpdate("DELETE FROM fts_symbol").execute();
         List<Symbol> symbols = new ArrayList<>(handle.createQuery("""
                         SELECT module_id, fqcn FROM java_type ORDER BY id""")
                 .map((rs, ctx) -> {
@@ -95,7 +122,7 @@ public final class FtsSymbolWriter {
         // Read fully before writing: inserting into fts_symbol while a result set over the source
         // tables is still open would interleave reads and writes on one connection.
         for (Symbol s : symbols) {
-            insert(handle, s.moduleId(), s.identifier(), s.fqcn());
+            insert(handle, s.moduleId(), s.identifier(), s.fqcn(), "");
         }
     }
 }

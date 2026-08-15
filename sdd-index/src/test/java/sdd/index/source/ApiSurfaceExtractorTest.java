@@ -121,6 +121,61 @@ class ApiSurfaceExtractorTest {
     }
 
     @Test
+    void javadocIsCapturedAsItsFirstSentenceOnly() throws Exception {
+        var session = parse("src/main/java/com/acme/GroupDirectory.java", """
+                package com.acme;
+                /**
+                 * Write-through state directory closing the ordering gap between a
+                 * successful admin PUT and this service's own watcher.
+                 *
+                 * <p>Uses a HashMap internally and is called from the watcher thread.
+                 *
+                 * @param <T> the entry type
+                 */
+                public class GroupDirectory<T> {}
+                """);
+        assertThat(ApiSurfaceExtractor.extract(session, true).get(0).javadoc())
+                .isEqualTo("Write-through state directory closing the ordering gap between a "
+                        + "successful admin PUT and this service's own watcher.");
+    }
+
+    @Test
+    void aTypeWithNoJavadocHasNullJavadoc() throws Exception {
+        var session = parse("src/main/java/com/acme/Plain.java", """
+                package com.acme;
+                // an ordinary comment is not javadoc
+                public class Plain {}
+                """);
+        assertThat(ApiSurfaceExtractor.extract(session, true).get(0).javadoc()).isNull();
+    }
+
+    @Test
+    void inlineTagsFlattenToTheirTextRatherThanTheirMarkup() throws Exception {
+        var session = parse("src/main/java/com/acme/Cache.java", """
+                package com.acme;
+                /** Backed by a {@code ConcurrentHashMap}, see {@link Registry#lookup}. */
+                public class Cache {}
+                """);
+        // the braces and tag names are markup: indexing "{@code" would put a token in the corpus
+        // that no reader would ever type, and hide the one they would
+        assertThat(ApiSurfaceExtractor.extract(session, true).get(0).javadoc())
+                .isEqualTo("Backed by a ConcurrentHashMap, see Registry#lookup.");
+    }
+
+    @Test
+    void anOverlongJavadocSentenceIsCappedAt400Characters() throws Exception {
+        String longSentence = "Resolves tiers " + "and prices ".repeat(90) + "at checkout.";
+        assertThat(longSentence.length()).isGreaterThan(900); // the case the cap exists for
+        var session = parse("src/main/java/com/acme/Verbose.java",
+                "package com.acme;\n/** " + longSentence + " */\npublic class Verbose {}\n");
+
+        String javadoc = ApiSurfaceExtractor.extract(session, true).get(0).javadoc();
+
+        assertThat(javadoc).hasSize(400);
+        assertThat(longSentence).startsWith(javadoc);
+    }
+
+    @Test
     void nestedTypeInsideAnnotationIsExtracted() throws Exception {
         var session = parse("src/main/java/com/acme/Marker.java",
                 "package com.acme;\npublic @interface Marker { enum Nested { A } }\n");

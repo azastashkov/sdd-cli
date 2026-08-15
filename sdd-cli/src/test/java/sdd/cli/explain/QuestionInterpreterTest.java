@@ -417,7 +417,7 @@ class QuestionInterpreterTest {
     private void seedTierResolver() {
         db.jdbi().useHandle(h -> {
             h.execute("INSERT INTO java_type(module_id, fqcn, kind) VALUES (2,'com.acme.pricing.TierResolver','CLASS')");
-            FtsSymbolWriter.insert(h, 2, "TierResolver", "com.acme.pricing.TierResolver");
+            FtsSymbolWriter.insert(h, 2, "TierResolver", "com.acme.pricing.TierResolver", "");
         });
     }
 
@@ -514,7 +514,7 @@ class QuestionInterpreterTest {
             for (int i = 0; i < 25; i++) {
                 String fqcn = "com.acme.pricing.TierResolver" + i;
                 h.execute("INSERT INTO java_type(module_id, fqcn, kind) VALUES (2,'" + fqcn + "','CLASS')");
-                FtsSymbolWriter.insert(h, 2, "TierResolver" + i, fqcn);
+                FtsSymbolWriter.insert(h, 2, "TierResolver" + i, fqcn, "");
             }
         });
         ScriptedChatModel model = new ScriptedChatModel(List.of(response("""
@@ -532,7 +532,7 @@ class QuestionInterpreterTest {
     void candidateEntityThatStillDoesNotResolveIsStillDroppedWithMissReason() {
         // fts_symbol alone is not resolution -- no java_type row means KbEntities.resolveClass
         // still finds nothing. The vocabulary is an aid to spelling, not a bypass around resolve().
-        db.jdbi().useHandle(h -> FtsSymbolWriter.insert(h, 2, "GhostType", "com.acme.ghost.GhostType"));
+        db.jdbi().useHandle(h -> FtsSymbolWriter.insert(h, 2, "GhostType", "com.acme.ghost.GhostType", ""));
         ScriptedChatModel model = new ScriptedChatModel(List.of(response("""
                 {"intent":"describe","restatement":"?",
                  "entities":[{"kind":"class","value":"GhostType"}],"search_terms":[]}""", "stop")));

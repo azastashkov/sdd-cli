@@ -82,7 +82,7 @@ public final class ExplainFixture {
         }
 
         // fts_symbol: the sole write path, one symbol per side of the FQCN cross-repo reference.
-        FtsSymbolWriter.insert(h, 2, "PriceApi", PRICE_API_FQCN);
-        FtsSymbolWriter.insert(h, 3, "OrdersController", "OrdersController");
+        FtsSymbolWriter.insert(h, 2, "PriceApi", PRICE_API_FQCN, "");
+        FtsSymbolWriter.insert(h, 3, "OrdersController", "OrdersController", "");
     }
 }

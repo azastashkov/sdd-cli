@@ -32,11 +32,14 @@ class SourcePersistenceTest {
         });
     }
 
+    private static final String TIER_JAVADOC = "The customer's loyalty standing at checkout.";
+
     private static SourceModel.TypeInfo type() {
         return new SourceModel.TypeInfo("com.acme.pricing.LoyaltyTier", "ENUM", true,
                 "src/main/java/com/acme/pricing/LoyaltyTier.java",
                 List.of("Generated"), "OK", "f".repeat(64),
-                List.of(new SourceModel.MemberInfo("values", "values()", "LoyaltyTier[]", null)));
+                List.of(new SourceModel.MemberInfo("values", "values()", "LoyaltyTier[]", null)),
+                TIER_JAVADOC);
     }
 
     @Test
@@ -48,8 +51,10 @@ class SourcePersistenceTest {
                 List.of(new SourceModel.FileRef("a/A.java", "b/B.java", 3)));
 
         Map<String, Object> jt = db.jdbi().withHandle(h ->
-                h.createQuery("SELECT fqcn, kind, is_api, annotations FROM java_type").mapToMap().one());
-        assertThat(jt).containsEntry("fqcn", "com.acme.pricing.LoyaltyTier").containsEntry("kind", "ENUM");
+                h.createQuery("SELECT fqcn, kind, is_api, annotations, javadoc FROM java_type")
+                        .mapToMap().one());
+        assertThat(jt).containsEntry("fqcn", "com.acme.pricing.LoyaltyTier").containsEntry("kind", "ENUM")
+                .containsEntry("javadoc", TIER_JAVADOC);
         assertThat((String) jt.get("annotations")).contains("Generated");
         Integer memberCount = db.jdbi().withHandle(h -> h.createQuery("SELECT count(*) FROM api_member")
                 .mapTo(Integer.class).one());
@@ -65,6 +70,12 @@ class SourcePersistenceTest {
         // FTS finds by camel-split word AND by member name
         assertThat(new FtsRetriever(db.jdbi()).search("loyalty", 10)).isNotEmpty();
         assertThat(new FtsRetriever(db.jdbi()).search("values", 10)).isNotEmpty();
+        // The doc lands on the type's row only. Repeating it on each member row would let one doc
+        // comment match a query once per member and bury the type it actually describes.
+        List<String> docsByIdentifier = db.jdbi().withHandle(h -> h.createQuery(
+                        "SELECT identifier || '=' || doc AS row FROM fts_symbol ORDER BY identifier")
+                .mapTo(String.class).list());
+        assertThat(docsByIdentifier).containsExactly("LoyaltyTier=" + TIER_JAVADOC, "values=");
     }
 
     @Test
@@ -171,7 +182,8 @@ class SourcePersistenceTest {
                 "src/main/java/com/acme/pricing/PriceCalculator.java",
                 List.of(), "OK", "e".repeat(64),
                 List.of(new SourceModel.MemberInfo("quote", "quote(String)", "String", null),
-                        new SourceModel.MemberInfo("quote", "quote(String,int)", "String", null)));
+                        new SourceModel.MemberInfo("quote", "quote(String,int)", "String", null)),
+                null);
         SourcePersistence.persistModuleSource(db.jdbi(), repoId, moduleId,
                 List.of(overloaded), List.of(), List.of());
         Integer quoteRows = db.jdbi().withHandle(h -> h.createQuery(
@@ -193,28 +205,49 @@ class SourcePersistenceTest {
                 List.of(), "OK", "a".repeat(64),
                 List.of(new SourceModel.MemberInfo("<init>", "PriceCalculator()", "void", null),
                         new SourceModel.MemberInfo("quote", "quote(String)", "String", null),
-                        new SourceModel.MemberInfo("quote", "quote(String,int)", "String", null)));
+                        new SourceModel.MemberInfo("quote", "quote(String,int)", "String", null)),
+                null);
         SourceModel.TypeInfo tier = new SourceModel.TypeInfo(
                 "com.acme.pricing.LoyaltyTier", "ENUM", true,
                 "src/main/java/com/acme/pricing/LoyaltyTier.java",
                 List.of(), "OK", "b".repeat(64),
                 List.of(new SourceModel.MemberInfo("quote", "quote()", "String", null),
-                        new SourceModel.MemberInfo("values", "values()", "LoyaltyTier[]", null)));
+                        new SourceModel.MemberInfo("values", "values()", "LoyaltyTier[]", null)),
+                TIER_JAVADOC);
+        // A member whose name equals its type's simple name: both paths deliberately emit it twice,
+        // once as the type row and once as the member row, and the two rows are indistinguishable
+        // in every sort key. A rebuild that "tidied" that duplicate away — or that emitted it in
+        // one path only — would diverge here and nowhere else.
+        SourceModel.TypeInfo currency = new SourceModel.TypeInfo(
+                "com.acme.pricing.Currency", "CLASS", true,
+                "src/main/java/com/acme/pricing/Currency.java",
+                List.of(), "OK", "c".repeat(64),
+                List.of(new SourceModel.MemberInfo("Currency", "Currency", "String", null)),
+                null);
         SourcePersistence.persistModuleSource(db.jdbi(), repoId, moduleId,
-                List.of(calculator, tier), List.of(), List.of());
+                List.of(calculator, tier, currency), List.of(), List.of());
         List<String> written = symbolRows();
-        // constructors dropped, the overload collapsed, 'quote' kept once under each of its two types
-        assertThat(written).hasSize(5);
+        // constructors dropped, the overload collapsed, 'quote' kept once under each of its two
+        // types, and 'Currency' present twice
+        assertThat(written).hasSize(7);
 
-        db.jdbi().useHandle(h -> {
-            h.execute("DELETE FROM fts_symbol");
-            FtsSymbolWriter.rebuildFrom(h);
-        });
+        // Called on the populated table on purpose: rebuildFrom clears before it rebuilds, so a
+        // caller that forgets to (it is public, and its production caller only happens to hand it
+        // an empty table) gets the reconstruction rather than every row silently doubled.
+        db.jdbi().useHandle(FtsSymbolWriter::rebuildFrom);
 
         assertThat(symbolRows()).isEqualTo(written);
     }
 
-    /** Identity of every fts_symbol row, order-independent. */
+    /**
+     * Identity of every fts_symbol row, order-independent.
+     *
+     * <p>Excludes the {@code doc} column, and the exclusion is the point: {@code rebuildFrom} runs
+     * only inside the V2 migration, where {@code java_type.javadoc} does not exist yet, so it
+     * writes {@code ""} where the indexer writes a type's javadoc. That one column is a known,
+     * documented divergence (see {@code FtsSymbolWriter.rebuildFrom}); every other column must
+     * match exactly.
+     */
     private List<String> symbolRows() {
         return db.jdbi().withHandle(h -> h.createQuery("""
                         SELECT identifier || '|' || fqcn || '|' || words || '|' || module_id AS row

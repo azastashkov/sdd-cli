@@ -14,9 +14,14 @@ import java.nio.file.Path;
 import java.util.List;
 
 public final class Database implements AutoCloseable {
-    private static final List<String> MIGRATIONS = List.of("V1__init.sql", "V2__fts_porter.sql");
+    private static final List<String> MIGRATIONS =
+            List.of("V1__init.sql", "V2__fts_porter.sql", "V3__type_javadoc.sql");
 
-    /** The migration that recreates fts_symbol and so has to repopulate it — see {@link #applyMigration}. */
+    /**
+     * The migration that recreates fts_symbol and so has to repopulate it — see
+     * {@link #applyMigration}. V3 only widens {@code java_type}; it leaves fts_symbol alone and
+     * must not trigger a rebuild.
+     */
     private static final int FTS_REBUILD_VERSION = 2;
 
     private final Jdbi jdbi;

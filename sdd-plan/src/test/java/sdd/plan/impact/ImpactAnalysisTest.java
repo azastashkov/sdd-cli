@@ -41,7 +41,7 @@ class ImpactAnalysisTest {
             h.execute("INSERT INTO java_type(module_id, fqcn, kind) VALUES (1,'com.acme.LoyaltyTier','CLASS')");
             h.execute("INSERT INTO api_usage(from_module_id, target_fqcn, target_module_id, ref_kind) "
                     + "VALUES (2,'com.acme.LoyaltyTier',1,'IMPORT')");
-            FtsSymbolWriter.insert(h, 3L, "LegacyLoyaltyAdapter", "com.acme.legacy.LegacyLoyaltyAdapter");
+            FtsSymbolWriter.insert(h, 3L, "LegacyLoyaltyAdapter", "com.acme.legacy.LegacyLoyaltyAdapter", "");
         });
     }
 

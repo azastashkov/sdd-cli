@@ -173,7 +173,7 @@ class IndexPersistenceTest {
             IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "OK", null);
             long moduleId = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT id FROM module").mapTo(Long.class).one());
-            db.jdbi().useHandle(h -> FtsSymbolWriter.insert(h, moduleId, "OrderService", "com.acme.OrderService"));
+            db.jdbi().useHandle(h -> FtsSymbolWriter.insert(h, moduleId, "OrderService", "com.acme.OrderService", ""));
 
             // re-persist: modules are deleted and reinserted with NEW ids, so the symbol rows keyed
             // to the old ids can never be reached by a later per-module delete
