@@ -5,7 +5,7 @@ import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
 import sdd.core.retrieve.FtsSymbolWriter;
 import sdd.index.gradle.CatalogReader;
-import sdd.index.gradle.GradleModel;
+import sdd.index.extract.BuildModel;
 import sdd.index.gradle.ModeClassifier;
 import sdd.index.scan.RepoScan;
 
@@ -19,13 +19,19 @@ public final class IndexPersistence {
 
     private IndexPersistence() {}
 
-    public static void persistRepo(Jdbi jdbi, RepoScan scan, GradleModel.Extract extract,
-                                   String gradleStatus, String error) {
+    /**
+     * @param buildSystem which extractor produced {@code extract}, persisted to
+     *                    {@code repo.build_system}. Never null: a NULL in that column means "row
+     *                    predates the V4 migration", which is what tells {@code IndexService} to
+     *                    re-extract rather than trust the fingerprint.
+     */
+    public static void persistRepo(Jdbi jdbi, RepoScan scan, BuildModel.Extract extract,
+                                   String buildSystem, String gradleStatus, String error) {
         Set<String> catalogGAs = CatalogReader.internalGAs(scan.path());
         jdbi.useTransaction(h -> {
             String includedJson;
             try {
-                includedJson = MAPPER.writeValueAsString(extract.includedBuilds().stream()
+                includedJson = MAPPER.writeValueAsString(extract.compositeRoots().stream()
                         .map(Paths2::canonicalString).toList());
             } catch (Exception e) {
                 throw new RuntimeException("Failed to serialize included builds", e);
@@ -48,11 +54,7 @@ public final class IndexPersistence {
                     .bind("branch", scan.branch()).bind("dirty", scan.dirtyHash())
                     .bind("included", includedJson).bind("status", gradleStatus)
                     .bind("error", error).bind("at", Instant.now().toString())
-                    // Constant until build-system detection lands; this method is only ever reached
-                    // with a Gradle extract today. It is bound rather than defaulted in SQL so the
-                    // fingerprint short-circuit in IndexService can keep using NULL to mean
-                    // "written before V4, re-extract me".
-                    .bind("buildSystem", "GRADLE")
+                    .bind("buildSystem", java.util.Objects.requireNonNull(buildSystem, "buildSystem"))
                     .execute();
             long repoId = h.createQuery("SELECT id FROM repo WHERE name=:n")
                     .bind("n", scan.name()).mapTo(Long.class).one();
@@ -61,24 +63,24 @@ public final class IndexPersistence {
             // symbol rows are reachable at all.
             FtsSymbolWriter.deleteForRepo(h, repoId);
             h.createUpdate("DELETE FROM module WHERE repo_id=:r").bind("r", repoId).execute();
-            for (GradleModel.Project p : extract.projects()) {
-                insertModule(h, repoId, p, catalogGAs);
+            for (BuildModel.Module m : extract.modules()) {
+                insertModule(h, repoId, m, catalogGAs);
             }
         });
     }
 
-    private static void insertModule(Handle h, long repoId, GradleModel.Project p, Set<String> catalogGAs) {
-        String kind = moduleKind(p);
-        h.createUpdate("INSERT INTO module(repo_id, gradle_path, grp, name, version, kind) "
-                        + "VALUES (:r, :path, :grp, :name, :ver, :kind)")
+    private static void insertModule(Handle h, long repoId, BuildModel.Module p, Set<String> catalogGAs) {
+        h.createUpdate("INSERT INTO module(repo_id, gradle_path, grp, name, version, kind, language) "
+                        + "VALUES (:r, :path, :grp, :name, :ver, :kind, :lang)")
                 .bind("r", repoId).bind("path", p.path()).bind("grp", p.group())
-                .bind("name", p.name()).bind("ver", p.version()).bind("kind", kind)
+                .bind("name", p.name()).bind("ver", p.version()).bind("kind", p.kind())
+                .bind("lang", p.language())
                 .execute();
         long moduleId = h.createQuery("SELECT last_insert_rowid()").mapTo(Long.class).one();
 
-        if (!p.publications().isEmpty()) {
-            for (GradleModel.Publication pub : p.publications()) {
-                insertArtifact(h, repoId, moduleId, pub.groupId(), pub.artifactId());
+        if (!p.publishes().isEmpty()) {
+            for (BuildModel.Coordinate pub : p.publishes()) {
+                insertArtifact(h, repoId, moduleId, pub.group(), pub.name());
             }
         } else if (p.group() != null && !p.group().isBlank()) {
             insertArtifact(h, repoId, moduleId, p.group(), p.name());
@@ -99,8 +101,8 @@ public final class IndexPersistence {
         // 50) — so a product's testImplementation on an internal test-fixture artifact now
         // correctly pulls that artifact's producer repo into the affected set.
         Map<String, MergedDep> merged = new LinkedHashMap<>();
-        p.configurations().forEach((cfgName, cfg) -> {
-            for (GradleModel.DeclaredDep d : cfg.declared()) {
+        p.scopes().forEach((cfgName, cfg) -> {
+            for (BuildModel.DeclaredDep d : cfg.declared()) {
                 MergedDep m = merged.computeIfAbsent(d.group() + ":" + d.name(),
                         k -> new MergedDep(d.group(), d.name(), cfgName));
                 if (m.declaredVersion == null) {
@@ -109,8 +111,8 @@ public final class IndexPersistence {
             }
         });
         // Resolution results only enrich declared edges with the version actually selected.
-        for (GradleModel.DepConfig cfg : p.configurations().values()) {
-            for (GradleModel.ResolvedDep r : cfg.resolved()) {
+        for (BuildModel.DepScope cfg : p.scopes().values()) {
+            for (BuildModel.ResolvedDep r : cfg.resolved()) {
                 MergedDep m = merged.get(r.group() + ":" + r.name());
                 if (m != null && m.resolvedVersion == null) {
                     m.resolvedVersion = r.version();
@@ -152,24 +154,12 @@ public final class IndexPersistence {
                 .bind("g", grp).bind("n", name).bind("m", moduleId).execute();
     }
 
-    private static String moduleKind(GradleModel.Project p) {
-        boolean boot = p.plugins().contains("org.springframework.boot") || p.hasBootJarTask();
-        if (boot) {
-            return "SERVICE";
-        }
-        if (p.plugins().contains("maven-publish") || !p.publications().isEmpty()) {
-            return "LIBRARY";
-        }
-        return "UNKNOWN";
-    }
-
-    private static String rollupKind(GradleModel.Extract extract) {
+    private static String rollupKind(BuildModel.Extract extract) {
         boolean svc = false;
         boolean lib = false;
-        for (GradleModel.Project p : extract.projects()) {
-            String k = moduleKind(p);
-            svc |= k.equals("SERVICE");
-            lib |= k.equals("LIBRARY");
+        for (BuildModel.Module m : extract.modules()) {
+            svc |= m.kind().equals("SERVICE");
+            lib |= m.kind().equals("LIBRARY");
         }
         if (svc && lib) {
             return "MIXED";

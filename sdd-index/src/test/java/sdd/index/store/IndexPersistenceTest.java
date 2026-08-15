@@ -4,6 +4,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import sdd.core.db.Database;
 import sdd.core.retrieve.FtsSymbolWriter;
+import sdd.index.extract.BuildModel;
+import sdd.index.extract.GradleBuildExtractor;
 import sdd.index.gradle.GradleModel;
 import sdd.index.scan.RepoScan;
 
@@ -17,8 +19,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class IndexPersistenceTest {
     @TempDir Path ws;
 
-    private static GradleModel.Extract serviceExtract() {
-        return new GradleModel.Extract(List.of(new GradleModel.Project(
+    private static BuildModel.Extract serviceExtract() {
+        return GradleBuildExtractor.adapt(new GradleModel.Extract(List.of(new GradleModel.Project(
                 ":", "svc-orders", "com.acme", "0.1.0", Path.of("/w/svc-orders"),
                 List.of("java", "org.springframework.boot"), true,
                 List.of(),
@@ -28,14 +30,14 @@ class IndexPersistenceTest {
                                 new GradleModel.DeclaredDep("com.acme", "lib-bom-managed", null)),
                         List.of(new GradleModel.ResolvedDep("com.acme", "lib-core", "2.3.0", List.of())),
                         List.of())))),
-                List.of(Path.of("/w/lib-included")));
+                List.of(Path.of("/w/lib-included"))));
     }
 
     @Test
     void persistsRepoModulesEdgesAndStatuses() {
         try (Database db = Database.open(ws)) {
             RepoScan scan = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");
-            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "GRADLE", "OK", null);
 
             Map<String, Object> repo = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT kind, gradle_status, included_builds FROM repo WHERE name='svc-orders'")
@@ -61,7 +63,7 @@ class IndexPersistenceTest {
     @Test
     void edgesAreCreatedOnlyForDeclaredDependenciesNotResolvedTransitives() {
         try (Database db = Database.open(ws)) {
-            GradleModel.Extract extract = new GradleModel.Extract(List.of(new GradleModel.Project(
+            BuildModel.Extract extract = GradleBuildExtractor.adapt(new GradleModel.Extract(List.of(new GradleModel.Project(
                     ":", "svc-orders", "com.acme", "0.1.0", Path.of("/w/svc-orders"),
                     List.of("java"), false, List.of(),
                     Map.of("compileClasspath", new GradleModel.DepConfig(
@@ -69,9 +71,9 @@ class IndexPersistenceTest {
                             List.of(new GradleModel.ResolvedDep("com.acme", "lib-core", "2.3.0", List.of()),
                                     new GradleModel.ResolvedDep("org.slf4j", "slf4j-api", "2.0.13", List.of())),
                             List.of())))),
-                    List.of());
+                    List.of()));
             RepoScan scan = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");
-            IndexPersistence.persistRepo(db.jdbi(), scan, extract, "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scan, extract, "GRADLE", "OK", null);
 
             List<Map<String, Object>> edges = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT to_name, declared_version, resolved_version, mode FROM dep_edge")
@@ -87,14 +89,14 @@ class IndexPersistenceTest {
     @Test
     void gaPublishedByAnotherRepoRecordsConflictWarningOnTheRepoRow() {
         try (Database db = Database.open(ws)) {
-            GradleModel.Extract owner = publisherExtract("lib-core", "com.acme", "lib-core");
+            BuildModel.Extract owner = publisherExtract("lib-core", "com.acme", "lib-core");
             IndexPersistence.persistRepo(db.jdbi(),
                     new RepoScan("lib-core", Path.of("/w/lib-core"), "a".repeat(40), "main", ""),
-                    owner, "OK", null);
-            GradleModel.Extract squatter = publisherExtract("lib-core-fork", "com.acme", "lib-core");
+                    owner, "GRADLE", "OK", null);
+            BuildModel.Extract squatter = publisherExtract("lib-core-fork", "com.acme", "lib-core");
             IndexPersistence.persistRepo(db.jdbi(),
                     new RepoScan("lib-core-fork", Path.of("/w/lib-core-fork"), "b".repeat(40), "main", ""),
-                    squatter, "OK", null);
+                    squatter, "GRADLE", "OK", null);
 
             String error = db.jdbi().withHandle(h -> h.createQuery(
                             "SELECT error FROM repo WHERE name='lib-core-fork'")
@@ -108,21 +110,21 @@ class IndexPersistenceTest {
         }
     }
 
-    private static GradleModel.Extract publisherExtract(String moduleName, String grp, String artifactId) {
-        return new GradleModel.Extract(List.of(new GradleModel.Project(
+    private static BuildModel.Extract publisherExtract(String moduleName, String grp, String artifactId) {
+        return GradleBuildExtractor.adapt(new GradleModel.Extract(List.of(new GradleModel.Project(
                 ":", moduleName, grp, "1.0.0", Path.of("/w/" + moduleName),
                 List.of("java-library", "maven-publish"), false,
                 List.of(new GradleModel.Publication(grp, artifactId)),
                 Map.of("compileClasspath", new GradleModel.DepConfig(List.of(), List.of(), List.of())))),
-                List.of());
+                List.of()));
     }
 
     @Test
     void reindexReplacesOldRowsAndMarkStalePreservesThem() {
         try (Database db = Database.open(ws)) {
             RepoScan scan = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");
-            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "OK", null);
-            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "GRADLE", "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "GRADLE", "OK", null);
             Integer modules = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT count(*) FROM module").mapTo(Integer.class).one());
             assertThat(modules).isEqualTo(1); // replaced, not duplicated
@@ -142,10 +144,10 @@ class IndexPersistenceTest {
     void reindexingUsageTargetRepoDoesNotViolateForeignKeysAndKeepsTheUsageRow() {
         try (Database db = Database.open(ws)) {
             RepoScan producer = new RepoScan("lib-core", Path.of("/w/lib-core"), "b".repeat(40), "main", "");
-            GradleModel.Extract producerExtract = publisherExtract("lib-core", "com.acme", "lib-core");
-            IndexPersistence.persistRepo(db.jdbi(), producer, producerExtract, "OK", null);
+            BuildModel.Extract producerExtract = publisherExtract("lib-core", "com.acme", "lib-core");
+            IndexPersistence.persistRepo(db.jdbi(), producer, producerExtract, "GRADLE", "OK", null);
             RepoScan consumer = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");
-            IndexPersistence.persistRepo(db.jdbi(), consumer, serviceExtract(), "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), consumer, serviceExtract(), "GRADLE", "OK", null);
             // what UsageLinker writes: a consumer-module row pointing at a module of ANOTHER repo
             db.jdbi().useHandle(h -> h.execute("""
                     INSERT INTO api_usage(from_module_id, target_fqcn, target_module_id, ref_kind)
@@ -157,7 +159,7 @@ class IndexPersistenceTest {
                             'IMPORT')"""));
 
             // re-persisting the TARGET repo deletes its modules — must not wedge the run
-            IndexPersistence.persistRepo(db.jdbi(), producer, producerExtract, "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), producer, producerExtract, "GRADLE", "OK", null);
 
             Map<String, Object> usage = db.jdbi().withHandle(h -> h.createQuery(
                     "SELECT target_fqcn, target_module_id FROM api_usage").mapToMap().one());
@@ -170,14 +172,14 @@ class IndexPersistenceTest {
     void reindexingRepoDropsFtsRowsOfItsOldModules() {
         try (Database db = Database.open(ws)) {
             RepoScan scan = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");
-            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "GRADLE", "OK", null);
             long moduleId = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT id FROM module").mapTo(Long.class).one());
             db.jdbi().useHandle(h -> FtsSymbolWriter.insert(h, moduleId, "OrderService", "com.acme.OrderService", ""));
 
             // re-persist: modules are deleted and reinserted with NEW ids, so the symbol rows keyed
             // to the old ids can never be reached by a later per-module delete
-            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "GRADLE", "OK", null);
 
             Integer orphans = db.jdbi().withHandle(h -> h.createQuery(
                     "SELECT count(*) FROM fts_symbol").mapTo(Integer.class).one());
@@ -198,13 +200,13 @@ class IndexPersistenceTest {
                     List.of(new GradleModel.ResolvedDep("com.acme", "lib-core", "2.4.0", List.of())),
                     List.of()));
 
-            GradleModel.Extract extract = new GradleModel.Extract(
+            BuildModel.Extract extract = GradleBuildExtractor.adapt(new GradleModel.Extract(
                     List.of(new GradleModel.Project(":", "lib-core", "com.acme", "0.1.0",
                             Path.of("/w/lib-core"), List.of("java"), false, List.of(), configs)),
-                    List.of());
+                    List.of()));
 
             RepoScan scan = new RepoScan("lib-core", Path.of("/w/lib-core"), "a".repeat(40), "main", "");
-            IndexPersistence.persistRepo(db.jdbi(), scan, extract, "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scan, extract, "GRADLE", "OK", null);
 
             List<Map<String, Object>> edges = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT to_name, configuration, resolved_version FROM dep_edge WHERE to_name='lib-core'")
@@ -229,13 +231,13 @@ class IndexPersistenceTest {
                     List.of(new GradleModel.DeclaredDep("com.trading", "mock-pricing-venue", "1.0.0")),
                     List.of(), List.of()));
 
-            GradleModel.Extract extract = new GradleModel.Extract(
+            BuildModel.Extract extract = GradleBuildExtractor.adapt(new GradleModel.Extract(
                     List.of(new GradleModel.Project(":", "product-b", "com.trading", "0.1.0",
                             Path.of("/w/product-b"), List.of("java"), false, List.of(), configs)),
-                    List.of());
+                    List.of()));
 
             RepoScan scan = new RepoScan("product-b", Path.of("/w/product-b"), "a".repeat(40), "main", "");
-            IndexPersistence.persistRepo(db.jdbi(), scan, extract, "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scan, extract, "GRADLE", "OK", null);
 
             List<Map<String, Object>> edges = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT to_name, configuration, mode, declared_via FROM dep_edge "
@@ -260,13 +262,13 @@ class IndexPersistenceTest {
                     List.of(new GradleModel.DeclaredDep("com.trading", "shared-lib", "2.0.0")),
                     List.of(), List.of()));
 
-            GradleModel.Extract extract = new GradleModel.Extract(
+            BuildModel.Extract extract = GradleBuildExtractor.adapt(new GradleModel.Extract(
                     List.of(new GradleModel.Project(":", "product-b", "com.trading", "0.1.0",
                             Path.of("/w/product-b"), List.of("java"), false, List.of(), configs)),
-                    List.of());
+                    List.of()));
 
             RepoScan scan = new RepoScan("product-b", Path.of("/w/product-b"), "a".repeat(40), "main", "");
-            IndexPersistence.persistRepo(db.jdbi(), scan, extract, "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scan, extract, "GRADLE", "OK", null);
 
             List<Map<String, Object>> edges = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT to_name, configuration, resolved_version FROM dep_edge "
@@ -282,17 +284,17 @@ class IndexPersistenceTest {
     void reindexingProducerAfterLinkDoesNotViolateForeignKeys() {
         try (Database db = Database.open(ws)) {
             RepoScan producer = new RepoScan("lib-core", Path.of("/w/lib-core"), "b".repeat(40), "main", "");
-            GradleModel.Extract producerExtract = new GradleModel.Extract(List.of(new GradleModel.Project(
+            BuildModel.Extract producerExtract = GradleBuildExtractor.adapt(new GradleModel.Extract(List.of(new GradleModel.Project(
                     ":", "lib-core", "com.acme", "2.3.0", Path.of("/w/lib-core"),
                     List.of("java-library", "maven-publish"), false, List.of(),
                     Map.of("compileClasspath", new GradleModel.DepConfig(List.of(), List.of(), List.of())))),
-                    List.of());
-            IndexPersistence.persistRepo(db.jdbi(), producer, producerExtract, "OK", null);
+                    List.of()));
+            IndexPersistence.persistRepo(db.jdbi(), producer, producerExtract, "GRADLE", "OK", null);
             RepoScan consumer = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");
-            IndexPersistence.persistRepo(db.jdbi(), consumer, serviceExtract(), "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), consumer, serviceExtract(), "GRADLE", "OK", null);
             ArtifactLinker.link(db.jdbi(), Map.of());
             // re-persist the PRODUCER after linking — must not throw
-            IndexPersistence.persistRepo(db.jdbi(), producer, producerExtract, "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), producer, producerExtract, "GRADLE", "OK", null);
             // and a fresh link restores the internal edge to the new module row
             ArtifactLinker.link(db.jdbi(), Map.of());
             Integer internal = db.jdbi().withHandle(h -> h.createQuery(
@@ -306,7 +308,7 @@ class IndexPersistenceTest {
     void markStaleAppendsToExistingErrorInsteadOfOverwriting() {
         try (Database db = Database.open(ws)) {
             RepoScan scan = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");
-            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "GRADLE", "OK", null);
             db.jdbi().useHandle(h -> h.execute("UPDATE repo SET error='prior note' WHERE name='svc-orders'"));
             IndexPersistence.markStale(db.jdbi(), "svc-orders", "network down");
             String error = db.jdbi().withHandle(h -> h.createQuery(
@@ -319,7 +321,7 @@ class IndexPersistenceTest {
     void markStaleDoesNotAppendDuplicateIdenticalMessages() {
         try (Database db = Database.open(ws)) {
             RepoScan scan = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");
-            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "GRADLE", "OK", null);
             IndexPersistence.markStale(db.jdbi(), "svc-orders", "network down");
             IndexPersistence.markStale(db.jdbi(), "svc-orders", "network down");
             String error = db.jdbi().withHandle(h -> h.createQuery(
@@ -335,7 +337,7 @@ class IndexPersistenceTest {
         // check must not treat the shorter note as a duplicate and drop it.
         try (Database db = Database.open(ws)) {
             RepoScan scan = new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", "");
-            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scan, serviceExtract(), "GRADLE", "OK", null);
             db.jdbi().useHandle(h -> h.execute(
                     "UPDATE repo SET error='13 source files failed to parse; ' WHERE name='svc-orders'"));
             IndexPersistence.markStale(db.jdbi(), "svc-orders", "3 source files failed to parse");

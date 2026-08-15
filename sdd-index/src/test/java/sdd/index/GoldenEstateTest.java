@@ -6,6 +6,8 @@ import sdd.core.config.RunSettings;
 import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
 import sdd.core.testing.FixtureRepo;
+import sdd.index.extract.BuildModel;
+import sdd.index.extract.GradleBuildExtractor;
 import sdd.index.gradle.GradleModel;
 
 import java.io.IOException;
@@ -43,14 +45,14 @@ class GoldenEstateTest {
 
     @TempDir Path ws;
 
-    private static GradleModel.Extract extractFor(Path repoDir, String name, String grp,
+    private static BuildModel.Extract extractFor(Path repoDir, String name, String grp,
                                                   List<String> plugins,
                                                   List<GradleModel.DeclaredDep> deps) {
-        return new GradleModel.Extract(List.of(new GradleModel.Project(
+        return GradleBuildExtractor.adapt(new GradleModel.Extract(List.of(new GradleModel.Project(
                 ":", name, grp, "1.0", repoDir, plugins, false, List.of(),
                 Map.of("compileClasspath",
                         new GradleModel.DepConfig(deps, List.of(), List.of())))),
-                List.of());
+                List.of()));
     }
 
     @Test
@@ -139,7 +141,7 @@ class GoldenEstateTest {
         SddConfig config = new SddConfig(ws, Map.of(), Map.of(), List.of(), Map.of(), List.of(), RunSettings.defaults(), Map.of());
         String actual;
         try (Database db = Database.open(ws)) {
-            IndexService.Extractor stubExtractor = repoDir -> {
+            IndexService.ExtractFn stubExtractor = repoDir -> {
                 String name = repoDir.getFileName().toString();
                 return name.equals("lib-pricing")
                         ? extractFor(repoDir, "lib-pricing", "com.acme",
