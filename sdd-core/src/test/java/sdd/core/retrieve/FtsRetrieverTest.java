@@ -50,6 +50,23 @@ class FtsRetrieverTest {
     }
 
     @Test
+    void stemmedQueryMatchesUnstemmedIdentifier() {
+        // The miss this stemmer exists for: asking "how are client tiers resolved" over a
+        // TierResolver. Unstemmed, "tiers" is not "tier" and "resolved" is not "resolver", so the
+        // query matches no token at all and the answer is empty rather than merely mediocre.
+        db.jdbi().useHandle(h -> h.execute(
+                "INSERT INTO fts_symbol(identifier, fqcn, words, module_id) VALUES (?, ?, ?, ?)",
+                "TierResolver", "com.acme.pricing.TierResolver",
+                IdentifierWords.split("TierResolver"), 1));
+
+        List<Hit> hits = new FtsRetriever(db.jdbi()).search("tiers resolved", 10);
+
+        assertThat(hits).extracting(Hit::identifier).contains("TierResolver");
+        // and it beats LoyaltyTier, which the same query reaches on "tier" alone
+        assertThat(hits.get(0).identifier()).isEqualTo("TierResolver");
+    }
+
+    @Test
     void tiedScoresOrderDeterministicallyByIdentifierThenModule() {
         // two rows with identical tokens => identical bm25 score; order must be pinned
         db.jdbi().useHandle(h -> {

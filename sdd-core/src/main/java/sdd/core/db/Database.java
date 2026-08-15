@@ -3,6 +3,7 @@ package sdd.core.db;
 import org.jdbi.v3.core.Jdbi;
 import org.sqlite.SQLiteConfig;
 import org.sqlite.SQLiteDataSource;
+import sdd.core.retrieve.FtsSymbolWriter;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -13,7 +14,10 @@ import java.nio.file.Path;
 import java.util.List;
 
 public final class Database implements AutoCloseable {
-    private static final List<String> MIGRATIONS = List.of("V1__init.sql");
+    private static final List<String> MIGRATIONS = List.of("V1__init.sql", "V2__fts_porter.sql");
+
+    /** The migration that recreates fts_symbol and so has to repopulate it — see {@link #applyMigration}. */
+    private static final int FTS_REBUILD_VERSION = 2;
 
     private final Jdbi jdbi;
     private final int schemaVersion;
@@ -63,6 +67,16 @@ public final class Database implements AutoCloseable {
                 if (!statement.isBlank()) {
                     h.execute(statement);
                 }
+            }
+            // V2 drops and recreates fts_symbol (fts5 cannot restem or widen a table in place), so
+            // by this point the search index is empty while java_type is untouched — a state that
+            // answers every search with nothing and reports no error. Rebuilding here, inside the
+            // migration's own transaction, means an upgrade either lands whole or not at all.
+            // Keyed on the version rather than on "is the table empty" so that a legitimately
+            // empty index is not rebuilt on every open; applyMigrationForTest's version 999 is
+            // deliberately outside this, since its scripts are arbitrary and touch no real schema.
+            if (version == FTS_REBUILD_VERSION) {
+                FtsSymbolWriter.rebuildFrom(h);
             }
             h.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)");
             h.execute("INSERT INTO meta(key, value) VALUES ('schema_version', ?) "

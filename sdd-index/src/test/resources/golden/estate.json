@@ -130,66 +130,79 @@
     "src_file" : "src/main/java/com/acme/orders/OrderService.java"
   } ],
   "fts_symbol" : [ {
+    "doc" : null,
     "fqcn" : "com.acme.orders.BillingClient",
     "identifier" : "BillingClient",
     "module_id" : 2,
     "words" : "billing client"
   }, {
+    "doc" : null,
     "fqcn" : "com.acme.orders.Events",
     "identifier" : "Events",
     "module_id" : 2,
     "words" : "events"
   }, {
+    "doc" : null,
     "fqcn" : "com.acme.orders.OrderController",
     "identifier" : "OrderController",
     "module_id" : 2,
     "words" : "order controller"
   }, {
+    "doc" : null,
     "fqcn" : "com.acme.orders.OrderHelper",
     "identifier" : "OrderHelper",
     "module_id" : 2,
     "words" : "order helper"
   }, {
+    "doc" : null,
     "fqcn" : "com.acme.orders.OrderService",
     "identifier" : "OrderService",
     "module_id" : 2,
     "words" : "order service"
   }, {
+    "doc" : null,
     "fqcn" : "com.acme.pricing.PriceCalculator",
     "identifier" : "PriceCalculator",
     "module_id" : 1,
     "words" : "price calculator"
   }, {
+    "doc" : null,
     "fqcn" : "com.acme.orders.BillingClient",
     "identifier" : "charge",
     "module_id" : 2,
     "words" : "charge"
   }, {
+    "doc" : null,
     "fqcn" : "com.acme.orders.OrderController",
     "identifier" : "get",
     "module_id" : 2,
     "words" : "get"
   }, {
+    "doc" : null,
     "fqcn" : "com.acme.pricing.PriceCalculator",
     "identifier" : "getCurrency",
     "module_id" : 1,
     "words" : "get currency"
   }, {
+    "doc" : null,
     "fqcn" : "com.acme.orders.OrderService",
     "identifier" : "helper",
     "module_id" : 2,
     "words" : "helper"
   }, {
+    "doc" : null,
     "fqcn" : "com.acme.orders.Events",
     "identifier" : "in",
     "module_id" : 2,
     "words" : "in"
   }, {
+    "doc" : null,
     "fqcn" : "com.acme.orders.Events",
     "identifier" : "out",
     "module_id" : 2,
     "words" : "out"
   }, {
+    "doc" : null,
     "fqcn" : "com.acme.pricing.PriceCalculator",
     "identifier" : "quote",
     "module_id" : 1,

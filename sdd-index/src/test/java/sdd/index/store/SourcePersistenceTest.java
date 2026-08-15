@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import sdd.core.db.Database;
 import sdd.core.retrieve.FtsRetriever;
+import sdd.core.retrieve.FtsSymbolWriter;
 import sdd.index.source.SourceModel;
 
 import java.nio.file.Path;
@@ -176,5 +177,48 @@ class SourcePersistenceTest {
         Integer quoteRows = db.jdbi().withHandle(h -> h.createQuery(
                 "SELECT count(*) FROM fts_symbol WHERE identifier='quote'").mapTo(Integer.class).one());
         assertThat(quoteRows).isEqualTo(1);
+    }
+
+    @Test
+    void rebuildFromReproducesTheRowsThisClassWrote() {
+        // A schema migration that recreates fts_symbol repopulates it with
+        // FtsSymbolWriter.rebuildFrom, which reconstructs from java_type/api_member what this
+        // class wrote at index time. rebuildFrom lives in sdd-core and cannot call this class, so
+        // the two are separate statements of one rule; if they ever drift, upgraded workspaces get
+        // a quietly wrong search index and no test in sdd-core would notice. Pin them together
+        // here, the one place both are visible, against real indexer output.
+        SourceModel.TypeInfo calculator = new SourceModel.TypeInfo(
+                "com.acme.pricing.PriceCalculator", "CLASS", true,
+                "src/main/java/com/acme/pricing/PriceCalculator.java",
+                List.of(), "OK", "a".repeat(64),
+                List.of(new SourceModel.MemberInfo("<init>", "PriceCalculator()", "void", null),
+                        new SourceModel.MemberInfo("quote", "quote(String)", "String", null),
+                        new SourceModel.MemberInfo("quote", "quote(String,int)", "String", null)));
+        SourceModel.TypeInfo tier = new SourceModel.TypeInfo(
+                "com.acme.pricing.LoyaltyTier", "ENUM", true,
+                "src/main/java/com/acme/pricing/LoyaltyTier.java",
+                List.of(), "OK", "b".repeat(64),
+                List.of(new SourceModel.MemberInfo("quote", "quote()", "String", null),
+                        new SourceModel.MemberInfo("values", "values()", "LoyaltyTier[]", null)));
+        SourcePersistence.persistModuleSource(db.jdbi(), repoId, moduleId,
+                List.of(calculator, tier), List.of(), List.of());
+        List<String> written = symbolRows();
+        // constructors dropped, the overload collapsed, 'quote' kept once under each of its two types
+        assertThat(written).hasSize(5);
+
+        db.jdbi().useHandle(h -> {
+            h.execute("DELETE FROM fts_symbol");
+            FtsSymbolWriter.rebuildFrom(h);
+        });
+
+        assertThat(symbolRows()).isEqualTo(written);
+    }
+
+    /** Identity of every fts_symbol row, order-independent. */
+    private List<String> symbolRows() {
+        return db.jdbi().withHandle(h -> h.createQuery("""
+                        SELECT identifier || '|' || fqcn || '|' || words || '|' || module_id AS row
+                        FROM fts_symbol ORDER BY identifier, fqcn, module_id""")
+                .mapTo(String.class).list());
     }
 }
