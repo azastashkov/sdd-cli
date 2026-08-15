@@ -110,6 +110,21 @@ public final class QuestionInterpreter {
      * has to judge relevance and still has to name an identifier exactly — this list only makes
      * the exact spelling available; the anti-invention rule in {@link #SYSTEM_PROMPT} decides
      * whether it should be used at all.
+     *
+     * <p><strong>Doc-only hits are deliberately not marked here</strong>, unlike in
+     * {@link SearchFacts}, and the asymmetry is a decision rather than an oversight. Since the
+     * corpus gained type javadoc, {@code Hit.docOnly()} distinguishes a candidate found only
+     * through unverified prose from one found by name, and this is the third consumer of
+     * {@link Retriever#search} to have to rule on it. Marking would be actively worse in this one
+     * place: the whole list is already labelled as hits that <em>may be irrelevant</em>, and
+     * tagging some entries as weaker evidence implies the untagged ones are confirmed — reviving
+     * exactly the anchoring the caveat exists to prevent. What a marker would buy elsewhere is
+     * provenance for a claim, and no claim is made here: this list only supplies spellings, and
+     * whatever the model names still has to survive {@link KbEntities#resolve} against the
+     * structural tables, so a stale doc comment can surface a candidate but can never put an
+     * entity into the answer that the KB does not independently hold. Provenance is carried where
+     * it reaches a reader — {@link SearchFacts} labels the hit, and {@code AnswerNarrator}'s
+     * system prompt has a rule for that label.
      */
     private static String composeUserMessage(Jdbi jdbi, Retriever retriever, String question) {
         List<String> symbolLabels = retriever.search(question, SYMBOL_CANDIDATES).stream()

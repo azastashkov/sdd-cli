@@ -32,8 +32,14 @@ final class SearchFacts {
      * unverified text that nothing in this pipeline checks against the code, so a doc-only hit has
      * to be distinguishable from one whose name matched — otherwise a stale doc comment reaches the
      * reader looking exactly like code-derived evidence.
+     *
+     * <p>Bracketed like the {@code [score=…]} it follows, rather than set off with the " — " that
+     * already separates the fqcn from the repo on the same line. This string is also, verbatim, a
+     * model prompt (see {@code AnswerNarrator}), and a third " — " clause reads as a peer of the
+     * repo rather than as a qualifier on the hit; the bracket idiom is already established on this
+     * line as metadata about the hit.
      */
-    private static final String DOC_ONLY_MARKER = " — matched on javadoc";
+    private static final String DOC_ONLY_MARKER = " [matched on javadoc]";
 
     private SearchFacts() {
     }

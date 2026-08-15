@@ -118,6 +118,22 @@ class FtsRetrieverTest {
     }
 
     @Test
+    void aRowWrittenBeforeTheDocColumnWasPopulatedIsNeverReportedDocOnly() {
+        // The state every existing workspace is in on day one: rebuildFrom cannot reach javadoc at
+        // the V2 migration, so its rows hold NULL rather than "" until a re-index. highlight()
+        // passes that NULL through, and a null must read as "this column did not match" — not as a
+        // match, and not as an NPE.
+        Integer nullDocs = db.jdbi().withHandle(h -> h.createQuery(
+                "SELECT count(*) FROM fts_symbol WHERE doc IS NULL").mapTo(Integer.class).one());
+        assertThat(nullDocs).isEqualTo(3); // the seeded rows, written the pre-javadoc way
+
+        List<Hit> hits = new FtsRetriever(db.jdbi()).search("loyalty tier order", 10);
+
+        assertThat(hits).isNotEmpty();
+        assertThat(hits).allSatisfy(hit -> assertThat(hit.docOnly()).isFalse());
+    }
+
+    @Test
     void tiedScoresOrderDeterministicallyByIdentifierThenModule() {
         // two rows with identical tokens => identical bm25 score; order must be pinned
         db.jdbi().useHandle(h -> {

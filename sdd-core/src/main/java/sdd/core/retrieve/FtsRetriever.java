@@ -50,13 +50,21 @@ public final class FtsRetriever implements Retriever {
         // column would multiply the cost of every search by four. It is bounded by LIMIT, so the
         // tokenizer only re-runs over the rows actually returned.
         //
-        // The ORDER BY runs to fqcn because (identifier, module_id) is not unique: a member row and
-        // its own type's row share both when a member's name equals its type's simple name, and two
-        // types in one module can expose the same member name. Without the last key those rows fall
-        // back to rowid, and FtsSymbolWriter.rebuildFrom writes rows in a different physical order
-        // than the indexer does (all types, then all members, versus interleaved) — so a migrated
-        // workspace would break such a tie differently from a freshly indexed one, and `sdd plan
-        // approve` SHA-pins a plan.md whose seed list depends on this order.
+        // The ORDER BY runs to fqcn because (identifier, module_id) is not unique: two types in one
+        // module can expose the same member name, giving two rows that tie on score, identifier and
+        // module_id but differ in fqcn. Without the last key those rows fall back to rowid, and
+        // FtsSymbolWriter.rebuildFrom writes rows in a different physical order than the indexer
+        // does (all types, then all members, versus interleaved) — so a migrated workspace would
+        // break that tie differently from a freshly indexed one, and `sdd plan approve` SHA-pins a
+        // plan.md whose seed list depends on this order.
+        //
+        // One tie the key does not break, deliberately: a member whose name equals its type's
+        // simple name produces a member row carrying that type's own fqcn (SourcePersistence
+        // .insertType), so it matches the type row on every sort key and still falls back to rowid.
+        // That one is unobservable rather than fixed. Those two rows differ only in doc — and if
+        // their doc text differs at all they also differ in bm25's length normalisation, so they
+        // never reach this tie; when it does fire they are equal in every column selected here, and
+        // either order yields the identical list of Hit records.
         return jdbi.withHandle(h -> h.createQuery("""
                         SELECT identifier, fqcn, module_id,
                                bm25(fts_symbol, 10.0, 3.0, 8.0, 2.0, 0.0) AS score,

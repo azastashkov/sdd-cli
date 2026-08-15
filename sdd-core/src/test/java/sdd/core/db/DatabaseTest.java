@@ -104,10 +104,10 @@ class DatabaseTest {
             // FtsSymbolWriter.insert: that path now writes the doc column, which the v1 table does
             // not have — the sole-write-path rule is about the current schema, and reconstructing
             // an older one is precisely the case it cannot serve.
-            insertV1Symbol(h, "TierResolver", "com.acme.pricing.TierResolver");
-            insertV1Symbol(h, "LoyaltyTier", "com.acme.pricing.LoyaltyTier");
-            insertV1Symbol(h, "resolve", "com.acme.pricing.TierResolver");
-            insertV1Symbol(h, "resolve", "com.acme.pricing.LoyaltyTier");
+            insertV1Symbol(h, 10L, "TierResolver", "com.acme.pricing.TierResolver");
+            insertV1Symbol(h, 10L, "LoyaltyTier", "com.acme.pricing.LoyaltyTier");
+            insertV1Symbol(h, 10L, "resolve", "com.acme.pricing.TierResolver");
+            insertV1Symbol(h, 10L, "resolve", "com.acme.pricing.LoyaltyTier");
         });
         List<String> symbolsBefore = symbolRows(v1);
 
@@ -147,11 +147,12 @@ class DatabaseTest {
      * words column because that split is what v1 wrote and what the rebuild must reproduce; only
      * the column list is frozen at v1, not the derivation.
      */
-    private static void insertV1Symbol(Handle h, String identifier, String fqcn) {
+    private static void insertV1Symbol(Handle h, long moduleId, String identifier, String fqcn) {
         h.createUpdate("INSERT INTO fts_symbol(identifier, fqcn, words, module_id) "
-                        + "VALUES (:id, :fqcn, :words, 10)")
+                        + "VALUES (:id, :fqcn, :words, :mod)")
                 .bind("id", identifier).bind("fqcn", fqcn)
-                .bind("words", IdentifierWords.split(identifier)).execute();
+                .bind("words", IdentifierWords.split(identifier))
+                .bind("mod", moduleId).execute();
     }
 
     /** Identity of every fts_symbol row, comparable across the v1 and v2 shapes of the table. */

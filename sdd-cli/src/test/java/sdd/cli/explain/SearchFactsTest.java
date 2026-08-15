@@ -10,6 +10,8 @@ import sdd.core.retrieve.Retriever;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -54,8 +56,21 @@ class SearchFactsTest {
             assertThat(text).startsWith("GroupDirectory (com.acme.api.GroupDirectory) — "
                     + ExplainFixture.LIB_API);
             // the marker is appended to the existing line, not a replacement for it
-            assertThat(text).contains("[score=").endsWith(" — matched on javadoc");
+            assertThat(text).contains("[score=").endsWith(" [matched on javadoc]");
         });
+    }
+
+    @Test
+    void theMarkerItRendersIsTheOneTheNarratorHasARuleFor() {
+        // The rendered evidence string IS call 2's prompt, and the narrator's system prompt names
+        // this marker to tell the model what it means. Both sides are read from production here —
+        // the marker out of a real rendered fact, the rule out of the real prompt — so renaming
+        // one without the other fails rather than silently leaving an undefined token in a prompt.
+        String text = searchFacts(PROSE_ONLY_TERM).get(0);
+        Matcher marker = Pattern.compile("\\[[^\\[\\]]+]$").matcher(text);
+
+        assertThat(marker.find()).as("a trailing bracketed marker in %s", text).isTrue();
+        assertThat(AnswerNarrator.SYSTEM_PROMPT).contains(marker.group());
     }
 
     @Test

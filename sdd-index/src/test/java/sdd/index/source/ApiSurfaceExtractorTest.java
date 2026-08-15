@@ -163,6 +163,38 @@ class ApiSurfaceExtractorTest {
     }
 
     @Test
+    void htmlMarkupInsideTheFirstSentenceIsDroppedRatherThanIndexed() throws Exception {
+        var session = parse("src/main/java/com/acme/Cache.java", """
+                package com.acme;
+                /**
+                 * A <b>write-through</b> cache, see <a href="http://acme/docs">the docs</a>
+                 * for the 5&nbsp;&lt;p&gt; rules.
+                 */
+                public class Cache {}
+                """);
+
+        String javadoc = ApiSurfaceExtractor.extract(session, true).get(0).javadoc();
+
+        // "b", "href" and "http" would answer queries no reader types while diluting the ones
+        // they do; the escaped <p> was written to be read as text, so it survives as text.
+        assertThat(javadoc).isEqualTo("A write-through cache, see the docs for the 5 <p> rules.");
+    }
+
+    @Test
+    void theCapStepsBackRatherThanSplittingASurrogatePair() throws Exception {
+        // an emoji straddling the 400-char boundary: cutting at exactly 400 would store its high
+        // surrogate alone, which is not a character at all
+        String longSentence = "x".repeat(399) + "😀" + " and more text after it.";
+        var session = parse("src/main/java/com/acme/Emoji.java",
+                "package com.acme;\n/** " + longSentence + " */\npublic class Emoji {}\n");
+
+        String javadoc = ApiSurfaceExtractor.extract(session, true).get(0).javadoc();
+
+        assertThat(javadoc).hasSize(399).isEqualTo("x".repeat(399));
+        assertThat(javadoc.chars().anyMatch(c -> Character.isSurrogate((char) c))).isFalse();
+    }
+
+    @Test
     void anOverlongJavadocSentenceIsCappedAt400Characters() throws Exception {
         String longSentence = "Resolves tiers " + "and prices ".repeat(90) + "at checkout.";
         assertThat(longSentence.length()).isGreaterThan(900); // the case the cap exists for
