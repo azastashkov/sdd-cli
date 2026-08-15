@@ -18,6 +18,13 @@ public record SddConfig(
         Path workspace,
         Map<String, ModelEndpoint> models,
         Map<Integer, Path> jdkHomes,
+        /**
+         * Where {@code node} lives, or null to take it from PATH. The direct analogue of
+         * {@code jdkHomes}, and needed for the same reason: these repos pin their Node version with
+         * a {@code .nvmrc}, and under nvm the executable sits somewhere an interactive shell's PATH
+         * knows about but a launcher's or a cron job's does not.
+         */
+        Path nodeHome,
         List<String> excludes,
         Map<String, String> artifactOverrides,
         List<ManualEdge> manualEdges,

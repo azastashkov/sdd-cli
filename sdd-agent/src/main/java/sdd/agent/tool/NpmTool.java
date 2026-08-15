@@ -72,7 +72,8 @@ public final class NpmTool implements BuildTool {
         return allowed;
     }
 
-    static Set<String> scriptsOf(Path repoRoot) {
+    /** The script names this repo defines; used to derive both the allowlist and the defaults. */
+    public static Set<String> scriptsOf(Path repoRoot) {
         Path packageJson = repoRoot.resolve("package.json");
         if (!Files.isRegularFile(packageJson)) {
             return Set.of();

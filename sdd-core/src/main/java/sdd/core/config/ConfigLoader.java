@@ -59,6 +59,9 @@ public final class ConfigLoader {
             }
         }
 
+        Path nodeHome = root.get("node_home") == null
+                ? null : Path.of(str(root.get("node_home"), env, "node_home"));
+
         Object excludesNode = root.get("excludes");
         List<String> excludes;
         if (excludesNode == null) {
@@ -172,7 +175,7 @@ public final class ConfigLoader {
             throw new ConfigException("verification_exclusions must be a mapping, got: " + exclusionsNode);
         }
 
-        return new SddConfig(workspace, Map.copyOf(models), Map.copyOf(jdkHomes),
+        return new SddConfig(workspace, Map.copyOf(models), Map.copyOf(jdkHomes), nodeHome,
                 excludes, Map.copyOf(artifactOverrides), List.copyOf(manualEdges), run,
                 Map.copyOf(verificationExclusions));
     }

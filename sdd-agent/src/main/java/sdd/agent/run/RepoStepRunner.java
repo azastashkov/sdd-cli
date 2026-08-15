@@ -54,7 +54,12 @@ public final class RepoStepRunner {
         // Hoisted (rather than inlined into the Toolbox constructor) so appliedEdits() can be read
         // after the loop finishes — this one instance is reused across every cycle below, so its
         // edits accumulate over the whole attempt regardless of how many times loop.run() is called.
-        FileTools fileTools = new FileTools(new PathJail(step.repoRoot()));
+        // The TypeScript gate is available only where it makes sense and only if node is present;
+        // FileTools fails open when it is absent, and records why.
+        FileTools fileTools = new FileTools(new PathJail(step.repoRoot()),
+                toolchain == sdd.core.toolchain.Toolchain.NPM
+                        ? sdd.core.ts.TsSidecar.create(settings.nodeHome(), java.time.Duration.ofSeconds(30))
+                        : java.util.Optional.empty());
         Toolbox toolbox = new Toolbox(fileTools, build, compactor);
         VerificationRunner verifier = new VerificationRunner(build, compactor);
         AgentLoop loop = new AgentLoop(model, toolbox, settings.budget(), settings.contextSoftCap(),

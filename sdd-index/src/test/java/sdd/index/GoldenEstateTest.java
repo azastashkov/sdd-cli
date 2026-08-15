@@ -138,7 +138,7 @@ class GoldenEstateTest {
                         """)
                 .commit("init");
 
-        SddConfig config = new SddConfig(ws, Map.of(), Map.of(), List.of(), Map.of(), List.of(), RunSettings.defaults(), Map.of());
+        SddConfig config = new SddConfig(ws, Map.of(), Map.of(), null, List.of(), Map.of(), List.of(), RunSettings.defaults(), Map.of());
         String actual;
         try (Database db = Database.open(ws)) {
             IndexService.ExtractFn stubExtractor = repoDir -> {

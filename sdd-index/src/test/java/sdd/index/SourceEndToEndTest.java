@@ -118,7 +118,7 @@ class SourceEndToEndTest {
                         """)
                 .commit("init");
 
-        SddConfig config = new SddConfig(ws, Map.of(), Map.of(), List.of(), Map.of(), List.of(), RunSettings.defaults(), Map.of());
+        SddConfig config = new SddConfig(ws, Map.of(), Map.of(), null, List.of(), Map.of(), List.of(), RunSettings.defaults(), Map.of());
         try (Database db = Database.open(ws)) {
             IndexService service = new IndexService(repoDir -> {
                 String name = repoDir.getFileName().toString();

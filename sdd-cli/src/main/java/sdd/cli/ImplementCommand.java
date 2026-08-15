@@ -20,6 +20,7 @@ import sdd.cli.implement.PlanModel;
 import sdd.cli.implement.PlannedVersions;
 import sdd.cli.implement.PreFlight;
 import sdd.cli.implement.Propagation;
+import sdd.cli.implement.VerificationTasks;
 import sdd.cli.implement.PropagationPlanner;
 import sdd.cli.implement.RepoPropagation;
 import sdd.cli.implement.RepoRun;
@@ -330,26 +331,27 @@ public final class ImplementCommand implements Callable<Integer> {
                 }
                 Function<String, RunnerSettings> settingsFor = repo -> {
                     Path root = activeSteps.get(repo).repoRoot();
+                    sdd.core.toolchain.Toolchain toolchain = sdd.core.toolchain.Toolchain.detect(root);
+                    List<String> rawVerification = activePlan.step(repo)
+                            .map(PlanModel.PlanStep::verification)
+                            .orElse(List.of());
+                    List<String> tasks = VerificationTasks.resolve(toolchain, root, rawVerification,
+                            config.verificationExclusions().getOrDefault(repo, List.of()));
+                    AgentBudget budget = new AgentBudget(config.run().agentTurns(),
+                            AgentBudget.defaults().maxWall(), config.run().agentTokens());
+                    if (toolchain == sdd.core.toolchain.Toolchain.NPM) {
+                        // No JDK, and no substitution flags: npm appends passthrough arguments to
+                        // the end of the whole script string, where they would land on the wrong
+                        // command. Provider substitution for npm is done by overlaying
+                        // node_modules, not by flags.
+                        return RunnerSettings.npm(config.nodeHome(), tasks, gradlePermits, budget);
+                    }
                     Path javaHome = config.jdkHomes()
                             .get(GradleExtractor.jdkMajorFor(GradleExtractor.wrapperVersion(root)));
                     List<String> extraArgs = new ArrayList<>(Propagation.includeBuildArgs(
                             repo, activePlan.edges(), paths));
                     extraArgs.addAll(Propagation.mavenLocalArgs(
                             activePlan.edges(), MavenLocalInit.scriptPath(activeRunDir)));
-                    List<String> rawVerification = activePlan.step(repo)
-                            .map(PlanModel.PlanStep::verification)
-                            .orElse(List.of());
-                    List<String> tasks = new ArrayList<>(rawVerification.isEmpty()
-                            ? List.of("check") : rawVerification);
-                    tasks.retainAll(GradleTool.allowedTasks());   // prose verification entries are
-                                                                   // acceptance-only, not runnable tasks
-                    if (!rawVerification.isEmpty() && tasks.isEmpty()) {
-                        tasks = new ArrayList<>(List.of("check"));   // prose-only list still means
-                                                                      // "verify normally", not "skip"
-                    }
-                    tasks.removeAll(config.verificationExclusions().getOrDefault(repo, List.of()));
-                    AgentBudget budget = new AgentBudget(config.run().agentTurns(),
-                            AgentBudget.defaults().maxWall(), config.run().agentTokens());
                     return RunnerSettings.custom(javaHome, extraArgs, tasks, gradlePermits, budget);
                 };
 
