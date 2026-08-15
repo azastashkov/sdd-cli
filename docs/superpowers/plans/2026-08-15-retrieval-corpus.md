@@ -594,7 +594,7 @@ same untransacted read, one destroyed knowledge base per unlucky upgrade.
 
 *Trigger:* anyone tidying up a magic string, or wiring a second retrieval backend and deriving the
 label from it.
-*Symptom:* `SearchFacts.java:61`'s `"fts_symbol (bm25)"` and `SeedFinder.java:63`'s `"fts"` are
+*Symptom:* `SearchFacts.java:71`'s `"fts_symbol (bm25)"` and `SeedFinder.java:63`'s `"fts"` are
 literals with no single owner. The second is not merely displayed: it flows into `ModelSeeder`'s
 **prompt**, `ImpactAnalysis`'s reason lines and `PlanMdRenderer`'s `plan.md` — the Gate-1 artifact a
 human approves, whose text `sdd approve` hashes into `plan_sha256`. Rewording it therefore changes a

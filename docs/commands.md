@@ -309,7 +309,7 @@ index-status warnings for degraded/failed/stale repos in its closure, via
 key; `ConfigLoader` rejects `retrieval: embeddings` at load time, before it
 could be declared and then silently ignored (`ConfigLoader.java:38,
 rejectUnimplementedRetrieval`). The search section's `[fts_symbol (bm25)]`
-label states what actually answered (`SearchFacts.java:14-20, 61`).
+label states what actually answered (`SearchFacts.java:14-20, 71`).
 
 **Javadoc can make a type findable, never a fact:** the indexer stores the
 first sentence of each type's javadoc (whitespace-collapsed, inline tags
@@ -323,7 +323,7 @@ every identifier column (`bm25(fts_symbol, 10.0, 3.0, 8.0, 2.0, 0.0)`,
 `FtsRetriever.java:82`), it never reaches any other section — `describe`,
 `consumers`, `dependency_path` and `impact` are pure SQL over structural
 tables — and a hit reached *only* through prose is labelled
-`[matched on javadoc]` on its own fact line (`SearchFacts.java:45, 59`).
+`[matched on javadoc]` on its own fact line (`SearchFacts.java:55, 69`).
 
 **If your knowledge base predates javadoc indexing, run `sdd index --force`.**
 The schema upgrade rebuilds the search index but cannot invent javadoc it never
