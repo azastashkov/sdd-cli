@@ -57,6 +57,23 @@ public final class KbEntities {
                 .mapTo(String.class).list());
     }
 
+    /**
+     * {@code "VERB /norm/path"} for every indexed endpoint, {@code ORDER BY} for determinism. A
+     * NULL {@code http_method} renders {@code "ANY"} — the same spelling {@link #resolveEndpoint}
+     * already uses for an unspecified verb, so this is one convention, not two. {@code DISTINCT}
+     * because two repos can expose the same verb+path shape and this is a name vocabulary, not a
+     * per-repo listing — a duplicate label would just be prompt noise.
+     */
+    public static List<String> endpointLabels(Jdbi jdbi) {
+        return jdbi.withHandle(h -> h.createQuery("""
+                        SELECT DISTINCT http_method, norm_path FROM rest_endpoint
+                        WHERE norm_path IS NOT NULL ORDER BY norm_path, http_method""")
+                .mapToMap().list()).stream()
+                .map(row -> (row.get("http_method") == null ? "ANY" : String.valueOf(row.get("http_method")))
+                        + " " + row.get("norm_path"))
+                .toList();
+    }
+
     private static List<EntityMatch> resolveRepo(Jdbi jdbi, String value) {
         return jdbi.withHandle(h -> h.createQuery("SELECT name FROM repo WHERE name = :n")
                 .bind("n", value).mapTo(String.class).list()).stream()

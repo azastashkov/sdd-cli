@@ -7,24 +7,31 @@ import sdd.core.db.Database;
 import sdd.core.kb.EntityKind;
 import sdd.core.llm.ChatMessage;
 import sdd.core.llm.ChatModel;
+import sdd.core.llm.ChatRequest;
 import sdd.core.llm.ChatResponse;
 import sdd.core.llm.ModelException;
 import sdd.core.llm.Usage;
+import sdd.core.retrieve.FtsRetriever;
+import sdd.core.retrieve.FtsSymbolWriter;
+import sdd.core.retrieve.Retriever;
 import sdd.core.testing.ScriptedChatModel;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class QuestionInterpreterTest {
     @TempDir Path ws;
     private Database db;
+    private Retriever retriever;
 
     @BeforeEach
     void seed() {
         db = Database.open(ws);
         ExplainFixture.seed(db.jdbi());
+        retriever = new FtsRetriever(db.jdbi());
     }
 
     private static ChatResponse response(String content, String finish) {
@@ -33,7 +40,12 @@ class QuestionInterpreterTest {
 
     private RetrievalRequest interpret(String question, String content, String finish) {
         ScriptedChatModel model = new ScriptedChatModel(List.of(response(content, finish)));
-        return QuestionInterpreter.interpret(db.jdbi(), question, model, "m", 512);
+        return QuestionInterpreter.interpret(db.jdbi(), retriever, question, model, "m", 512);
+    }
+
+    private static String userMessageOf(ChatRequest request) {
+        return request.messages().stream()
+                .filter(m -> "user".equals(m.role())).findFirst().orElseThrow().content();
     }
 
     // --- each intent parses -------------------------------------------------------------
@@ -237,7 +249,7 @@ class QuestionInterpreterTest {
         ChatModel refusing = req -> {
             throw new ModelException("connection refused", 0);
         };
-        RetrievalRequest r = QuestionInterpreter.interpret(db.jdbi(), "what is lib-core", refusing, "m", 512);
+        RetrievalRequest r = QuestionInterpreter.interpret(db.jdbi(), retriever, "what is lib-core", refusing, "m", 512);
 
         assertThat(r.modelUnavailable()).isTrue();
         assertThat(r.notes()).anySatisfy(n -> assertThat(n).contains("interpreter unavailable")
@@ -285,7 +297,7 @@ class QuestionInterpreterTest {
         ChatModel refusing = req -> {
             throw new ModelException("boom", 0);
         };
-        String modelError = QuestionInterpreter.interpret(db.jdbi(), "q", refusing, "m", 512).notes().get(0);
+        String modelError = QuestionInterpreter.interpret(db.jdbi(), retriever, "q", refusing, "m", 512).notes().get(0);
         String truncated = interpret("q", "{", "length").notes().get(0);
         String nullContent = interpret("q", null, "stop").notes().get(0);
         String nonJson = interpret("q", "garbage", "stop").notes().get(0);
@@ -357,7 +369,7 @@ class QuestionInterpreterTest {
         ScriptedChatModel model = new ScriptedChatModel(List.of(response("""
                 {"intent":"search","restatement":"?","entities":[],"search_terms":[]}""", "stop")));
 
-        QuestionInterpreter.interpret(db.jdbi(), "what is lib-core used for", model, "m", 512);
+        QuestionInterpreter.interpret(db.jdbi(), retriever, "what is lib-core used for", model, "m", 512);
 
         assertThat(model.requests()).singleElement().satisfies(req -> {
             assertThat(req.messages()).anySatisfy(m ->
@@ -373,7 +385,7 @@ class QuestionInterpreterTest {
         ScriptedChatModel model = new ScriptedChatModel(List.of(response("""
                 {"intent":"search","restatement":"?","entities":[],"search_terms":[]}""", "stop")));
 
-        QuestionInterpreter.interpret(db.jdbi(), "what is going on", model, "m", 512);
+        QuestionInterpreter.interpret(db.jdbi(), retriever, "what is going on", model, "m", 512);
 
         assertThat(model.requests()).singleElement().satisfies(req ->
                 assertThat(req.messages()).anySatisfy(m -> assertThat(m.content())
@@ -391,9 +403,146 @@ class QuestionInterpreterTest {
         ScriptedChatModel model = new ScriptedChatModel(List.of(response("""
                 {"intent":"search","restatement":"?","entities":[],"search_terms":[]}""", "stop")));
 
-        QuestionInterpreter.interpret(db.jdbi(), "what is going on", model, "m", 512);
+        QuestionInterpreter.interpret(db.jdbi(), retriever, "what is going on", model, "m", 512);
 
         assertThat(model.requests()).singleElement().satisfies(req ->
                 assertThat(req.messages()).anySatisfy(m -> assertThat(m.content()).contains("more)")));
+    }
+
+    // --- question-scoped vocabulary: endpoints and FTS-backed symbol candidates --------------
+
+    /** Seeds a class discoverable only through the FTS candidate vocabulary, never through a
+     *  literal mention -- {@code fts_symbol} plus the {@code java_type} row {@link
+     *  sdd.core.kb.KbEntities#resolveClass} actually resolves against. */
+    private void seedTierResolver() {
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO java_type(module_id, fqcn, kind) VALUES (2,'com.acme.pricing.TierResolver','CLASS')");
+            FtsSymbolWriter.insert(h, 2, "TierResolver", "com.acme.pricing.TierResolver");
+        });
+    }
+
+    @Test
+    void callOneUserMessageContainsFtsCandidatesForTheQuestion() {
+        seedTierResolver();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(response("""
+                {"intent":"search","restatement":"?","entities":[],"search_terms":[]}""", "stop")));
+
+        // "TierResolver" never appears verbatim -- only the constituent word "tier" does.
+        QuestionInterpreter.interpret(db.jdbi(), retriever, "what handles tier resolution logic", model, "m", 512);
+
+        assertThat(model.requests()).singleElement().satisfies(req ->
+                assertThat(userMessageOf(req)).contains("TierResolver (com.acme.pricing.TierResolver)"));
+    }
+
+    @Test
+    void callOneUserMessageListsKnownEndpointsWithAnyForNullHttpMethod() {
+        db.jdbi().useHandle(h -> h.execute(
+                "INSERT INTO rest_endpoint(module_id, class_fqcn, method_name, http_method, path_template, norm_path) "
+                        + "VALUES (4,'HealthController','ping',NULL,'/health','/health')"));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(response("""
+                {"intent":"search","restatement":"?","entities":[],"search_terms":[]}""", "stop")));
+
+        QuestionInterpreter.interpret(db.jdbi(), retriever, "what is going on", model, "m", 512);
+
+        assertThat(model.requests()).singleElement().satisfies(req ->
+                assertThat(userMessageOf(req)).contains("Known endpoints:")
+                        .contains("GET /orders/{}")   // the fixture's http_method IS 'GET'
+                        .contains("ANY /health"));     // http_method IS NULL renders ANY
+    }
+
+    // --- the regression this feature exists to fix -------------------------------------------
+
+    @Test
+    void descriptiveQuestionResolvesViaCandidateVocabularyInsteadOfDowngradingToSearch() {
+        seedTierResolver();
+        // A stand-in for a real model: it can only name TierResolver exactly once the prompt has
+        // actually told it the name exists (the candidate-symbol vocabulary this feature adds).
+        // Without that, it can only guess a paraphrase -- exactly what produced the live defect
+        // ("what consumes the tier resolver API?"): KbEntities.resolveClass cannot match "tier
+        // resolver API", so the entity drops and CONSUMERS has nothing left to downgrade to but
+        // SEARCH. This is genuinely conditioned on the prompt content, not a hardcoded answer.
+        ChatModel conditionallyInformed = req -> {
+            String value = userMessageOf(req).contains("TierResolver") ? "TierResolver" : "tier resolver API";
+            return response("""
+                    {"intent":"consumers","restatement":"What consumes the tier resolver API?",
+                     "entities":[{"kind":"class","value":"%s"}],"search_terms":["tier resolver"]}"""
+                    .formatted(value), "stop");
+        };
+
+        RetrievalRequest r = QuestionInterpreter.interpret(db.jdbi(), retriever,
+                "what consumes the tier resolver API?", conditionallyInformed, "m", 512);
+
+        assertThat(r.intent()).isEqualTo(Intent.CONSUMERS);
+        assertThat(r.entities()).containsExactly(
+                new EntityRef(EntityKind.CLASS, "TierResolver", false));
+        assertThat(r.notes()).isEmpty();
+    }
+
+    @Test
+    void determinismSameKbAndQuestionProduceByteIdenticalUserMessages() {
+        seedTierResolver();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                response("""
+                        {"intent":"search","restatement":"?","entities":[],"search_terms":[]}""", "stop"),
+                response("""
+                        {"intent":"search","restatement":"?","entities":[],"search_terms":[]}""", "stop")));
+
+        QuestionInterpreter.interpret(db.jdbi(), retriever, "what handles tier resolution", model, "m", 512);
+        QuestionInterpreter.interpret(db.jdbi(), retriever, "what handles tier resolution", model, "m", 512);
+
+        List<ChatRequest> requests = model.requests();
+        assertThat(requests).hasSize(2);
+        assertThat(userMessageOf(requests.get(1))).isEqualTo(userMessageOf(requests.get(0)));
+    }
+
+    @Test
+    void emptyFtsResultsRenderNoneAndDoNotCrash() {
+        ScriptedChatModel model = new ScriptedChatModel(List.of(response("""
+                {"intent":"search","restatement":"?","entities":[],"search_terms":[]}""", "stop")));
+
+        // No token in this question matches either fixture symbol (PriceApi, OrdersController).
+        QuestionInterpreter.interpret(db.jdbi(), retriever, "zzz-nonexistent-term-xyz-unmatched", model, "m", 512);
+
+        assertThat(model.requests()).singleElement().satisfies(req ->
+                assertThat(userMessageOf(req))
+                        .contains("only if the question is actually about it): (none)"));
+    }
+
+    @Test
+    void candidateSymbolListIsCappedAtSymbolCandidates() {
+        db.jdbi().useHandle(h -> {
+            for (int i = 0; i < 25; i++) {
+                String fqcn = "com.acme.pricing.TierResolver" + i;
+                h.execute("INSERT INTO java_type(module_id, fqcn, kind) VALUES (2,'" + fqcn + "','CLASS')");
+                FtsSymbolWriter.insert(h, 2, "TierResolver" + i, fqcn);
+            }
+        });
+        ScriptedChatModel model = new ScriptedChatModel(List.of(response("""
+                {"intent":"search","restatement":"?","entities":[],"search_terms":[]}""", "stop")));
+
+        QuestionInterpreter.interpret(db.jdbi(), retriever, "tier resolver lookup", model, "m", 512);
+
+        String content = userMessageOf(model.requests().get(0));
+        long candidateCount = Pattern.compile("com\\.acme\\.pricing\\.TierResolver\\d+")
+                .matcher(content).results().count();
+        assertThat(candidateCount).isEqualTo(20);   // SYMBOL_CANDIDATES, of 25 seeded matches
+    }
+
+    @Test
+    void candidateEntityThatStillDoesNotResolveIsStillDroppedWithMissReason() {
+        // fts_symbol alone is not resolution -- no java_type row means KbEntities.resolveClass
+        // still finds nothing. The vocabulary is an aid to spelling, not a bypass around resolve().
+        db.jdbi().useHandle(h -> FtsSymbolWriter.insert(h, 2, "GhostType", "com.acme.ghost.GhostType"));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(response("""
+                {"intent":"describe","restatement":"?",
+                 "entities":[{"kind":"class","value":"GhostType"}],"search_terms":[]}""", "stop")));
+
+        RetrievalRequest r = QuestionInterpreter.interpret(db.jdbi(), retriever,
+                "what is the ghost type here", model, "m", 512);
+
+        assertThat(r.entities()).isEmpty();
+        assertThat(r.notes()).anySatisfy(n -> assertThat(n).contains("GhostType")
+                .contains(sdd.core.kb.KbEntities.missReason(EntityKind.CLASS)));
+        assertThat(r.intent()).isEqualTo(Intent.SEARCH);
     }
 }
