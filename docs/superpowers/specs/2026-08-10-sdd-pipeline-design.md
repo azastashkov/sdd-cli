@@ -304,3 +304,62 @@ Three rules keep the command honest, each deterministic rather than left to a pr
 Deliberately out of scope: conversational follow-up (each invocation is independent), any git
 freshness check against the working tree, and fixing `SddConfig.retrieval` being dead config — the
 search section is instead labelled with the backend that actually answered.
+
+## Amendment (2026-08-16): npm/TypeScript repos, and the cross-language REST join
+
+The Context above says "Java Spring services + shared Java libraries, Gradle
+everywhere". That is no longer true of the estate: the micro-frontends moved
+into their own TypeScript/npm/Vite repos, and half the estate now builds with
+npm. This amendment records what changed and, more importantly, what was
+refused.
+
+**Build systems are detected, not assumed.** `sdd.index.extract.BuildExtractor`
+reads a repo into a neutral `BuildModel`; `GradleModel` stays exactly as it was,
+because it is the deserialization shape of the `sdd-init.gradle` JSON contract.
+Gradle is offered every repo first, so a Spring service shipping a
+`package.json` for frontend assets stays a Gradle repo. A repo no extractor
+claims is `UNSUPPORTED`, which is a fact about the workspace, rather than
+`FAILED`, which is a problem to investigate.
+
+**npm coordinates are `("npm", <full package name>)`.** Splitting `@scope/pkg`
+into group and name was the obvious alternative and is wrong: an unscoped
+package like `react` would carry an empty group, and `ArtifactRef.parse`
+requires both halves of a `grp:name` reference to be non-empty, so those
+packages would be unaddressable in specs and in `sdd explain`.
+
+**Version grammar is per-ecosystem.** `ModeClassifier` encodes Maven rules,
+under which `^0.2.1` reads as PINNED — the exact opposite of what it means.
+Every internal specifier in this estate is a caret range, so sharing one
+classifier would have mislabelled every npm edge and reported nothing. Both
+classification sites dispatch on the consuming module's language.
+
+**TypeScript is read by the TypeScript compiler**, run under `node`, with the
+compiler shipped as an ordinary jar dependency. Two rules govern it: only real
+syntax counts, and anything unresolvable is marked rather than guessed. The
+first is not hypothetical — the SDK documents `/api/streams` in a JSDoc block
+and does not call it, so a text scraper invents a caller that does not exist.
+
+**TypeScript call sites go into `rest_client`**, the table the Spring extractor
+already fills. `RestMatcher`, `ContractEdges`, the impact closure and every
+explain fact read that table and none of them mention a language, so a
+TypeScript caller became visible everywhere a Java one is without new query
+code.
+
+**No cross-language edge is HIGH confidence.** A browser talks to one origin
+and an ingress fans it out, so which service serves a path is genuinely absent
+from TypeScript source. MEDIUM — exactly one endpoint in the estate matches
+this verb and path — is the strongest claim the evidence supports. HIGH
+requires a human, via `manual_edges`.
+
+**A bug this exposed, fixed independently:** `Closure.expand` drained its
+build-edge BFS and only then applied contract edges, without re-enqueueing what
+they added — so a repo reached through a REST or Kafka contract never had its
+own consumers expanded. Pre-existing and equally wrong for Java; its regression
+test is a Java-only estate for that reason.
+
+**Deliberately still open.** TypeScript API surfaces are not yet indexed, so
+there is no `ts-api` contract kind and no TypeScript symbol search; npm
+provider substitution during `sdd implement` (the analogue of `--include-build`
+and `publishToMavenLocal`) is not implemented, so a multi-repo npm plan cannot
+yet build a consumer against an unpublished provider; and `sdd graph` renders a
+mixed repo as `unknown` because `MermaidGraph` has no `mixed` class.

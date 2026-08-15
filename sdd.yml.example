@@ -60,7 +60,8 @@ run:
   agent_turns: 100        # per-attempt turn cap (default 40)
   agent_tokens: 6000000   # per-attempt token cap (default 1500000)
   token_budget: 30000000  # whole-run cap; the run pauses at exit 3 when it is hit
-  gradle_workers: 2       # concurrent gradle subprocesses
+  gradle_workers: 2       # concurrent build subprocesses, gradle and npm alike — the resource
+                          # being protected is the machine, so one pool covers both
   model_concurrency: 2    # concurrent model calls
 
 # Verification tasks to skip per repo — the report marks these "not locally verified"
@@ -73,5 +74,12 @@ run:
 #   11: /Library/Java/JavaVirtualMachines/temurin-11.jdk/Contents/Home
 #   17: /Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home
 #   21: /Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home
+
+# Where node lives, for reading TypeScript and running npm scripts. The npm analogue of
+# jdk_homes, and needed for the same reason: repos pin their node version with .nvmrc, and under
+# nvm the executable sits somewhere an interactive shell's PATH knows about but a launcher's does
+# not. Omit to take node from PATH. A node_home that does not exist is an error rather than a
+# quiet fallback, so a typo here cannot silently change which compiler reads the estate.
+# node_home: /Users/me/.nvm/versions/node/v22.11.0
 
 excludes: []              # workspace directories to skip

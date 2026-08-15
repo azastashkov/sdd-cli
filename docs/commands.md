@@ -67,8 +67,9 @@ same as every other command that opens the database.
 
 **What it does:** scans every git repo directly under the workspace
 (`WorkspaceScanner.scan`: a directory with a `.git`, not excluded by
-`sdd.yml`'s `excludes:`), extracts its Gradle/Spring facts into
-`.sdd/index.db`, links internal dependencies, matches REST/Kafka edges, and
+`sdd.yml`'s `excludes:`), works out which build system owns each one, extracts
+its facts into `.sdd/index.db`, links internal dependencies, matches REST/Kafka
+edges, and
 (unless skipped) generates a repo-card summary per repo with the `coder`
 model. (`IndexCommand.java:23-116`)
 
@@ -90,6 +91,27 @@ model. (`IndexCommand.java:23-116`)
 **Writes:** `.sdd/index.db` (schema tables for repos, modules, deps, REST
 endpoints/clients, Kafka roles, repo cards) and a curation report path printed
 at the end (`service.lastReportPath()`, `IndexCommand.java:108`).
+
+**Build systems.** A repo is offered to each extractor in turn and the first
+that claims it wins; Gradle is asked first, so a Spring service that ships a
+`package.json` to build its frontend assets stays a Gradle repo. A repo that
+neither claims is recorded `UNSUPPORTED` — distinct from `FAILED`, which means
+"we tried to read this build and could not".
+
+- **Gradle** — the Tooling API, with a static parse of the build files as the
+  degraded fallback.
+- **npm** — `package.json`, its `workspaces` globs, and `package-lock.json`
+  when present. No subprocess, no network and no `node`: everything needed is
+  declared in files the repo checks in. `node_modules` is never read, because
+  it records what someone installed rather than what the repo declares.
+
+**TypeScript sources** are read by the TypeScript compiler itself, run under
+`node`. Without `node` a repo's dependency graph still indexes fully and only
+its `parse_status` is `FAILED` — and because a failed parse is never skipped as
+"unchanged", the repo re-reads itself on the next run once `node` appears.
+Only real syntax counts: a path named in a doc comment is not a call site, so
+`/api/streams` is recorded from the repo that calls it and not from the one
+that merely documents it.
 
 ## `sdd plan <ref>`
 

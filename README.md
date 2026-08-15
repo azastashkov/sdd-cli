@@ -1,7 +1,8 @@
 # sdd — Spec-Driven Development pipeline for multi-repo estates
 
 `sdd` turns a written spec into coordinated, human-gated code changes across a
-multi-repo Gradle/Spring estate: a human writes the spec, `sdd` plans the
+multi-repo estate of Gradle/Spring services and npm/TypeScript packages: a
+human writes the spec, `sdd` plans the
 change across every affected repo, an agent loop implements it repo by repo,
 and a second human gate reviews and decides on the result before anything
 ships. Design: `docs/superpowers/specs/2026-08-10-sdd-pipeline-design.md`.
@@ -10,7 +11,10 @@ ships. Design: `docs/superpowers/specs/2026-08-10-sdd-pipeline-design.md`.
 
 `sdd` extracts what the estate actually contains — modules, dependencies,
 REST endpoints and clients, Kafka roles — with real parsers into a SQLite
-knowledge base (`.sdd/index.db`), not with a model. Models are used only
+knowledge base (`.sdd/index.db`), not with a model. Both ecosystems land in
+the same tables, so a question like "who calls `POST /api/orders`" is answered
+with the Java services AND the browser SDK that call it, and a change to an
+endpoint pulls the front ends that depend on it into its blast radius. Models are used only
 where a parser cannot substitute: writing a short repo-card summary, drafting
 a plan narrative and its open questions, and doing the per-repo coding during
 implementation. The knowledge base — never a model's memory of the estate —
@@ -217,5 +221,9 @@ codes, and what it writes to disk, verified line-by-line against the source.
 ## Development
 
 - Java 21, Gradle. `./gradlew build` runs all tests.
+- Reading TypeScript needs `node` on PATH (or `node_home` in `sdd.yml`). Tests
+  that require it are tagged `node-it` and skip themselves when it is absent;
+  everything else, including indexing an npm repo's dependency graph, works
+  without it.
 - Modules: `sdd-core` (config, db, model client, retrieval), `sdd-index`,
   `sdd-plan`, `sdd-agent`, `sdd-cli`.
