@@ -220,7 +220,7 @@ thing that creates a KB this command is about to report as missing.
 
 The string the narrator is shown and the printed `## Evidence` section are
 the same value: `EvidenceRenderer.render(evidence)` is called once to build
-the call-2 user message (`AnswerNarrator.java:52`) and again, unmodified, to
+the call-2 user message (`AnswerNarrator.java:56`) and again, unmodified, to
 print the report (`ExplainReport.java:80`) — an answer can only be grounded
 in facts its reader can also see.
 
@@ -268,7 +268,7 @@ rendered report is written there instead of printed
 - **Call 2 — narrate** (`AnswerNarrator.narrate`, `ExplainCommand.java:112-113`):
   the model is shown the rendered evidence string — and only that string —
   and told to answer from it alone, never naming a repo, topic, endpoint or
-  class absent from it (`AnswerNarrator.java:26-46`). Skipped entirely when
+  class absent from it (`AnswerNarrator.java:26-50`). Skipped entirely when
   the fetch found zero facts: a narrator handed nothing is exactly where
   invention happens, so there is no call 2 to make in that case
   (`ExplainCommand.java:108-125`).
@@ -303,14 +303,56 @@ index-status warnings for degraded/failed/stale repos in its closure, via
 `Closure.expand`'s own status check (`ImpactFacts.java:79-82`,
 `KbStatus.java:19-39`).
 
-**`retrieval: embeddings` in `sdd.yml` is accepted but not honored by this
-command:** `ConfigLoader` validates `retrieval` as `fts` or `embeddings`
-(`ConfigLoader.java:38-41, 56-58`), but `explain` always constructs an
-`FtsRetriever` regardless of that setting (`ExplainCommand.java:103`) — no
-`EmbeddingsRetriever` exists and nothing reads `SddConfig.retrieval`
-anywhere in the codebase. The search section's `[fts_symbol (bm25)]` label
-states what actually answered rather than silently implying the configured
-backend ran (`SearchFacts.java:14-17, 43`).
+**FTS is the only retrieval backend:** `explain` always constructs an
+`FtsRetriever` (`ExplainCommand.java:101`) — no `EmbeddingsRetriever` exists.
+`sdd.yml`'s `retrieval` key accepts only `fts` (the default) or an absent
+key; `ConfigLoader` rejects `retrieval: embeddings` at load time, before it
+could be declared and then silently ignored (`ConfigLoader.java:38,
+rejectUnimplementedRetrieval`). The search section's `[fts_symbol (bm25)]`
+label states what actually answered (`SearchFacts.java:14-20, 71`).
+
+**Javadoc can make a type findable, never a fact:** the indexer stores the
+first sentence of each type's javadoc (whitespace-collapsed, inline tags
+flattened, capped at 400 characters) in `java_type.javadoc` and in
+`fts_symbol`'s `doc` column (`ApiSurfaceExtractor.javadocSummary`,
+`SourcePersistence.insertType`), so a question whose wording only appears in
+prose — "what closes the ordering gap?" — can still find the type that
+answers it. That text is unverified: nothing here checks a doc comment
+against the code it sits above. So it is weighted at the floor, well below
+every identifier column (`bm25(fts_symbol, 10.0, 3.0, 8.0, 2.0, 0.0)`,
+`FtsRetriever.java:82`), it never reaches any other section — `describe`,
+`consumers`, `dependency_path` and `impact` are pure SQL over structural
+tables — and a hit reached *only* through prose is labelled
+`[matched on javadoc]` on its own fact line (`SearchFacts.java:55, 69`).
+
+**If your knowledge base predates javadoc indexing, run `sdd index --force`.**
+The schema upgrade rebuilds the search index but cannot invent javadoc it never
+stored, so a workspace carried up from an older version searches identifiers
+only. A plain `sdd index` will *not* fix it: for a repo that last indexed
+successfully, it skips whenever the git fingerprint is unchanged, and upgrading
+the schema changes no repo's fingerprint, so on a healthy workspace it prints
+`(unchanged, skipped)` and exits 0 having done nothing
+(`IndexService.java:176-183`, `IndexCommand.java:34-39`).
+
+Neither the weighting nor the label is a promise about rank. The weighting is
+per-term: bm25 scores a whole row across term frequency, document frequency
+and field length, so a type whose javadoc matches most of the question does
+rank above one whose name matches a single word of it. And the label reports
+*presence*, not rank — `docOnly` fires only when javadoc was the sole column
+that matched, so a type that javadoc alone lifted to the top still renders
+unlabelled the moment any query word also hits its package fragment. Both are
+measured, not hypothetical: asked where the ordering gap between an admin
+write and the watcher is, `com.trading.admin.GroupDirectory` climbs from rank
+42 to rank 1 entirely on its javadoc and carries no marker at all, because the
+question says "admin" and so does its package
+(`docs/superpowers/plans/2026-08-15-retrieval-corpus.md`, carried item 13).
+So a stale comment *can* reach a reader looking like a code-derived hit. What
+stops it becoming a claim is neither the ranking nor the label but the
+narrator's rule, given beside its `repo_card` one — offer such a hit as a
+candidate whose documentation matches, not as evidence of behaviour
+(`AnswerNarrator.java:46-49`) — and the fact firewall behind it.
+Member-level javadoc is not indexed, and doc-only hits are deliberately not
+marked in `plan.md`'s seed list.
 
 ## `sdd implement <spec>.plan.json`
 

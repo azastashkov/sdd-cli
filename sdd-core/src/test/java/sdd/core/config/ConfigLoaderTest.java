@@ -38,7 +38,6 @@ class ConfigLoaderTest {
     void loadsMinimalConfigWithDefaults() throws Exception {
         SddConfig c = ConfigLoader.load(write(MINIMAL), ENV);
         assertThat(c.workspace()).isEqualTo(ws);
-        assertThat(c.retrieval()).isEqualTo("fts");
         assertThat(c.models()).containsOnlyKeys("planner", "coder");
         ModelEndpoint planner = c.models().get("planner");
         assertThat(planner.apiKey()).isEqualTo("sk-test-123");
@@ -55,7 +54,6 @@ class ConfigLoaderTest {
     @Test
     void parsesOptionalSections() throws Exception {
         SddConfig c = ConfigLoader.load(write("""
-                retrieval: embeddings
                 models:
                   planner:
                     base_url: https://api.deepseek.com/v1
@@ -65,24 +63,33 @@ class ConfigLoaderTest {
                   coder:
                     base_url: http://127.0.0.1:8080/v1
                     model: mlx-community/Qwen3.6-35B-A3B-8bit
-                  embeddings:
-                    base_url: http://127.0.0.1:8080/v1
-                    model: some-embedding-model
                 jdk_homes:
                   17: /opt/jdk17
                   21: /opt/jdk21
                 excludes: [sandbox-repo]
                 """), ENV);
-        assertThat(c.retrieval()).isEqualTo("embeddings");
         assertThat(c.jdkHomes()).containsEntry(17, Path.of("/opt/jdk17"));
         assertThat(c.excludes()).containsExactly("sandbox-repo");
     }
 
     @Test
-    void embeddingsRetrievalRequiresEmbeddingsEndpoint() throws Exception {
+    void embeddingsRetrievalIsRejectedAsNotImplemented() throws Exception {
         assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + "retrieval: embeddings\n"), ENV))
                 .isInstanceOf(ConfigException.class)
-                .hasMessageContaining("embeddings");
+                .hasMessageContaining("not implemented")
+                .hasMessageContaining("retrieval: fts");
+
+        // Pin the old escape hatch shut: declaring a valid models.embeddings endpoint alongside
+        // retrieval: embeddings must still fail. This is the single most likely future regression —
+        // someone "fixing" the rejection by re-adding the requires-an-endpoint check it replaced.
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                  embeddings:
+                    base_url: http://127.0.0.1:8080/v1
+                    model: some-embedding-model
+                retrieval: embeddings
+                """), ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("not implemented");
     }
 
     @Test
@@ -169,7 +176,14 @@ class ConfigLoaderTest {
     void invalidRetrievalValueFails() throws Exception {
         assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + "retrieval: vector\n"), ENV))
                 .isInstanceOf(ConfigException.class)
-                .hasMessageContaining("retrieval");
+                .hasMessageContaining("retrieval")
+                .hasMessageNotContaining("embeddings");
+    }
+
+    @Test
+    void explicitFtsRetrievalStillLoads() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL + "retrieval: fts\n"), ENV);
+        assertThat(c.models()).containsOnlyKeys("planner", "coder");
     }
 
     @Test

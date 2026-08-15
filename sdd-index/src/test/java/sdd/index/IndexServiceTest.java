@@ -27,7 +27,7 @@ class IndexServiceTest {
     @TempDir Path ws;
 
     private SddConfig config() {
-        return new SddConfig(ws, "fts", Map.of(), Map.of(), List.of(), Map.of(), List.of(), RunSettings.defaults(), Map.of());
+        return new SddConfig(ws, Map.of(), Map.of(), List.of(), Map.of(), List.of(), RunSettings.defaults(), Map.of());
     }
 
     private static GradleModel.Extract oneModule(String name) {

@@ -37,7 +37,7 @@ class SeedFinderTest {
             h.execute("INSERT INTO kafka_role(module_id, topic_id, role) VALUES (1,1,'CONSUMER')");
             h.execute("INSERT INTO java_type(module_id, fqcn, kind) VALUES (3,'com.acme.pricing.LoyaltyTier','CLASS')");
             h.execute("INSERT INTO artifact(grp, name, module_id) VALUES ('com.acme','lib-core',3)");
-            FtsSymbolWriter.insert(h, 3L, "LoyaltyTier", "com.acme.pricing.LoyaltyTier");
+            FtsSymbolWriter.insert(h, 3L, "LoyaltyTier", "com.acme.pricing.LoyaltyTier", "");
         });
     }
 

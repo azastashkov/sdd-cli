@@ -11,10 +11,13 @@ import java.util.Locale;
 
 /**
  * {@code search} intent: a full-text fallback over {@code fts_symbol} for when no entity named in
- * the question resolved. Labelled {@code "fts_symbol (bm25)"} rather than a generic "search" so
- * the output is honest about which backend actually answered — {@code SddConfig.retrieval} is
- * validated but read nowhere (a phase-6 known-carried item), so an {@code embeddings}-configured
- * estate silently gets FTS results too, and this label is the one place that is not hidden.
+ * the question resolved. Labelled {@code "fts_symbol (bm25)"} rather than a generic "search" so the
+ * output names the backend that actually answered instead of implying a choice was made among
+ * several. FTS is the only backend there is: {@code ConfigLoader} rejects {@code retrieval:
+ * embeddings} at load time rather than accepting the setting and quietly serving FTS anyway. So the
+ * label is not disambiguating two live options today — it is what stops this section needing to be
+ * renamed on the day a second one lands, and it reaches the narrator's prompt verbatim, so it must
+ * not be reworded casually.
  */
 final class SearchFacts {
     /**
@@ -27,6 +30,30 @@ final class SearchFacts {
      */
     private static final int FETCH_LIMIT = 200;
 
+    /**
+     * Appended to a hit the query reached only through the type's javadoc prose. Javadoc is
+     * unverified text that nothing in this pipeline checks against the code, so a doc-only hit has
+     * to be distinguishable from one whose name matched — otherwise a stale doc comment reaches the
+     * reader looking exactly like code-derived evidence.
+     *
+     * <p>Its <em>absence</em> asserts nothing, and the section must not be read as though it did.
+     * {@link Hit#docOnly()} is presence provenance rather than rank provenance: it fires only when
+     * prose was the sole column that matched, so a hit that prose alone lifted to the top of this
+     * list renders unmarked as soon as a query word also reaches its package fragment — measured, on
+     * this estate (carried item 13 of {@code
+     * docs/superpowers/plans/2026-08-15-retrieval-corpus.md}, disclosed to readers in {@code
+     * docs/commands.md}). A stale comment can therefore still reach a reader here looking
+     * code-derived; what stops it becoming a claim is the narrator's rule about this marker and the
+     * fact firewall behind it, not this line.
+     *
+     * <p>Bracketed like the {@code [score=…]} it follows, rather than set off with the " — " that
+     * already separates the fqcn from the repo on the same line. This string is also, verbatim, a
+     * model prompt (see {@code AnswerNarrator}), and a third " — " clause reads as a peer of the
+     * repo rather than as a qualifier on the hit; the bracket idiom is already established on this
+     * line as metadata about the hit.
+     */
+    private static final String DOC_ONLY_MARKER = " [matched on javadoc]";
+
     private SearchFacts() {
     }
 
@@ -38,7 +65,8 @@ final class SearchFacts {
             String repo = KbEntities.repoOfModule(jdbi, hit.moduleId());
             facts.add(new Fact(hit.identifier() + " (" + hit.fqcn() + ") — "
                     + (repo != null ? repo : "unknown repo")
-                    + String.format(Locale.ROOT, " [score=%.4f]", hit.score())));
+                    + String.format(Locale.ROOT, " [score=%.4f]", hit.score())
+                    + (hit.docOnly() ? DOC_ONLY_MARKER : "")));
         }
         return List.of(Section.capped("Search hits", "fts_symbol (bm25)", facts, Section.MEMBER_LIMIT));
     }

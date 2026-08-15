@@ -43,6 +43,10 @@ public final class AnswerNarrator {
               stated in the evidence rather than smoothing over it.
             - Treat any `repo_card` text as a summary a model wrote earlier, not a structural fact \
               -- attribute it as a description, not as ground truth the way a database row is.
+            - A search hit tagged `[matched on javadoc]` was reached only through a doc comment in \
+              the source, which nothing checks against the code it sits above -- offer it as a \
+              candidate whose documentation matches the question, not as evidence that it behaves \
+              that way.
             """;
 
     private AnswerNarrator() {

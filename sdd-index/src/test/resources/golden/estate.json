@@ -130,66 +130,79 @@
     "src_file" : "src/main/java/com/acme/orders/OrderService.java"
   } ],
   "fts_symbol" : [ {
+    "doc" : "",
     "fqcn" : "com.acme.orders.BillingClient",
     "identifier" : "BillingClient",
     "module_id" : 2,
     "words" : "billing client"
   }, {
+    "doc" : "",
     "fqcn" : "com.acme.orders.Events",
     "identifier" : "Events",
     "module_id" : 2,
     "words" : "events"
   }, {
+    "doc" : "",
     "fqcn" : "com.acme.orders.OrderController",
     "identifier" : "OrderController",
     "module_id" : 2,
     "words" : "order controller"
   }, {
+    "doc" : "Builds an order from a Map<String,String> of request fields.",
     "fqcn" : "com.acme.orders.OrderHelper",
     "identifier" : "OrderHelper",
     "module_id" : 2,
     "words" : "order helper"
   }, {
+    "doc" : "",
     "fqcn" : "com.acme.orders.OrderService",
     "identifier" : "OrderService",
     "module_id" : 2,
     "words" : "order service"
   }, {
+    "doc" : "",
     "fqcn" : "com.acme.pricing.PriceCalculator",
     "identifier" : "PriceCalculator",
     "module_id" : 1,
     "words" : "price calculator"
   }, {
+    "doc" : "",
     "fqcn" : "com.acme.orders.BillingClient",
     "identifier" : "charge",
     "module_id" : 2,
     "words" : "charge"
   }, {
+    "doc" : "",
     "fqcn" : "com.acme.orders.OrderController",
     "identifier" : "get",
     "module_id" : 2,
     "words" : "get"
   }, {
+    "doc" : "",
     "fqcn" : "com.acme.pricing.PriceCalculator",
     "identifier" : "getCurrency",
     "module_id" : 1,
     "words" : "get currency"
   }, {
+    "doc" : "",
     "fqcn" : "com.acme.orders.OrderService",
     "identifier" : "helper",
     "module_id" : 2,
     "words" : "helper"
   }, {
+    "doc" : "",
     "fqcn" : "com.acme.orders.Events",
     "identifier" : "in",
     "module_id" : 2,
     "words" : "in"
   }, {
+    "doc" : "",
     "fqcn" : "com.acme.orders.Events",
     "identifier" : "out",
     "module_id" : 2,
     "words" : "out"
   }, {
+    "doc" : "",
     "fqcn" : "com.acme.pricing.PriceCalculator",
     "identifier" : "quote",
     "module_id" : 1,
@@ -202,6 +215,7 @@
     "fqcn" : "com.acme.pricing.PriceCalculator",
     "id" : 1,
     "is_api" : 1,
+    "javadoc" : null,
     "kind" : "CLASS",
     "module_id" : 1,
     "signature_hash" : "18b0107ef5547df855c5675a3d4eccab1e910799a4c9a0b045c132ef19c72553"
@@ -212,6 +226,7 @@
     "fqcn" : "com.acme.orders.BillingClient",
     "id" : 2,
     "is_api" : 0,
+    "javadoc" : null,
     "kind" : "INTERFACE",
     "module_id" : 2,
     "signature_hash" : "507767bf7abaad88723e984d1ebe4a2faa26acb94e9ea8b94203390071e0c8ae"
@@ -222,6 +237,7 @@
     "fqcn" : "com.acme.orders.Events",
     "id" : 3,
     "is_api" : 0,
+    "javadoc" : null,
     "kind" : "CLASS",
     "module_id" : 2,
     "signature_hash" : "448703d3884da21b4b332980f67d5b78ddbb26e3530674c9a1ca3eb322915163"
@@ -232,6 +248,7 @@
     "fqcn" : "com.acme.orders.OrderController",
     "id" : 4,
     "is_api" : 0,
+    "javadoc" : null,
     "kind" : "CLASS",
     "module_id" : 2,
     "signature_hash" : "105e940b00bfc63f083ae27a28722ddb625f1e40a716137a9a10ddc9c2ae3bf3"
@@ -242,6 +259,7 @@
     "fqcn" : "com.acme.orders.OrderHelper",
     "id" : 5,
     "is_api" : 0,
+    "javadoc" : "Builds an order from a Map<String,String> of request fields.",
     "kind" : "CLASS",
     "module_id" : 2,
     "signature_hash" : "b96125c5d3dc1a09c22e8c7721acdde351952dc6290a644e075b0f984989fa00"
@@ -252,6 +270,7 @@
     "fqcn" : "com.acme.orders.OrderService",
     "id" : 6,
     "is_api" : 0,
+    "javadoc" : null,
     "kind" : "CLASS",
     "module_id" : 2,
     "signature_hash" : "09c5da1e41f5bedd1ae12b5cf97c7425182963f5c6fa47956823396f144984ed"

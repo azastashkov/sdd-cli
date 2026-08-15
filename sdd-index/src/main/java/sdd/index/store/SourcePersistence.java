@@ -66,23 +66,26 @@ public final class SourcePersistence {
         }
         h.createUpdate("""
                         INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path,
-                                              signature_hash, api_confidence, annotations)
-                        VALUES (:m, :fqcn, :kind, :api, :file, :hash, :conf, :ann)""")
+                                              signature_hash, api_confidence, annotations, javadoc)
+                        VALUES (:m, :fqcn, :kind, :api, :file, :hash, :conf, :ann, :javadoc)""")
                 .bind("m", moduleId).bind("fqcn", t.fqcn()).bind("kind", t.kind())
                 .bind("api", t.isApi() ? 1 : 0).bind("file", t.relPath())
                 .bind("hash", t.signatureHash()).bind("conf", t.apiConfidence())
-                .bind("ann", annotationsJson).execute();
+                .bind("ann", annotationsJson).bind("javadoc", t.javadoc()).execute();
         long typeId = h.createQuery("SELECT last_insert_rowid()").mapTo(Long.class).one();
         String simpleName = t.fqcn().substring(t.fqcn().lastIndexOf('.') + 1);
-        FtsSymbolWriter.insert(h, moduleId, simpleName, t.fqcn());
+        FtsSymbolWriter.insert(h, moduleId, simpleName, t.fqcn(), t.javadoc());
         java.util.Set<String> ftsEmitted = new java.util.HashSet<>();
         for (SourceModel.MemberInfo m : t.members()) {
             h.createUpdate("INSERT INTO api_member(type_id, name, signature, return_type, synthesized_by) "
                             + "VALUES (:t, :name, :sig, :ret, :by)")
                     .bind("t", typeId).bind("name", m.name()).bind("sig", m.signature())
                     .bind("ret", m.returnType()).bind("by", m.synthesizedBy()).execute();
+            // Members carry no doc text: member-level javadoc is out of scope, and repeating the
+            // type's summary on each of its members would let one doc comment match a query once
+            // per member and swamp the ranking of the type it actually describes.
             if (!m.name().equals("<init>") && ftsEmitted.add(m.name())) {
-                FtsSymbolWriter.insert(h, moduleId, m.name(), t.fqcn());
+                FtsSymbolWriter.insert(h, moduleId, m.name(), t.fqcn(), "");
             }
         }
     }
