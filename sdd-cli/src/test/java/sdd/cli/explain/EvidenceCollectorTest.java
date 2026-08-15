@@ -225,6 +225,32 @@ class EvidenceCollectorTest {
                 ExplainFixture.SVC_NOTIFY + " -> " + ExplainFixture.SVC_ORDERS);
     }
 
+    @Test
+    void dependencyEdgesFromTwoModulesInOneRepoAreDistinguishableRatherThanIdenticalDuplicates() {
+        // Two modules of svc-orders each declare the same dependency on lib-api. These are two
+        // genuine dep_edge rows, not a join artifact — but a projection that drops the consuming
+        // module renders them as the same sentence twice, which reads as a duplication bug and
+        // hides the one fact that distinguishes them. Seen live on the trading estate, where
+        // trading-ops' :e2e and :load modules both depend on com.trading:common-model.
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (3,':load','UNKNOWN')"); // module 7
+            h.execute("INSERT INTO dep_edge(from_module_id, to_grp, to_name, configuration, declared_version, declared_via, mode, is_internal, to_module_id) "
+                    + "VALUES (7,'com.acme','lib-api','compileClasspath',NULL,'BOM','BOM_MANAGED',1,2)");
+        });
+        RetrievalRequest request = new RetrievalRequest(Intent.DEPENDENCY_PATH,
+                List.of(new EntityRef(EntityKind.REPO, ExplainFixture.SVC_ORDERS, false),
+                        new EntityRef(EntityKind.REPO, ExplainFixture.LIB_API, true)),
+                List.of(), "Why does svc-orders depend on lib-api?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        List<String> hops = texts(section(evidence, "Dependency edges")).stream()
+                .filter(t -> t.contains(ExplainFixture.SVC_ORDERS + " -> " + ExplainFixture.LIB_API)).toList();
+        assertThat(hops).hasSize(2).doesNotHaveDuplicates();
+        assertThat(hops).anySatisfy(t -> assertThat(t).contains("from_module=:"))
+                .anySatisfy(t -> assertThat(t).contains("from_module=:load"));
+    }
+
     // --- search ---------------------------------------------------------------------------------
 
     @Test

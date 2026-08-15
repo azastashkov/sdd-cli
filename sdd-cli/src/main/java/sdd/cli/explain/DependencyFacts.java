@@ -145,7 +145,7 @@ final class DependencyFacts {
             String from = path.get(i);
             String to = path.get(i + 1);
             List<Map<String, Object>> rows = h.createQuery("""
-                            SELECT e.to_grp AS to_grp, e.to_name AS to_name,
+                            SELECT mf.gradle_path AS from_module, e.to_grp AS to_grp, e.to_name AS to_name,
                                    e.configuration AS configuration, e.declared_version AS declared_version,
                                    e.declared_via AS declared_via, e.mode AS mode
                             FROM dep_edge e
@@ -154,17 +154,36 @@ final class DependencyFacts {
                             JOIN repo rf ON rf.id = mf.repo_id
                             JOIN repo rt ON rt.id = mt.repo_id
                             WHERE rf.name = :from AND rt.name = :to AND e.is_internal = 1
-                            ORDER BY e.to_grp, e.to_name, e.configuration""")
+                            ORDER BY e.to_grp, e.to_name, e.configuration, mf.gradle_path""")
                     .bind("from", from).bind("to", to).mapToMap().list();
             for (Map<String, Object> row : rows) {
                 facts.add(new Fact(from + " -> " + to + ": " + row.get("to_grp") + ":" + row.get("to_name")
-                        + " (configuration=" + row.get("configuration")
-                        + ", declared_version=" + row.get("declared_version")
-                        + ", declared_via=" + row.get("declared_via")
-                        + ", mode=" + row.get("mode") + ")"));
+                        + " (" + attributes(row) + ")"));
             }
         }
         return Section.capped("Dependency edges", "dep_edge", facts, Section.DEFAULT_LIMIT);
+    }
+
+    /**
+     * Renders a {@code dep_edge} row's attributes, skipping any that are NULL.
+     *
+     * <p>{@code from_module} is included because two modules of the same repo may each declare the
+     * same dependency: those are two genuine rows, and without the module they render as one
+     * sentence twice, which reads as a duplication bug rather than as the two facts it is.
+     *
+     * <p>NULL attributes are omitted rather than printed. {@code declared_version} is legitimately
+     * NULL for a BOM-managed dependency, and {@code String.valueOf} would render the literal
+     * "null" — the same misreading as a version actually named "null".
+     */
+    private static String attributes(Map<String, Object> row) {
+        List<String> parts = new ArrayList<>();
+        for (String key : List.of("from_module", "configuration", "declared_version", "declared_via", "mode")) {
+            Object value = row.get(key);
+            if (value != null) {
+                parts.add(key + "=" + value);
+            }
+        }
+        return String.join(", ", parts);
     }
 
     private static Section apiUsage(Handle h, List<String> path) {
