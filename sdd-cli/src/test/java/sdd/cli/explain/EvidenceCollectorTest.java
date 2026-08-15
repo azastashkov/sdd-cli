@@ -540,8 +540,9 @@ class EvidenceCollectorTest {
 
         Section ambiguity = section(evidence, "Endpoint match is ambiguous: '" + ExplainFixture.ORDERS_ENDPOINT + "'");
         assertThat(ambiguity.facts()).singleElement().satisfies(f -> assertThat(f.text())
-                .contains("matched 2 distinct repos")
-                .contains(ExplainFixture.LIB_CORE).contains(ExplainFixture.SVC_ORDERS));
+                .contains("matched 2 distinct endpoints")
+                .contains(ExplainFixture.LIB_CORE + " (GET /orders/{})")
+                .contains(ExplainFixture.SVC_ORDERS + " (GET /orders/{})"));
         // every match's consumers are rendered — never a silently chosen one
         assertThat(texts(section(evidence, "Consumers of endpoint: " + ExplainFixture.ORDERS_ENDPOINT)))
                 .containsExactlyInAnyOrder(
@@ -549,6 +550,52 @@ class EvidenceCollectorTest {
                                 + " (confidence=MEDIUM, matched_by=PATH_ONLY)",
                         ExplainFixture.SVC_BILLING + " calls GET /orders/{} on " + ExplainFixture.SVC_ORDERS
                                 + " (confidence=HIGH, matched_by=FEIGN_NAME_PATH)");
+    }
+
+    @Test
+    void consumersOnAnEndpointDeclaredTwiceInOneRepoEmitsEachCallerFactExactlyOnce() {
+        // the same verb+path on two controller methods of one repo: two rest_endpoint rows, two
+        // EntityMatch values, but one (repo, verb, norm) triple — and callersOf is keyed on exactly
+        // that triple, so querying per match would re-fetch the identical rows and say it twice.
+        db.jdbi().useHandle(h -> h.execute(
+                "INSERT INTO rest_endpoint(module_id, class_fqcn, method_name, http_method, path_template, norm_path) "
+                        + "VALUES (3,'OrdersAdminController','getForAdmin','GET','/orders/{id}','/orders/{}')"));
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.ENDPOINT, ExplainFixture.ORDERS_ENDPOINT, false)),
+                List.of(), "What calls GET /orders/{id}?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        assertThat(texts(section(evidence, "Consumers of endpoint: " + ExplainFixture.ORDERS_ENDPOINT)))
+                .containsExactly(ExplainFixture.SVC_BILLING + " calls GET /orders/{} on " + ExplainFixture.SVC_ORDERS
+                        + " (confidence=HIGH, matched_by=FEIGN_NAME_PATH)");
+        // one endpoint declared twice is not two endpoints — nothing ambiguous to report
+        assertThat(evidence.sections()).noneMatch(s -> s.title().startsWith("Endpoint match is ambiguous"));
+    }
+
+    @Test
+    void consumersOnTwoDistinctEndpointsWithinOneRepoStillYieldsAnAmbiguityFact() {
+        // a literal path no row matches exactly, so resolution falls back to templatesMatch, where
+        // /orders/summary matches both /orders/{} and /{}/summary — two genuinely different
+        // endpoints, both in svc-orders. Counting repos would see one repo and stay silent.
+        db.jdbi().useHandle(h -> h.execute(
+                "INSERT INTO rest_endpoint(module_id, class_fqcn, method_name, http_method, path_template, norm_path) "
+                        + "VALUES (3,'TenantSummaryController','summary','GET','/{tenant}/summary','/{}/summary')"));
+        RetrievalRequest request = new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.ENDPOINT, "GET /orders/summary", false)),
+                List.of(), "What calls GET /orders/summary?", List.of(), false);
+
+        Evidence evidence = collect(request);
+
+        Section ambiguity = section(evidence, "Endpoint match is ambiguous: 'GET /orders/summary'");
+        assertThat(ambiguity.facts()).singleElement().satisfies(f -> assertThat(f.text())
+                .contains("matched 2 distinct endpoints")
+                .contains(ExplainFixture.SVC_ORDERS + " (GET /orders/{})")
+                .contains(ExplainFixture.SVC_ORDERS + " (GET /{}/summary)"));
+        // and both matches' consumers are still rendered, exactly as in the multi-repo case
+        assertThat(texts(section(evidence, "Consumers of endpoint: GET /orders/summary")))
+                .containsExactly(ExplainFixture.SVC_BILLING + " calls GET /orders/{} on " + ExplainFixture.SVC_ORDERS
+                        + " (confidence=HIGH, matched_by=FEIGN_NAME_PATH)");
     }
 
     // --- consumers: class, topic, artifact --------------------------------------------------------

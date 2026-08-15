@@ -8,6 +8,7 @@ import sdd.core.kb.EntityMatch;
 import sdd.core.kb.Resolution;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
@@ -21,8 +22,9 @@ import java.util.TreeSet;
  *
  * <p><strong>Endpoint ambiguity is never silently resolved.</strong> {@code Routes.templatesMatch}
  * (via {@code KbEntities.resolveEndpoint}) can legitimately match several {@code rest_endpoint}
- * rows across different repos for one value — every match's consumers are rendered, and when more
- * than one repo matched, an explicit ambiguity fact says so, rather than narrating "the" endpoint.
+ * rows for one value — across different repos, or two different templates inside a single repo —
+ * and every match's consumers are rendered. When more than one distinct endpoint matched, an
+ * explicit ambiguity fact says so, rather than narrating "the" endpoint.
  */
 final class ConsumerFacts {
     private ConsumerFacts() {
@@ -110,30 +112,59 @@ final class ConsumerFacts {
     // --- endpoint: rest_call_edge rows for every resolved endpoint match ----------------------
 
     private static List<Section> endpointConsumers(Jdbi jdbi, Resolution resolution) {
+        List<EndpointKey> keys = endpointKeys(resolution);
         List<Section> sections = new ArrayList<>();
-        if (new TreeSet<>(resolution.repos()).size() > 1) {
-            sections.add(endpointAmbiguity(resolution));
+        if (keys.size() > 1) {
+            sections.add(endpointAmbiguity(resolution, keys));
         }
         List<Fact> facts = new ArrayList<>();
-        for (EntityMatch match : resolution.matches()) {
-            int space = match.detail().indexOf(' ');
-            String verb = space > 0 ? match.detail().substring(0, space) : "ANY";
-            String norm = space > 0 ? match.detail().substring(space + 1) : match.detail();
-            facts.addAll(jdbi.withHandle(h -> callersOf(h, match.repo(), verb, norm)));
+        for (EndpointKey key : keys) {
+            facts.addAll(jdbi.withHandle(h -> callersOf(h, key.repo(), key.verb(), key.norm())));
         }
         sections.add(Section.capped("Consumers of endpoint: " + resolution.value(), "rest_call_edge",
                 facts, Section.DEFAULT_LIMIT));
         return sections;
     }
 
-    private static Section endpointAmbiguity(Resolution resolution) {
-        List<String> matchTexts = resolution.matches().stream()
-                .map(m -> m.repo() + " (" + m.detail() + ")")
-                .distinct()
+    /** One resolved endpoint identity — exactly {@link #callersOf}'s query key. */
+    private record EndpointKey(String repo, String verb, String norm) {
+    }
+
+    /**
+     * The distinct endpoints {@code resolution} matched, in resolution order. Two
+     * {@code rest_endpoint} rows in one repo declaring the same verb and path (the same endpoint on
+     * two controller methods) resolve to two {@link EntityMatch} values carrying one identical
+     * triple: {@link #callersOf} is keyed on {@code (repo, norm_path, verb)} and already aggregates
+     * every row sharing it, so a second query with the same triple returns the identical rows and
+     * every caller fact would be stated twice. Unlike {@code DependencyFacts}' {@code dep_edge}
+     * rows — where two rows that render alike are two genuinely different facts, and the fix was to
+     * distinguish them — there is no second row of information here, so collapsing is right.
+     */
+    private static List<EndpointKey> endpointKeys(Resolution resolution) {
+        LinkedHashSet<EndpointKey> keys = new LinkedHashSet<>();
+        for (EntityMatch match : resolution.matches()) {
+            int space = match.detail().indexOf(' ');
+            String verb = space > 0 ? match.detail().substring(0, space) : "ANY";
+            String norm = space > 0 ? match.detail().substring(space + 1) : match.detail();
+            keys.add(new EndpointKey(match.repo(), verb, norm));
+        }
+        return List.copyOf(keys);
+    }
+
+    /**
+     * Counted in distinct endpoints, not distinct repos: one value can match two different
+     * templates inside a single repo (a literal path falling through to {@code templatesMatch}),
+     * and merging those two endpoints' callers into one section unannounced would tell the reader
+     * about two endpoints as if they were one. Repos are named per match, so the multi-repo case
+     * still reads as it always did.
+     */
+    private static Section endpointAmbiguity(Resolution resolution, List<EndpointKey> keys) {
+        List<String> matchTexts = keys.stream()
+                .map(key -> key.repo() + " (" + key.verb() + " " + key.norm() + ")")
                 .toList();
         return Section.of("Endpoint match is ambiguous: '" + resolution.value() + "'", "rest_endpoint",
-                List.of(new Fact("'" + resolution.value() + "' matched " + new TreeSet<>(resolution.repos()).size()
-                        + " distinct repos: " + String.join(", ", matchTexts)
+                List.of(new Fact("'" + resolution.value() + "' matched " + keys.size()
+                        + " distinct endpoints: " + String.join(", ", matchTexts)
                         + " — every match's consumers are listed below, none silently chosen")));
     }
 
