@@ -309,7 +309,24 @@ index-status warnings for degraded/failed/stale repos in its closure, via
 key; `ConfigLoader` rejects `retrieval: embeddings` at load time, before it
 could be declared and then silently ignored (`ConfigLoader.java:38,
 rejectUnimplementedRetrieval`). The search section's `[fts_symbol (bm25)]`
-label states what actually answered (`SearchFacts.java:14-17, 43`).
+label states what actually answered (`SearchFacts.java:14-17, 52`).
+
+**Javadoc can make a type findable, never a fact:** the indexer stores the
+first sentence of each type's javadoc (whitespace-collapsed, inline tags
+flattened, capped at 400 characters) in `java_type.javadoc` and in
+`fts_symbol`'s `doc` column (`ApiSurfaceExtractor.javadocSummary`,
+`SourcePersistence.insertType`), so a question whose wording only appears in
+prose — "what closes the ordering gap?" — can still find the type that
+answers it. That text is unverified: nothing here checks a doc comment
+against the code it sits above. So it is weighted at the floor, well below
+every identifier column (`bm25(fts_symbol, 10.0, 3.0, 8.0, 2.0, 0.0)`,
+`FtsRetriever.java:62`), it never reaches any other section — `describe`,
+`consumers`, `dependency_path` and `impact` are pure SQL over structural
+tables — and a hit found *only* through prose is labelled
+` — matched on javadoc` on its own fact line (`SearchFacts.java:36, 50`), so
+a stale comment can never reach a reader looking like code-derived evidence.
+Member-level javadoc is not indexed, and doc-only hits are deliberately not
+marked in `plan.md`'s seed list.
 
 ## `sdd implement <spec>.plan.json`
 

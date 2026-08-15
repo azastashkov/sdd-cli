@@ -70,6 +70,14 @@ class SourcePersistenceTest {
         // FTS finds by camel-split word AND by member name
         assertThat(new FtsRetriever(db.jdbi()).search("loyalty", 10)).isNotEmpty();
         assertThat(new FtsRetriever(db.jdbi()).search("values", 10)).isNotEmpty();
+        // ...and by a word that appears only in the type's javadoc, which is the whole point of
+        // carrying it: "checkout" is in no identifier, package or member name anywhere here.
+        assertThat(new FtsRetriever(db.jdbi()).search("checkout", 10))
+                .singleElement()
+                .satisfies(hit -> {
+                    assertThat(hit.fqcn()).isEqualTo("com.acme.pricing.LoyaltyTier");
+                    assertThat(hit.docOnly()).isTrue();
+                });
         // The doc lands on the type's row only. Repeating it on each member row would let one doc
         // comment match a query once per member and bury the type it actually describes.
         List<String> docsByIdentifier = db.jdbi().withHandle(h -> h.createQuery(

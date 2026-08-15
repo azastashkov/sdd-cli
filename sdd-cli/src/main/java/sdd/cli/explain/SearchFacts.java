@@ -27,6 +27,14 @@ final class SearchFacts {
      */
     private static final int FETCH_LIMIT = 200;
 
+    /**
+     * Appended to a hit the query reached only through the type's javadoc prose. Javadoc is
+     * unverified text that nothing in this pipeline checks against the code, so a doc-only hit has
+     * to be distinguishable from one whose name matched — otherwise a stale doc comment reaches the
+     * reader looking exactly like code-derived evidence.
+     */
+    private static final String DOC_ONLY_MARKER = " — matched on javadoc";
+
     private SearchFacts() {
     }
 
@@ -38,7 +46,8 @@ final class SearchFacts {
             String repo = KbEntities.repoOfModule(jdbi, hit.moduleId());
             facts.add(new Fact(hit.identifier() + " (" + hit.fqcn() + ") — "
                     + (repo != null ? repo : "unknown repo")
-                    + String.format(Locale.ROOT, " [score=%.4f]", hit.score())));
+                    + String.format(Locale.ROOT, " [score=%.4f]", hit.score())
+                    + (hit.docOnly() ? DOC_ONLY_MARKER : "")));
         }
         return List.of(Section.capped("Search hits", "fts_symbol (bm25)", facts, Section.MEMBER_LIMIT));
     }

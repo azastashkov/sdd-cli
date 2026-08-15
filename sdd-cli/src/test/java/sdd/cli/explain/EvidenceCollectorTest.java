@@ -10,6 +10,7 @@ import sdd.core.llm.ChatRequest;
 import sdd.core.llm.ChatResponse;
 import sdd.core.llm.Usage;
 import sdd.core.retrieve.FtsRetriever;
+import sdd.core.retrieve.FtsSymbolWriter;
 import sdd.core.retrieve.Hit;
 import sdd.core.retrieve.Retriever;
 import sdd.core.testing.ScriptedChatModel;
@@ -20,6 +21,13 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class EvidenceCollectorTest {
+    /**
+     * A word planted in a type's javadoc that occurs in no identifier, package, path or repo name
+     * anywhere in the fixture — so any section text containing it can only have come from the
+     * javadoc. See {@link #noEvidenceSectionOutsideSearchRendersTextTakenFromTypeJavadoc}.
+     */
+    private static final String JAVADOC_SENTINEL = "quorumsentinel";
+
     @TempDir Path ws;
     private Database db;
     private Retriever retriever;
@@ -45,6 +53,11 @@ class EvidenceCollectorTest {
 
     private static List<String> texts(Section section) {
         return section.facts().stream().map(Fact::text).toList();
+    }
+
+    /** Every fact text in the whole answer, across all its sections. */
+    private static List<String> allTexts(Evidence evidence) {
+        return evidence.sections().stream().flatMap(s -> s.facts().stream()).map(Fact::text).toList();
     }
 
     // --- describe -----------------------------------------------------------------------------
@@ -797,6 +810,62 @@ class EvidenceCollectorTest {
                 .contains("1 kafka_topic row(s)")
                 .contains(ExplainFixture.LIB_API).contains(ExplainFixture.SVC_ORDERS)
                 .doesNotContain(ExplainFixture.LIB_CORE));
+    }
+
+    // --- javadoc firewall -------------------------------------------------------------------------
+
+    @Test
+    void noEvidenceSectionOutsideSearchRendersTextTakenFromTypeJavadoc() {
+        // Javadoc rots, and nothing in this pipeline checks it against the code. So it is allowed
+        // to make a type *findable* — it lives in java_type.javadoc and fts_symbol.doc, and the
+        // search intent surfaces it, labelled — but it may never become a *fact*: no describe,
+        // consumers, dependency-path or impact section may put unverified prose in front of a
+        // reader as if the KB had derived it. That is true today because those collectors are
+        // pure SQL over structural tables; this test is what keeps it true.
+        String javadoc = "Closes the " + JAVADOC_SENTINEL + " between an admin PUT and the watcher.";
+        db.jdbi().useHandle(h -> {
+            h.createUpdate("UPDATE java_type SET javadoc = :doc WHERE fqcn = :fqcn")
+                    .bind("doc", javadoc).bind("fqcn", ExplainFixture.PRICE_API_FQCN).execute();
+            // ...and the same text in the search corpus, as the indexer would have written it
+            h.execute("DELETE FROM fts_symbol WHERE identifier = 'PriceApi'");
+            FtsSymbolWriter.insert(h, 2, "PriceApi", ExplainFixture.PRICE_API_FQCN, javadoc);
+        });
+
+        // Positive control: the sentinel really is in this KB and really is reachable, so the
+        // assertions below fail because the firewall holds, not because nothing was seeded.
+        assertThat(allTexts(collect(new RetrievalRequest(Intent.SEARCH, List.of(),
+                List.of(JAVADOC_SENTINEL), "find it", List.of(), false))))
+                .anySatisfy(t -> assertThat(t).contains("PriceApi").contains("matched on javadoc"));
+
+        List<RetrievalRequest> nonSearch = List.of(
+                new RetrievalRequest(Intent.DESCRIBE,
+                        List.of(new EntityRef(EntityKind.REPO, ExplainFixture.LIB_API, false),
+                                new EntityRef(EntityKind.CLASS, ExplainFixture.PRICE_API_FQCN, false)),
+                        List.of(), "What is lib-api, and what is PriceApi?", List.of(), false),
+                new RetrievalRequest(Intent.CONSUMERS,
+                        List.of(new EntityRef(EntityKind.CLASS, ExplainFixture.PRICE_API_FQCN, false)),
+                        List.of(), "What uses PriceApi?", List.of(), false),
+                new RetrievalRequest(Intent.DEPENDENCY_PATH,
+                        List.of(new EntityRef(EntityKind.REPO, ExplainFixture.SVC_ORDERS, false),
+                                new EntityRef(EntityKind.REPO, ExplainFixture.LIB_API, true)),
+                        List.of(), "Why does svc-orders depend on lib-api?", List.of(), false),
+                new RetrievalRequest(Intent.IMPACT,
+                        List.of(new EntityRef(EntityKind.REPO, ExplainFixture.LIB_API, false)),
+                        List.of(), "What breaks if lib-api changes?", List.of(), false));
+
+        for (RetrievalRequest request : nonSearch) {
+            Evidence evidence = collect(request);
+            List<String> texts = allTexts(evidence);
+            // the type carrying the javadoc is genuinely in this answer — otherwise "no section
+            // mentions the sentinel" would be trivially true
+            assertThat(texts).as("%s facts", request.intent())
+                    .anyMatch(t -> t.contains(ExplainFixture.PRICE_API_FQCN)
+                            || t.contains(ExplainFixture.LIB_API));
+            assertThat(texts).as("%s facts", request.intent())
+                    .noneMatch(t -> t.contains(JAVADOC_SENTINEL));
+            assertThat(evidence.caveats()).as("%s caveats", request.intent())
+                    .noneMatch(c -> c.contains(JAVADOC_SENTINEL));
+        }
     }
 
     // --- no third model call ---------------------------------------------------------------------

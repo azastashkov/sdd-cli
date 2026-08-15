@@ -67,6 +67,57 @@ class FtsRetrieverTest {
     }
 
     @Test
+    void aQueryMatchingOnlyJavadocProseFindsTheTypeAndFlagsItDocOnly() {
+        // The miss the doc column exists for: the answer to "how does the ordering gap get closed"
+        // is in prose, and no identifier in the estate contains any of those words.
+        db.jdbi().useHandle(h -> FtsSymbolWriter.insert(h, 1L, "GroupDirectory",
+                "com.acme.groups.GroupDirectory",
+                "Write-through state directory closing the ordering gap between a successful "
+                        + "admin PUT and this service's own watcher."));
+
+        List<Hit> hits = new FtsRetriever(db.jdbi()).search("watcher", 10);
+
+        assertThat(hits).singleElement().satisfies(hit -> {
+            assertThat(hit.identifier()).isEqualTo("GroupDirectory");
+            assertThat(hit.docOnly()).isTrue();
+        });
+    }
+
+    @Test
+    void anIdentifierMatchOutranksAProseOnlyMatchOnTheSameTerm() {
+        // The weight floor, asserted rather than assumed: javadoc is unverified text, so it may
+        // surface a candidate no identifier could reach but must never come first when a real name
+        // matched the same term.
+        db.jdbi().useHandle(h -> {
+            FtsSymbolWriter.insert(h, 1L, "Checkout", "com.acme.checkout.Checkout", "");
+            FtsSymbolWriter.insert(h, 1L, "GroupDirectory", "com.acme.groups.GroupDirectory",
+                    "Closes the ordering gap during checkout so a stale entry never reaches "
+                            + "the caller.");
+        });
+
+        List<Hit> hits = new FtsRetriever(db.jdbi()).search("checkout", 10);
+
+        assertThat(hits).extracting(Hit::identifier).containsExactly("Checkout", "GroupDirectory");
+        assertThat(hits.get(0).docOnly()).isFalse();
+        assertThat(hits.get(1).docOnly()).isTrue();
+    }
+
+    @Test
+    void aHitWhoseIdentifierAndProseBothMatchIsNotDocOnly() {
+        db.jdbi().useHandle(h -> FtsSymbolWriter.insert(h, 1L, "TierResolver",
+                "com.acme.pricing.TierResolver",
+                "Resolves a customer's tier from their order history."));
+
+        List<Hit> hits = new FtsRetriever(db.jdbi()).search("tier", 10);
+
+        // "tier" is in this type's name AND in its javadoc; the marker is about how the reader
+        // found it, so a name match anywhere clears it.
+        assertThat(hits).filteredOn(hit -> hit.identifier().equals("TierResolver"))
+                .singleElement()
+                .satisfies(hit -> assertThat(hit.docOnly()).isFalse());
+    }
+
+    @Test
     void tiedScoresOrderDeterministicallyByIdentifierThenModule() {
         // two rows with identical tokens => identical bm25 score; order must be pinned
         db.jdbi().useHandle(h -> {
