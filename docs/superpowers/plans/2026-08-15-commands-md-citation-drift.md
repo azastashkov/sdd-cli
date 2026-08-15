@@ -19,6 +19,12 @@ by `9063806`'s own javadoc growth, and `AnswerNarrator.java:52`→`:56`, invalid
 adding four lines to `SYSTEM_PROMPT` above the call. Three further citations into `SearchFacts.java`
 were re-pointed in that same commit because its javadoc edit moved them.
 
+**A fifth branch-owned citation escaped that audit** and was caught by the whole-branch review:
+`AnswerNarrator.java:26-46`→`:26-50`, the `SYSTEM_PROMPT` constant itself, invalidated by the very
+same four lines `4be4625` added to it. The audit corrected the citation *below* the constant and not
+the one *at* it. It is fixed in this branch's final fix wave, which makes the real figures **32
+wrong, five of them the branch's own**. The 27 below are unaffected.
+
 **The remaining 27 are listed below, and were deliberately left untouched.** They are pre-existing
 drift in the `sdd explain` call-1 paragraph, `sdd implement`, `sdd review` and the
 `approve`/`reject`/`redo` subcommands — sections the retrieval branch never went near (it touched 51

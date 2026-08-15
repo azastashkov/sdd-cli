@@ -268,7 +268,7 @@ rendered report is written there instead of printed
 - **Call 2 — narrate** (`AnswerNarrator.narrate`, `ExplainCommand.java:112-113`):
   the model is shown the rendered evidence string — and only that string —
   and told to answer from it alone, never naming a repo, topic, endpoint or
-  class absent from it (`AnswerNarrator.java:26-46`). Skipped entirely when
+  class absent from it (`AnswerNarrator.java:26-50`). Skipped entirely when
   the fetch found zero facts: a narrator handed nothing is exactly where
   invention happens, so there is no call 2 to make in that case
   (`ExplainCommand.java:108-125`).
