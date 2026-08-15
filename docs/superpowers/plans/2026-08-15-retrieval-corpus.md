@@ -398,13 +398,19 @@ on `step.files()`, `is_api` and `file_ref` and never takes free text, so the fla
 *Ruling:* recorded, not implemented — the clause describes a component that was never built.
 *Cost if wrong:* an embeddings phase scopes work for a consumer that does not exist.
 
-### 5. A V2-upgraded workspace carries no javadoc until re-indexed, and nothing says so
+### 5. A V2-upgraded workspace carries no javadoc until `sdd index --force`, and nothing says so
 
 This is the sharpest of these items, and it is a **determinism** issue rather than only a
 retrieval-quality one.
 
 *Trigger:* running any command against a workspace migrated from v1/v2 without re-running
-`sdd index`.
+`sdd index --force`. Note the flag: the whole-branch review found that this item's first draft named
+`sdd index`, which does not work. `IndexService.indexRepo` short-circuits on an unchanged
+`head_commit || ':' || dirty_hash` fingerprint, and a schema migration changes no repo's fingerprint
+— so a plain `sdd index` after an upgrade reports `(unchanged, skipped)` for every repo and exits 0
+while leaving `java_type.javadoc` NULL and `fts_symbol.doc` empty. A remedy that reports success
+without doing anything is worse than a documented gap, and this item is the only record of the
+defect.
 *Symptom:* `FtsSymbolWriter.rebuildFrom` writes `doc` as empty at migration time because no javadoc
 exists yet, and `java_type.javadoc` is NULL for every pre-existing row. So a migrated workspace and a
 freshly-indexed one **over the same estate** now hold different FTS content, therefore produce

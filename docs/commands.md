@@ -325,6 +325,14 @@ every identifier column (`bm25(fts_symbol, 10.0, 3.0, 8.0, 2.0, 0.0)`,
 tables — and a hit reached *only* through prose is labelled
 `[matched on javadoc]` on its own fact line (`SearchFacts.java:45, 59`).
 
+**If your knowledge base predates javadoc indexing, run `sdd index --force`.**
+The schema upgrade rebuilds the search index but cannot invent javadoc it never
+stored, so a workspace carried up from an older version searches identifiers
+only. A plain `sdd index` will *not* fix it: it skips every repo whose git
+fingerprint is unchanged, and upgrading the schema changes no repo's fingerprint,
+so it prints `(unchanged, skipped)` and exits 0 having done nothing
+(`IndexService.java:176-183`, `IndexCommand.java:34-39`).
+
 Neither the weighting nor the label is a promise about rank. The weighting is
 per-term: bm25 scores a whole row across term frequency, document frequency
 and field length, so a type whose javadoc matches most of the question does
