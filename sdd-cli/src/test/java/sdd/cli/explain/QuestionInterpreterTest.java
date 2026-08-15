@@ -348,8 +348,8 @@ class QuestionInterpreterTest {
     @Test
     void fallbackSearchTermsLowercaseWithLocaleRootNotTheJvmDefault() {
         // Under a Turkish default locale, String.toLowerCase() (no Locale argument) maps 'I' to
-        // the dotless 'ı' rather than 'i' -- EvidenceCollector.kindLabel/EvidenceRenderer.kindLabel
-        // and SearchFacts all pass Locale.ROOT for exactly this reason; QuestionInterpreter's
+        // the dotless 'ı' rather than 'i' -- EntityKind.label() and SearchFacts both pass
+        // Locale.ROOT for exactly this reason; QuestionInterpreter's
         // search-term extraction did not.
         java.util.Locale previous = java.util.Locale.getDefault();
         java.util.Locale.setDefault(java.util.Locale.forLanguageTag("tr"));

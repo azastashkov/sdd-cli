@@ -1,7 +1,6 @@
 package sdd.cli.explain;
 
 import sdd.core.contract.Markdown;
-import sdd.core.kb.EntityKind;
 import sdd.core.kb.Provenance;
 
 import java.util.ArrayList;
@@ -196,7 +195,7 @@ public final class EvidenceRenderer {
             boolean withRole = request.intent() == Intent.DEPENDENCY_PATH;
             List<String> parts = new ArrayList<>();
             for (EntityRef entity : request.entities()) {
-                String part = kindLabel(entity.kind()) + " '" + capField(entity.value(), ENTITY_VALUE_CAP) + "'";
+                String part = entity.kind().label() + " '" + capField(entity.value(), ENTITY_VALUE_CAP) + "'";
                 if (withRole) {
                     part += entity.object() ? " (object)" : " (subject)";
                 }
@@ -282,9 +281,5 @@ public final class EvidenceRenderer {
             return s;
         }
         return s.substring(0, limit) + " [truncated to " + limit + " of " + s.length() + " chars]";
-    }
-
-    private static String kindLabel(EntityKind kind) {
-        return kind.name().toLowerCase(Locale.ROOT);
     }
 }

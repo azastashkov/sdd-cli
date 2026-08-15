@@ -6,6 +6,7 @@ import sdd.core.route.Routes;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.regex.Pattern;
 
 /**
@@ -177,12 +178,12 @@ public final class KbEntities {
      * intentional determinism fix, not an accidental behavior change.
      */
     private static List<EntityMatch> resolveArtifact(Jdbi jdbi, String value) {
-        int colon = value.indexOf(':');
-        if (colon <= 0 || colon == value.length() - 1) {
+        Optional<ArtifactRef> ref = ArtifactRef.parse(value);
+        if (ref.isEmpty()) {
             return List.of();
         }
-        String grp = value.substring(0, colon);
-        String name = value.substring(colon + 1);
+        String grp = ref.get().grp();
+        String name = ref.get().name();
         return jdbi.withHandle(h -> h.createQuery("""
                         SELECT DISTINCT r.name FROM artifact a
                         JOIN module m ON m.id = a.module_id

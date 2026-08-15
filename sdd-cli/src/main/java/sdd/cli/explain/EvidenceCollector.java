@@ -11,7 +11,6 @@ import sdd.core.retrieve.Retriever;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -129,12 +128,8 @@ public final class EvidenceCollector {
                 facts.add(new Fact(match.repo() + ": " + match.detail()));
             }
         }
-        String title = "Resolved " + kindLabel(entity.kind()) + " '" + entity.value() + "'"
+        String title = "Resolved " + entity.kind().label() + " '" + entity.value() + "'"
                 + (withRoleSuffix ? (entity.object() ? " (object)" : " (subject)") : "");
         return Section.capped(title, source, facts, Section.DEFAULT_LIMIT);
-    }
-
-    private static String kindLabel(EntityKind kind) {
-        return kind.name().toLowerCase(Locale.ROOT);
     }
 }
