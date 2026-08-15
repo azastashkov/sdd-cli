@@ -97,8 +97,9 @@ public final class Database implements AutoCloseable {
      * records afterwards.
      *
      * <p>The re-read is what makes a concurrent upgrade safe. Two processes opening the same v1
-     * workspace both see version 1 before either takes a lock; without this check the second would
-     * re-run a migration the first had just committed. That is not idempotent here: V2's
+     * workspace can both see version 1 before either takes a lock — the window is short, but nothing
+     * bounds it — and without this check the second re-runs a migration the first has just
+     * committed. That is not idempotent here: V2's
      * {@code DROP TABLE fts_symbol} plus {@link FtsSymbolWriter#rebuildFrom} would discard the first
      * process's work, and V3's {@code ALTER TABLE ... ADD COLUMN javadoc} would then fail with
      * {@code duplicate column name} and roll back — leaving the database recording version 2 with

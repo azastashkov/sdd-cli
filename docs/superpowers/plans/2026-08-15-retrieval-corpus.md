@@ -575,7 +575,7 @@ was the count of migrations the *binary* knows about rather than the version the
 the one code path whose correctness the migration verification above rests on.
 *Why that inverted:* the whole-branch review found that same path already carried a correctness bug
 — `migrate` read `schema_version` on one handle and `applyMigration` wrote on another, so two
-processes opening a v1 workspace both read 1 and both ran V2 and V3. The loser committed
+processes opening a v1 workspace could both read 1 and both run V2 and V3. The loser committed
 `schema_version = 2` and then failed V3 with `duplicate column name: javadoc`, leaving a database
 that **no subsequent open could ever repair**, on the operation every command including read-only
 `sdd graph` and `sdd review` performs. Reproduced as a test before it was fixed. One edit closes
@@ -586,6 +586,18 @@ load-bearing, not belt-and-braces: with the default `DEFERRED`, the check reads 
 the transaction then dies on `[SQLITE_BUSY] database is locked` at V2's `DROP TABLE fts_symbol`,
 which the busy timeout does not rescue — measured by running the concurrency test with the mode
 switched back.
+*How likely it was, measured, because the record should not overstate it:* the window between the
+read and the first write is short, and across separate `sdd` processes JVM startup jitter dwarfs it.
+Ten trials of six concurrent `sdd graph` invocations of the **pre-fix** binary against copies of the
+real v1 estate KB produced **zero** failures — every trial reached `schema_version = 3` cleanly. The
+defect reproduces reliably only once the interleaving is forced, which is what the in-JVM test does
+(four threads released from one barrier: `duplicate column name: javadoc`, every run). So this was a
+low-probability event with an unrecoverable outcome and no warning, not a likely one — which is an
+argument for the six-line fix, not against it, since nothing about the ordering was ever guaranteed
+and the estate was one unlucky upgrade from a knowledge base that could not be opened again.
+*Verified after the fix on the same real data:* four concurrent `sdd graph` processes against a copy
+of the v1 estate KB all exit 0, the database lands at `schema_version = 3` with all 1227
+`fts_symbol` rows intact and `typeof(doc) = 'text'` throughout, and it reopens cleanly afterwards.
 *Cost if it had been left:* a diagnostic lying about which schema a workspace is on, in exactly the
 situation (mixed binary versions) where someone is reading it to find that out — and, through the
 same untransacted read, one destroyed knowledge base per unlucky upgrade.
