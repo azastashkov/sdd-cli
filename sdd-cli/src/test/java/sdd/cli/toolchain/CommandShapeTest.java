@@ -228,6 +228,65 @@ class CommandShapeTest {
                 .contains(marker);
     }
 
+    // ---------------------------------------------------------------- timeout kill policy
+
+    /** A wrapper that leaves a still-running grandchild behind and then hangs past any timeout. */
+    private Path repoWithOrphanSpawningWrapper(String name) throws Exception {
+        Path repo = Files.createDirectories(tmp.resolve(name));
+        Path gradlew = repo.resolve("gradlew");
+        Files.writeString(gradlew, """
+                #!/bin/sh
+                sleep 30 &
+                echo $! > child.pid
+                sleep 30
+                """);
+        Files.setPosixFilePermissions(gradlew, PosixFilePermissions.fromString("rwxr-xr-x"));
+        return repo;
+    }
+
+    private static boolean childAlive(Path repo) throws Exception {
+        long pid = Long.parseLong(Files.readString(repo.resolve("child.pid")).trim());
+        return ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false);
+    }
+
+    @Test
+    void gradleToolKillsTheWholeProcessTreeOnTimeout() throws Exception {
+        Path repo = repoWithOrphanSpawningWrapper("kill-tree");
+
+        String out = new GradleTool(repo, null, Duration.ofSeconds(1)).run("check");
+
+        assertThat(out).isEqualTo("timed out after 1s");
+        // destroyForcibly on the wrapper alone would leave the grandchild running; the four
+        // scrubbing sites walk descendants() first precisely so a timed-out build leaves nothing
+        // behind. Poll briefly because the kill is asynchronous.
+        boolean alive = true;
+        for (int i = 0; i < 40 && alive; i++) {
+            Thread.sleep(50);
+            alive = childAlive(repo);
+        }
+        assertThat(alive).as("descendants of a timed-out build must not survive it").isFalse();
+    }
+
+    @Test
+    void smokeRunnerLeavesDescendantsRunningOnTimeout() throws Exception {
+        Path consumer = repoWithOrphanSpawningWrapper("kill-only-self");
+        Path provider = Files.createDirectories(tmp.resolve("kill-provider"));
+
+        GradleSmokeRunner.Result result =
+                new GradleSmokeRunner(Duration.ofSeconds(1)).probe(consumer, provider);
+
+        assertThat(result.ok()).isFalse();
+        assertThat(result.detail()).isEqualTo("timed out after 1s");
+        // Pins CURRENT behavior, not desired behavior: unlike the other four sites this one calls
+        // destroyForcibly() without walking descendants(), so a timed-out probe can orphan whatever
+        // the wrapper spawned. That is a latent defect worth fixing on its own terms — but fixing it
+        // silently while extracting shared subprocess plumbing would hide a behavior change inside
+        // a refactor, which is exactly what this class exists to prevent.
+        assertThat(childAlive(consumer))
+                .as("smoke probe currently kills only the wrapper; see comment before changing this")
+                .isTrue();
+    }
+
     // ---------------------------------------------------------------- shared refusal
 
     @Test

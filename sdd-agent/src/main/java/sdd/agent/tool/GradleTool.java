@@ -1,15 +1,15 @@
 package sdd.agent.tool;
 
+import sdd.core.toolchain.EnvPolicy;
+import sdd.core.toolchain.Subprocess;
+
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
 
 /**
  * The agent's only path to the build: an env-scrubbed subprocess running an ALLOWLISTED Gradle
@@ -26,7 +26,6 @@ public final class GradleTool {
     }
     static final int MAX_OUTPUT = 8000;
     static final int MAX_FULL_OUTPUT = 200_000;
-    private static final List<String> KEEP_ENV = List.of("PATH", "HOME", "LANG", "TMPDIR");
 
     private final Path repoRoot;
     private final Path javaHome;
@@ -77,9 +76,7 @@ public final class GradleTool {
             permits.acquireUninterruptibly();
         }
         try {
-            Path log = null;
             try {
-                log = Files.createTempFile("sdd-agent-gradle", ".log");
                 java.util.List<String> command = new java.util.ArrayList<>();
                 command.add("./gradlew");
                 command.add(task);
@@ -87,33 +84,19 @@ public final class GradleTool {
                 command.add("--no-configuration-cache");
                 command.add("--no-daemon");
                 command.add("-q");
-                ProcessBuilder builder = new ProcessBuilder(command);
-                builder.directory(repoRoot.toFile());
-                builder.redirectErrorStream(true);
-                builder.redirectOutput(log.toFile());
-                scrubEnvironment(builder.environment());
-                Process process = builder.start();
-                if (!process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
-                    process.descendants().forEach(ProcessHandle::destroyForcibly);
-                    process.destroyForcibly();
+                Subprocess.Outcome outcome = Subprocess.run(command, repoRoot,
+                        EnvPolicy.scrubbedJvm(javaHome), timeout,
+                        Subprocess.KillPolicy.PROCESS_TREE, "sdd-agent-gradle");
+                if (outcome.timedOut()) {
                     return "timed out after " + timeout.toSeconds() + "s";
                 }
-                String output = Files.readString(log, StandardCharsets.UTF_8);
-                output = headPreserving ? headCap(output) : tailCap(output);
-                return "exit " + process.exitValue() + "\n" + output;
+                String output = headPreserving ? headCap(outcome.output()) : tailCap(outcome.output());
+                return "exit " + outcome.exitCode() + "\n" + output;
             } catch (IOException e) {
                 throw new ToolException("gradle run failed: " + e.getMessage());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new ToolException("gradle run interrupted");
-            } finally {
-                if (log != null) {
-                    try {
-                        Files.deleteIfExists(log);
-                    } catch (IOException ignored) {
-                        // best-effort temp cleanup
-                    }
-                }
             }
         } finally {
             if (permits != null) {
@@ -134,20 +117,5 @@ public final class GradleTool {
             return output.substring(0, MAX_FULL_OUTPUT) + "\n... (tail omitted)";
         }
         return output;
-    }
-
-    private void scrubEnvironment(Map<String, String> env) {
-        Map<String, String> keep = new java.util.HashMap<>();
-        for (String name : KEEP_ENV) {
-            String value = System.getenv(name);
-            if (value != null) {
-                keep.put(name, value);
-            }
-        }
-        env.clear();
-        env.putAll(keep);
-        if (javaHome != null) {
-            env.put("JAVA_HOME", javaHome.toAbsolutePath().toString());
-        }
     }
 }

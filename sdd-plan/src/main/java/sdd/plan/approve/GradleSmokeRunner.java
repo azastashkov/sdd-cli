@@ -1,12 +1,13 @@
 package sdd.plan.approve;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import sdd.core.toolchain.EnvPolicy;
+import sdd.core.toolchain.Subprocess;
+
 import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Runs `./gradlew help --include-build <provider>` in the consumer repo (design M5: the
@@ -30,44 +31,35 @@ public final class GradleSmokeRunner implements SmokeRunner {
         if (!Files.isExecutable(gradlew)) {
             return new Result(false, "no gradle wrapper in " + consumerRepo);
         }
-        Path log = null;
         try {
-            log = Files.createTempFile("sdd-smoke", ".log");
-            ProcessBuilder builder = new ProcessBuilder(List.of("./gradlew", "help",
-                    "--include-build", providerRepo.toAbsolutePath().toString(),
-                    "--no-configuration-cache", "-q"));
-            builder.directory(consumerRepo.toFile());
-            builder.redirectErrorStream(true);
-            builder.redirectOutput(log.toFile());
-            Process process = builder.start();
-            if (!process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
-                process.destroyForcibly();
+            // EnvPolicy.INHERIT and KillPolicy.PROCESS_ONLY are this site's two deliberate
+            // departures from every other build subprocess, and CommandShapeTest pins both.
+            // Scrubbing the environment here would change which propagation mechanism Gate 1
+            // records for every cross-repo edge in the estate; see EnvPolicy's javadoc.
+            Subprocess.Outcome outcome = Subprocess.run(
+                    List.of("./gradlew", "help",
+                            "--include-build", providerRepo.toAbsolutePath().toString(),
+                            "--no-configuration-cache", "-q"),
+                    consumerRepo, EnvPolicy.INHERIT, timeout,
+                    Subprocess.KillPolicy.PROCESS_ONLY, "sdd-smoke");
+            if (outcome.timedOut()) {
                 return new Result(false, "timed out after " + timeout.toSeconds() + "s");
             }
-            int exit = process.exitValue();
-            if (exit == 0) {
+            if (outcome.exitCode() == 0) {
                 return new Result(true, "");
             }
             String lastLine = "";
-            for (String line : Files.readAllLines(log, StandardCharsets.UTF_8)) {
+            for (String line : (Iterable<String>) outcome.output().lines()::iterator) {
                 if (!line.isBlank()) {
                     lastLine = line.strip();
                 }
             }
-            return new Result(false, "exit " + exit + ": " + lastLine);
+            return new Result(false, "exit " + outcome.exitCode() + ": " + lastLine);
         } catch (IOException e) {
             return new Result(false, String.valueOf(e.getMessage()));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new Result(false, "interrupted");
-        } finally {
-            if (log != null) {
-                try {
-                    Files.deleteIfExists(log);
-                } catch (IOException ignored) {
-                    // best-effort temp cleanup
-                }
-            }
         }
     }
 }
