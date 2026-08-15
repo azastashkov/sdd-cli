@@ -52,6 +52,37 @@ public record EnvPolicy(boolean inherit, List<String> keep, Map<String, String> 
         return new EnvPolicy(false, JVM_KEEP, set);
     }
 
+    /**
+     * PATH/HOME/LANG/TMPDIR plus the settings that make npm behave in a script: no colour codes to
+     * confuse output parsing, no funding or audit notices, no update checks, no progress bars.
+     *
+     * <p>{@code NPM_TOKEN} is deliberately absent. Every publishing repo in an estate carries an
+     * {@code .npmrc} with {@code //registry.npmjs.org/:_authToken=${NPM_TOKEN}}, and sdd never
+     * publishes to a real registry — so withholding the variable makes an accidental
+     * {@code npm publish} fail at the environment level rather than succeed. A credential that is
+     * never present cannot be spent by a model that was told not to spend it.
+     *
+     * @param nodeHome when set, {@code <nodeHome>/bin} is PREPENDED to PATH, so a configured Node
+     *                 wins over whatever the ambient PATH would have found
+     */
+    public static EnvPolicy scrubbedNode(Path nodeHome) {
+        Map<String, String> set = new LinkedHashMap<>();
+        set.put("CI", "1");
+        set.put("NO_COLOR", "1");
+        set.put("FORCE_COLOR", "0");
+        set.put("npm_config_fund", "false");
+        set.put("npm_config_audit", "false");
+        set.put("npm_config_update_notifier", "false");
+        set.put("npm_config_progress", "false");
+        if (nodeHome != null) {
+            String ambient = System.getenv("PATH");
+            String prefix = nodeHome.toAbsolutePath().resolve("bin").toString();
+            set.put("PATH", ambient == null || ambient.isBlank()
+                    ? prefix : prefix + java.io.File.pathSeparator + ambient);
+        }
+        return new EnvPolicy(false, JVM_KEEP, set);
+    }
+
     /** Rewrites {@code env} in place — i.e. a {@link ProcessBuilder#environment()} map. */
     public void applyTo(Map<String, String> env) {
         if (inherit) {

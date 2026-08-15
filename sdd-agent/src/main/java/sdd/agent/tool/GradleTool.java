@@ -16,7 +16,7 @@ import java.util.concurrent.Semaphore;
  * task with a per-repo JAVA_HOME and a hard timeout (design Component 3 guardrails). No generic
  * shell, no arbitrary tasks, no inherited secrets.
  */
-public final class GradleTool {
+public final class GradleTool implements BuildTool {
     static final Set<String> ALLOWED = Set.of("help", "compileJava", "classes", "testClasses",
             "assemble", "check", "test", "build");
 
@@ -50,7 +50,24 @@ public final class GradleTool {
         this.permits = permits;
     }
 
+    @Override
+    public String toolName() {
+        return "run_gradle";
+    }
+
+    /** Byte-identical to the string this tool has always advertised; see BuildTool's javadoc. */
+    @Override
+    public String taskDescription() {
+        return "help|compileJava|classes|testClasses|assemble|check|test|build";
+    }
+
+    @Override
+    public Set<String> tasks() {
+        return ALLOWED;
+    }
+
     /** Model-facing output, tail-capped at MAX_OUTPUT (the 4A behavior). */
+    @Override
     public String run(String task) {
         return execute(task, false);
     }
@@ -60,6 +77,7 @@ public final class GradleTool {
      * errors first, so the compactor — which scrapes head-first — must see the start of a long log,
      * not run()'s tail. Fed to OutputCompactor by the compacting Toolbox path and VerificationRunner.
      */
+    @Override
     public String runFull(String task) {
         return execute(task, true);
     }
