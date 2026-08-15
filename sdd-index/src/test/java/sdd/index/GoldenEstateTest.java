@@ -19,11 +19,14 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Pins the full knowledge base produced by a fixed two-repo estate (lib-pricing + svc-orders) —
- * the same fixture shape as {@link SourceEndToEndTest}, copied verbatim so its content, and
- * therefore the dump, stays fixed — against the checked-in golden dump {@code
+ * {@link SourceEndToEndTest}'s fixture, copied rather than shared so that an edit made for that
+ * test's sake cannot silently move this dump — against the checked-in golden dump {@code
  * src/test/resources/golden/estate.json}. Runs the full {@link IndexService} (repo cards off) and
  * compares {@link DbDump#canonicalJson}'s output byte-for-byte. Any change to the pipeline's
  * output shape — intentional or not — shows up here as a diff.
+ *
+ * <p>The copy has diverged in exactly one place, deliberately: {@code OrderHelper} carries a javadoc
+ * comment here and not there. See its {@code .file(...)} call below for why.
  *
  * <p>To regenerate after an intentional change: run with {@code -Dsdd.regenGolden=true} (wired
  * through by {@code sdd-index/build.gradle.kts}):
@@ -71,8 +74,25 @@ class GoldenEstateTest {
                             public OrderHelper helper() { return new OrderHelper(); }
                         }
                         """)
-                .file("src/main/java/com/acme/orders/OrderHelper.java",
-                        "package com.acme.orders;\npublic class OrderHelper {}\n")
+                // The one javadoc-bearing type in this estate. Nothing else runs a doc comment
+                // through parse -> extract -> persist -> fts_symbol in a single pass:
+                // ApiSurfaceExtractorTest covers the front half and SourcePersistenceTest the back
+                // half against a hand-built TypeInfo, so without this the golden pinned `"doc": ""`
+                // and `"javadoc": null` for every row and the seam between the halves was untested.
+                // Written to exercise the summary rules rather than merely to be non-empty: two
+                // sentences (only the first is kept), an inline tag (content taken verbatim, so the
+                // type arguments survive), HTML markup (dropped), and a block tag (excluded by
+                // construction).
+                .file("src/main/java/com/acme/orders/OrderHelper.java", """
+                        package com.acme.orders;
+                        /**
+                         * Builds an <b>order</b> from a {@code Map<String,String>} of request fields.
+                         * This second sentence is not indexed.
+                         *
+                         * @since 1.0
+                         */
+                        public class OrderHelper {}
+                        """)
                 .file("src/main/resources/application.yml", """
                         spring:
                           application:

@@ -148,7 +148,7 @@
     "module_id" : 2,
     "words" : "order controller"
   }, {
-    "doc" : "",
+    "doc" : "Builds an order from a Map<String,String> of request fields.",
     "fqcn" : "com.acme.orders.OrderHelper",
     "identifier" : "OrderHelper",
     "module_id" : 2,
@@ -259,7 +259,7 @@
     "fqcn" : "com.acme.orders.OrderHelper",
     "id" : 5,
     "is_api" : 0,
-    "javadoc" : null,
+    "javadoc" : "Builds an order from a Map<String,String> of request fields.",
     "kind" : "CLASS",
     "module_id" : 2,
     "signature_hash" : "b96125c5d3dc1a09c22e8c7721acdde351952dc6290a644e075b0f984989fa00"
