@@ -556,18 +556,33 @@ and detaches from the answers, which is the opposite of what it was introduced t
 *Cost if wrong:* the provenance labelling reassures rather than informs, which is worse than absent —
 it is the anchoring failure of item 9, arriving through the door item 9 held shut.
 
-### 14. `Database.migrate` reports the code's migration count, not the database's recorded version
+### 14. `Database.migrate` reported the code's migration count, not the database's recorded version — **fixed**
+
+Recorded as a carried item because the deferral was reasoned about in writing and the reasoning
+turned out to be backwards. It is closed.
 
 *Trigger:* an older binary opening a database a newer binary has already migrated — which is now
 possible for the first time, because before this branch there was only ever one migration.
-*Symptom:* `Database.java:66` returns `MIGRATIONS.size()` unconditionally, so the reported version is
-the count of migrations the *binary* knows about rather than the version the *database* records.
-*Ruling:* pre-existing and left alone here. This branch made it reachable rather than introducing it,
-and fixing it means reading `schema_version` back after the transaction — a change to the one code
-path whose correctness the migration verification above rests on, which does not belong in a
-docs-and-measurement task.
-*Cost if wrong:* a diagnostic lies about which schema a workspace is on, in exactly the situation
-(mixed binary versions) where someone is reading it to find that out.
+*Symptom as found:* `migrate` returned `MIGRATIONS.size()` unconditionally, so the reported version
+was the count of migrations the *binary* knows about rather than the version the *database* records.
+*Ruling as first taken:* pre-existing and left alone, on the grounds that fixing it means touching
+the one code path whose correctness the migration verification above rests on.
+*Why that inverted:* the whole-branch review found that same path already carried a correctness bug
+— `migrate` read `schema_version` on one handle and `applyMigration` wrote on another, so two
+processes opening a v1 workspace both read 1 and both ran V2 and V3. The loser committed
+`schema_version = 2` and then failed V3 with `duplicate column name: javadoc`, leaving a database
+that **no subsequent open could ever repair**, on the operation every command including read-only
+`sdd graph` and `sdd review` performs. Reproduced as a test before it was fixed. One edit closes
+both: `applyMigration` re-reads `schema_version` inside its own transaction and returns the version
+recorded afterwards, `migrate` returns that value, and the migration connection opens
+`BEGIN IMMEDIATE` so the lock is taken before the check rather than after it. The last part is
+load-bearing, not belt-and-braces: with the default `DEFERRED`, the check reads a stale snapshot and
+the transaction then dies on `[SQLITE_BUSY] database is locked` at V2's `DROP TABLE fts_symbol`,
+which the busy timeout does not rescue — measured by running the concurrency test with the mode
+switched back.
+*Cost if it had been left:* a diagnostic lying about which schema a workspace is on, in exactly the
+situation (mixed binary versions) where someone is reading it to find that out — and, through the
+same untransacted read, one destroyed knowledge base per unlucky upgrade.
 
 ### 15. The two backend labels stay hardcoded and are load-bearing
 

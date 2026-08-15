@@ -11,7 +11,13 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -67,7 +73,7 @@ class DatabaseTest {
             assertThat(db.schemaVersion()).isEqualTo(3);
         }
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
-                Database.applyMigrationForTest(ws, "CREATE TABLE t_ok(id INTEGER);\n;\nCREATE BROKEN SYNTAX"))
+                Database.applyMigrationForTest(ws, 999, "CREATE TABLE t_ok(id INTEGER);\n;\nCREATE BROKEN SYNTAX"))
                 .isInstanceOf(Exception.class);
         try (Database db = Database.open(ws)) {
             List<String> tables = db.jdbi().withHandle(h ->
@@ -82,12 +88,9 @@ class DatabaseTest {
         // now the loop in migrate() has only ever run from version 0. So build a genuine v1
         // workspace (v1's own script, through the production statement splitter) and hand it to
         // Database.open cold.
-        Files.createDirectories(ws.resolve(".sdd"));
-        Database.applyMigrationForTest(ws, readMigration("V1__init.sql"));
+        seedV1Workspace(ws);
         Jdbi v1 = rawJdbi(ws);
         v1.useHandle(h -> {
-            // applyMigrationForTest stamps its own test-only version; a real v1 workspace holds 1.
-            h.execute("UPDATE meta SET value='1' WHERE key='schema_version'");
             h.execute("INSERT INTO repo(id, name, path, kind) VALUES (1, 'pricing', '/w/pricing', 'SERVICE')");
             h.execute("INSERT INTO module(id, repo_id, gradle_path) VALUES (10, 1, ':')");
             h.execute("INSERT INTO java_type(id, module_id, fqcn, kind) VALUES "
@@ -134,12 +137,96 @@ class DatabaseTest {
     }
 
     @Test
+    void concurrentOpensOfAV1WorkspaceLeaveItUpgradedAndStillOpenable() throws Exception {
+        // The corruption this guards: every process reads schema_version before any of them takes a
+        // lock, so all of them see 1 and all of them queue up to run V2 and V3. Re-running V2 is not
+        // idempotent (DROP + CREATE + rebuild throws away what the winner wrote) and re-running V3 is
+        // an error (duplicate column javadoc) — and because the version stamp for V2 has already
+        // committed by then, the failure leaves the database at 2 with V3's column present, which
+        // every later open re-attempts and every later open fails on. Unrecoverable, on the one
+        // operation `sdd graph` and `sdd review` perform as readers.
+        seedV1Workspace(ws);
+        int openers = 4;
+        CyclicBarrier allReady = new CyclicBarrier(openers);
+        ExecutorService pool = Executors.newFixedThreadPool(openers);
+        try {
+            List<Future<Integer>> reported = new ArrayList<>();
+            for (int i = 0; i < openers; i++) {
+                reported.add(pool.submit(() -> {
+                    allReady.await(10, TimeUnit.SECONDS);
+                    try (Database db = Database.open(ws)) {
+                        return db.schemaVersion();
+                    }
+                }));
+            }
+            for (Future<Integer> f : reported) {
+                assertThat(f.get(30, TimeUnit.SECONDS)).isEqualTo(3);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        // The state that matters is the one left behind: a bricked database still reports 3 to
+        // whichever opener won, and only fails the next reader.
+        try (Database after = Database.open(ws)) {
+            assertThat(after.schemaVersion()).isEqualTo(3);
+            String ddl = after.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT sql FROM sqlite_master WHERE name='fts_symbol'").mapTo(String.class).one());
+            assertThat(ddl).contains("porter").contains("doc");
+        }
+    }
+
+    @Test
+    void reapplyingAnAlreadyRecordedMigrationChangesNothingAndReportsTheRecordedVersion() throws Exception {
+        // The deterministic half of the case above: the losing process's second and third migrations
+        // arrive at a database that has already recorded them. The script here would be plainly
+        // visible if it ran, so "no-op" is asserted rather than assumed.
+        try (Database db = Database.open(ws)) {
+            assertThat(db.schemaVersion()).isEqualTo(3);
+        }
+
+        int reported = Database.applyMigrationForTest(ws, 3, "CREATE TABLE t_reapplied(id INTEGER)");
+
+        assertThat(reported).isEqualTo(3);
+        try (Database db = Database.open(ws)) {
+            List<String> tables = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT name FROM sqlite_master WHERE type='table'").mapTo(String.class).list());
+            assertThat(tables).doesNotContain("t_reapplied");
+        }
+    }
+
+    @Test
+    void aWorkspaceUpgradedByANewerBinaryReportsItsOwnVersionNotThisBinarysMigrationCount() throws Exception {
+        // Carried item 14. `migrate` used to return MIGRATIONS.size() unconditionally, so an older
+        // binary reading a newer database reported its own count — a diagnostic lying in exactly the
+        // mixed-version situation someone reads it to diagnose.
+        try (Database db = Database.open(ws)) {
+            assertThat(db.schemaVersion()).isEqualTo(3);
+        }
+        rawJdbi(ws).useHandle(h -> h.execute("UPDATE meta SET value='4' WHERE key='schema_version'"));
+
+        try (Database db = Database.open(ws)) {
+            assertThat(db.schemaVersion()).isEqualTo(4);
+        }
+    }
+
+    @Test
     void busyTimeoutIsConfigured() throws Exception {
         try (Database db = Database.open(ws)) {
             Integer timeout = db.jdbi().withHandle(h ->
                     h.createQuery("PRAGMA busy_timeout").mapTo(Integer.class).one());
             assertThat(timeout).isEqualTo(5000);
         }
+    }
+
+    /**
+     * A genuine v1 workspace: v1's own script, through the production statement splitter, stamped
+     * with the version a real v1 database holds. The tables are empty — callers that need rows add
+     * them through {@link #rawJdbi}, which does not migrate.
+     */
+    private static void seedV1Workspace(Path workspace) throws Exception {
+        Files.createDirectories(workspace.resolve(".sdd"));
+        Database.applyMigrationForTest(workspace, 1, readMigration("V1__init.sql"));
     }
 
     /**
