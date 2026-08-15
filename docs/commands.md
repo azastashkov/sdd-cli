@@ -220,7 +220,7 @@ thing that creates a KB this command is about to report as missing.
 
 The string the narrator is shown and the printed `## Evidence` section are
 the same value: `EvidenceRenderer.render(evidence)` is called once to build
-the call-2 user message (`AnswerNarrator.java:52`) and again, unmodified, to
+the call-2 user message (`AnswerNarrator.java:56`) and again, unmodified, to
 print the report (`ExplainReport.java:80`) — an answer can only be grounded
 in facts its reader can also see.
 
@@ -309,7 +309,7 @@ index-status warnings for degraded/failed/stale repos in its closure, via
 key; `ConfigLoader` rejects `retrieval: embeddings` at load time, before it
 could be declared and then silently ignored (`ConfigLoader.java:38,
 rejectUnimplementedRetrieval`). The search section's `[fts_symbol (bm25)]`
-label states what actually answered (`SearchFacts.java:14-17, 58`).
+label states what actually answered (`SearchFacts.java:14-20, 61`).
 
 **Javadoc can make a type findable, never a fact:** the indexer stores the
 first sentence of each type's javadoc (whitespace-collapsed, inline tags
@@ -320,19 +320,28 @@ prose — "what closes the ordering gap?" — can still find the type that
 answers it. That text is unverified: nothing here checks a doc comment
 against the code it sits above. So it is weighted at the floor, well below
 every identifier column (`bm25(fts_symbol, 10.0, 3.0, 8.0, 2.0, 0.0)`,
-`FtsRetriever.java:70`), it never reaches any other section — `describe`,
+`FtsRetriever.java:82`), it never reaches any other section — `describe`,
 `consumers`, `dependency_path` and `impact` are pure SQL over structural
-tables — and a hit found *only* through prose is labelled
-`[matched on javadoc]` on its own fact line (`SearchFacts.java:42, 56`), so
-a stale comment can never reach a reader looking like code-derived evidence.
-That weighting is per-term, not a ranking guarantee: bm25 scores a whole row
-across term frequency, document frequency and field length, so a type whose
-javadoc matches most of the question does rank above one whose name matches a
-single word of it — measured, not hypothetical. The label, not the ordering,
-is what tells a reader where a hit came from.
-The narrator is given a rule for that label beside its `repo_card` one —
-offer such a hit as a candidate whose documentation matches, not as evidence
-of behaviour (`AnswerNarrator.java:46-49`).
+tables — and a hit reached *only* through prose is labelled
+`[matched on javadoc]` on its own fact line (`SearchFacts.java:45, 59`).
+
+Neither the weighting nor the label is a promise about rank. The weighting is
+per-term: bm25 scores a whole row across term frequency, document frequency
+and field length, so a type whose javadoc matches most of the question does
+rank above one whose name matches a single word of it. And the label reports
+*presence*, not rank — `docOnly` fires only when javadoc was the sole column
+that matched, so a type that javadoc alone lifted to the top still renders
+unlabelled the moment any query word also hits its package fragment. Both are
+measured, not hypothetical: asked where the ordering gap between an admin
+write and the watcher is, `com.trading.admin.GroupDirectory` climbs from rank
+42 to rank 1 entirely on its javadoc and carries no marker at all, because the
+question says "admin" and so does its package
+(`docs/superpowers/plans/2026-08-15-retrieval-corpus.md`, carried item 13).
+So a stale comment *can* reach a reader looking like a code-derived hit. What
+stops it becoming a claim is neither the ranking nor the label but the
+narrator's rule, given beside its `repo_card` one — offer such a hit as a
+candidate whose documentation matches, not as evidence of behaviour
+(`AnswerNarrator.java:46-49`) — and the fact firewall behind it.
 Member-level javadoc is not indexed, and doc-only hits are deliberately not
 marked in `plan.md`'s seed list.
 

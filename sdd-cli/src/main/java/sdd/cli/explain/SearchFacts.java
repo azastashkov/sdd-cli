@@ -11,10 +11,13 @@ import java.util.Locale;
 
 /**
  * {@code search} intent: a full-text fallback over {@code fts_symbol} for when no entity named in
- * the question resolved. Labelled {@code "fts_symbol (bm25)"} rather than a generic "search" so
- * the output is honest about which backend actually answered — {@code SddConfig.retrieval} is
- * validated but read nowhere (a phase-6 known-carried item), so an {@code embeddings}-configured
- * estate silently gets FTS results too, and this label is the one place that is not hidden.
+ * the question resolved. Labelled {@code "fts_symbol (bm25)"} rather than a generic "search" so the
+ * output names the backend that actually answered instead of implying a choice was made among
+ * several. FTS is the only backend there is: {@code ConfigLoader} rejects {@code retrieval:
+ * embeddings} at load time rather than accepting the setting and quietly serving FTS anyway. So the
+ * label is not disambiguating two live options today — it is what stops this section needing to be
+ * renamed on the day a second one lands, and it reaches the narrator's prompt verbatim, so it must
+ * not be reworded casually.
  */
 final class SearchFacts {
     /**

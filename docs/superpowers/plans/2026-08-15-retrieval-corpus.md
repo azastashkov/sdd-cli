@@ -6,7 +6,9 @@ Phase 6 shipped with this carried item (`docs/superpowers/plans/2026-08-14-phase
 
 > **`SddConfig.retrieval` is dead config.** `ConfigLoader` validates `fts`|`embeddings` and demands a
 > `models.embeddings` endpoint for the latter, but nothing reads it and no `EmbeddingsRetriever`
-> exists — a user configuring `embeddings` silently gets FTS. Fixing it means a
+> exists — a user configuring `embeddings` silently gets FTS. *Trigger:* `retrieval: embeddings` in
+> `sdd.yml`. *Symptom:* FTS results with no indication. Explain does not fix it, but labels its
+> search section `[fts_symbol (bm25)]` so its own output is honest. Fixing it means a
 > `Retrievers.of(config, jdbi)` factory and an actual embeddings backend.
 
 The claim was exactly true. `ConfigLoader` validated the enum and demanded a `models.embeddings`
@@ -151,8 +153,9 @@ is read per hit with the same `highlight(…, char(2), char(3))` technique `FtsR
 | `fts_symbol` rows with non-empty `doc` | 219 | n/a |
 
 **How much javadoc actually reached the KB: 219 of 256 types.** The 37 without were checked rather
-than assumed. They are nine Spring `*Application` boot classes and twenty-eight nested records,
-nested enums and bare enums — `Tier`, `Side`, `AdminServiceApplication` were read at source and carry
+than assumed. They are ten Spring `*Application` boot classes and 27 types that carry no comment
+either — fourteen nested records, twelve enums (nine of them the bare ones in `com.trading.model`)
+and one nested interface. `Tier`, `Side` and `AdminServiceApplication` were read at source and carry
 no comment at all. This is source coverage, not an extraction gap. At file level, 241 of 263 main
 sources carry a type-level javadoc block and **none carries javadoc only below the type level**,
 which is what makes the member-level gap (carried item 5) cheap to defer *for this estate* and says
@@ -245,10 +248,11 @@ The verb moves to first and three near-duplicate `status` rows leave the window.
 | 5 | `tier` −4.50 | `handleJwtAuth` −9.93 `[W]` |
 
 Read this one with the drift caveat in hand. `TierSpreadService`, which the pre-branch analysis
-expected to surface, **does not exist in the estate any more**; `VenueProperties.getTierSpreadBps` is
-now the only tier-spread symbol there is, so the new top hit is the best available answer rather than
-a wrong one. Positions 3–5 are the visible cost of porter: `handles` stems to `handl` and now matches
-every `handle*` method in the estate.
+expected to surface, **does not exist in the estate any more**; the only tier-spread code anywhere is
+the mock venue's `VenueProperties`, whose `getTierSpreadBps`/`setTierSpreadBps` accessor pair takes
+ranks 1 and 2 above on an identical score. So the new top hit is the best available answer rather
+than a wrong one. Positions 3–5 are the visible cost of porter: `handles` stems to `handl` and now
+matches every `handle*` method in the estate.
 
 ### Which of the three changes did the work
 
@@ -360,7 +364,7 @@ Until then the design work is costed and recorded, not lost, and reversing this 
 *Trigger:* wanting semantic rather than lexical retrieval.
 *Symptom:* config load fails naming the remedy. `sdd explain` still exits 0 because
 `ExplainCommand.buildModel` catches every `RuntimeException` and degrades to a fallback reason
-(`sdd-cli/src/main/java/sdd/cli/ExplainCommand.java:174-176`); every other command exits 1.
+(`sdd-cli/src/main/java/sdd/cli/ExplainCommand.java:172-174`); every other command exits 1.
 *Ruling:* rejected rather than silently downgraded — accepting a setting is a promise to act on it.
 *Cost if wrong:* small and bounded. One validator branch, one record component, four test call sites.
 No schema, no data and no public API to undo.
@@ -416,10 +420,11 @@ and not a new concept for a reader to learn.
 *Cost if wrong:* two users over one estate get different approved plans and no signal that they
 should not have.
 
-The tension worth recording alongside it: the same commit spends an entire `ORDER BY` key
-(`FtsRetriever`'s `fqcn` tiebreak) eliminating a *tie-order* divergence between migrated and fresh
-workspaces, while shipping a *content* divergence between them unannounced. The smaller problem got
-the fix.
+The tension worth recording alongside it: the same *branch* spends an entire `ORDER BY` key on the
+smaller half of this problem. `FtsRetriever`'s `fqcn` tiebreak (`c6b9ec9`) exists to eliminate a
+*tie-order* divergence between migrated and fresh workspaces, while the *content* divergence between
+them shipped unannounced in the two commits before it (`6de05cc`, `141f3ac`). Different commits, one
+branch — and the smaller problem got the fix.
 
 ### 6. Member-level javadoc is not extracted
 
@@ -495,12 +500,16 @@ a prose row matching most of a query loses to an identifier row matching one ter
 not buy the property item 12 was about; it would only reduce what prose is worth, and
 `GroupDirectory` climbed from 42 to 1 on exactly that. Any retune must re-run this A/B against a
 **larger and independently chosen** question set, and must not be justified by item 12.
+*Cost if wrong:* the weights are treated as measured and left alone when they are in fact arbitrary,
+so a real ranking problem gets attributed to the corpus or the tokenizer for a second time.
 
 ### 12. `FtsRetriever` claimed a ranking guarantee that does not exist — found here, **fixed** in `9063806`
 
 Recorded as a carried item because the finding shaped items 7, 11 and 13, not because it is still
 open. It is closed.
 
+*Trigger:* reading `FtsRetriever`'s class javadoc as a promise about ranking — which is what a reader
+weighing whether stale prose can mislead them would go there to find out.
 *Symptom as found:* `FtsRetriever`'s class javadoc stated that prose in the `doc` column *"breaks ties
 and surfaces types no identifier could reach, but it can never win against a code-derived match."*
 **It can.** Two instances in five questions: on Q3 `Action` (−15.13, doc-only) and `PayloadKeySpec`
@@ -549,17 +558,32 @@ it is the anchoring failure of item 9, arriving through the door item 9 held shu
 
 ### 14. `Database.migrate` reports the code's migration count, not the database's recorded version
 
-`Database.java:66` returns `MIGRATIONS.size()` unconditionally, so an older binary opening a newer
-database reports the wrong version. Pre-existing, but newly reachable now that more than one
-migration exists.
+*Trigger:* an older binary opening a database a newer binary has already migrated — which is now
+possible for the first time, because before this branch there was only ever one migration.
+*Symptom:* `Database.java:66` returns `MIGRATIONS.size()` unconditionally, so the reported version is
+the count of migrations the *binary* knows about rather than the version the *database* records.
+*Ruling:* pre-existing and left alone here. This branch made it reachable rather than introducing it,
+and fixing it means reading `schema_version` back after the transaction — a change to the one code
+path whose correctness the migration verification above rests on, which does not belong in a
+docs-and-measurement task.
+*Cost if wrong:* a diagnostic lies about which schema a workspace is on, in exactly the situation
+(mixed binary versions) where someone is reading it to find that out.
 
 ### 15. The two backend labels stay hardcoded and are load-bearing
 
-`SearchFacts.java:58`'s `"fts_symbol (bm25)"` and `SeedFinder.java:63`'s `"fts"`. The second flows
-into `ModelSeeder`'s **prompt**, `ImpactAnalysis`'s reason lines and `PlanMdRenderer`'s `plan.md`.
-*Ruling:* left alone with a comment saying why they must not be reworded. Derive them from the
+*Trigger:* anyone tidying up a magic string, or wiring a second retrieval backend and deriving the
+label from it.
+*Symptom:* `SearchFacts.java:61`'s `"fts_symbol (bm25)"` and `SeedFinder.java:63`'s `"fts"` are
+literals with no single owner. The second is not merely displayed: it flows into `ModelSeeder`'s
+**prompt**, `ImpactAnalysis`'s reason lines and `PlanMdRenderer`'s `plan.md` — the Gate-1 artifact a
+human approves, whose text `sdd approve` hashes into `plan_sha256`. Rewording it therefore changes a
+model's input and changes the document a human signed off on. Plans already approved keep their
+recorded hash; it is the next regeneration that no longer matches.
+*Ruling:* left alone, with a comment saying why they must not be reworded. Derive them from the
 retriever only once a second backend exists, and then define that backend to emit these exact strings
 for FTS.
+*Cost if wrong:* a rename that reads as cosmetic changes the Gate-1 document a human approves and
+the prompt a model is given, with nothing failing to say so.
 
 ---
 
@@ -573,7 +597,8 @@ keep the four real weights aligned.
 This was verified rather than assumed, and the dangerous half is the error mode: **supplying too many
 weights is silently ignored and supplying too few defaults the rest to 1.0 — neither raises.** An
 off-by-one would mis-weight every column in the table without any signal at all. The order is fixed
-by `V2__fts_porter.sql:9` and **must be re-checked against it if that table is ever recreated.**
+by the column list in `V2__fts_porter.sql` and **must be re-checked against it if that table is ever
+recreated.**
 
 ---
 
@@ -593,12 +618,42 @@ by `V2__fts_porter.sql:9` and **must be re-checked against it if that table is e
 3. **Were the corrections to this document itself recorded, not quietly patched?** Yes, and they are
    named in place rather than only in a commit message. Two claims in the first version were false and
    are corrected above: that `sdd status` migrates a database (it never opens one) and that frozen
-   production runs depended on the estate KB (`.sdd/runs/` is empty; they were archived). Both were
+   production runs depended on the estate KB (`.sdd/runs/` is empty — where those runs went is not
+   recorded anywhere this document can check, and the first draft's "archived" was a guess). Both were
    inherited from the branch plan's Risk #3 and from stale memory, and both were repeated here without
    being checked — which is the failure this document exists to argue against. A third was mine
    alone: item 12 originally offered "lowering the weight until it becomes true" as an option, which
    is impossible, since column weights cannot order rows at any value. Item 11 now says so explicitly
    so the bad inference is not available to the next reader.
+
+   A second correction round then found four more unsupported claims here, and the pattern in them is
+   worth more than the fixes themselves. The javadoc-coverage split was miscounted (nine and twenty-eight; it is **ten and 27**, and
+   the 27 include a nested interface the sentence did not admit to). Item 5 said "the same commit"
+   of two changes that landed in different commits. The bm25 note pinned the column order to
+   `V2__fts_porter.sql:9`, which is the `tokenize =` clause, not the columns. And the Q5 paragraph
+   called `getTierSpreadBps` "the only tier-spread symbol there is" two lines under a table showing
+   `setTierSpreadBps` tied with it at rank 2. Separately, the phase-6 carried item quoted at the top
+   of this document had two sentences elided mid-blockquote with no ellipsis, and is now quoted whole
+   — one of the elided sentences is where the `[fts_symbol (bm25)]` label this branch kept actually
+   comes from.
+
+   The same audit found the inverse error outside this document: `SearchFacts`' class javadoc still
+   justified that label by the defect `c5b0fcc`/`54e0a3e` had already removed — "`SddConfig.retrieval`
+   is validated but read nowhere … so an `embeddings`-configured estate silently gets FTS results
+   too". It survived because it sits in no task's diff, so no task-scoped reviewer was ever shown it.
+   It now states the real rationale (the label names the backend that answered, and must survive a
+   second backend arriving) without resting on a defect that no longer exists.
+
+   **The failure mode to take away: the previous round's citation fix introduced a wrong citation.**
+   `ExplainCommand.java:172-174` was correct and only its package path was wrong; "fixing" it moved
+   the range to `:174-176`, which points at three closing braces. And the correction commit before
+   it, `9063806`, added twelve javadoc lines above `FtsRetriever`'s bm25 call and edited
+   `docs/commands.md` in that same commit without re-checking the `FtsRetriever.java:70` citation it
+   had just invalidated — the call is at `:82` now. Both are the same mistake: a `file:line` citation is a claim about the tree as it stands
+   *after* the commit, so it has to be re-read after that commit's own edits, not before them. Two of
+   the false statements this branch's documents have carried were introduced by a round whose whole
+   purpose was to remove false statements, which is the strongest argument here for auditing every
+   citation in a document rather than only the ones a review names.
 4. **Are the two negative findings recorded as prominently as the positive ones?** Items 12 and 13
    are both failures of things this branch shipped, found by this measurement. Item 12 was fixed in
    `9063806` and is kept here anyway, because it is what narrowed items 7 and 11. Item 13 contradicts
