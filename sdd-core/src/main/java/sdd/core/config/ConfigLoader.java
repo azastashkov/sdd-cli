@@ -35,10 +35,7 @@ public final class ConfigLoader {
         }
         Map<String, Object> root = parseYaml(file);
 
-        String retrieval = str(root.getOrDefault("retrieval", "fts"), env, "retrieval");
-        if (!retrieval.equals("fts") && !retrieval.equals("embeddings")) {
-            throw new ConfigException("retrieval must be 'fts' or 'embeddings', got '" + retrieval + "'");
-        }
+        rejectUnimplementedRetrieval(root, env);
 
         Map<String, ModelEndpoint> models = new LinkedHashMap<>();
         Object modelsNode = root.get("models");
@@ -52,9 +49,6 @@ public final class ConfigLoader {
             if (!models.containsKey(required)) {
                 throw new ConfigException("models." + required + " is required");
             }
-        }
-        if (retrieval.equals("embeddings") && !models.containsKey("embeddings")) {
-            throw new ConfigException("retrieval=embeddings requires a models.embeddings endpoint");
         }
 
         Map<Integer, Path> jdkHomes = new LinkedHashMap<>();
@@ -178,9 +172,35 @@ public final class ConfigLoader {
             throw new ConfigException("verification_exclusions must be a mapping, got: " + exclusionsNode);
         }
 
-        return new SddConfig(workspace, retrieval, Map.copyOf(models), Map.copyOf(jdkHomes),
+        return new SddConfig(workspace, Map.copyOf(models), Map.copyOf(jdkHomes),
                 excludes, Map.copyOf(artifactOverrides), List.copyOf(manualEdges), run,
                 Map.copyOf(verificationExclusions));
+    }
+
+    // No EmbeddingsRetriever exists and every command retrieves with SQLite FTS5 regardless of this
+    // key, so accepting "embeddings" here would be a promise ConfigLoader cannot keep: the user
+    // declares a models.embeddings endpoint, wires a credential, and silently gets FTS anyway. The
+    // key is still parsed and validated — never stored, see SddConfig's javadoc — so that snakeyaml
+    // does not just swallow the setting and let the same lie back in, quieter. "embeddings" and any
+    // other bad value get deliberately different messages: a user who wrote "embeddings" followed
+    // the (former) documentation and needs to be told the feature does not exist and what to do
+    // instead, while a user who wrote something else (e.g. "vector") made a typo and must not be
+    // told their config mentions a feature that was never real.
+    private static void rejectUnimplementedRetrieval(Map<String, Object> root, Function<String, String> env) {
+        Object node = root.get("retrieval");
+        if (node == null) {
+            return;
+        }
+        String v = str(node, env, "retrieval");
+        if (v.equals("fts")) {
+            return;
+        }
+        if (v.equals("embeddings")) {
+            throw new ConfigException("retrieval: embeddings is not implemented — no embeddings "
+                    + "backend exists in this build and every command retrieves with SQLite FTS5. "
+                    + "Set retrieval: fts, or remove the key.");
+        }
+        throw new ConfigException("retrieval must be 'fts', got '" + v + "'");
     }
 
     @SuppressWarnings("unchecked")
