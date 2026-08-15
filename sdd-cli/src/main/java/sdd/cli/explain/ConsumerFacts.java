@@ -2,6 +2,7 @@ package sdd.cli.explain;
 
 import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
+import sdd.core.kb.ArtifactRef;
 import sdd.core.kb.ContractEdges;
 import sdd.core.kb.EntityKind;
 import sdd.core.kb.EntityMatch;
@@ -11,6 +12,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.TreeSet;
 
 /**
@@ -238,12 +240,12 @@ final class ConsumerFacts {
     // --- artifact: dep_edge by to_grp/to_name --------------------------------------------------
 
     private static List<Section> artifactConsumers(Jdbi jdbi, String artifact) {
-        int colon = artifact.indexOf(':');
-        if (colon <= 0 || colon == artifact.length() - 1) {
+        Optional<ArtifactRef> ref = ArtifactRef.parse(artifact);
+        if (ref.isEmpty()) {
             return List.of(Section.of("Consumers of artifact: " + artifact, "dep_edge", List.of()));
         }
-        String grp = artifact.substring(0, colon);
-        String name = artifact.substring(colon + 1);
+        String grp = ref.get().grp();
+        String name = ref.get().name();
         List<Map<String, Object>> rows = jdbi.withHandle(h -> h.createQuery("""
                         SELECT DISTINCT r.name AS consumer, e.configuration AS configuration,
                                e.declared_version AS declared_version, e.mode AS mode

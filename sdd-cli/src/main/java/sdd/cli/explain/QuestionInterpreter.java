@@ -344,12 +344,12 @@ public final class QuestionInterpreter {
         List<EntityRef> entities = new ArrayList<>();
 
         for (String repo : KbEntities.repoNames(jdbi)) {
-            if (mentionsWholeWord(question, repo)) {
+            if (Mentions.wholeWord(question, repo)) {
                 entities.add(new EntityRef(EntityKind.REPO, repo, false));
             }
         }
         for (String topic : KbEntities.topicNames(jdbi)) {
-            if (mentionsWholeWord(question, topic)) {
+            if (Mentions.wholeWord(question, topic)) {
                 entities.add(new EntityRef(EntityKind.TOPIC, topic, false));
             }
         }
@@ -383,9 +383,5 @@ public final class QuestionInterpreter {
 
         Intent intent = entities.isEmpty() ? Intent.SEARCH : Intent.DESCRIBE;
         return new RetrievalRequest(intent, entities, searchTerms, question, notes, true);
-    }
-
-    private static boolean mentionsWholeWord(String question, String candidate) {
-        return Pattern.compile("\\b" + Pattern.quote(candidate) + "\\b").matcher(question).find();
     }
 }

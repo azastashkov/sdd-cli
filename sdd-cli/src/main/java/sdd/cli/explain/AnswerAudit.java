@@ -5,7 +5,6 @@ import sdd.core.kb.KbEntities;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Pattern;
 
 /**
  * A cheap, deterministic backstop that runs after {@link AnswerNarrator}: every {@code repo.name}
@@ -59,13 +58,9 @@ public final class AnswerAudit {
 
     private static void noteIfHallucinated(List<String> notes, String kind, String name,
                                            String answer, String evidence) {
-        if (mentionsWholeWord(answer, name) && !mentionsWholeWord(evidence, name)) {
+        if (Mentions.wholeWord(answer, name) && !Mentions.wholeWord(evidence, name)) {
             notes.add("answer names " + kind + " '" + name + "', which does not appear in the "
                     + "evidence above -- possible hallucination");
         }
-    }
-
-    private static boolean mentionsWholeWord(String text, String name) {
-        return Pattern.compile("\\b" + Pattern.quote(name) + "\\b").matcher(text).find();
     }
 }

@@ -275,12 +275,12 @@ Every claim carries a `file:line` citation — the file's own standard. Document
 - **`OpenQuestions.disconnectedSeeds` keeps its own copy of the contract queries** (its projection is unfiltered by repo inequality). Noted rather than forced into `ContractEdges`.
 - **No conversational follow-up.** Each invocation is independent; there is no session or history.
 
-### Deferred by the final review (2026-08-15)
+### Deferred by the final review (2026-08-15) — since cleared
 
-Both were found by the whole-branch review, judged real, and deliberately not fixed in this phase.
+Both were found by the whole-branch review, judged real, and deliberately not fixed in this phase. Both were then fixed on `sdd/carried-items`, so neither is carried any longer:
 
-- **Small helpers duplicated inside `sdd.cli.explain`.** `kindLabel` is defined identically in `EvidenceCollector` and `EvidenceRenderer`; `mentionsWholeWord` identically in `AnswerAudit` and `QuestionInterpreter`; the `grp:name` split is duplicated between `KbEntities.resolveArtifact` and `ConsumerFacts.artifactConsumers`. *Trigger:* editing one copy. *Symptom:* the copies drift silently — neither has a test that would notice. *Ruling:* deferred; this phase's fix wave was already eight items on an approved branch. *Cost if wrong:* a little duplication to pay down, in a package that just finished paying down exactly this kind of debt.
-- **Two `rest_endpoint` rows in one repo with the same verb and path emit each caller fact twice.** `ConsumerFacts.endpointConsumers` calls `callersOf` once per `EntityMatch`; two rows differing only in `class_fqcn`/`method_name` produce identical `detail` strings, and the ambiguity check counts distinct *repos*, so no ambiguity section fires. *Trigger:* the same endpoint declared on two controller methods in one repo. *Symptom:* a duplicated caller line, with no explanation of why. *Cost if wrong:* the answer is redundant, never wrong — the facts are all true, one is just stated twice.
+- The duplicate caller facts and the repo-counted ambiguity check in `ConsumerFacts.endpointConsumers` — matches are now collapsed to their distinct `(repo, verb, norm)` triples (exactly `callersOf`'s query key) before querying, and the ambiguity fact counts those triples, so two different endpoints inside one repo are reported as ambiguous instead of merged silently.
+- The three duplicated helpers — `kindLabel` is now `EntityKind.label()`, `mentionsWholeWord` is now `Mentions.wholeWord` in `sdd.cli.explain`, and the `grp:name` split is now `ArtifactRef.parse` in `sdd.core.kb` (each caller keeping its own empty-case behavior).
 
 ## Self-Review (completed at write time)
 
