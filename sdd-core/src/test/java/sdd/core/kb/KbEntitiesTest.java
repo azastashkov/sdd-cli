@@ -175,4 +175,113 @@ class KbEntitiesTest {
     void topicNamesListsAllTopics() {
         assertThat(KbEntities.topicNames(db.jdbi())).containsExactly("orders.events");
     }
+
+    // --- exact-match-first endpoint resolution (over-matching fix) ---
+
+    private void seedCandlesCollisionPair() {
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO rest_endpoint(module_id, class_fqcn, method_name, http_method, path_template, norm_path) "
+                    + "VALUES (1,'CandlesController','symbols','GET','/candles/{id}/symbols','/candles/{}/symbols')");
+            h.execute("INSERT INTO rest_endpoint(module_id, class_fqcn, method_name, http_method, path_template, norm_path) "
+                    + "VALUES (1,'CandlesController','get','GET','/candles/{id}/{other}','/candles/{}/{}')");
+        });
+    }
+
+    private void seedHealthNullAndGetRows() {
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO rest_endpoint(module_id, class_fqcn, method_name, http_method, path_template, norm_path) "
+                    + "VALUES (1,'HealthController','any',NULL,'/health','/health')");
+            h.execute("INSERT INTO rest_endpoint(module_id, class_fqcn, method_name, http_method, path_template, norm_path) "
+                    + "VALUES (1,'HealthController','get','GET','/health','/health')");
+        });
+    }
+
+    /**
+     * The live-estate regression: trading-candles exposes both GET /api/candles/{}/symbols and
+     * GET /api/candles/{}/{}. templatesMatch treats {} as a wildcard on both sides, so naming the
+     * first also matched the second under the old fuzzy-only resolution. Naming an endpoint by
+     * the exact spelling the KB itself offers must resolve back to that one row.
+     */
+    @Test
+    void namingOneOfTwoCollidingTemplatedEndpointsResolvesExactlyOne() {
+        seedCandlesCollisionPair();
+
+        Resolution r = KbEntities.resolve(db.jdbi(), EntityKind.ENDPOINT, "GET /candles/{}/symbols");
+
+        assertThat(r.matches()).extracting(EntityMatch::detail)
+                .containsExactly("GET /candles/{}/symbols");
+    }
+
+    @Test
+    void explicitAnyVerbResolvesToNullMethodRowOnly() {
+        seedHealthNullAndGetRows();
+
+        Resolution r = KbEntities.resolve(db.jdbi(), EntityKind.ENDPOINT, "ANY /health");
+
+        assertThat(r.matches()).extracting(EntityMatch::detail)
+                .containsExactly("ANY /health");
+    }
+
+    /**
+     * Pins the behavior the fix must not break: an omitted verb is not the same thing as an
+     * explicit ANY, and must still resolve every http_method at the exact path, including the
+     * NULL-method row.
+     */
+    @Test
+    void omittedVerbStillResolvesEveryVerbAtExactPath() {
+        seedHealthNullAndGetRows();
+
+        Resolution r = KbEntities.resolve(db.jdbi(), EntityKind.ENDPOINT, "/health");
+
+        assertThat(r.matches()).extracting(EntityMatch::detail)
+                .containsExactlyInAnyOrder("ANY /health", "GET /health");
+    }
+
+    /**
+     * A literal path with no exact-match row must still fall back to the existing fuzzy
+     * templatesMatch/verbsCompatible scan, unchanged.
+     */
+    @Test
+    void literalPathWithNoExactMatchFallsBackToFuzzyTemplateMatch() {
+        db.jdbi().useHandle(h -> h.execute("INSERT INTO rest_endpoint(module_id, class_fqcn, method_name, http_method, path_template, norm_path) "
+                + "VALUES (1,'CandlesController','symbols','GET','/candles/{id}/symbols','/candles/{}/symbols')"));
+
+        Resolution r = KbEntities.resolve(db.jdbi(), EntityKind.ENDPOINT, "GET /candles/7/symbols");
+
+        assertThat(r.matches()).extracting(EntityMatch::detail)
+                .containsExactly("GET /candles/{}/symbols");
+    }
+
+    /**
+     * Round-trip invariant, driven from endpointLabels' own output so the two cannot drift
+     * apart: every label the KB offers as a name must resolve back to exactly the row that
+     * produced it. Fixture covers a {}-templated collision pair (also the over-matching repro
+     * in the other direction), a NULL-method row, and its GET sibling at the same path.
+     */
+    @Test
+    void everyEndpointLabelRoundTripsToExactlyItsOwnRow() {
+        seedCandlesCollisionPair();
+        seedHealthNullAndGetRows();
+
+        for (String label : KbEntities.endpointLabels(db.jdbi())) {
+            Resolution r = KbEntities.resolve(db.jdbi(), EntityKind.ENDPOINT, label);
+
+            assertThat(r.matches())
+                    .as("round-trip for label '%s'", label)
+                    .extracting(EntityMatch::detail)
+                    .containsExactly(label);
+        }
+    }
+
+    @Test
+    void endpointValueMatchingNothingStillReturnsEmptyResolutionWithUnchangedMissReason() {
+        seedCandlesCollisionPair();
+        seedHealthNullAndGetRows();
+
+        Resolution r = KbEntities.resolve(db.jdbi(), EntityKind.ENDPOINT, "DELETE /nope");
+
+        assertThat(r.isEmpty()).isTrue();
+        assertThat(r.matches()).isEmpty();
+        assertThat(KbEntities.missReason(EntityKind.ENDPOINT)).isEqualTo("no endpoint matches");
+    }
 }
