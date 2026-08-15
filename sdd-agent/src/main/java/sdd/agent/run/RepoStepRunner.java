@@ -7,7 +7,9 @@ import sdd.agent.loop.AgentLoop;
 import sdd.agent.loop.AgentOutcome;
 import sdd.agent.loop.AgentResult;
 import sdd.agent.tool.FileTools;
+import sdd.agent.tool.BuildTool;
 import sdd.agent.tool.GradleTool;
+import sdd.agent.tool.NpmTool;
 import sdd.agent.tool.PathJail;
 import sdd.agent.tool.Toolbox;
 import sdd.core.llm.ChatModel;
@@ -39,14 +41,22 @@ public final class RepoStepRunner {
     public StepOutcome run(RepoStep step, ChatModel model, String modelName, RunnerSettings settings,
                            String priorDigest) {
         OutputCompactor compactor = new OutputCompactor(step.repoRoot());
-        GradleTool gradle = new GradleTool(step.repoRoot(), settings.javaHome(), settings.gradleTimeout(),
-                settings.gradleExtraArgs(), settings.gradlePermits());
+        // The settings say which toolchain this repo uses; the filesystem is consulted only when
+        // they do not, so a repo that has never been indexed still gets the right tool.
+        sdd.core.toolchain.Toolchain toolchain = settings.toolchain() == sdd.core.toolchain.Toolchain.UNKNOWN
+                ? sdd.core.toolchain.Toolchain.detect(step.repoRoot())
+                : settings.toolchain();
+        BuildTool build = toolchain == sdd.core.toolchain.Toolchain.NPM
+                ? new NpmTool(step.repoRoot(), settings.nodeHome(), settings.gradleTimeout(),
+                        settings.gradlePermits())
+                : new GradleTool(step.repoRoot(), settings.javaHome(), settings.gradleTimeout(),
+                        settings.gradleExtraArgs(), settings.gradlePermits());
         // Hoisted (rather than inlined into the Toolbox constructor) so appliedEdits() can be read
         // after the loop finishes — this one instance is reused across every cycle below, so its
         // edits accumulate over the whole attempt regardless of how many times loop.run() is called.
         FileTools fileTools = new FileTools(new PathJail(step.repoRoot()));
-        Toolbox toolbox = new Toolbox(fileTools, gradle, compactor);
-        VerificationRunner verifier = new VerificationRunner(gradle, compactor);
+        Toolbox toolbox = new Toolbox(fileTools, build, compactor);
+        VerificationRunner verifier = new VerificationRunner(build, compactor);
         AgentLoop loop = new AgentLoop(model, toolbox, settings.budget(), settings.contextSoftCap(),
                 settings.clock());
 

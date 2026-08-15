@@ -1,6 +1,6 @@
 package sdd.agent.run;
 
-import sdd.agent.tool.GradleTool;
+import sdd.agent.tool.BuildTool;
 
 /**
  * The independent deterministic gate the runner applies on `done` (design M7): run an allowlisted
@@ -8,19 +8,19 @@ import sdd.agent.tool.GradleTool;
  * here — they ride in the work order and surface as human-confirmed.
  */
 public final class VerificationRunner {
-    private final GradleTool gradle;
+    private final BuildTool build;
     private final OutputCompactor compactor;
 
     public record Verdict(boolean passed, String output, boolean infra) {
     }
 
-    public VerificationRunner(GradleTool gradle, OutputCompactor compactor) {
-        this.gradle = gradle;
+    public VerificationRunner(BuildTool build, OutputCompactor compactor) {
+        this.build = build;
         this.compactor = compactor;
     }
 
     public Verdict verify(String task) {
-        String raw = gradle.runFull(task);
+        String raw = build.runFull(task);
         String compacted = compactor.compact(raw, task);
         boolean passed = compacted.startsWith("exit 0");
         return new Verdict(passed, compacted, !passed && InfraClassifier.isInfra(raw));
