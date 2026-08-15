@@ -12,6 +12,7 @@ import sdd.core.llm.ChatModel;
 import sdd.core.llm.ChatRequest;
 import sdd.core.llm.ChatResponse;
 import sdd.core.llm.ModelException;
+import sdd.core.retrieve.Retriever;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -33,6 +34,7 @@ public final class QuestionInterpreter {
     private static final int MAX_ENTITIES = 4;
     private static final int MAX_TERMS = 8;
     private static final int MAX_VOCAB_NAMES = 200;
+    static final int SYMBOL_CANDIDATES = 20;
 
     private static final Pattern DOTTED_IDENTIFIER =
             Pattern.compile("\\b[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)+\\b");
@@ -66,12 +68,12 @@ public final class QuestionInterpreter {
     private QuestionInterpreter() {
     }
 
-    public static RetrievalRequest interpret(Jdbi jdbi, String question, ChatModel model,
+    public static RetrievalRequest interpret(Jdbi jdbi, Retriever retriever, String question, ChatModel model,
                                               String modelName, int maxTokens) {
         ChatResponse response;
         try {
             response = model.complete(new ChatRequest(modelName,
-                    List.of(ChatMessage.system(SYSTEM_PROMPT), ChatMessage.user(composeUserMessage(jdbi, question))),
+                    List.of(ChatMessage.system(SYSTEM_PROMPT), ChatMessage.user(composeUserMessage(jdbi, retriever, question))),
                     List.of(), maxTokens, 0.15));
         } catch (ModelException e) {
             return fallback(jdbi, question, "model error: " + e.getMessage());
@@ -85,15 +87,40 @@ public final class QuestionInterpreter {
     /**
      * The system prompt commands "name entities exactly as they appear in the estate", which is
      * an unreasonable demand of a model that has never seen the estate's names. Handing over the
-     * KB's repo and topic names — names only, never {@code repo_card} text — gives the model a
-     * vocabulary to be exact about without letting it judge relevance; the anti-invention rule in
-     * {@link #SYSTEM_PROMPT} still governs, so this is an aid, not permission to invent. Capped
-     * so a large estate cannot blow up the prompt; validation downstream is unaffected either way
-     * since every name still has to survive {@link KbEntities#resolve}.
+     * KB's repo, topic and endpoint names — names only, never {@code repo_card} text — gives the
+     * model a vocabulary to be exact about without letting it judge relevance; the anti-invention
+     * rule in {@link #SYSTEM_PROMPT} still governs, so this is an aid, not permission to invent.
+     * Capped so a large estate cannot blow up the prompt; validation downstream is unaffected
+     * either way since every name still has to survive {@link KbEntities#resolve}.
+     *
+     * <p>Repos, topics and endpoints are exhaustive lists — small and enumerable for any estate
+     * this tool targets. Types are not: a large estate can have thousands, so listing them all
+     * would either blow up the prompt or force an arbitrary cut that silently hides whichever
+     * names didn't make it. Instead the {@code symbols matching the question} section runs the
+     * same deterministic {@link Retriever} full-text search the {@code SEARCH} intent's fallback
+     * uses, scoped to this one question, and offers its top {@link #SYMBOL_CANDIDATES} hits as
+     * candidate names — question-scoped rather than exhaustive, so it scales. This is still no
+     * model in the loop: the search runs before call 1, deterministically, and only narrates
+     * candidates the model may or may not use.
+     *
+     * <p>Labelled honestly as search hits that <strong>may be irrelevant</strong> rather than as
+     * confirmed matches: a full-text hit ranks by term overlap, not by whether the question is
+     * actually about that symbol, and presenting the top hit as if it were the answer is exactly
+     * how a fluent, confident, wrong answer gets anchored onto the wrong entity. The model still
+     * has to judge relevance and still has to name an identifier exactly — this list only makes
+     * the exact spelling available; the anti-invention rule in {@link #SYSTEM_PROMPT} decides
+     * whether it should be used at all.
      */
-    private static String composeUserMessage(Jdbi jdbi, String question) {
+    private static String composeUserMessage(Jdbi jdbi, Retriever retriever, String question) {
+        List<String> symbolLabels = retriever.search(question, SYMBOL_CANDIDATES).stream()
+                .map(hit -> hit.identifier() + " (" + hit.fqcn() + ")")
+                .toList();
         return "Known repos: " + namesLine(KbEntities.repoNames(jdbi)) + "\n"
-                + "Known topics: " + namesLine(KbEntities.topicNames(jdbi)) + "\n\n"
+                + "Known topics: " + namesLine(KbEntities.topicNames(jdbi)) + "\n"
+                + "Known endpoints: " + namesLine(KbEntities.endpointLabels(jdbi)) + "\n"
+                + "Symbols matching the question (full-text search hits, best match first — these "
+                + "may be irrelevant; name one as an entity only if the question is actually about "
+                + "it): " + namesLine(symbolLabels) + "\n\n"
                 + "Question: " + question;
     }
 

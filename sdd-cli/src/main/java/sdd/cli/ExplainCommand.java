@@ -95,12 +95,16 @@ public final class ExplainCommand implements Callable<Integer> {
 
             ModelSetup setup = buildModel();
 
+            // Built once and shared: call 1's candidate-symbol vocabulary (QuestionInterpreter)
+            // and the deterministic fetch (EvidenceCollector) both search the same KB via the
+            // same Retriever -- a second instance would just be a redundant FtsRetriever(db.jdbi()).
+            Retriever retriever = new FtsRetriever(db.jdbi());
+
             RetrievalRequest request = setup.model() != null
-                    ? QuestionInterpreter.interpret(db.jdbi(), questionText, setup.model(),
+                    ? QuestionInterpreter.interpret(db.jdbi(), retriever, questionText, setup.model(),
                             setup.endpoint().model(), setup.endpoint().maxTokens())
                     : QuestionInterpreter.fallback(db.jdbi(), questionText, setup.failureReason());
 
-            Retriever retriever = new FtsRetriever(db.jdbi());
             Evidence evidence = EvidenceCollector.collect(db.jdbi(), retriever, request);
 
             Optional<Answer> answer = Optional.empty();

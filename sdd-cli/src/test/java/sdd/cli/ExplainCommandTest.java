@@ -295,6 +295,28 @@ class ExplainCommandTest {
     }
 
     @Test
+    void exactlyTwoModelCallsEndToEndWhenEvidenceIsFound() throws Exception {
+        // The question-scoped candidate vocabulary QuestionInterpreter now builds runs a
+        // deterministic FTS search before call 1 -- not a model call. This pins the "still exactly
+        // two model calls" invariant end-to-end through the real command, not just at the
+        // QuestionInterpreter unit level, so a request-count assertion (not script exhaustion)
+        // proves it.
+        seedKb();
+        ExplainCommand cmd = new ExplainCommand();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                response("""
+                        {"intent":"describe","restatement":"What is lib-core?",
+                         "entities":[{"kind":"repo","value":"lib-core"}],"search_terms":[]}""", "stop"),
+                response("lib-core is a library repo.", "stop")));
+        cmd.plannerForTest = model;
+
+        Run run = explain(cmd, "--workspace", ws.toString(), "what", "is", "lib-core");
+
+        assertThat(run.exitCode()).isZero();
+        assertThat(model.requests()).hasSize(2);
+    }
+
+    @Test
     void call2FailureStillPrintsAnswerUnavailableAndFullEvidence() throws Exception {
         seedKb();
         ExplainCommand cmd = new ExplainCommand();

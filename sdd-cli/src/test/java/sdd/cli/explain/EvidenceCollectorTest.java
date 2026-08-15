@@ -764,7 +764,7 @@ class EvidenceCollectorTest {
                 new ChatResponse(ChatMessage.assistant("a narrated answer"), "stop", new Usage(1, 1))));
 
         // call 1: interpretation
-        RetrievalRequest request = QuestionInterpreter.interpret(db.jdbi(), "what breaks if lib-core changes",
+        RetrievalRequest request = QuestionInterpreter.interpret(db.jdbi(), retriever, "what breaks if lib-core changes",
                 model, "m", 512);
         assertThat(request.intent()).isEqualTo(Intent.IMPACT);
         assertThat(model.requests()).hasSize(1);
