@@ -262,6 +262,34 @@ class IndexServiceTest {
     }
 
     @Test
+    void repoMigratedFromBeforeV4ReindexesOnAPlainRunWithoutForce() throws Exception {
+        // The trap this closes: V2 and V3 both left upgraded workspaces needing an explicit
+        // `sdd index --force`, because the fingerprint short-circuit saw an unchanged head/dirty
+        // pair and skipped — so the newly-added column stayed empty indefinitely and nothing said
+        // so. Simulating the migrated state directly (a row that is otherwise perfectly healthy but
+        // has no build_system) is the whole point: it must NOT be treated as unchanged.
+        FixtureRepo.in(ws, "has-source").file("src/main/java/P.java", "public class P {}\n").commit("init");
+        try (Database db = Database.open(ws)) {
+            IndexService service = new IndexService(repoDir -> oneModuleAt("has-source", repoDir));
+            service.run(config(), db);
+            db.jdbi().useHandle(h ->
+                    h.execute("UPDATE repo SET build_system=NULL WHERE name='has-source'"));
+
+            List<IndexService.RepoResult> second = service.run(config(), db);   // note: no --force
+
+            assertThat(second).filteredOn(r -> r.repo().equals("has-source")).first()
+                    .satisfies(r -> {
+                        assertThat(r.skipped()).isFalse();
+                        assertThat(r.status()).isEqualTo("OK");
+                    });
+            String refilled = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT build_system FROM repo WHERE name='has-source'")
+                    .mapTo(String.class).one());
+            assertThat(refilled).isEqualTo("GRADLE");
+        }
+    }
+
+    @Test
     void forceReindexesUnchangedRepoWithoutDuplicatingRows() throws Exception {
         FixtureRepo.in(ws, "has-source").file("src/main/java/P.java", "public class P {}\n").commit("init");
         try (Database db = Database.open(ws)) {

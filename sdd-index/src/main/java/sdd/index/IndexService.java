@@ -173,10 +173,17 @@ public final class IndexService {
         // on the next run is coherent and cheap — unlike a gradle-status skip, nothing was lost.
         // A NULL parse_status is not "parsed fine" either: rows written before source extraction
         // existed have one, and skipping them would leave those repos without source data forever.
+        // A NULL build_system is not "unchanged" either: it means the row predates the V4 migration
+        // and so has never been through an extractor that records which build system produced it.
+        // Without this clause a workspace upgraded to V4 reports "(unchanged, skipped)" for every
+        // repo and the new column stays NULL forever on a plain `sdd index` — the same trap the V2
+        // and V3 upgrades hit, whose documented remedy was the easily-missed `sdd index --force`.
+        // Costing one full re-index on upgrade buys back a workspace that heals itself.
         Optional<String> stored = jdbi.withHandle(h -> h.createQuery("""
                         SELECT head_commit || ':' || dirty_hash FROM repo
                         WHERE name=:n AND gradle_status='OK'
-                          AND parse_status IS NOT NULL AND parse_status != 'FAILED'""")
+                          AND parse_status IS NOT NULL AND parse_status != 'FAILED'
+                          AND build_system IS NOT NULL""")
                 .bind("n", scan.name()).mapTo(String.class).findOne());
         if (!force && stored.isPresent() && stored.get().equals(scan.fingerprint())) {
             return new RepoResult(scan.name(), "OK", null, 0, 0, true, null);
