@@ -830,7 +830,7 @@ class EvidenceCollectorTest {
             // Raw SQL rather than FtsSymbolWriter, which is otherwise the sole write path for this
             // table: it deletes by module and by repo, never by identifier, and widening its API to
             // suit one fixture would be the wrong direction — the point of the rule is that
-            // production has exactly two ways to remove rows. The insert below still goes through it.
+            // production never removes a row by identifier. The insert below still goes through it.
             h.execute("DELETE FROM fts_symbol WHERE identifier = 'PriceApi'");
             FtsSymbolWriter.insert(h, 2, "PriceApi", ExplainFixture.PRICE_API_FQCN, javadoc);
         });

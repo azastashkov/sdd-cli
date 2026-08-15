@@ -328,9 +328,10 @@ tables — and a hit reached *only* through prose is labelled
 **If your knowledge base predates javadoc indexing, run `sdd index --force`.**
 The schema upgrade rebuilds the search index but cannot invent javadoc it never
 stored, so a workspace carried up from an older version searches identifiers
-only. A plain `sdd index` will *not* fix it: it skips every repo whose git
-fingerprint is unchanged, and upgrading the schema changes no repo's fingerprint,
-so it prints `(unchanged, skipped)` and exits 0 having done nothing
+only. A plain `sdd index` will *not* fix it: for a repo that last indexed
+successfully, it skips whenever the git fingerprint is unchanged, and upgrading
+the schema changes no repo's fingerprint, so on a healthy workspace it prints
+`(unchanged, skipped)` and exits 0 having done nothing
 (`IndexService.java:176-183`, `IndexCommand.java:34-39`).
 
 Neither the weighting nor the label is a promise about rank. The weighting is

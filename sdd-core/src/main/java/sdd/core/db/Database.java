@@ -78,10 +78,15 @@ public final class Database implements AutoCloseable {
      * reporting the count would make {@link #schemaVersion()} lie in exactly the mixed-version
      * situation someone consults it to diagnose.
      *
-     * <p>The version read here is a hint that lets the common case skip the loop entirely; it is not
-     * load-bearing, because it is taken outside the migration transaction and another process may
-     * move the database on before the loop reaches it. {@link #applyMigration} re-reads inside its own
-     * transaction and that reading is the authority.
+     * <p>The version read here lets the common case skip the loop entirely, and on that path — the
+     * database already at the newest migration this binary knows — it is exactly the value
+     * {@link #schemaVersion()} returns, since the loop that would call {@link #applyMigration} never
+     * runs to re-read it. That is still safe: schema versions only move forward, so a database already
+     * at the newest known version cannot be made stale by a concurrent migration, only by one that
+     * hasn't happened yet, which is not this case. When the loop does run, this read is only a hint,
+     * not the authority — it is taken outside the migration transaction, and another process may move
+     * the database on before the loop reaches it. {@link #applyMigration} re-reads inside its own
+     * transaction in that case, and that reading is the authority.
      */
     private static int migrate(Path workspace) {
         Jdbi jdbi = Jdbi.create(dataSource(workspace, SQLiteConfig.TransactionMode.IMMEDIATE));
@@ -99,13 +104,15 @@ public final class Database implements AutoCloseable {
      * <p>The re-read is what makes a concurrent upgrade safe. Two processes opening the same v1
      * workspace can both see version 1 before either takes a lock — the window is short, but nothing
      * bounds it — and without this check the second re-runs a migration the first has just
-     * committed. That is not idempotent here: V2's
-     * {@code DROP TABLE fts_symbol} plus {@link FtsSymbolWriter#rebuildFrom} would discard the first
-     * process's work, and V3's {@code ALTER TABLE ... ADD COLUMN javadoc} would then fail with
-     * {@code duplicate column name} and roll back — leaving the database recording version 2 with
-     * V3's column already present, a state every subsequent open re-attempts and every subsequent
-     * open therefore fails on. That is unrecoverable without hand-editing SQLite, and it would happen
-     * on {@link #open}, which every command including the read-only ones performs.
+     * committed. V2's re-run is harmless in effect: {@link FtsSymbolWriter#rebuildFrom} reconstructs
+     * {@code fts_symbol} entirely from {@code java_type} and {@code api_member}, and neither V2 nor
+     * V3 touches either table, so the second process's {@code DROP TABLE fts_symbol} plus rebuild
+     * reproduces the same rows rather than losing anything. V3 is where it breaks: the second
+     * process's {@code ALTER TABLE ... ADD COLUMN javadoc} fails with {@code duplicate column name}
+     * and rolls back — leaving the database recording version 2 with V3's column already present, a
+     * state every subsequent open re-attempts and every subsequent open therefore fails on. That is
+     * unrecoverable without hand-editing SQLite, and it would happen on {@link #open}, which every
+     * command including the read-only ones performs.
      */
     private static int applyMigration(Jdbi jdbi, int version, String script) {
         return jdbi.inTransaction(h -> {

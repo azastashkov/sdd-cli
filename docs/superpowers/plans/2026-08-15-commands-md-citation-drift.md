@@ -10,7 +10,7 @@ is not a cosmetic defect. It is the document asserting something the code does n
 
 While verifying the `sdd/retrieval-corpus` branch, **every `file:line` citation in both
 `docs/commands.md` and that branch's plan doc was re-checked by opening the cited file and reading
-the cited lines** — 145 citations in total. **31 were wrong.** Four belonged to the branch under
+the cited lines** — 145 citations in total. **32 were wrong.** Four belonged to the branch under
 review and were fixed there, in `20805cf`: two in
 `docs/superpowers/plans/2026-08-15-retrieval-corpus.md` (`ExplainCommand.java:174-176`, which the
 previous correction round had itself broken, and `V2__fts_porter.sql:9`, which is the `tokenize =`

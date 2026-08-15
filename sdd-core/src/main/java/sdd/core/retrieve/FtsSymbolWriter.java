@@ -87,11 +87,11 @@ public final class FtsSymbolWriter {
      * does not exist until V3, so selecting it here would break the very upgrade this method
      * exists to complete. A workspace upgraded from V1 therefore searches identifiers only until it
      * is re-indexed — and the remedy is {@code sdd index --force} specifically, not {@code sdd
-     * index}: {@code IndexService.indexRepo} skips any repo whose
-     * {@code head_commit || ':' || dirty_hash} fingerprint is unchanged, and a schema migration
-     * changes no repo's fingerprint, so a plain {@code sdd index} reports
-     * {@code (unchanged, skipped)} for every repo, exits 0, and leaves the workspace exactly as
-     * degraded as it found it. <strong>Any future migration that recreates fts_symbol must both move
+     * index}: for a repo that last indexed successfully, {@code IndexService.indexRepo} skips
+     * whenever the {@code head_commit || ':' || dirty_hash} fingerprint is unchanged, and a schema
+     * migration changes no repo's fingerprint, so on a healthy workspace a plain {@code sdd index}
+     * reports {@code (unchanged, skipped)} for every repo, exits 0, and leaves the workspace exactly
+     * as degraded as it found it. <strong>Any future migration that recreates fts_symbol must both move
      * {@code Database.FTS_REBUILD_VERSION} to itself and extend this method to carry
      * {@code java_type.javadoc} across</strong> — otherwise that upgrade would silently drop every
      * javadoc row an indexed workspace already had.

@@ -145,9 +145,10 @@ class DatabaseTest {
     @Test
     void concurrentOpensOfAV1WorkspaceLeaveItUpgradedAndStillOpenable() throws Exception {
         // The corruption this guards: every process reads schema_version before any of them takes a
-        // lock, so all of them see 1 and all of them queue up to run V2 and V3. Re-running V2 is not
-        // idempotent (DROP + CREATE + rebuild throws away what the winner wrote) and re-running V3 is
-        // an error (duplicate column javadoc) — and because the version stamp for V2 has already
+        // lock, so all of them see 1 and all of them queue up to run V2 and V3. Re-running V2 is
+        // harmless in effect (DROP + CREATE + rebuild reconstructs fts_symbol from java_type and
+        // api_member, which neither migration touches, so it reproduces the same rows) but re-running
+        // V3 is an error (duplicate column javadoc) — and because the version stamp for V2 has already
         // committed by then, the failure leaves the database at 2 with V3's column present, which
         // every later open re-attempts and every later open fails on. Unrecoverable, on the one
         // operation `sdd graph` and `sdd review` perform as readers.
