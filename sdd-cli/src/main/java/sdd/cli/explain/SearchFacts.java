@@ -36,6 +36,16 @@ final class SearchFacts {
      * to be distinguishable from one whose name matched — otherwise a stale doc comment reaches the
      * reader looking exactly like code-derived evidence.
      *
+     * <p>Its <em>absence</em> asserts nothing, and the section must not be read as though it did.
+     * {@link Hit#docOnly()} is presence provenance rather than rank provenance: it fires only when
+     * prose was the sole column that matched, so a hit that prose alone lifted to the top of this
+     * list renders unmarked as soon as a query word also reaches its package fragment — measured, on
+     * this estate (carried item 13 of {@code
+     * docs/superpowers/plans/2026-08-15-retrieval-corpus.md}, disclosed to readers in {@code
+     * docs/commands.md}). A stale comment can therefore still reach a reader here looking
+     * code-derived; what stops it becoming a claim is the narrator's rule about this marker and the
+     * fact firewall behind it, not this line.
+     *
      * <p>Bracketed like the {@code [score=…]} it follows, rather than set off with the " — " that
      * already separates the fqcn from the repo on the same line. This string is also, verbatim, a
      * model prompt (see {@code AnswerNarrator}), and a third " — " clause reads as a peer of the

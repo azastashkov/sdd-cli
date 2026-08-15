@@ -826,7 +826,11 @@ class EvidenceCollectorTest {
         db.jdbi().useHandle(h -> {
             h.createUpdate("UPDATE java_type SET javadoc = :doc WHERE fqcn = :fqcn")
                     .bind("doc", javadoc).bind("fqcn", ExplainFixture.PRICE_API_FQCN).execute();
-            // ...and the same text in the search corpus, as the indexer would have written it
+            // ...and the same text in the search corpus, as the indexer would have written it.
+            // Raw SQL rather than FtsSymbolWriter, which is otherwise the sole write path for this
+            // table: it deletes by module and by repo, never by identifier, and widening its API to
+            // suit one fixture would be the wrong direction — the point of the rule is that
+            // production has exactly two ways to remove rows. The insert below still goes through it.
             h.execute("DELETE FROM fts_symbol WHERE identifier = 'PriceApi'");
             FtsSymbolWriter.insert(h, 2, "PriceApi", ExplainFixture.PRICE_API_FQCN, javadoc);
         });
