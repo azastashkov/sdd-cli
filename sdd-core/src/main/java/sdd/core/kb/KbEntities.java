@@ -81,8 +81,18 @@ public final class KbEntities {
                 .toList();
     }
 
+    /**
+     * Exact-match-first: a name the system itself offered in its vocabulary (e.g. from
+     * {@link #endpointLabels}) must resolve back to the one row that produced it, not to every
+     * row a fuzzy template match happens to also cover. {@code verb} is {@code null} when the
+     * caller omitted it — that is deliberately distinct from an explicit {@code "ANY"}: omitted
+     * matches every http_method at the exact path, while explicit ANY names only the
+     * NULL-http_method row. Only when the exact pass finds nothing do we fall back to the
+     * original fuzzy {@code templatesMatch}/{@code verbsCompatible} scan, unchanged, for a real
+     * literal path (e.g. {@code /api/candles/7/symbols}) that no row matches exactly.
+     */
     private static List<EntityMatch> resolveEndpoint(Jdbi jdbi, String value) {
-        String verb = "ANY";
+        String verb = null;
         String path = value.strip();
         int space = path.indexOf(' ');
         if (space > 0 && VERB.matcher(path.substring(0, space)).matches()) {
@@ -90,7 +100,6 @@ public final class KbEntities {
             path = path.substring(space + 1).strip();
         }
         String touchNorm = Routes.normalize(path);
-        String finalVerb = verb;
         List<Map<String, Object>> endpoints = jdbi.withHandle(h -> h.createQuery("""
                         SELECT e.http_method AS verb, e.norm_path AS norm, r.name AS repo
                         FROM rest_endpoint e
@@ -98,6 +107,13 @@ public final class KbEntities {
                         JOIN repo r ON r.id = m.repo_id
                         WHERE e.norm_path IS NOT NULL ORDER BY r.name""")
                 .mapToMap().list());
+
+        List<EntityMatch> exact = exactEndpointMatches(endpoints, touchNorm, verb);
+        if (!exact.isEmpty()) {
+            return exact;
+        }
+
+        String finalVerb = verb == null ? "ANY" : verb;
         List<EntityMatch> matches = new ArrayList<>();
         for (Map<String, Object> e : endpoints) {
             String endpointVerb = e.get("verb") == null ? "ANY" : String.valueOf(e.get("verb"));
@@ -107,6 +123,24 @@ public final class KbEntities {
             }
         }
         return matches;
+    }
+
+    private static List<EntityMatch> exactEndpointMatches(List<Map<String, Object>> endpoints, String touchNorm, String verb) {
+        List<EntityMatch> exact = new ArrayList<>();
+        for (Map<String, Object> e : endpoints) {
+            String norm = String.valueOf(e.get("norm"));
+            if (!touchNorm.equals(norm)) {
+                continue;
+            }
+            String endpointVerb = e.get("verb") == null ? null : String.valueOf(e.get("verb"));
+            boolean verbMatches = verb == null
+                    || ("ANY".equals(verb) ? endpointVerb == null : verb.equals(endpointVerb));
+            if (verbMatches) {
+                exact.add(new EntityMatch(String.valueOf(e.get("repo")),
+                        (endpointVerb == null ? "ANY" : endpointVerb) + " " + norm, "rest_endpoint"));
+            }
+        }
+        return exact;
     }
 
     private static List<EntityMatch> resolveTopic(Jdbi jdbi, String value) {
