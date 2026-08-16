@@ -1,6 +1,7 @@
 package sdd.plan.jira;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Element;
 import sdd.core.http.RestClient;
@@ -30,6 +31,8 @@ import java.util.Locale;
  * see that method's javadoc.
  */
 public final class JiraClient {
+    private static final ObjectMapper JSON = new ObjectMapper();
+
     private final RestClient restClient;
     private final String baseUrl;
 
@@ -107,6 +110,27 @@ public final class JiraClient {
         List<String> remoteLinkUrls = fetchRemoteLinks(key);
 
         return new Issue(issueDoc, commentDocs, subtaskKeys, linkedIssueKeys, remoteLinkUrls, hrefUrls);
+    }
+
+    /**
+     * Task 4: {@code POST /rest/api/2/issue/{key}/comment} with {@code {"body": "<text>"}} — the
+     * Data Center v2 add-comment endpoint. {@code body} is plain text handed straight through: DC
+     * accepts wiki markup in this field, but the Task 4 brief is explicit that {@code sdd}'s own
+     * write-back comments make no attempt at rich formatting, so there is nothing here to escape
+     * or transform. Uses {@link RestClient#postExpectingNoContent} even though Jira actually
+     * replies 201 with the created comment resource: no caller needs that body (the point of
+     * commenting is the side effect on the issue, not anything in the response), and that method's
+     * own javadoc already covers "a body the caller does not need", not just 204 endpoints.
+     *
+     * <p>Failures (network, 4xx/5xx, an expired PAT) propagate as {@link AtlassianException} —
+     * this method does not decide what "best-effort" means; the Task 4 brief is explicit that a
+     * failed comment must never affect {@code sdd plan approve}/{@code sdd review}'s exit code, so
+     * that policy belongs to the caller (the one place that knows whether {@code plan.json}/
+     * {@code report.md} already landed on disk), not here.
+     */
+    public void comment(String key, String body) {
+        restClient.postExpectingNoContent("/rest/api/2/issue/" + key + "/comment",
+                JSON.createObjectNode().put("body", body));
     }
 
     private List<String> fetchRemoteLinks(String key) {

@@ -15,10 +15,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 
+import static com.github.tomakehurst.wiremock.client.WireMock.equalToJson;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.notFound;
 import static com.github.tomakehurst.wiremock.client.WireMock.okJson;
+import static com.github.tomakehurst.wiremock.client.WireMock.post;
+import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
+import static com.github.tomakehurst.wiremock.client.WireMock.serverError;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -184,5 +188,32 @@ class JiraClientTest {
         wm.verify(getRequestedFor(urlEqualTo("/rest/api/2/issue/PROJ-200"
                 + "?expand=renderedFields&fields=summary,description,issuelinks,subtasks,comment,status,updated"))
                 .withHeader("Authorization", com.github.tomakehurst.wiremock.client.WireMock.equalTo("Bearer sk-token")));
+    }
+
+    @Test
+    void commentPostsABodyOnlyPayloadToTheIssuesCommentEndpoint() {
+        wm.stubFor(post(urlEqualTo("/rest/api/2/issue/PROJ-123/comment"))
+                .willReturn(com.github.tomakehurst.wiremock.client.WireMock.created()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{\"id\": \"10050\"}")));
+
+        client().comment("PROJ-123", "sdd: plan approved for `SPEC-7`");
+
+        wm.verify(postRequestedFor(urlEqualTo("/rest/api/2/issue/PROJ-123/comment"))
+                .withHeader("Authorization", com.github.tomakehurst.wiremock.client.WireMock.equalTo("Bearer sk-token"))
+                .withRequestBody(equalToJson("{\"body\": \"sdd: plan approved for `SPEC-7`\"}")));
+    }
+
+    @Test
+    void commentOnAServerErrorPropagatesAnAtlassianExceptionForTheCallerToTreatAsBestEffort() {
+        wm.stubFor(post(urlEqualTo("/rest/api/2/issue/PROJ-123/comment")).willReturn(serverError()));
+        // maxAttempts=1 with a no-op sleeper (the same seam RestClientTest's own
+        // failsAfterExhaustingMaxAttemptsOnPersistent5xx test uses) so this assertion does not
+        // burn several real seconds on RestClient's exponential backoff.
+        RestClient rc = new RestClient("Jira", wm.baseUrl(), "sk-token", "JIRA_PAT",
+                Duration.ofSeconds(5), 1, HttpClient.newHttpClient(), millis -> { });
+
+        assertThatThrownBy(() -> new JiraClient(rc, wm.baseUrl()).comment("PROJ-123", "text"))
+                .isInstanceOf(AtlassianException.class);
     }
 }

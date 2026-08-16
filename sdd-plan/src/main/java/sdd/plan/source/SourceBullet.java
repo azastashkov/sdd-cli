@@ -1,5 +1,9 @@
 package sdd.plan.source;
 
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+
 /**
  * Renders one line of {@code NormalizedSpec.sources()} — the "## Sources" provenance section —
  * from a fetched {@link SourceDoc}. The Task 3 brief requires "keep parsing and rendering of a
@@ -53,5 +57,34 @@ public final class SourceBullet {
 
     private static String or(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    /**
+     * Task 4's parser half of this class: the distinct Jira issue keys named by every root
+     * {@code jira} bullet in a spec's {@code sources()}, in first-appearance order — the set of
+     * issues {@code sdd plan approve} and {@code sdd review} comment back on.
+     *
+     * <p>Deliberately reads only the {@code jira} shape, never {@code jira-comment}: a comment
+     * bullet's key is the same issue whose own root bullet is rendered alongside it (see
+     * {@link #render}/{@code JiraSpecSource.addIssue}, which always adds an issue's doc and its
+     * comment docs together), so counting {@code jira-comment} keys too would only ever repeat a
+     * key already collected here, never surface a new one — {@code SourceBudget} dropping the root
+     * doc while keeping one of its comments is the one scenario where that could differ, and is
+     * accepted here as a rare, disclosed edge case rather than reason to also scan comment bullets.
+     * A line is matched on {@code startsWith("jira ")} (with the trailing space): that alone
+     * excludes {@code jira-comment} lines, since {@code "jira-comment ...".startsWith("jira ")} is
+     * false — no separate first-token dispatch needed.
+     */
+    public static List<String> jiraIssueKeys(List<String> sources) {
+        Set<String> keys = new LinkedHashSet<>();
+        for (String line : sources) {
+            if (line != null && line.startsWith("jira ")) {
+                String[] parts = line.split(" ", 3);
+                if (parts.length >= 2 && !parts[1].isBlank()) {
+                    keys.add(parts[1]);
+                }
+            }
+        }
+        return List.copyOf(keys);
     }
 }

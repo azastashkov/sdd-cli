@@ -58,4 +58,33 @@ class SourceBulletTest {
 
         assertThatThrownBy(() -> SourceBullet.render(doc)).isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void jiraIssueKeysParsesRootIssueBulletsOnly() {
+        List<String> sources = List.of(
+                "jira PROJ-123 updated 2026-08-16T09:12:00Z https://jira.corp.local/browse/PROJ-123",
+                "jira-comment PROJ-123 10001 updated 2026-08-16T09:20:00Z "
+                        + "https://jira.corp.local/browse/PROJ-123#comment-10001",
+                "confluence 65601 v7 \"Order API spec\" https://confluence.corp.local/pages/viewpage.action?pageId=65601");
+
+        assertThat(SourceBullet.jiraIssueKeys(sources)).containsExactly("PROJ-123");
+    }
+
+    @Test
+    void jiraIssueKeysDedupesAndPreservesFirstAppearanceOrder() {
+        List<String> sources = List.of(
+                "jira PROJ-2 updated unknown https://jira.corp.local/browse/PROJ-2",
+                "jira PROJ-1 updated unknown https://jira.corp.local/browse/PROJ-1",
+                "jira PROJ-2 updated unknown https://jira.corp.local/browse/PROJ-2");
+
+        assertThat(SourceBullet.jiraIssueKeys(sources)).containsExactly("PROJ-2", "PROJ-1");
+    }
+
+    @Test
+    void jiraIssueKeysIsEmptyWhenThereAreNoJiraSources() {
+        assertThat(SourceBullet.jiraIssueKeys(List.of(
+                "confluence 65601 v7 \"Order API spec\" https://confluence.corp.local/pages/viewpage.action?pageId=65601")))
+                .isEmpty();
+        assertThat(SourceBullet.jiraIssueKeys(List.of())).isEmpty();
+    }
 }
