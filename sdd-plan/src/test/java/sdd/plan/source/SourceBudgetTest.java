@@ -1,10 +1,12 @@
 package sdd.plan.source;
 
 import org.junit.jupiter.api.Test;
+import sdd.plan.confluence.SpecNormalizationException;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SourceBudgetTest {
 
@@ -69,5 +71,45 @@ class SourceBudgetTest {
         assertThat(capped.notes()).hasSize(2);
         assertThat(capped.notes().get(0)).contains("Comment B");
         assertThat(capped.notes().get(1)).contains("Comment A");
+    }
+
+    @Test
+    void aSingleDocumentOverTheBudgetFailsLoudlyInsteadOfEmptyingTheBundle() {
+        // FREE_TEXT never passes through ConfluenceExtract, so nothing else caps its size before
+        // it reaches here — dropping it silently would leave zero documents and send the model
+        // an empty prompt
+        SourceDoc oversized = doc(SourceDoc.Kind.FREE_TEXT, "text-1", "Huge requirement", 300_001);
+        SourceBundle bundle = new SourceBundle(List.of(oversized), List.of());
+
+        assertThatThrownBy(() -> SourceBudget.apply(bundle))
+                .isInstanceOf(SpecNormalizationException.class)
+                .hasMessageContaining("Huge requirement")
+                .hasMessageContaining("300001")
+                .hasMessageContaining("300000");
+    }
+
+    @Test
+    void anOversizedDocumentFailsLoudlyEvenAlongsideDocumentsThatWouldOtherwiseFit() {
+        // the oversized document can never fit no matter what else is dropped, so this must
+        // fail before any dropping happens rather than quietly discarding the small, valid doc
+        SourceDoc oversized = doc(SourceDoc.Kind.FREE_TEXT, "text-1", "Huge requirement", 400_000);
+        SourceDoc small = doc(SourceDoc.Kind.FREE_TEXT, "text-2", "Small note", 1_000);
+        SourceBundle bundle = new SourceBundle(List.of(oversized, small), List.of());
+
+        assertThatThrownBy(() -> SourceBudget.apply(bundle))
+                .isInstanceOf(SpecNormalizationException.class)
+                .hasMessageContaining("Huge requirement");
+    }
+
+    @Test
+    void aConfluenceDocumentAtExactlyTheCapIsNotRejected() {
+        // ConfluenceExtract itself rejects anything over MAX_TEXT_CHARS (300_000), so a
+        // confluence document arriving here at exactly the boundary must still be accepted
+        SourceDoc atCap = doc(SourceDoc.Kind.CONFLUENCE_PAGE, "c1", "At the cap", 300_000);
+        SourceBundle bundle = new SourceBundle(List.of(atCap), List.of());
+
+        SourceBundle capped = SourceBudget.apply(bundle);
+
+        assertThat(capped.docs()).containsExactly(atCap);
     }
 }

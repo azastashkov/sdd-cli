@@ -245,6 +245,22 @@ class ConfluenceNormalizerTest {
     }
 
     @Test
+    void anOversizedSingleDocumentFailsLoudlyInsteadOfNormalizingAnEmptyBundle() {
+        // a FREE_TEXT document alone over the 300_000-char budget must never be silently
+        // dropped down to an empty bundle and sent to the model as an empty prompt — normalize
+        // must fail before the planner is ever called
+        SourceDoc oversized = new SourceDoc(SourceDoc.Kind.FREE_TEXT, "text-1", null,
+                "Huge requirement", null, "x".repeat(300_001), List.of());
+        SourceBundle bundle = new SourceBundle(List.of(oversized), List.of());
+        ScriptedChatModel planner = new ScriptedChatModel(List.of());
+
+        assertThatThrownBy(() -> ConfluenceNormalizer.normalize(bundle, planner, "m", 100, "id"))
+                .isInstanceOf(SpecNormalizationException.class)
+                .hasMessageContaining("Huge requirement");
+        assertThat(planner.requests()).isEmpty();
+    }
+
+    @Test
     void systemPromptStatesConfluenceWinsOverJiraOnConflict() {
         assertThat(ConfluenceNormalizer.SYSTEM_PROMPT).contains("Confluence").contains("Jira")
                 .contains("unmapped");

@@ -27,6 +27,17 @@ public final class ConfluenceExportSource implements SpecSource {
 
     @Override
     public NormalizedSpec load(String ref) {
+        SourceDoc doc = loadDoc(ref);
+        SourceBundle bundle = new SourceBundle(List.of(doc), List.of());
+        return ConfluenceNormalizer.normalize(bundle, planner, modelName, maxTokens, doc.id());
+    }
+
+    /** Read -> deterministic extract -> {@link SourceDoc}, with no model involvement. Public so
+     *  {@code sdd.cli.PlanCommand}'s multi-ref/{@code --text} path can build one {@link SourceDoc}
+     *  per Confluence-export ref without re-implementing this file-read-and-extract step; {@code
+     *  PlanCommand} already reaches into this package for {@link #load}, so this adds no new
+     *  package boundary. */
+    public static SourceDoc loadDoc(String ref) {
         Path file = Path.of(ref);
         String html;
         try {
@@ -35,11 +46,8 @@ public final class ConfluenceExportSource implements SpecSource {
             throw new UncheckedIOException(e);
         }
         ConfluenceExtract.Extracted extracted = ConfluenceExtract.extract(html);
-        String id = specId(file);
-        SourceDoc doc = new SourceDoc(SourceDoc.Kind.CONFLUENCE_PAGE, id, null, null, null,
+        return new SourceDoc(SourceDoc.Kind.CONFLUENCE_PAGE, specId(file), null, null, null,
                 extracted.text(), extracted.attachments());
-        SourceBundle bundle = new SourceBundle(List.of(doc), List.of());
-        return ConfluenceNormalizer.normalize(bundle, planner, modelName, maxTokens, id);
     }
 
     static String specId(Path file) {

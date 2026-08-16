@@ -13,7 +13,6 @@ import sdd.core.llm.ChatModel;
 import sdd.core.llm.HttpChatModel;
 import sdd.core.retrieve.FtsRetriever;
 import sdd.plan.confluence.ConfluenceExportSource;
-import sdd.plan.confluence.ConfluenceExtract;
 import sdd.plan.confluence.ConfluenceNormalizer;
 import sdd.plan.confluence.SpecNormalizationException;
 import sdd.plan.gen.ExecutionOrder;
@@ -37,9 +36,7 @@ import sdd.plan.spec.SpecRenderer;
 import sdd.plan.spec.SpecSources;
 import sdd.plan.spec.SpecValidator;
 
-import java.io.IOException;
 import java.io.PrintWriter;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -132,21 +129,18 @@ public final class PlanCommand implements Callable<Integer> {
         }
 
         // General path: any mix of Confluence-export refs and --text becomes one SourceBundle.
+        // Each export ref goes through ConfluenceExportSource.loadDoc — the same read+extract
+        // step the single-doc fast path above uses via ConfluenceExportSource.load — rather than
+        // PlanCommand re-implementing file I/O and extraction a second time.
         List<SourceDoc> docs = new ArrayList<>();
         String anchorRef = null;
+        String anchorId = null;
         for (String ref : refs) {
-            Path file = Path.of(ref);
-            String html;
-            try {
-                html = Files.readString(file);
-            } catch (IOException e) {
-                throw new UncheckedIOException(e);
-            }
-            ConfluenceExtract.Extracted extracted = ConfluenceExtract.extract(html);
-            docs.add(new SourceDoc(SourceDoc.Kind.CONFLUENCE_PAGE, confluenceDocId(file), null, null,
-                    null, extracted.text(), extracted.attachments()));
+            SourceDoc doc = ConfluenceExportSource.loadDoc(ref);
+            docs.add(doc);
             if (anchorRef == null) {
                 anchorRef = ref;
+                anchorId = doc.id();
             }
         }
         for (int i = 0; i < texts.size(); i++) {
@@ -157,8 +151,7 @@ public final class PlanCommand implements Callable<Integer> {
         // Output naming: derive from the first Confluence-export ref exactly like the
         // single-doc path above; only when there is NO file ref to derive from (pure --text)
         // does the id/filename come from slugifying the first --text instead.
-        String fallbackId = anchorRef != null ? confluenceDocId(Path.of(anchorRef))
-                : "spec-" + slugify(texts.get(0));
+        String fallbackId = anchorId != null ? anchorId : "spec-" + slugify(texts.get(0));
         // A file ref already carries its own directory (it is the path the operator passed in);
         // pure --text has no such anchor, so its default target is resolved against --workspace.
         Path target = out != null ? out
@@ -189,31 +182,18 @@ public final class PlanCommand implements Callable<Integer> {
         return 0;
     }
 
-    /** Mirrors {@code ConfluenceExportSource.specId} — that method is package-private to
-     *  {@code sdd.plan.confluence}, so its slug SHAPE is reused here rather than the method
-     *  itself; keep the two in sync if either changes. */
-    private static String confluenceDocId(Path file) {
-        String base = file.getFileName().toString();
-        int dot = base.lastIndexOf('.');
-        if (dot > 0) {
-            base = base.substring(0, dot);
-        }
-        return "spec-" + slug(base, "confluence");
-    }
-
-    /** First ~6 words of free text, slugified with the same shape as {@link #confluenceDocId} —
-     *  the one rule for "turn a human-facing name into a filename/id fragment" every source in
-     *  this seam shares, so two ids for "the same" name never diverge by punctuation alone. No
-     *  clock, no random value: the same {@code --text} always produces the same slug. */
+    /** First ~6 words of free text, slugified with the same shape
+     *  {@code ConfluenceExportSource.specId} uses for a filename (lowercase, non-alphanumerics
+     *  collapsed to '-', leading/trailing '-' trimmed) — the one rule for "turn a human-facing
+     *  name into a filename/id fragment" every source in this seam shares, so two ids for "the
+     *  same" name never diverge by punctuation alone. That method operates on a filename, not on
+     *  free text, so its exact code isn't reusable here — only its shape is. No clock, no random
+     *  value: the same {@code --text} always produces the same slug. */
     private static String slugify(String text) {
         String[] words = text.strip().split("\\s+");
         String joined = String.join(" ", Arrays.copyOfRange(words, 0, Math.min(6, words.length)));
-        return slug(joined, "spec");
-    }
-
-    private static String slug(String base, String fallback) {
-        String slug = base.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-").replaceAll("(^-|-$)", "");
-        return slug.isBlank() ? fallback : slug;
+        String slug = joined.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-").replaceAll("(^-|-$)", "");
+        return slug.isBlank() ? "spec" : slug;
     }
 
     private Integer validate(SddConfig config, String ref, PrintWriter outWriter, PrintWriter errWriter) {

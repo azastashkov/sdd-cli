@@ -662,4 +662,18 @@ class PlanCommandTest {
         String userMessage = planner.requests().get(0).messages().get(1).content();
         assertThat(userMessage).contains("Confluence context.").contains("Extra operator context.");
     }
+
+    @Test
+    void anOversizedTextArgumentFailsLoudlyInsteadOfNormalizingAnEmptyBundle() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        PlanCommand cmd = new PlanCommand();
+        ScriptedChatModel planner = new ScriptedChatModel(List.of());
+        cmd.plannerForTest = planner;
+
+        Run run = plan(cmd, "--workspace", ws.toString(), "--text", "x".repeat(300_001));
+
+        assertThat(run.out()).contains("error: document too large for the source budget");
+        assertThat(run.exitCode()).isEqualTo(1);
+        assertThat(planner.requests()).isEmpty();
+    }
 }

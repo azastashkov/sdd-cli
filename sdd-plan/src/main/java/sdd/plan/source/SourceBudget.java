@@ -1,5 +1,7 @@
 package sdd.plan.source;
 
+import sdd.plan.confluence.SpecNormalizationException;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -15,6 +17,15 @@ import java.util.List;
  * would silently misrepresent what the model was given — lowest priority first, until the
  * total fits. Every drop appends a note naming the document so a human can see what was left
  * out; a cap the human cannot see is a lie.
+ * <p>
+ * A Confluence document can never exceed {@code MAX_TOTAL_CHARS} on its own —
+ * {@code ConfluenceExtract.extract} already rejects anything over that size — but a
+ * {@code FREE_TEXT} document from {@code --text} never passes through {@code ConfluenceExtract}
+ * and has no such cap. Dropping such a document (because it alone is over budget) can leave the
+ * whole bundle empty, which would otherwise send the model an empty prompt with no visible
+ * failure beyond a buried {@code [source]} Open Question. {@link #apply} instead fails loudly:
+ * any single document whose own text already exceeds the budget is rejected up front, before any
+ * dropping happens, naming the offending document and its size.
  */
 public final class SourceBudget {
 
@@ -24,6 +35,13 @@ public final class SourceBudget {
     }
 
     public static SourceBundle apply(SourceBundle bundle) {
+        for (SourceDoc doc : bundle.docs()) {
+            if (doc.text().length() > MAX_TOTAL_CHARS) {
+                throw new SpecNormalizationException("document too large for the source budget: '"
+                        + doc.label() + "' is " + doc.text().length() + " chars (limit "
+                        + MAX_TOTAL_CHARS + ") — split it or drop it before ingesting");
+            }
+        }
         List<SourceDoc> kept = new ArrayList<>(bundle.docs());
         List<String> drops = new ArrayList<>();
         while (totalChars(kept) > MAX_TOTAL_CHARS && !kept.isEmpty()) {
