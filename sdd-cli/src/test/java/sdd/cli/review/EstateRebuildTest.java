@@ -21,6 +21,57 @@ class EstateRebuildTest {
         return repo;
     }
 
+    private Path npmRepo(String script) throws Exception {
+        Path repo = Files.createDirectories(ws.resolve("web"));
+        Files.writeString(repo.resolve("package.json"),
+                "{\"name\":\"web\",\"scripts\":{\"test\":\"vitest run\"}}");
+        Files.createDirectories(repo.resolve("node_modules"));
+        Path bin = Files.createDirectories(ws.resolve("nodehome/bin"));
+        Path npm = bin.resolve("npm");
+        Files.writeString(npm, "#!/bin/sh\n" + script + "\n");
+        Files.setPosixFilePermissions(npm, PosixFilePermissions.fromString("rwxr-xr-x"));
+        return repo;
+    }
+
+    @Test
+    void anNpmRepoIsVerifiedRatherThanFailedForLackingAGradleWrapper() throws Exception {
+        // Gate 2 used to answer every npm repo with "no gradle wrapper" and count it as a rebuild
+        // failure, so a mixed estate could not pass review at all — for a reason that had nothing
+        // to do with the code under review.
+        Path repo = npmRepo("for a in \"$@\"; do echo \"$a\" >> args.out; done; exit 0");
+
+        EstateRebuild.Result result = new EstateRebuild().verify(repo,
+                sdd.core.toolchain.Toolchain.NPM, null, ws.resolve("nodehome"),
+                List.of("test"), List.of());
+
+        assertThat(result.ok()).as("%s", result.log()).isTrue();
+        assertThat(Files.readAllLines(repo.resolve("args.out"))).containsExactly("run", "test");
+    }
+
+    @Test
+    void substitutionFlagsAreNeverPassedToNpm() throws Exception {
+        // npm appends passthrough arguments to the end of the WHOLE script string, so a flag meant
+        // for the build lands on the last command in a chained script instead.
+        Path repo = npmRepo("for a in \"$@\"; do echo \"$a\" >> args.out; done; exit 0");
+
+        new EstateRebuild().verify(repo, sdd.core.toolchain.Toolchain.NPM, null,
+                ws.resolve("nodehome"), List.of("test"), List.of("--include-build", "/w/lib"));
+
+        assertThat(Files.readAllLines(repo.resolve("args.out"))).containsExactly("run", "test");
+    }
+
+    @Test
+    void anNpmRepoWithoutInstalledDependenciesSaysSo() throws Exception {
+        Path repo = Files.createDirectories(ws.resolve("web"));
+        Files.writeString(repo.resolve("package.json"), "{\"name\":\"web\"}");
+
+        EstateRebuild.Result result = new EstateRebuild().verify(repo,
+                sdd.core.toolchain.Toolchain.NPM, null, null, List.of("test"), List.of());
+
+        assertThat(result.ok()).isFalse();
+        assertThat(result.log()).contains("node_modules is not installed").contains("npm install");
+    }
+
     @Test
     void runsEveryTaskWithSubstitutionFlagsAndPasses() throws Exception {
         Path repo = repoWith("echo \"$*\" >> calls; exit 0");

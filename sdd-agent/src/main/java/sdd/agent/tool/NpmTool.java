@@ -133,7 +133,7 @@ public final class NpmTool implements BuildTool {
             // `node a.mjs && node b.mjs` they land on the wrong command entirely. Substitution for
             // npm is done by overlaying node_modules, never by flags.
             Subprocess.Outcome outcome = Subprocess.run(
-                    List.of(npmExecutable(), "run", script),
+                    List.of(sdd.core.ts.NodeLocator.npmExecutable(nodeHome), "run", script),
                     repoRoot, EnvPolicy.scrubbedNode(nodeHome), timeout,
                     Subprocess.KillPolicy.PROCESS_TREE, "sdd-agent-npm");
             if (outcome.timedOut()) {
@@ -153,24 +153,6 @@ public final class NpmTool implements BuildTool {
         }
     }
 
-    /**
-     * The npm to run, as an absolute path when {@code node_home} names one.
-     *
-     * <p>Resolving it here rather than relying on the child's PATH is necessary, not tidiness:
-     * {@link ProcessBuilder} looks the command up on the PARENT process's PATH and ignores the
-     * PATH in the environment it is handed. A configured node_home would otherwise be silently
-     * disregarded when choosing which npm runs — the machine's default would win, and nothing
-     * would say so.
-     */
-    private String npmExecutable() {
-        if (nodeHome != null) {
-            Path candidate = nodeHome.toAbsolutePath().resolve("bin").resolve("npm");
-            if (Files.isExecutable(candidate)) {
-                return candidate.toString();
-            }
-        }
-        return "npm";
-    }
 
     private static String tailCap(String output) {
         return output.length() > MAX_OUTPUT

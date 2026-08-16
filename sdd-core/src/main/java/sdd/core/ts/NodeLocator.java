@@ -54,6 +54,26 @@ public final class NodeLocator {
         return Optional.empty();
     }
 
+    /**
+     * The {@code npm} to invoke: an absolute path under {@code node_home} when one is configured
+     * and present, otherwise the bare name for a PATH lookup.
+     *
+     * <p>Resolving this rather than relying on the child's PATH is necessary, not tidiness.
+     * {@link ProcessBuilder} looks a command up on the PARENT process's PATH and ignores the PATH
+     * in the environment it is handed, so a configured {@code node_home} would otherwise be
+     * silently disregarded when choosing which npm runs — the machine's default would win, with
+     * nothing to say so.
+     */
+    public static String npmExecutable(Path nodeHome) {
+        if (nodeHome != null) {
+            Path candidate = nodeHome.toAbsolutePath().resolve("bin").resolve("npm");
+            if (Files.isExecutable(candidate)) {
+                return candidate.toString();
+            }
+        }
+        return "npm";
+    }
+
     /** Where a reader should look when {@link #find} comes back empty. */
     public static String notFoundHint(Path nodeHome) {
         if (nodeHome != null) {

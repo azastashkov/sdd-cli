@@ -87,6 +87,7 @@ class VerificationTasksTest {
                 .containsExactly("test");
     }
 
+
     @Test
     void aDangerousScriptIsNeverReachableEvenIfAPlanNamesIt() throws Exception {
         packageJson("\"release\":\"npm publish\",\"test\":\"vitest run\"");

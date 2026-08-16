@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import sdd.core.toolchain.EnvPolicy;
+import sdd.core.toolchain.Toolchain;
+import sdd.core.ts.NodeLocator;
 import sdd.core.toolchain.Subprocess;
 
 import java.time.Duration;
@@ -35,14 +37,27 @@ public final class EstateRebuild {
     public record Result(boolean ok, String log) {
     }
 
+    /** A Gradle rebuild; kept so existing callers and their pinned behaviour are untouched. */
     public Result verify(Path repoRoot, Path javaHome, List<String> tasks, List<String> extraArgs) {
-        Path gradlew = repoRoot.resolve("gradlew");
-        if (!Files.isExecutable(gradlew)) {
-            return new Result(false, "no gradle wrapper in " + repoRoot);
+        return verify(repoRoot, Toolchain.GRADLE, javaHome, null, tasks, extraArgs);
+    }
+
+    /**
+     * Re-runs a repo's verification tasks with whatever its toolchain requires.
+     *
+     * <p>Before this dispatched, Gate 2 answered every npm repo with "no gradle wrapper" and
+     * counted it as a rebuild failure — so a mixed estate could not pass review at all, for a
+     * reason that had nothing to do with the code under review.
+     */
+    public Result verify(Path repoRoot, Toolchain toolchain, Path javaHome, Path nodeHome,
+                         List<String> tasks, List<String> extraArgs) {
+        String missing = missingToolchain(repoRoot, toolchain);
+        if (missing != null) {
+            return new Result(false, missing);
         }
         String lastLog = "exit 0\n";
         for (String task : tasks) {
-            Result single = runTask(repoRoot, javaHome, task, extraArgs);
+            Result single = runTask(repoRoot, toolchain, javaHome, nodeHome, task, extraArgs);
             lastLog = single.log();
             if (!single.ok()) {
                 return single;
@@ -51,17 +66,41 @@ public final class EstateRebuild {
         return new Result(true, lastLog);
     }
 
-    private Result runTask(Path repoRoot, Path javaHome, String task, List<String> extraArgs) {
+    /** What this repo needs and does not have, or null when it can be built. */
+    private static String missingToolchain(Path repoRoot, Toolchain toolchain) {
+        return switch (toolchain) {
+            case GRADLE -> Files.isExecutable(repoRoot.resolve("gradlew"))
+                    ? null : "no gradle wrapper in " + repoRoot;
+            case NPM -> Files.isDirectory(repoRoot.resolve("node_modules"))
+                    ? null : "node_modules is not installed in " + repoRoot
+                            + " — run npm install (or npm ci) before sdd review";
+            case UNKNOWN -> "cannot determine build system in " + repoRoot;
+        };
+    }
+
+    private Result runTask(Path repoRoot, Toolchain toolchain, Path javaHome, Path nodeHome,
+                           String task, List<String> extraArgs) {
         try {
             List<String> command = new ArrayList<>();
-            command.add("./gradlew");
-            command.add(task);
-            command.addAll(extraArgs);
-            command.add("--no-configuration-cache");
-            command.add("--no-daemon");
-            command.add("-q");
-            Subprocess.Outcome outcome = Subprocess.run(command, repoRoot,
-                    EnvPolicy.scrubbedJvm(javaHome), timeout,
+            EnvPolicy env;
+            if (toolchain == Toolchain.NPM) {
+                // No extra arguments, ever: npm appends passthrough args to the end of the whole
+                // script string, where they land on the wrong command. Provider substitution for
+                // npm is not done with flags.
+                command.add(NodeLocator.npmExecutable(nodeHome));
+                command.add("run");
+                command.add(task);
+                env = EnvPolicy.scrubbedNode(nodeHome);
+            } else {
+                command.add("./gradlew");
+                command.add(task);
+                command.addAll(extraArgs);
+                command.add("--no-configuration-cache");
+                command.add("--no-daemon");
+                command.add("-q");
+                env = EnvPolicy.scrubbedJvm(javaHome);
+            }
+            Subprocess.Outcome outcome = Subprocess.run(command, repoRoot, env, timeout,
                     Subprocess.KillPolicy.PROCESS_TREE, "sdd-rebuild");
             if (outcome.timedOut()) {
                 return new Result(false, "timed out after " + timeout.toSeconds() + "s");

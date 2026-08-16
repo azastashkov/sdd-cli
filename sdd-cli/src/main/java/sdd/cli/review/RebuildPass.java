@@ -10,7 +10,9 @@ import sdd.cli.implement.RunGit;
 import sdd.cli.implement.RunState;
 import sdd.cli.implement.RunStore;
 import sdd.cli.implement.Scheduler;
+import sdd.cli.implement.VerificationTasks;
 import sdd.core.config.SddConfig;
+import sdd.core.toolchain.Toolchain;
 import sdd.index.gradle.GradleExtractor;
 
 import java.io.PrintWriter;
@@ -115,14 +117,18 @@ public final class RebuildPass {
                 if (!repos.contains(repo)) {
                     continue;   // staged as an upstream tree only; not asked to be verified
                 }
-                List<String> tasks = tasksFor(plan, config, repo);
+                Toolchain toolchain = Toolchain.detect(root);
+                List<String> tasks = tasksFor(plan, config, repo, root);
                 if (tasks.isEmpty()) {
                     notLocallyVerified.add(repo);
                     continue;
                 }
                 try {
-                    rebuilds.put(repo, rebuild.verify(root, javaHomeFor(config, root), tasks,
-                            extraArgsFor(plan, repo, paths, runDir)));
+                    rebuilds.put(repo, rebuild.verify(root, toolchain,
+                            toolchain == Toolchain.NPM ? null : javaHomeFor(config, root),
+                            config.nodeHome(), tasks,
+                            toolchain == Toolchain.NPM ? List.of()
+                                    : extraArgsFor(plan, repo, paths, runDir)));
                 } catch (RuntimeException e) {
                     // Same rule as a failed checkout: one repo's blow-up is a verdict, not the end
                     // of the pass — the remaining repos still get verified and the report still
@@ -165,18 +171,17 @@ public final class RebuildPass {
     }
 
     /** Mirrors {@code ImplementCommand}'s settingsFor verification-task resolution exactly. */
-    static List<String> tasksFor(PlanModel plan, SddConfig config, String repo) {
+    /**
+     * Delegates to the one resolver {@code sdd implement} also uses. This method used to carry its
+     * own copy of the logic — its javadoc admitted as much — which is precisely the arrangement
+     * where a fix lands on one side and Gate 2 verifies something different from what the agent was
+     * held to.
+     */
+    static List<String> tasksFor(PlanModel plan, SddConfig config, String repo, Path root) {
         List<String> rawVerification = plan.step(repo)
                 .map(PlanModel.PlanStep::verification).orElse(List.of());
-        List<String> tasks = new ArrayList<>(rawVerification.isEmpty() ? List.of("check") : rawVerification);
-        tasks.retainAll(GradleTool.allowedTasks());   // prose verification entries are acceptance-only,
-                                                       // not runnable tasks
-        if (!rawVerification.isEmpty() && tasks.isEmpty()) {
-            tasks = new ArrayList<>(List.of("check"));   // prose-only list still means "verify
-                                                          // normally", not "skip"
-        }
-        tasks.removeAll(config.verificationExclusions().getOrDefault(repo, List.of()));
-        return tasks;
+        return VerificationTasks.resolve(Toolchain.detect(root), root, rawVerification,
+                config.verificationExclusions().getOrDefault(repo, List.of()));
     }
 
     /** Mirrors {@code ImplementCommand}'s settingsFor extraArgs resolution exactly. */
