@@ -735,6 +735,84 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void nonIntegerMaxPagesFailsNamingKeyAndValue() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  jira:
+                    base_url: https://jira.corp.local
+                  max_pages: many
+                """), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.max_pages must be an integer, got 'many'");
+    }
+
+    @Test
+    void nonIntegerMaxLinkedIssuesFailsNamingKeyAndValue() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  jira:
+                    base_url: https://jira.corp.local
+                  max_linked_issues: many
+                """), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.max_linked_issues must be an integer, got 'many'");
+    }
+
+    @Test
+    void nonListNoProxyFails() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  proxy:
+                    host: proxy.corp.local
+                    port: 8080
+                    no_proxy: oops
+                """), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.proxy.no_proxy");
+    }
+
+    @Test
+    void nonListDefaultReviewersFails() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  bitbucket:
+                    base_url: https://bitbucket.corp.local
+                    project: TRADING
+                    default_reviewers: oops
+                """), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.bitbucket.default_reviewers");
+    }
+
+    @Test
+    void nonMappingJiraFails() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + "atlassian:\n  jira: oops\n"), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.jira");
+    }
+
+    @Test
+    void nonMappingBitbucketFails() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + "atlassian:\n  bitbucket: oops\n"), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.bitbucket");
+    }
+
+    @Test
+    void nonMappingTlsFails() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + "atlassian:\n  tls: oops\n"), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.tls");
+    }
+
+    @Test
+    void nonMappingProxyFails() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + "atlassian:\n  proxy: oops\n"), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.proxy");
+    }
+
+    @Test
     void rejectsNullValueInExtraBody() throws Exception {
         assertThatThrownBy(() -> ConfigLoader.load(write("""
                 models:
