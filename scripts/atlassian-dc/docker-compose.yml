@@ -1,0 +1,206 @@
+# Local Atlassian Data Center rig for the `sdd` Jira/Confluence/Bitbucket integration.
+#
+# ============================================================================
+# HUMAN STEPS REQUIRED BEFORE THIS IS USABLE — READ THIS FIRST
+# ============================================================================
+# Each of the three products below needs:
+#   1. A 30-day evaluation licence, generated at https://my.atlassian.com
+#      (Data Center evaluation licences are free and self-service, but require
+#      an interactive Atlassian account — this cannot be scripted).
+#   2. A one-time browser setup wizard, run against the freshly-started
+#      container: pick "Data Center", let it find the Postgres this file
+#      already wired up via environment variables, paste the licence key,
+#      and create the first admin account.
+#
+#   Jira:       http://localhost:8080
+#   Confluence: http://localhost:8090
+#   Bitbucket:  http://localhost:7990
+#
+# Do this ONCE per product. The setup wizard's work (licence, admin account,
+# projects/spaces created afterwards) lives in the named volumes below, so a
+# plain `docker compose restart` / `down` (without `-v`) does not lose it —
+# only `docker compose down -v` would, which is why that flag is never used
+# by any script in this rig.
+#
+# After the three wizards are done, see scripts/atlassian-dc/README.md for
+# the rest of the runbook (issue-tokens.sh, mirror.sh, seed.sh, the live
+# end-to-end `sdd` run).
+# ============================================================================
+#
+# Plain HTTP on localhost throughout — deliberately. This rig has no TLS: the
+# corporate-network TLS path (custom truststore, self-signed certs) is
+# exercised by sdd's own unit tests against a self-signed WireMock instance
+# instead, not by this rig. See HttpClientsTest / RestClientTest.
+#
+# All three products' host ports are also what belongs in <workspace>/sdd.yml's
+# atlassian.jira/confluence/bitbucket.base_url once the wizards are done:
+#   http://localhost:8080 / :8090 / :7990
+
+networks:
+  atlassian-dc:
+    driver: bridge
+
+volumes:
+  jira-data:
+  jira-db-data:
+  confluence-data:
+  confluence-db-data:
+  bitbucket-data:
+  bitbucket-db-data:
+
+services:
+  # -------------------------------------------------------------------------
+  # Jira Software Data Center
+  # -------------------------------------------------------------------------
+  jira-db:
+    image: postgres:13
+    networks: [atlassian-dc]
+    environment:
+      POSTGRES_DB: jira
+      POSTGRES_USER: jira
+      POSTGRES_PASSWORD: jira
+      # Jira's DC install guide requires this locale/encoding combination —
+      # the setup wizard's DB-connectivity check fails without it.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - jira-db-data:/var/lib/postgresql/data
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jira -d jira"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  jira:
+    image: atlassian/jira-software:9
+    networks: [atlassian-dc]
+    depends_on:
+      jira-db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      # Pre-fills the setup wizard's "database connection" screen — it still has
+      # to be clicked through once by a human, but nothing has to be typed here.
+      ATL_DB_TYPE: postgres72
+      ATL_JDBC_URL: jdbc:postgresql://jira-db:5432/jira
+      ATL_JDBC_USER: jira
+      ATL_JDBC_PASSWORD: jira
+      JVM_MINIMUM_MEMORY: 1024m
+      JVM_MAXIMUM_MEMORY: 2048m
+    volumes:
+      - jira-data:/var/atlassian/application-data/jira
+    mem_limit: 3g
+    healthcheck:
+      # Jira's own /status endpoint returns {"state":"RUNNING"} once the app
+      # (not just the JVM) is actually serving requests — a plain TCP or HTTP-200
+      # check would report healthy while the setup wizard is still mid-boot.
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/status | grep -q RUNNING"]
+      interval: 30s
+      timeout: 10s
+      # Cold-start JVM boot on a heavy DC product can take several minutes.
+      retries: 20
+      start_period: 300s
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # Confluence Data Center
+  # -------------------------------------------------------------------------
+  confluence-db:
+    image: postgres:13
+    networks: [atlassian-dc]
+    environment:
+      POSTGRES_DB: confluence
+      POSTGRES_USER: confluence
+      POSTGRES_PASSWORD: confluence
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - confluence-db-data:/var/lib/postgresql/data
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U confluence -d confluence"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  confluence:
+    image: atlassian/confluence:8
+    networks: [atlassian-dc]
+    depends_on:
+      confluence-db:
+        condition: service_healthy
+    ports:
+      - "8090:8090"
+    environment:
+      ATL_DB_TYPE: postgresql
+      ATL_JDBC_URL: jdbc:postgresql://confluence-db:5432/confluence
+      ATL_JDBC_USER: confluence
+      ATL_JDBC_PASSWORD: confluence
+      JVM_MINIMUM_MEMORY: 1024m
+      JVM_MAXIMUM_MEMORY: 2048m
+    volumes:
+      - confluence-data:/var/atlassian/application-data/confluence
+    mem_limit: 3g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8090/status | grep -q RUNNING"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # Bitbucket Data Center
+  # -------------------------------------------------------------------------
+  bitbucket-db:
+    image: postgres:13
+    networks: [atlassian-dc]
+    environment:
+      POSTGRES_DB: bitbucket
+      POSTGRES_USER: bitbucket
+      POSTGRES_PASSWORD: bitbucket
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - bitbucket-db-data:/var/lib/postgresql/data
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bitbucket -d bitbucket"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  bitbucket:
+    image: atlassian/bitbucket:8
+    networks: [atlassian-dc]
+    depends_on:
+      bitbucket-db:
+        condition: service_healthy
+    ports:
+      - "7990:7990"
+      # Bitbucket's SSH port. sdd talks git-over-HTTP only (see RemoteGit's
+      # javadoc — no key distribution on a closed network), so this is exposed
+      # only in case a human wants to use it by hand; nothing in this rig uses it.
+      - "7999:7999"
+    environment:
+      JDBC_DRIVER: org.postgresql.Driver
+      JDBC_URL: jdbc:postgresql://bitbucket-db:5432/bitbucket
+      JDBC_USER: bitbucket
+      JDBC_PASSWORD: bitbucket
+      JVM_MINIMUM_MEMORY: 1024m
+      JVM_MAXIMUM_MEMORY: 2048m
+    volumes:
+      - bitbucket-data:/var/atlassian/application-data/bitbucket
+    mem_limit: 3g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:7990/status | grep -q RUNNING"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+    restart: unless-stopped
