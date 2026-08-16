@@ -216,7 +216,7 @@ public final class ContractActualizer {
             if (!wanted) {
                 return;
             }
-            List<Path> roots = tsModuleRoots(repoRoot);
+            List<Path> roots = NpmPackages.roots(repoRoot);
             if (roots.isEmpty()) {
                 return;
             }
@@ -492,29 +492,6 @@ public final class ContractActualizer {
         body.append('\n');
     }
 
-    /** Every directory holding a {@code package.json}, which is what makes a directory an npm
-     *  package. Same depth cap and same skip list as the Java module walk. */
-    private static List<Path> tsModuleRoots(Path repoRoot) {
-        List<Path> roots = new ArrayList<>();
-        collectTsRoots(repoRoot, 0, roots);
-        return roots.stream().sorted().toList();
-    }
-
-    private static void collectTsRoots(Path dir, int depth, List<Path> roots) {
-        if (Files.isRegularFile(dir.resolve("package.json"))) {
-            roots.add(dir);
-        }
-        if (depth >= MAX_MODULE_DEPTH) {
-            return;
-        }
-        try (var children = Files.list(dir)) {
-            children.filter(Files::isDirectory)
-                    .filter(child -> !SKIP_DIRS.contains(child.getFileName().toString()))
-                    .forEach(child -> collectTsRoots(child, depth + 1, roots));
-        } catch (java.io.IOException e) {
-            // unreadable directory: fall through with whatever was found so far
-        }
-    }
 
     // Mirrors FileTools.SKIP_DIRS: never descend into vendored deps or tool/VCS output looking for
     // module roots (the real estate live smoke nests modules under libs/ and services/ two deep —

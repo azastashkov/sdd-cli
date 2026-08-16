@@ -182,7 +182,9 @@ public final class Orchestrator {
         StepOutcome outcome;
         int usedTier = 0;
         Path baselineDir = runDir.resolve("contracts").resolve(slug(repo) + "-baseline");
+        Path dtsBaselineDir = runDir.resolve("contracts").resolve(slug(repo) + "-dts-baseline");
         boolean compatGate = false;
+        DtsBuilder.Result typeCompatBaseline = null;
         List<NpmOverlay.Applied> overlaysApplied = List.of();
         try {
             RunGit.startBranch(step.repoRoot(), branch, base);
@@ -198,6 +200,18 @@ public final class Orchestrator {
                     compatGate = true;
                 } else {
                     events.add("japicmp skipped: baseline build failed — "
+                            + summarize(baseline.log()));
+                }
+            }
+            if (needsTypeCompatGate(plan, repo)) {
+                // Same lifecycle as the baseline jars, and for the same reason: the candidate's
+                // sources overwrite the baseline's in this very tree, so the baseline has to exist
+                // as an artifact before the agent touches anything.
+                DtsBuilder.Result baseline = new DtsBuilder(nodeHome).build(step.repoRoot(), dtsBaselineDir);
+                if (baseline.ok()) {
+                    typeCompatBaseline = baseline;
+                } else {
+                    events.add("type-compat skipped: baseline declaration emit failed — "
                             + summarize(baseline.log()));
                 }
             }
@@ -323,6 +337,32 @@ public final class Orchestrator {
                 }
                 store.writeContract(runDir, contract.id(), body);
                 events.add("contract " + contract.id() + " actualized");
+            }
+            if (typeCompatBaseline != null) {
+                DtsBuilder.Result candidate = new DtsBuilder(nodeHome).build(step.repoRoot(),
+                        runDir.resolve("contracts").resolve(slug(repo) + "-dts-candidate"));
+                if (!candidate.ok()) {
+                    events.add("type-compat skipped: candidate declaration emit failed — "
+                            + summarize(candidate.log()));
+                } else {
+                    DtsCompatCheck.Verdict verdict =
+                            DtsCompatCheck.compare(nodeHome, typeCompatBaseline, candidate);
+                    // The count goes in the event alongside the verdict: a gate that probed
+                    // nothing and a gate that probed forty exports and found nothing wrong are
+                    // the same three words otherwise.
+                    events.add("type-compat: " + (verdict.typeCompatible() ? "compatible" : "BREAKING")
+                            + " (" + verdict.probed() + " export(s) probed)");
+                    if (!verdict.typeCompatible()) {
+                        store.writeAgentEvents(runDir, repo, events);
+                        store.writeTranscript(runDir, repo, transcript);
+                        store.writeEdits(runDir, repo, edits);
+                        synchronized (lock) {
+                            transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
+                                    attemptTag + "type-incompatible drift: " + summarize(verdict.report()));
+                        }
+                        return true;
+                    }
+                }
             }
             if (compatGate) {
                 JarBuilder.Result candidate = buildJars(step, repo,
@@ -469,6 +509,11 @@ public final class Orchestrator {
     private boolean needsCompatGate(PlanModel plan, String repo) {
         return providedContracts(plan, repo).stream()
                 .anyMatch(c -> "binary-compatible".equals(c.compat()));
+    }
+
+    private boolean needsTypeCompatGate(PlanModel plan, String repo) {
+        return providedContracts(plan, repo).stream()
+                .anyMatch(c -> "type-compatible".equals(c.compat()));
     }
 
     private String contractDigest(Path runDir, RepoStep step) {

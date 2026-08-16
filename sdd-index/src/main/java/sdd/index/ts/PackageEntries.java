@@ -209,8 +209,10 @@ public final class PackageEntries {
         return path;
     }
 
-    /** A tsconfig path option, or null. Read textually — only two scalars are needed. */
-    static Path tsconfigPath(Path packageDir, String option) {
+    /** A tsconfig path option, or null. Read textually — only two scalars are needed. Public
+     *  because the compat gate hands {@code rootDir} to the compiler so its emitted declarations
+     *  land at the same relative paths on both sides of the comparison. */
+    public static Path tsconfigPath(Path packageDir, String option) {
         Path tsconfig = packageDir.resolve("tsconfig.json");
         if (!Files.isRegularFile(tsconfig)) {
             return null;

@@ -21,6 +21,41 @@ public final class NpmPackages {
     private NpmPackages() {
     }
 
+    /**
+     * Every directory in a repo holding a {@code package.json}, which is what makes a directory an
+     * npm package. One definition, shared by contract actualization and the compat gate, so the
+     * two can never disagree about what the repo contains.
+     *
+     * <p>Same depth cap and skip list as the Java module walk: a workspaces monorepo nests its
+     * packages one or two deep, and {@code node_modules} holds thousands of manifests that are
+     * somebody else's packages.
+     */
+    public static List<Path> roots(Path repoRoot) {
+        List<Path> roots = new java.util.ArrayList<>();
+        collectRoots(repoRoot, 0, roots);
+        return roots.stream().sorted().toList();
+    }
+
+    private static final java.util.Set<String> SKIP_DIRS = java.util.Set.of(".git", "build",
+            ".gradle", ".sdd", ".idea", "node_modules", "dist", "target", "coverage");
+    private static final int MAX_DEPTH = 4;
+
+    private static void collectRoots(Path dir, int depth, List<Path> roots) {
+        if (java.nio.file.Files.isRegularFile(dir.resolve("package.json"))) {
+            roots.add(dir);
+        }
+        if (depth >= MAX_DEPTH) {
+            return;
+        }
+        try (var children = java.nio.file.Files.list(dir)) {
+            children.filter(java.nio.file.Files::isDirectory)
+                    .filter(child -> !SKIP_DIRS.contains(child.getFileName().toString()))
+                    .forEach(child -> collectRoots(child, depth + 1, roots));
+        } catch (java.io.IOException e) {
+            // unreadable directory: fall through with whatever was found so far
+        }
+    }
+
     public static List<Publishable> publishableOf(Jdbi jdbi, String repo) {
         return jdbi.withHandle(h -> h.createQuery("""
                         SELECT a.name AS package_name, r.path AS repo_path, m.gradle_path AS module_path

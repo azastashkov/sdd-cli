@@ -43,8 +43,35 @@ public final class TsSidecar {
      * "TypeScript support silently unavailable".
      */
     static final String TS_VERSION = "5.5.4";
-    private static final String TS_RESOURCE =
-            "/META-INF/resources/webjars/typescript/" + TS_VERSION + "/lib/typescript.js";
+    static final String TS_LIB_DIR =
+            "/META-INF/resources/webjars/typescript/" + TS_VERSION + "/lib/";
+    private static final String TS_RESOURCE = TS_LIB_DIR + "typescript.js";
+
+    /**
+     * The lib declaration files, materialized beside the compiler so the default host finds them
+     * with no path arithmetic.
+     *
+     * <p>Only the compat gate loads them — every other mode runs {@code noLib} because it reads
+     * written type text and never asks a question a lib file could answer. Assignability is the
+     * opposite: without {@code Promise} and {@code Date} being real types, every member of every
+     * package compares as broken. The set is what {@code lib.es2020} and {@code lib.dom}
+     * transitively reference, and {@code SidecarLibClosureTest} recomputes that closure from the
+     * files themselves so the list cannot silently rot when the pinned version moves.
+     */
+    static final List<String> TS_LIBS = List.of(
+            "lib.decorators.d.ts", "lib.decorators.legacy.d.ts", "lib.dom.d.ts", "lib.es2015.collection.d.ts",
+            "lib.es2015.core.d.ts", "lib.es2015.d.ts", "lib.es2015.generator.d.ts", "lib.es2015.iterable.d.ts",
+            "lib.es2015.promise.d.ts", "lib.es2015.proxy.d.ts", "lib.es2015.reflect.d.ts", "lib.es2015.symbol.d.ts",
+            "lib.es2015.symbol.wellknown.d.ts", "lib.es2016.array.include.d.ts", "lib.es2016.d.ts",
+            "lib.es2016.intl.d.ts", "lib.es2017.d.ts", "lib.es2017.date.d.ts", "lib.es2017.intl.d.ts",
+            "lib.es2017.object.d.ts", "lib.es2017.sharedmemory.d.ts", "lib.es2017.string.d.ts",
+            "lib.es2017.typedarrays.d.ts", "lib.es2018.asyncgenerator.d.ts", "lib.es2018.asynciterable.d.ts",
+            "lib.es2018.d.ts", "lib.es2018.intl.d.ts", "lib.es2018.promise.d.ts", "lib.es2018.regexp.d.ts",
+            "lib.es2019.array.d.ts", "lib.es2019.d.ts", "lib.es2019.intl.d.ts", "lib.es2019.object.d.ts",
+            "lib.es2019.string.d.ts", "lib.es2019.symbol.d.ts", "lib.es2020.bigint.d.ts", "lib.es2020.d.ts",
+            "lib.es2020.date.d.ts", "lib.es2020.intl.d.ts", "lib.es2020.number.d.ts", "lib.es2020.promise.d.ts",
+            "lib.es2020.sharedmemory.d.ts", "lib.es2020.string.d.ts", "lib.es2020.symbol.wellknown.d.ts",
+            "lib.es5.d.ts");
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Duration DEFAULT_TIMEOUT = Duration.ofMinutes(5);
@@ -166,6 +193,45 @@ public final class TsSidecar {
         return call(request);
     }
 
+    /**
+     * Emits a package's {@code .d.ts}, the baseline half of the type-compatibility gate.
+     *
+     * <p>Captured as an artifact BEFORE the edit, because the candidate's sources overwrite the
+     * baseline's in the same working tree — the same reason the japicmp gate builds a baseline jar
+     * up front rather than comparing two checkouts.
+     *
+     * @return the response carries {@code entryDts}, the emitted declaration for the entry point
+     */
+    public Result emitDeclarations(Path repoRoot, List<Path> files, Path entry, Path rootDir,
+                                   Path outDir) {
+        com.fasterxml.jackson.databind.node.ObjectNode request = MAPPER.createObjectNode()
+                .put("version", PROTOCOL_VERSION)
+                .put("mode", "emitDeclarations")
+                .put("repoRoot", repoRoot.toAbsolutePath().toString())
+                .put("entry", entry.toAbsolutePath().toString())
+                .put("outDir", outDir.toAbsolutePath().toString());
+        if (rootDir != null) {
+            request.put("rootDir", rootDir.toAbsolutePath().toString());
+        }
+        var array = request.putArray("files");
+        files.forEach(f -> array.add(f.toAbsolutePath().toString()));
+        return call(request);
+    }
+
+    /**
+     * Whether the candidate's declarations are assignable to the baseline's, export by export.
+     *
+     * @return the response carries {@code probed} (how many exports were checked — a thin check
+     *         must never read as a clean one) and {@code breaks}
+     */
+    public Result typeCompat(Path baselineDts, Path candidateDts) {
+        return call(MAPPER.createObjectNode()
+                .put("version", PROTOCOL_VERSION)
+                .put("mode", "typeCompat")
+                .put("baselineDts", baselineDts.toAbsolutePath().toString())
+                .put("candidateDts", candidateDts.toAbsolutePath().toString()));
+    }
+
     private Result call(JsonNode request) {
         Path requestFile = null;
         Path responseFile = null;
@@ -225,11 +291,18 @@ public final class TsSidecar {
             byte[] compiler = resource(TS_RESOURCE);
             Path target = Path.of(System.getProperty("java.io.tmpdir"))
                     .resolve("sdd-ts-sidecar-" + shortHash(script, compiler));
+            // The marker is the LAST lib file rather than the compiler: an install interrupted
+            // part-way through writing the libs would otherwise look complete forever, and the
+            // failure would surface as a compat gate that reports breaks in correct code.
             if (!Files.isRegularFile(target.resolve("sdd-ts-extract.cjs"))
-                    || !Files.isRegularFile(target.resolve("typescript.js"))) {
+                    || !Files.isRegularFile(target.resolve("typescript.js"))
+                    || !Files.isRegularFile(target.resolve(TS_LIBS.get(TS_LIBS.size() - 1)))) {
                 Path staging = Files.createTempDirectory("sdd-ts-staging");
                 Files.write(staging.resolve("sdd-ts-extract.cjs"), script);
                 Files.write(staging.resolve("typescript.js"), compiler);
+                for (String lib : TS_LIBS) {
+                    Files.write(staging.resolve(lib), resource(TS_LIB_DIR + lib));
+                }
                 try {
                     Files.move(staging, target, StandardCopyOption.ATOMIC_MOVE);
                 } catch (IOException alreadyThere) {

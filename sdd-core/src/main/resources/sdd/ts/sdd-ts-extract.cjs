@@ -78,6 +78,176 @@ function buildProgram(fileNames, options) {
   return ts.createProgram(fileNames, opts, createHost(opts));
 }
 
+/**
+ * A program that CAN type-check, for the compat gate alone.
+ *
+ * Every other mode runs with `noLib: true` because it reads written type text and never asks a
+ * question the lib files could answer. Assignability is the opposite: `Promise<Session>` against
+ * `Promise<Session>` is unanswerable without lib.es5, and every member would be reported broken.
+ * The lib files sit beside this script, so the default host finds them with no path arithmetic.
+ */
+function buildCheckingProgram(fileNames, options) {
+  const opts = Object.assign({
+    target: ts.ScriptTarget.ES2020,
+    lib: ['lib.es2020.d.ts', 'lib.dom.d.ts'],
+  }, options, {
+    // Strict, and specifically strictFunctionTypes: without it parameters are BIVARIANT, so
+    // narrowing `(id: string | number)` to `(id: string)` — a real break that will fail every
+    // consumer passing a number — is assignable and the gate says compatible. Both sides are
+    // compared under the same setting, so this only ever makes the check more accurate: an
+    // unchanged or widened surface still passes.
+    strict: true,
+    noEmit: true,
+    skipLibCheck: true,
+    skipDefaultLibCheck: true,
+    moduleResolution: ts.ModuleResolutionKind.NodeJs,
+    types: [],
+  });
+  return ts.createProgram(fileNames, opts, ts.createCompilerHost(opts, true));
+}
+
+// ------------------------------------------------------------------- declaration emit / compat
+
+/**
+ * Writes `.d.ts` for a package, which is the baseline half of the type-compatibility gate: the
+ * candidate's sources overwrite the baseline's in place, so the baseline has to be captured as an
+ * artifact before the edit, exactly as the japicmp gate builds a baseline jar.
+ *
+ * Emit diagnostics are not read. A declaration that could not be emitted is missing from BOTH
+ * sides equally and simply goes unprobed — and the count of what was probed is reported, so a
+ * thin check is never mistaken for a clean one.
+ */
+function emitDeclarations(request) {
+  const files = request.files || [];
+  const outDir = request.outDir;
+  const opts = {
+    declaration: true,
+    emitDeclarationOnly: true,
+    outDir,
+    rootDir: request.rootDir || undefined,
+    noLib: true,
+    skipLibCheck: true,
+    types: [],
+    target: ts.ScriptTarget.ES2020,
+  };
+  const program = ts.createProgram(files, opts, createHost(opts));
+  const written = [];
+  program.emit(undefined, (fileName, text) => {
+    fs.mkdirSync(path.dirname(fileName), { recursive: true });
+    fs.writeFileSync(fileName, text, 'utf8');
+    written.push(fileName);
+  });
+  const entryDts = declarationFor(request.entry, request.rootDir, outDir, written);
+  return { version: PROTOCOL_VERSION, ok: entryDts !== null, entryDts, emitted: written.length,
+    error: entryDts === null ? 'no declaration was emitted for the entry point' : null };
+}
+
+/** The emitted declaration for the entry source, matched by basename among what was written —
+ *  reconstructing the path from rootDir/outDir would have to reimplement the compiler's own
+ *  common-source-directory rule, which changes with the file set. */
+function declarationFor(entry, rootDir, outDir, written) {
+  if (!entry) return null;
+  const stem = path.basename(entry).replace(/\.(m|c)?tsx?$/, '');
+  for (const file of written) {
+    if (path.basename(file).replace(/\.d\.(m|c)?ts$/, '') === stem) return file;
+  }
+  return written.length === 1 ? written[0] : null;
+}
+
+/**
+ * Is the candidate assignable to the baseline, export by export?
+ *
+ * The check is a synthesised program, not a diff of the two declaration files. A textual diff
+ * flags legal widening — a parameter that became optional, a union that gained a member, a return
+ * type that narrowed — as breaking, and `Orchestrator` turns compat drift into a FAILED repo, so
+ * a false positive fails work that was correct. Assignability is the question that was actually
+ * meant, and the compiler is the only thing that answers it.
+ *
+ * Absence falls out of the same probe: an export the candidate no longer has produces "has no
+ * exported member", which needs no separate rule and no separate message.
+ */
+function typeCompat(request) {
+  const baseline = request.baselineDts;
+  const candidate = request.candidateDts;
+  const probeFile = path.join(path.dirname(candidate), '__sdd_compat_probe.ts');
+
+  const exports = exportsOf(baseline);
+  if (exports.length === 0) {
+    // Nothing readable to check. Reported as such rather than as a pass: "no breaks found" and
+    // "nothing was looked at" are the two things a gate must never conflate.
+    return { version: PROTOCOL_VERSION, ok: true, probed: 0, breaks: [],
+      error: 'no exports could be read from the baseline declarations' };
+  }
+
+  const lines = [
+    'import type * as __Baseline from ' + JSON.stringify(moduleRef(probeFile, baseline)) + ';',
+    'import * as __Candidate from ' + JSON.stringify(moduleRef(probeFile, candidate)) + ';',
+  ];
+  const probes = [];
+  for (const e of exports) {
+    const id = '__p' + probes.length;
+    if (e.isValue) {
+      lines.push('const ' + id + ': typeof __Baseline.' + e.name + ' = __Candidate.' + e.name + ';');
+    } else {
+      lines.push('declare const ' + id + '_c: __Candidate.' + e.name + ';');
+      lines.push('const ' + id + ': __Baseline.' + e.name + ' = ' + id + '_c;');
+    }
+    probes.push({ id, name: e.name, line: lines.length });
+  }
+  fs.writeFileSync(probeFile, lines.join('\n') + '\n', 'utf8');
+
+  const program = buildCheckingProgram([probeFile], {});
+  const source = program.getSourceFile(probeFile);
+  const diagnostics = program.getSemanticDiagnostics(source)
+    .concat(program.getSyntacticDiagnostics(source));
+
+  const breaks = [];
+  const seen = new Set();
+  for (const d of diagnostics) {
+    const line = d.start === undefined ? 0
+      : source.getLineAndCharacterOfPosition(d.start).line + 1;
+    const probe = probes.filter((p) => p.line <= line).pop();
+    const name = probe ? probe.name : '<probe>';
+    if (seen.has(name)) continue;
+    seen.add(name);
+    breaks.push({ export: name, message: ts.flattenDiagnosticMessageText(d.messageText, ' ') });
+  }
+  return { version: PROTOCOL_VERSION, ok: true, probed: probes.length, breaks, error: null };
+}
+
+/** The baseline's exported names, split into values and types — the two need different probes,
+ *  and a name can be both (a class), in which case the value probe subsumes the type one. */
+function exportsOf(dtsFile) {
+  const program = buildCheckingProgram([dtsFile], {});
+  const checker = program.getTypeChecker();
+  const source = program.getSourceFile(dtsFile);
+  if (!source) return [];
+  const moduleSymbol = checker.getSymbolAtLocation(source);
+  if (!moduleSymbol) return [];
+  const out = [];
+  for (const symbol of checker.getExportsOfModule(moduleSymbol)) {
+    if (symbol.name === 'default' || !/^[A-Za-z_$][\w$]*$/.test(symbol.name)) {
+      // `default` cannot be written as a member of a namespace import, and a name that is not an
+      // identifier cannot appear in the probe at all. Skipped rather than mangled.
+      continue;
+    }
+    const flags = symbol.flags;
+    const isValue = !!(flags & ts.SymbolFlags.Value);
+    const isType = !!(flags & (ts.SymbolFlags.Type | ts.SymbolFlags.TypeAlias | ts.SymbolFlags.Interface));
+    if (isValue || isType) {
+      out.push({ name: symbol.name, isValue });
+    }
+  }
+  return out;
+}
+
+/** A relative specifier without its `.d.ts` tail, which is how a declaration file is imported. */
+function moduleRef(fromFile, target) {
+  let rel = path.relative(path.dirname(fromFile), target).replace(/\\/g, '/');
+  rel = rel.replace(/\.d\.(m|c)?ts$/, '');
+  return rel.startsWith('.') ? rel : './' + rel;
+}
+
 // ---------------------------------------------------------------------------- syntax check
 
 /** One file, parsed alone. The analogue of the Java side's JavaParser gate: syntax only. */
@@ -1039,6 +1209,12 @@ function main() {
       break;
     case 'streamDescriptors':
       response = extractStreamDescriptors(request);
+      break;
+    case 'emitDeclarations':
+      response = emitDeclarations(request);
+      break;
+    case 'typeCompat':
+      response = typeCompat(request);
       break;
     case 'ping':
       // Used by `sdd doctor` and by the sidecar's own startup check: proves node runs, the
