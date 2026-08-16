@@ -1,13 +1,14 @@
 package sdd.agent.run;
 
+import sdd.core.toolchain.Toolchain;
+
 import java.util.List;
 import java.util.Locale;
 import java.util.stream.Stream;
 
 /**
- * Classifies a RAW (pre-compaction) Gradle log as an infrastructure failure — dependency
- * resolution, network, daemon, Docker, disk, or the GradleTool subprocess timeout — per design
- * line 63. Deliberately matched on the raw log: the compacted output may have dropped the
+ * Classifies a RAW (pre-compaction) build log as an infrastructure failure — dependency
+ * resolution, network, daemon, Docker, disk, or the subprocess timeout — per design line 63. Deliberately matched on the raw log: the compacted output may have dropped the
  * telltale line. Patterns are matched case-insensitively anywhere in the log.
  *
  * <p><b>Precision rule for dependency-resolution failures:</b> a live-smoke run misclassified an
@@ -38,17 +39,45 @@ public final class InfraClassifier {
                     "cannot connect to the docker daemon", "no space left on device"))
             .toList();
 
+    /**
+     * npm failures that are genuinely about the machine or the network.
+     *
+     * <p>The same precision rule the Gradle list follows applies here, and it excludes more than it
+     * includes. {@code npm ERR! 404}, {@code ERESOLVE} and {@code ETARGET} all mean the registry
+     * ANSWERED — the package or version simply is not there, usually because the agent wrote a name
+     * or a range that does not exist. {@code Cannot find module} is an import the agent got wrong.
+     * Every one of those is a build error the verify-fail cycle should feed back so it can be
+     * fixed, not an infra pause that stops the run and waits for a human who has nothing to do.
+     */
+    private static final List<String> NPM_PATTERNS = List.of(
+            // network
+            "enotfound", "eai_again", "econnrefused", "econnreset", "etimedout",
+            "esockettimedout", "network timeout", "socket hang up",
+            // credentials the registry rejected, and machine limits
+            "npm err! code e401", "npm err! code e403",
+            "eacces", "eperm", "enospc",
+            // node itself ran out of room to work in
+            "javascript heap out of memory", "fatal error: reached heap limit");
+
     private InfraClassifier() {
     }
 
-    public static boolean isInfra(String rawGradleLog) {
-        if (rawGradleLog == null || rawGradleLog.isEmpty()) {
+    /** Gradle logs; kept so existing callers read unchanged. */
+    public static boolean isInfra(String rawLog) {
+        return isInfra(rawLog, Toolchain.GRADLE);
+    }
+
+    public static boolean isInfra(String rawLog, Toolchain toolchain) {
+        if (rawLog == null || rawLog.isEmpty()) {
             return false;
         }
-        if (rawGradleLog.startsWith("timed out after")) {   // GradleTool's process-timeout marker
+        if (rawLog.startsWith("timed out after")) {   // the build tools' shared timeout marker
             return true;
         }
-        String lower = rawGradleLog.toLowerCase(Locale.ROOT);
+        String lower = rawLog.toLowerCase(Locale.ROOT);
+        if (toolchain == Toolchain.NPM) {
+            return NPM_PATTERNS.stream().anyMatch(lower::contains);
+        }
         boolean standalone = STANDALONE_PATTERNS.stream().anyMatch(lower::contains);
         boolean resolutionWithNetworkCause = RESOLUTION_PATTERNS.stream().anyMatch(lower::contains)
                 && NETWORK_PATTERNS.stream().anyMatch(lower::contains);
