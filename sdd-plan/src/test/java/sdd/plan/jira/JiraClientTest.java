@@ -115,6 +115,33 @@ class JiraClientTest {
     }
 
     @Test
+    void fetchIssueHarvestsNamedHyperlinkHrefsFromTheRawDescriptionHtml() {
+        // Task 3 review Fix 2: ConfluenceExtract keeps an <a> element's visible text ("the spec")
+        // but drops its href — this is the second, independent jsoup pass that recovers it.
+        stubIssue("PROJ-300", "issue-with-named-hyperlink.json");
+        stubRemoteLinks("PROJ-300", "remotelink-empty.json");
+
+        JiraClient.Issue issue = client().fetchIssue("PROJ-300");
+
+        assertThat(issue.hrefUrls())
+                .contains("https://confluence.corp.local/pages/viewpage.action?pageId=65601");
+        assertThat(issue.issueDoc().text()).doesNotContain("pageId=65601");   // confirms the href
+                                                                               // really is absent from extracted text
+    }
+
+    @Test
+    void fetchIssueHarvestsNamedHyperlinkHrefsFromCommentBodyHtmlButNotMailtoOrRelativeHrefs() {
+        stubIssue("PROJ-300", "issue-with-named-hyperlink.json");
+        stubRemoteLinks("PROJ-300", "remotelink-empty.json");
+
+        JiraClient.Issue issue = client().fetchIssue("PROJ-300");
+
+        assertThat(issue.hrefUrls()).contains("https://confluence.corp.local/x/AbCd")
+                .doesNotContain("mailto:someone@corp.local")
+                .doesNotContain("/relative/path");
+    }
+
+    @Test
     void fetchIssueCollectsSubtaskKeys() {
         stubIssue("PROJ-1", "issue-with-subtasks-and-links.json");
         stubRemoteLinks("PROJ-1", "remotelink-empty.json");

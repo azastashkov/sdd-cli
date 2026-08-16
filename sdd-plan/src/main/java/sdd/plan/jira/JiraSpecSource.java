@@ -82,14 +82,18 @@ public final class JiraSpecSource implements SpecSource {
     public Fetched fetch(List<String> rootKeys) {
         List<SourceDoc> docs = new ArrayList<>();
         List<String> notes = new ArrayList<>();
-        List<String> remoteLinkUrls = new ArrayList<>();
+        // Every depth-1 link candidate LinkHarvester gets that ISN'T harvested from a doc's own
+        // extracted text: Jira remote links, plus (Task 3 review Fix 2) every <a href> harvested
+        // directly from the raw rendered HTML, since ConfluenceExtract drops hrefs. LinkHarvester's
+        // own exact-URL dedup means a link appearing in both sources still yields one fetch.
+        List<String> linkUrls = new ArrayList<>();
         Set<String> claimed = new LinkedHashSet<>(rootKeys);
 
         List<JiraClient.Issue> rootIssues = new ArrayList<>();
         for (String key : rootKeys) {
             JiraClient.Issue issue = fetchRoot(key);
             rootIssues.add(issue);
-            addIssue(docs, remoteLinkUrls, issue);
+            addIssue(docs, linkUrls, issue);
         }
 
         List<String> linkedKeys = new ArrayList<>();
@@ -108,7 +112,7 @@ public final class JiraSpecSource implements SpecSource {
                 continue;
             }
             try {
-                addIssue(docs, remoteLinkUrls, jiraClient.fetchIssue(key));
+                addIssue(docs, linkUrls, jiraClient.fetchIssue(key));
             } catch (AtlassianException e) {
                 notes.add("linked issue " + key + " could not be fetched: " + e.getMessage());
             }
@@ -117,7 +121,7 @@ public final class JiraSpecSource implements SpecSource {
         if (confluencePages != null) {
             LinkHarvester.Result harvested =
                     new LinkHarvester(confluencePages, confluenceHost, followDepth, maxPages)
-                            .harvest(docs, remoteLinkUrls);
+                            .harvest(docs, linkUrls);
             docs.addAll(harvested.pages());
             notes.addAll(harvested.notes());
         }
@@ -160,10 +164,11 @@ public final class JiraSpecSource implements SpecSource {
         }
     }
 
-    private static void addIssue(List<SourceDoc> docs, List<String> remoteLinkUrls, JiraClient.Issue issue) {
+    private static void addIssue(List<SourceDoc> docs, List<String> linkUrls, JiraClient.Issue issue) {
         docs.add(issue.issueDoc());
         docs.addAll(issue.commentDocs());
-        remoteLinkUrls.addAll(issue.remoteLinkUrls());
+        linkUrls.addAll(issue.remoteLinkUrls());
+        linkUrls.addAll(issue.hrefUrls());
     }
 
     private static List<String> subtasksThenLinks(JiraClient.Issue issue) {

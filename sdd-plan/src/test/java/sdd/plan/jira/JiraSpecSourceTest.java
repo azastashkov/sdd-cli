@@ -89,7 +89,8 @@ class JiraSpecSourceTest {
         if (confluenceConfigured) {
             RestClient confluenceRc = new RestClient("Confluence", wm.baseUrl(), "sk-token", "CONFLUENCE_PAT",
                     Duration.ofSeconds(5), HttpClient.newHttpClient());
-            confluenceClient = new ConfluenceClient(confluenceRc, HttpClient.newHttpClient(), "sk-token", wm.baseUrl());
+            confluenceClient = new ConfluenceClient(confluenceRc, HttpClient.newHttpClient(), "sk-token",
+                    wm.baseUrl(), Duration.ofSeconds(5));
             confluenceHost = URI.create(wm.baseUrl()).getHost();
         }
         return new JiraSpecSource(jiraClient, confluenceClient, confluenceHost, followDepth, maxPages,
@@ -123,6 +124,35 @@ class JiraSpecSourceTest {
         assertThat(spec.sources()).hasSize(2);
         assertThat(spec.sources().get(0)).startsWith("jira PROJ-123 updated ")
                 .endsWith(wm.baseUrl() + "/browse/PROJ-123");
+        assertThat(spec.sources().get(1)).isEqualTo("confluence 65601 v7 \"Order API spec\" "
+                + wm.baseUrl() + "/pages/viewpage.action?pageId=65601");
+    }
+
+    @Test
+    void loadFollowsANamedHyperlinkWithNoBareUrlInTheDescription() {
+        // Task 3 review Fix 2, the point of the fix: a description that links the spec the
+        // ordinary way a person does it — a named hyperlink, no bare URL anywhere in the text —
+        // must still be followed. Before Fix 2 this page was silently never fetched: the href
+        // never survived ConfluenceExtract, so LinkHarvester's text scan never saw anything to
+        // harvest, and (worse) it produced no note either.
+        wm.stubFor(get(urlEqualTo("/rest/api/2/issue/PROJ-300"
+                + "?expand=renderedFields&fields=summary,description,issuelinks,subtasks,comment,status,updated"))
+                .willReturn(okJson("""
+                        {"id": "10008", "key": "PROJ-300",
+                         "fields": {"summary": "Checkout flow needs a spec", "status": {"name": "Open"},
+                                    "updated": "2026-08-16T09:12:00.000+0000", "subtasks": [], "issuelinks": [],
+                                    "comment": {"comments": []}},
+                         "renderedFields": {
+                           "description": "<p>Please see <a href=\\"%s/pages/viewpage.action?pageId=65601\\">the spec</a> before starting.</p>",
+                           "comment": {"comments": []}}}
+                        """.formatted(wm.baseUrl()))));
+        stubRemoteLinks("PROJ-300", "remotelink-empty.json");
+        stubConfluencePage("65601", "page.json");
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(NORMALIZED_RESPONSE));
+
+        NormalizedSpec spec = source(planner).load("PROJ-300");
+
+        assertThat(spec.sources()).hasSize(2);
         assertThat(spec.sources().get(1)).isEqualTo("confluence 65601 v7 \"Order API spec\" "
                 + wm.baseUrl() + "/pages/viewpage.action?pageId=65601");
     }

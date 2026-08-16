@@ -1,6 +1,8 @@
 package sdd.plan.jira;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Element;
 import sdd.core.http.RestClient;
 import sdd.plan.confluence.ConfluenceExtract;
 import sdd.plan.source.SourceDoc;
@@ -23,7 +25,9 @@ import java.util.Locale;
  * <p>The "key insight" from the Task 3 brief: {@code expand=renderedFields} gives HTML for the
  * description and every comment body, which is exactly what {@code ConfluenceExtract.extract}
  * already parses — so this class needs no wiki-markup parser of its own, only an HTML feed into
- * that shared extractor.
+ * that shared extractor. It does run one extra, independent jsoup pass over that same HTML
+ * ({@link #hrefsIn}) to recover {@code <a href>} targets that {@code ConfluenceExtract} discards —
+ * see that method's javadoc.
  */
 public final class JiraClient {
     private final RestClient restClient;
@@ -37,12 +41,17 @@ public final class JiraClient {
     /**
      * One fetched issue: its own {@link SourceDoc} (kind {@code JIRA_ISSUE}), one
      * {@code JIRA_COMMENT} doc per rendered comment, and the raw material {@code JiraSpecSource}
-     * needs to decide what to fetch next — subtask keys, blocking/depends-linked issue keys, and
-     * every remote-link target URL (a Confluence link lands here far more often than inline in
-     * the description on Data Center, per the brief).
+     * needs to decide what to fetch next — subtask keys, blocking/depends-linked issue keys,
+     * every remote-link target URL, and every {@code <a href>} target harvested directly from the
+     * rendered description/comment HTML (before it is handed to {@code ConfluenceExtract}, which
+     * keeps an anchor's visible text but drops its {@code href} — see {@link #hrefsIn}'s javadoc).
+     * The brief's headline case — a person linking a spec with a named hyperlink in the
+     * description, e.g. {@code <a href="...">see the spec</a>} — depends on this list, not on
+     * {@code remoteLinkUrls}: a remote link is a separate, deliberate UI action, not what most
+     * people do when writing a description.
      */
     public record Issue(SourceDoc issueDoc, List<SourceDoc> commentDocs, List<String> subtaskKeys,
-                         List<String> linkedIssueKeys, List<String> remoteLinkUrls) {
+                         List<String> linkedIssueKeys, List<String> remoteLinkUrls, List<String> hrefUrls) {
     }
 
     private static final String ISSUE_FIELDS =
@@ -63,18 +72,21 @@ public final class JiraClient {
         String summary = fields.path("summary").asText("");
         String updated = normalizeUpdated(fields.path("updated").asText(null));
         String issueUrl = baseUrl + "/browse/" + key;
-        ConfluenceExtract.Extracted descExtract =
-                ConfluenceExtract.extract(rendered.path("description").asText(""));
+        String descriptionHtml = rendered.path("description").asText("");
+        ConfluenceExtract.Extracted descExtract = ConfluenceExtract.extract(descriptionHtml);
         SourceDoc issueDoc = new SourceDoc(SourceDoc.Kind.JIRA_ISSUE, key, issueUrl, summary, updated,
                 descExtract.text(), descExtract.attachments());
 
         List<SourceDoc> commentDocs = new ArrayList<>();
+        List<String> hrefUrls = new ArrayList<>(hrefsIn(descriptionHtml));
         for (JsonNode comment : rendered.path("comment").path("comments")) {
             String commentId = comment.path("id").asText();
-            ConfluenceExtract.Extracted body = ConfluenceExtract.extract(comment.path("body").asText(""));
+            String commentHtml = comment.path("body").asText("");
+            ConfluenceExtract.Extracted body = ConfluenceExtract.extract(commentHtml);
             String commentUpdated = normalizeUpdated(comment.path("updated").asText(null));
             commentDocs.add(new SourceDoc(SourceDoc.Kind.JIRA_COMMENT, key + "-comment-" + commentId,
                     issueUrl + "#comment-" + commentId, null, commentUpdated, body.text(), body.attachments()));
+            hrefUrls.addAll(hrefsIn(commentHtml));
         }
 
         List<String> subtaskKeys = new ArrayList<>();
@@ -94,7 +106,7 @@ public final class JiraClient {
 
         List<String> remoteLinkUrls = fetchRemoteLinks(key);
 
-        return new Issue(issueDoc, commentDocs, subtaskKeys, linkedIssueKeys, remoteLinkUrls);
+        return new Issue(issueDoc, commentDocs, subtaskKeys, linkedIssueKeys, remoteLinkUrls, hrefUrls);
     }
 
     private List<String> fetchRemoteLinks(String key) {
@@ -107,6 +119,38 @@ public final class JiraClient {
             }
         }
         return urls;
+    }
+
+    /**
+     * Task 3 review Fix 2 (Critical, ruled): a SECOND, independent jsoup pass over the same raw
+     * rendered HTML {@code ConfluenceExtract.extract} also receives — {@code href}s, not visible
+     * text. {@code ConfluenceExtract} keeps an {@code <a>} element's visible text but drops its
+     * {@code href} (it was built for Confluence storage-format content, not for preserving inbound
+     * hyperlinks), so a named link — {@code <a href="https://confluence...">see the spec</a>}, the
+     * ordinary way a person links a spec from a description — would otherwise vanish before
+     * {@code LinkHarvester} ever sees any text to scan, with no note at all. This method adds no
+     * {@code ConfluenceExtract.extract} call site and does not touch {@code ConfluenceExtract.java}:
+     * it uses jsoup directly, the same library {@code ConfluenceExtract} itself is built on.
+     *
+     * <p>Only absolute {@code http(s)://} hrefs are kept — a relative href has no host, so
+     * {@code LinkHarvester}'s same-host filter could never confirm it points at Confluence anyway;
+     * collecting it would just be an unresolvable-shaped note for a link that was never a
+     * candidate in the first place. Callers combine this with {@link #remoteLinkUrls} before
+     * handing everything to {@code LinkHarvester}; {@code LinkHarvester}'s own exact-URL dedup
+     * means one link mentioned in both places (or twice in one place) still yields one fetch.
+     */
+    static List<String> hrefsIn(String html) {
+        List<String> hrefs = new ArrayList<>();
+        if (html == null || html.isBlank()) {
+            return hrefs;
+        }
+        for (Element a : Jsoup.parse(html).select("a[href]")) {
+            String href = a.attr("href").strip();
+            if (href.startsWith("http://") || href.startsWith("https://")) {
+                hrefs.add(href);
+            }
+        }
+        return hrefs;
     }
 
     /** Matches "block"/"depend" case-insensitively against name/inward/outward, per the brief —
