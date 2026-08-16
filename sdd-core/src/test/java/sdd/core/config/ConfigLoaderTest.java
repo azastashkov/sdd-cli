@@ -564,6 +564,7 @@ class ConfigLoaderTest {
         assertThat(ac).isNotNull();
         assertThat(ac.tls().truststore()).isEqualTo(Path.of("/etc/ssl/corp-ca.jks"));
         assertThat(ac.tls().password()).isEqualTo("trust-pw");
+        assertThat(ac.tls().passwordError()).isNull();
         assertThat(ac.proxy().host()).isEqualTo("proxy.corp.local");
         assertThat(ac.proxy().port()).isEqualTo(8080);
         assertThat(ac.proxy().noProxy()).containsExactly(
@@ -652,6 +653,26 @@ class ConfigLoaderTest {
         assertThat(jira.token()).isNull();
         assertThat(jira.tokenVar()).isEqualTo("JIRA_PAT");
         assertThat(jira.tokenError()).isEqualTo("atlassian.jira.token: environment variable JIRA_PAT is not set");
+    }
+
+    // Fix 1 (review): an unset truststore_password ${VAR} must not fail loading either — it is
+    // shared by every configured site, but sdd index/status/clean never open an Atlassian
+    // connection at all and must not be blocked by a credential none of them will ever use.
+    @Test
+    void unsetTruststorePasswordEnvVarDoesNotFailLoadingAndCarriesTheDeferredError() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  tls:
+                    truststore: /etc/ssl/corp-ca.jks
+                    truststore_password: ${CORP_TRUSTSTORE_PASSWORD}
+                  jira:
+                    base_url: https://jira.corp.local
+                """), k -> null);   // no env var resolves
+
+        AtlassianTls tls = c.atlassian().tls();
+        assertThat(tls.password()).isNull();
+        assertThat(tls.passwordError()).isEqualTo(
+                "atlassian.tls.truststore_password: environment variable CORP_TRUSTSTORE_PASSWORD is not set");
     }
 
     @Test

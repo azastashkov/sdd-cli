@@ -67,6 +67,13 @@ public final class HttpClients {
      * trust anchors are in play.
      */
     private static SSLContext sslContext(AtlassianTls tls) {
+        // Deferred from ConfigLoader: an unset truststore_password ${VAR} does not fail config
+        // loading (sdd index/status/clean never open an Atlassian connection), so it is raised
+        // here instead — the earliest point something is actually about to open the truststore —
+        // with the exact message ConfigLoader would have thrown eagerly before that was fixed.
+        if (tls.passwordError() != null) {
+            throw new ConfigException(tls.passwordError());
+        }
         Path path = tls.truststore();
         if (!Files.isRegularFile(path)) {
             throw new ConfigException("atlassian.tls.truststore " + path + " does not exist");

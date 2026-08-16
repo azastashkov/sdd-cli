@@ -33,16 +33,20 @@ class HttpClientsTest {
     }
 
     @Test
-    void withNeitherTlsNorProxyReturnsPlainHttpClient() {
+    void withNeitherTlsNorProxyReturnsAPlainHttpClientUsingTheJdkDefaultSslContext() {
         HttpClient client = HttpClients.build(null, null);
         assertThat(client).isNotNull();
-        assertThat(client.sslContext()).isNotNull();   // the JDK default context, not a custom one
+        // Same instance HttpClient.newHttpClient() itself would use (SSLContext.getDefault() is a
+        // JVM-wide cached singleton) — a custom truststore-backed context would NOT be this same
+        // instance, so this actually distinguishes "plain" from "custom" rather than merely
+        // asserting non-null, which a custom context would satisfy too.
+        assertThat(client.sslContext()).isSameAs(HttpClient.newHttpClient().sslContext());
     }
 
     @Test
     void loadsJksTruststoreByExtension() throws Exception {
         Path jks = emptyKeystore("corp-ca.jks", "JKS");
-        HttpClient client = HttpClients.build(new AtlassianTls(jks, "changeit"), null);
+        HttpClient client = HttpClients.build(new AtlassianTls(jks, "changeit", null), null);
         assertThat(client).isNotNull();
         assertThat(client.sslContext()).isNotNull();
     }
@@ -50,7 +54,7 @@ class HttpClientsTest {
     @Test
     void loadsPkcs12TruststoreByExtension() throws Exception {
         Path p12 = emptyKeystore("corp-ca.p12", "PKCS12");
-        HttpClient client = HttpClients.build(new AtlassianTls(p12, "changeit"), null);
+        HttpClient client = HttpClients.build(new AtlassianTls(p12, "changeit", null), null);
         assertThat(client).isNotNull();
     }
 
@@ -59,16 +63,28 @@ class HttpClientsTest {
         // No extension at all: PKCS12 is the JDK default keystore type, and the brief is explicit
         // that an unrecognised extension should fall back to it rather than error out.
         Path noExt = emptyKeystore("corp-ca.trust", "PKCS12");
-        HttpClient client = HttpClients.build(new AtlassianTls(noExt, "changeit"), null);
+        HttpClient client = HttpClients.build(new AtlassianTls(noExt, "changeit", null), null);
         assertThat(client).isNotNull();
     }
 
     @Test
     void missingTruststorePathIsAnErrorNeverAQuietFallback() {
         Path missing = dir.resolve("does-not-exist.jks");
-        assertThatThrownBy(() -> HttpClients.build(new AtlassianTls(missing, "changeit"), null))
+        assertThatThrownBy(() -> HttpClients.build(new AtlassianTls(missing, "changeit", null), null))
                 .isInstanceOf(ConfigException.class)
                 .hasMessageContaining(missing.toString());
+    }
+
+    @Test
+    void aDeferredTruststorePasswordErrorSurfacesAtThePointHttpClientsActuallyOpensTheFile() throws Exception {
+        Path jks = emptyKeystore("corp-ca.jks", "JKS");
+        AtlassianTls tls = new AtlassianTls(jks, null,
+                "atlassian.tls.truststore_password: environment variable CORP_TRUSTSTORE_PASSWORD is not set");
+
+        assertThatThrownBy(() -> HttpClients.build(tls, null))
+                .isInstanceOf(ConfigException.class)
+                .hasMessage("atlassian.tls.truststore_password: environment variable "
+                        + "CORP_TRUSTSTORE_PASSWORD is not set");
     }
 
     @Test

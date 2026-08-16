@@ -89,13 +89,20 @@ public final class DoctorCommand implements Callable<Integer> {
         }
         if (ac.bitbucket() != null) {
             BitbucketSite bb = ac.bitbucket();
-            // "self" is Bitbucket Data Center's magic user slug for "the authenticated user" — the
-            // {self} path-parameter template from the brief resolves to this literal value, not a
-            // brace-delimited placeholder (curly braces are not valid, unencoded URI characters).
-            reportAtlassianProbe("atlassian:bitbucket:user", "Bitbucket", bb.site(), "/rest/api/1.0/users/self",
-                    client, clientBuildError, truststore, "name", "displayName");
-            reportAtlassianProbe("atlassian:bitbucket:project", "Bitbucket", bb.site(),
-                    "/rest/api/1.0/projects/" + bb.project(), client, clientBuildError, truststore, "key", "name");
+            // Fix 2 (review): Bitbucket Data Center's REST 1.0 API has no /users/self resource —
+            // /users/{userSlug} needs a real slug doctor does not have, so a second probe there
+            // would almost always 404 and report a healthy Bitbucket as down, which is expensive
+            // on the closed network doctor runs on first. The one probe below
+            // (GET /rest/api/1.0/projects/{project}, already needed to confirm the project itself
+            // is reachable) also authenticates, so its X-AUSERNAME response header gives the same
+            // identity confirmation without a second call.
+            if (clientBuildError != null) {
+                report(false, "atlassian:bitbucket", clientBuildError);
+            } else {
+                AtlassianProbe.ProbeResult result = AtlassianProbe.probeHeaderLabel("Bitbucket", bb.site(),
+                        "/rest/api/1.0/projects/" + bb.project(), client, truststore, "X-AUSERNAME");
+                report(result.ok(), "atlassian:bitbucket", bb.site().baseUrl() + " → " + result.detail());
+            }
         }
     }
 

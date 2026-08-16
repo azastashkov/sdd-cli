@@ -35,6 +35,30 @@ class AtlassianProbeTest {
     }
 
     @Test
+    void probeHeaderLabelReportsHttp200AsTheHeaderValue() {
+        wm.stubFor(get("/rest/api/1.0/projects/TRADING").willReturn(okJson("{\"key\":\"TRADING\"}")
+                .withHeader("X-AUSERNAME", "jsmith")));
+
+        AtlassianProbe.ProbeResult r = AtlassianProbe.probeHeaderLabel("Bitbucket",
+                site("sk-x", "BITBUCKET_PAT", null), "/rest/api/1.0/projects/TRADING",
+                HttpClient.newHttpClient(), null, "X-AUSERNAME");
+
+        assertThat(r.ok()).isTrue();
+        assertThat(r.detail()).isEqualTo("HTTP 200 as jsmith");
+    }
+
+    @Test
+    void probeHeaderLabelFallsBackToAQuestionMarkWhenTheHeaderIsAbsent() {
+        wm.stubFor(get("/rest/api/1.0/projects/TRADING").willReturn(okJson("{\"key\":\"TRADING\"}")));
+
+        AtlassianProbe.ProbeResult r = AtlassianProbe.probeHeaderLabel("Bitbucket",
+                site("sk-x", "BITBUCKET_PAT", null), "/rest/api/1.0/projects/TRADING",
+                HttpClient.newHttpClient(), null, "X-AUSERNAME");
+
+        assertThat(r.detail()).isEqualTo("HTTP 200 as ?");
+    }
+
+    @Test
     void fallsBackToTheNextLabelFieldWhenTheFirstIsAbsent() {
         wm.stubFor(get("/rest/api/user/current").willReturn(okJson("{\"displayName\":\"Jane Smith\"}")));
 

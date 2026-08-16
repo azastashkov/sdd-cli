@@ -41,6 +41,17 @@ class RestClientTest {
     }
 
     @Test
+    void getWithHeadersExposesTheResponseHeadersAlongsideTheParsedBody() {
+        wm.stubFor(get("/rest/api/1.0/projects/TRADING").willReturn(okJson("{\"key\":\"TRADING\"}")
+                .withHeader("X-AUSERNAME", "jsmith")));
+
+        RestClient.JsonResponse resp = client().getWithHeaders("/rest/api/1.0/projects/TRADING");
+
+        assertThat(resp.body().path("key").asText()).isEqualTo("TRADING");
+        assertThat(resp.headers().firstValue("X-AUSERNAME")).contains("jsmith");
+    }
+
+    @Test
     void postSendsContentTypeAndBody() {
         wm.stubFor(post("/rest/api/2/issue").willReturn(okJson("{\"id\":\"1\"}")));
         ObjectNode body = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode();

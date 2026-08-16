@@ -142,8 +142,11 @@ class DoctorCommandTest {
         assertThat(run.out()).contains("[ OK ] atlassian:confluence").contains("HTTP 200 as jsmith");
     }
 
+    // Fix 2 (review): Bitbucket DC has no /users/self resource, so doctor probes only
+    // /rest/api/1.0/projects/{project} and reads the username from that response's
+    // X-AUSERNAME header — a single call, not two.
     @Test
-    void bitbucketProbesBothTheUserAndTheProjectEndpoint() throws Exception {
+    void bitbucketProbesTheProjectEndpointAndReadsTheUsernameFromTheAusernameHeader() throws Exception {
         Files.writeString(ws.resolve("sdd.yml"), yaml() + """
                 atlassian:
                   bitbucket:
@@ -152,12 +155,12 @@ class DoctorCommandTest {
                     project: TRADING
                 """.formatted(wm.baseUrl()));
         wm.stubFor(get("/v1/models").willReturn(okJson("{\"data\":[]}")));
-        wm.stubFor(get("/rest/api/1.0/users/self").willReturn(okJson("{\"name\":\"jsmith\"}")));
-        wm.stubFor(get("/rest/api/1.0/projects/TRADING").willReturn(okJson("{\"key\":\"TRADING\"}")));
+        wm.stubFor(get("/rest/api/1.0/projects/TRADING").willReturn(okJson("{\"key\":\"TRADING\"}")
+                .withHeader("X-AUSERNAME", "jsmith")));
 
         Run run = doctor(ws);
 
-        assertThat(run.out()).contains("[ OK ] atlassian:bitbucket:user").contains("HTTP 200 as jsmith")
-                .contains("[ OK ] atlassian:bitbucket:project").contains("HTTP 200 as TRADING");
+        assertThat(run.out()).contains("[ OK ] atlassian:bitbucket").contains("HTTP 200 as jsmith");
+        wm.verify(0, getRequestedFor(urlEqualTo("/rest/api/1.0/users/self")));
     }
 }

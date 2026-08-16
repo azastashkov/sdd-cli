@@ -13,11 +13,16 @@ import java.nio.file.Path;
  * quiet fallback to the JDK default: a typo in this path must not silently change which trust
  * anchors are in play on a closed network where that is the whole point of configuring it.
  *
- * <p>{@code password} is resolved eagerly, unlike a site's {@code token} (see
- * {@link AtlassianSite}): it has no companion {@code *Error} field because, unlike a token, a
- * missing truststore password blocks the WHOLE {@code atlassian:} block (every site shares one
- * truststore) rather than a single command path — so there is no read-only command it would be
- * unfair to block, and deferring it would only hide a broken TLS setup until the first network
- * call instead of at `sdd doctor`'s config-load step.
+ * <p>{@code password}/{@code passwordError} follow the same deferred-credential idiom as a site's
+ * {@code token}/{@code tokenError} (see {@link AtlassianSite}), copied from
+ * {@code ConfigLoader.endpoint}'s {@code api_key} handling. An earlier draft resolved
+ * {@code truststore_password} eagerly, reasoning that a shared-by-every-site credential has no
+ * unfair read-only command to protect the way a single site's token does — that reasoning was
+ * wrong: eager resolution meant an unset {@code ${CORP_TRUSTSTORE_PASSWORD}} failed
+ * {@code ConfigLoader.load} for EVERY command, including {@code sdd index}/{@code status}/
+ * {@code clean}, none of which ever open an Atlassian connection. That is exactly the failure the
+ * idiom exists to prevent. {@code password} is null and {@code passwordError} carries the message
+ * when the {@code ${VAR}} is unset; {@code sdd.core.http.HttpClients} raises it, byte-identical, at
+ * the point it is about to actually open the truststore.
  */
-public record AtlassianTls(Path truststore, String password) {}
+public record AtlassianTls(Path truststore, String password, String passwordError) {}

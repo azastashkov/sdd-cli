@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.MissingNode;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
@@ -31,6 +32,12 @@ import java.time.Duration;
  */
 public final class RestClient {
     public interface Sleeper { void sleep(long millis) throws InterruptedException; }
+
+    /** A parsed body paired with the raw response headers — for the rare caller (Bitbucket's
+     *  {@code X-AUSERNAME}, see {@code AtlassianProbe}) that needs a header {@link #get}/{@link #post}/
+     *  {@link #put} otherwise discard. Deliberately minimal: one more field on the normal return
+     *  shape, not a parallel client API. */
+    public record JsonResponse(JsonNode body, HttpHeaders headers) {}
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -64,31 +71,38 @@ public final class RestClient {
     }
 
     public JsonNode get(String path) {
-        return send("GET", path, null, true);
+        return parse(send("GET", path, null).body());
     }
 
     public JsonNode post(String path, JsonNode body) {
-        return send("POST", path, body, true);
+        return parse(send("POST", path, body).body());
     }
 
     public JsonNode put(String path, JsonNode body) {
-        return send("PUT", path, body, true);
+        return parse(send("PUT", path, body).body());
     }
 
     /** For endpoints that reply 204 No Content (or a body the caller does not need) — same retry
      *  and error handling as {@link #post}, without trying to parse a response that may be empty. */
     public void postExpectingNoContent(String path, JsonNode body) {
-        send("POST", path, body, false);
+        send("POST", path, body);
     }
 
-    private JsonNode send(String method, String path, JsonNode body, boolean parseResponse) {
+    /** Same as {@link #get}, but keeps the response headers alongside the parsed body — see
+     *  {@link JsonResponse}. */
+    public JsonResponse getWithHeaders(String path) {
+        HttpResponse<String> resp = send("GET", path, null);
+        return new JsonResponse(parse(resp.body()), resp.headers());
+    }
+
+    private HttpResponse<String> send(String method, String path, JsonNode body) {
         AtlassianException last = null;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 HttpResponse<String> resp = execute(method, path, body);
                 int status = resp.statusCode();
                 if (status >= 200 && status < 300) {
-                    return parseResponse ? parse(resp.body()) : null;
+                    return resp;
                 }
                 if (status == 401 || status == 403) {
                     throw new AtlassianException(rejectedTokenMessage(status));

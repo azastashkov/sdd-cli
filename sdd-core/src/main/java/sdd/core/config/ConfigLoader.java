@@ -239,10 +239,20 @@ public final class ConfigLoader {
         }
         String truststore = requiredAt(m, "truststore", "atlassian.tls", env);
         Object rawPassword = m.get("truststore_password");
-        // Eagerly resolved, unlike a site's token — see AtlassianTls's javadoc for why this one
-        // has no deferred *Error companion field.
-        String password = rawPassword == null ? null : str(rawPassword, env, "atlassian.tls.truststore_password");
-        return new AtlassianTls(Path.of(truststore), password);
+        String password = null;
+        String passwordError = null;
+        // Deferred-credential idiom, same as a site's token below: an unset ${VAR} must not fail
+        // config loading for every command — sdd index/status/clean never open an Atlassian
+        // connection and must not be blocked by a truststore password they will never use. See
+        // AtlassianTls's javadoc for why an earlier draft got this wrong by resolving eagerly.
+        if (rawPassword != null) {
+            try {
+                password = str(rawPassword, env, "atlassian.tls.truststore_password");
+            } catch (ConfigException e) {
+                passwordError = e.getMessage();
+            }
+        }
+        return new AtlassianTls(Path.of(truststore), password, passwordError);
     }
 
     private static AtlassianProxy parseAtlassianProxy(Object node, Function<String, String> env) {
