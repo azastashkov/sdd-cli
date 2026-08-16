@@ -169,4 +169,54 @@ class DtsCompatCheckIT {
         assertThat(result.ok()).isFalse();
         assertThat(result.log()).contains("no package.json");
     }
+
+    @Test
+    void aGenericTypeIsProbedWithItsTypeArgumentsRatherThanBare() throws Exception {
+        // Found on the real trading-web-sdk, whose Stream<T> is exported. Naming a generic bare in
+        // the probe makes the compiler say "requires 1 type argument(s)" and the gate reports a
+        // break in a type nobody touched — a FAILED repo for correct work.
+        String source = """
+                export interface Stream<T> { subscribe(fn: (v: T) => void): () => void; }
+                export type Unsubscribe = () => void;
+                export interface Pair<A, B> { left: A; right: B; }
+                """;
+
+        DtsCompatCheck.Verdict verdict = compare(source, source);
+
+        assertThat(verdict.typeCompatible()).as("%s", verdict.report()).isTrue();
+        assertThat(verdict.probed()).isEqualTo(3);
+    }
+
+    @Test
+    void aBreakIsAttributedToTheExportThatActuallyBroke() throws Exception {
+        // A type probe spans two statements. Attributing on the LAST line hands a diagnostic
+        // raised on the first one to the PREVIOUS export, naming something that is perfectly fine.
+        DtsCompatCheck.Verdict verdict = compare("""
+                export interface Alpha { a: string; }
+                export interface Beta { b: string; }
+                """, """
+                export interface Alpha { a: string; }
+                export interface Beta { }
+                """);
+
+        assertThat(verdict.typeCompatible()).isFalse();
+        assertThat(verdict.report()).contains("Beta").doesNotContain("Alpha");
+    }
+
+    @Test
+    void aBreakMessageNamesTheSideATypeCameFromAndNotItsPathOnThisMachine() throws Exception {
+        DtsCompatCheck.Verdict verdict = compare("""
+                export interface Cfg { a: string; }
+                export interface Sdk { cfg: Cfg; token: string; }
+                """, """
+                export interface Cfg { a: string; }
+                export interface Sdk { cfg: Cfg; }
+                """);
+
+        assertThat(verdict.typeCompatible()).isFalse();
+        // The orchestrator records the first 200 characters of this as the repo's FAILED reason.
+        // Left as the checker writes it, that reason is absolute paths and names nothing.
+        assertThat(verdict.report()).doesNotContain("import(").doesNotContain(out.toString());
+        assertThat(verdict.report()).contains("candidate.").contains("baseline.");
+    }
 }

@@ -186,13 +186,23 @@ function typeCompat(request) {
   const probes = [];
   for (const e of exports) {
     const id = '__p' + probes.length;
+    // The FIRST line of the probe, recorded before the lines are written. A type probe spans two
+    // statements, and attributing on the last line hands every diagnostic raised on the first one
+    // to the PREVIOUS export — which reports a break against a name that is perfectly fine.
+    const startLine = lines.length + 1;
     if (e.isValue) {
       lines.push('const ' + id + ': typeof __Baseline.' + e.name + ' = __Candidate.' + e.name + ';');
     } else {
-      lines.push('declare const ' + id + '_c: __Candidate.' + e.name + ';');
-      lines.push('const ' + id + ': __Baseline.' + e.name + ' = ' + id + '_c;');
+      // A generic type cannot be named without its arguments, and `any` is both assignable to and
+      // from everything, so it satisfies any constraint and never itself causes a mismatch: what
+      // is left being compared is the shape of the members. Naming a generic bare instead makes
+      // the compiler say "requires 1 type argument(s)" and the gate reports a break in a type
+      // nobody touched — seen on the real trading-web-sdk, whose Stream<T> is exactly this.
+      const args = e.arity > 0 ? '<' + new Array(e.arity).fill('any').join(', ') + '>' : '';
+      lines.push('declare const ' + id + '_c: __Candidate.' + e.name + args + ';');
+      lines.push('const ' + id + ': __Baseline.' + e.name + args + ' = ' + id + '_c;');
     }
-    probes.push({ id, name: e.name, line: lines.length });
+    probes.push({ id, name: e.name, line: startLine });
   }
   fs.writeFileSync(probeFile, lines.join('\n') + '\n', 'utf8');
 
@@ -210,9 +220,39 @@ function typeCompat(request) {
     const name = probe ? probe.name : '<probe>';
     if (seen.has(name)) continue;
     seen.add(name);
-    breaks.push({ export: name, message: ts.flattenDiagnosticMessageText(d.messageText, ' ') });
+    breaks.push({
+      export: name,
+      message: readable(ts.flattenDiagnosticMessageText(d.messageText, ' '), baseline, candidate),
+    });
   }
   return { version: PROTOCOL_VERSION, ok: true, probed: probes.length, breaks, error: null };
+}
+
+/**
+ * A diagnostic a human can act on.
+ *
+ * The checker renders every cross-file type as `import("<absolute path>").Name`, and this probe
+ * imports two whole trees, so a single message can run to a thousand characters of machine-specific
+ * path. The orchestrator records the first 200 of the report as the repo's FAILED reason — left
+ * alone, that reason is pure path noise and names nothing. Rewriting the two known roots to
+ * `baseline` and `candidate` keeps the distinction that matters (which side a type came from)
+ * and discards the part that never does.
+ */
+function readable(message, baselineDts, candidateDts) {
+  const baseDir = path.dirname(baselineDts);
+  const candDir = path.dirname(candidateDts);
+  return message
+    .replace(/import\("([^"]*)"\)\./g, (whole, p) => {
+      if (p.startsWith(candDir)) return 'candidate.';
+      if (p.startsWith(baseDir)) return 'baseline.';
+      return '';
+    })
+    // The compiler elides a long type with a trailing `...`, which can land INSIDE the path and
+    // leave an `import("` with no closing quote — so the well-formed pass above cannot match it.
+    // Whatever is left of such a fragment is path, and none of it is worth a reader's attention.
+    .replace(/import\("[^"']*/g, '…')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /** The baseline's exported names, split into values and types — the two need different probes,
@@ -235,10 +275,19 @@ function exportsOf(dtsFile) {
     const isValue = !!(flags & ts.SymbolFlags.Value);
     const isType = !!(flags & (ts.SymbolFlags.Type | ts.SymbolFlags.TypeAlias | ts.SymbolFlags.Interface));
     if (isValue || isType) {
-      out.push({ name: symbol.name, isValue });
+      out.push({ name: symbol.name, isValue, arity: arityOf(symbol) });
     }
   }
   return out;
+}
+
+/** How many type parameters a type declares — an alias, an interface and a class all carry them
+ *  in the same place, so one read covers every shape the probe can name. */
+function arityOf(symbol) {
+  for (const decl of symbol.declarations || []) {
+    if (decl.typeParameters) return decl.typeParameters.length;
+  }
+  return 0;
 }
 
 /** A relative specifier without its `.d.ts` tail, which is how a declaration file is imported. */
@@ -887,6 +936,32 @@ function isExported(node) {
  * is machine- and version-dependent, and the checker without lib files would render half of them
  * as `any`. What the author wrote is stable and is what a reader compares.
  */
+/**
+ * A written type as ONE line, with comments removed.
+ *
+ * `getText()` returns the source span verbatim, so an inline object-literal type spanning twenty
+ * lines — with its own JSDoc inside — arrives with newlines in it. Every consumer of this text is
+ * line-oriented: the knowledge base stores it as a member signature, and a contract body is
+ * `<module>` headers over indented member lines. A newline inside one member silently becomes
+ * several members, one of which is a fragment of a comment.
+ *
+ * The printer, not a regex, does the comment removal: a string-literal type may contain the
+ * characters that open a comment, and only the compiler knows which is which. Collapsing runs of
+ * whitespace afterwards can shorten a run inside a string literal type, which changes the recorded
+ * text identically on both sides of any comparison and never changes what it means.
+ */
+const PRINTER = ts.createPrinter({ removeComments: true, omitTrailingSemicolon: true });
+
+function typeTextOf(node, source) {
+  if (!node) return null;
+  try {
+    return PRINTER.printNode(ts.EmitHint.Unspecified, node, source || node.getSourceFile())
+      .replace(/\s+/g, ' ').trim();
+  } catch (e) {
+    return node.getText().replace(/\s+/g, ' ').trim();
+  }
+}
+
 function membersOf(node) {
   const members = [];
   if (ts.isClassDeclaration(node) || ts.isInterfaceDeclaration(node)) {
@@ -898,17 +973,17 @@ function membersOf(node) {
       if (isPrivate) continue;
       if (ts.isMethodDeclaration(member) || ts.isMethodSignature(member)) {
         const params = (member.parameters || [])
-          .map((p) => (p.type ? p.type.getText() : 'any')).join(',');
+          .map((p) => (p.type ? typeTextOf(p.type) : 'any')).join(',');
         members.push({
           name: member.name.text,
           signature: member.name.text + '(' + params + ')',
-          returnType: member.type ? member.type.getText() : null,
+          returnType: typeTextOf(member.type),
         });
       } else if (ts.isPropertyDeclaration(member) || ts.isPropertySignature(member)) {
         members.push({
           name: member.name.text,
           signature: member.name.text,
-          returnType: member.type ? member.type.getText() : null,
+          returnType: typeTextOf(member.type),
         });
       }
     }
@@ -932,21 +1007,21 @@ function membersOf(node) {
           members.push({
             name: member.name.text,
             signature: member.name.text,
-            returnType: member.type ? member.type.getText() : null,
+            returnType: typeTextOf(member.type),
           });
         }
       }
     } else if (node.type) {
-      members.push({ name: '<value>', signature: '<value>', returnType: node.type.getText() });
+      members.push({ name: '<value>', signature: '<value>', returnType: typeTextOf(node.type) });
     }
     return members;
   }
   if (ts.isFunctionDeclaration(node) && node.name) {
-    const params = (node.parameters || []).map((p) => (p.type ? p.type.getText() : 'any')).join(',');
+    const params = (node.parameters || []).map((p) => (p.type ? typeTextOf(p.type) : 'any')).join(',');
     members.push({
       name: node.name.text,
       signature: node.name.text + '(' + params + ')',
-      returnType: node.type ? node.type.getText() : null,
+      returnType: typeTextOf(node.type),
     });
   }
   return members;
@@ -999,7 +1074,7 @@ function symbolsOf(source, repoRoot) {
           doc: docOf(statement, source),
           decorators: [],
           members: decl.type
-            ? [{ name: '<value>', signature: '<value>', returnType: decl.type.getText() }]
+            ? [{ name: '<value>', signature: '<value>', returnType: typeTextOf(decl.type) }]
             : [],
         });
       }
