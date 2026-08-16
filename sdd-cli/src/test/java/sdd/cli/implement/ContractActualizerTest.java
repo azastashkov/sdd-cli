@@ -267,4 +267,64 @@ class ContractActualizerTest {
         assertThat(actual.get("c5")).hasSizeGreaterThan(4000).endsWith("…(truncated)");
         assertThat(actual.get("c5").length()).isLessThanOrEqualTo(4000 + "\n…(truncated)".length());
     }
+
+    @Test
+    void actualizesAStreamDescriptorFromTheJavaBuildersWithNoNodeInvolved() throws Exception {
+        javaFile("src/main/java/com/trading/streams/CanonicalDescriptors.java", """
+                package com.trading.streams;
+                import java.util.List;
+                public final class CanonicalDescriptors {
+                    public static StreamDescriptor md(String owner, List<String> products) {
+                        KeySpec key = new KeySpec(
+                                List.of(new KeyField("clientId", true, null),
+                                        new KeyField("securityType", true, null)),
+                                "clientId", "securityType");
+                        ChannelBinding tick = new ChannelBinding(
+                                "md.tick.{securityType}.{clientId}", ChannelScope.KEY,
+                                FanoutMode.CHANNEL_KEYED, new FrameType("md.tick", null, null),
+                                "md.lvc.{securityType}", null, new FrameShape(null, List.of("ts")));
+                        ChannelBinding reject = new ChannelBinding(
+                                "md.reject.{securityType}.{clientId}", ChannelScope.KEY,
+                                FanoutMode.CHANNEL_KEYED, new FrameType("md.reject", null, null),
+                                null, null, null);
+                        return new StreamDescriptor("md", owner, List.copyOf(products), null,
+                                Activation.ON_SUBSCRIBE, key, null, List.of(tick, reject),
+                                null, null, null);
+                    }
+                }
+                """);
+        PlanModel.PlanContract contract = new PlanModel.PlanContract("c1", "stream-descriptor",
+                "platform-libs", List.of("web-sdk"), "b", null, List.of());
+
+        Map<String, String> actual = ContractActualizer.actualize(repo, List.of(contract));
+
+        // The Java half of a contract the TypeScript half declares identically. Node is never
+        // started for a Gradle provider — the two extractors are independent by construction.
+        assertThat(actual.get("c1"))
+                .contains("md key clientId,securityType\n")
+                .contains("md channels md.tick,md.reject\n");
+    }
+
+    @Test
+    void aDescriptorAxisTheBuilderDoesNotSetIsAbsentRatherThanEmpty() throws Exception {
+        javaFile("src/main/java/com/trading/streams/CanonicalDescriptors.java", """
+                package com.trading.streams;
+                import java.util.List;
+                public final class CanonicalDescriptors {
+                    public static StreamDescriptor bare(String owner) {
+                        KeySpec key = new KeySpec(List.of(new KeyField("clientId", true, null)),
+                                "clientId", null);
+                        return new StreamDescriptor("bare", owner, null, null,
+                                Activation.ON_AUTH, key, null, null, null, null, null);
+                    }
+                }
+                """);
+        PlanModel.PlanContract contract = new PlanModel.PlanContract("c1", "stream-descriptor",
+                "platform-libs", List.of("web-sdk"), "b", null, List.of());
+
+        // An axis a descriptor genuinely does not have is not an axis that could not be read, so
+        // it produces no line rather than an empty or unresolved one.
+        assertThat(ContractActualizer.actualize(repo, List.of(contract)).get("c1"))
+                .isEqualTo("# actualized (stream-descriptor)\nbare key clientId\n");
+    }
 }

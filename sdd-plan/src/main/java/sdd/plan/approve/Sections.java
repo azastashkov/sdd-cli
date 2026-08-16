@@ -11,7 +11,7 @@ final class Sections {
     private static final Pattern CONTRACT_HEAD =
             // Every contract kind must appear here or a plan declaring one is simply unparseable,
             // with an error that points at the heading rather than at the missing alternative.
-            Pattern.compile("### (.+?) \\((java-api|rest|kafka|ts-api|rest-client)"
+            Pattern.compile("### (.+?) \\((java-api|rest|kafka|ts-api|rest-client|stream-descriptor)"
                     + "(?:, (binary-compatible|type-compatible))?\\) — (\\S+)(?: -> (.+))?");
     private static final Pattern STEP_SCALAR = Pattern.compile("- (covers|version_action|provides|consumes): (.+)");
 

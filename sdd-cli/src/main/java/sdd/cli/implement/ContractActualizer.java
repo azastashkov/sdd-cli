@@ -11,6 +11,7 @@ import sdd.index.spring.KafkaExtractor;
 import sdd.index.spring.RestEndpointExtractor;
 import sdd.index.spring.SpringConfigPersistence;
 import sdd.index.spring.SpringModel;
+import sdd.index.streams.StreamDescriptorExtractor;
 import sdd.index.npm.PackageJson;
 import sdd.index.ts.PackageEntries;
 import sdd.index.ts.TsApiSurface;
@@ -93,6 +94,7 @@ public final class ContractActualizer {
                 case ContractKinds.KAFKA -> kafka(repoRoot, sessions);
                 case ContractKinds.TS_API -> tsApi(ts);
                 case ContractKinds.REST_CLIENT -> restClient(ts);
+                case ContractKinds.STREAM_DESCRIPTOR -> streamDescriptor(sessions, ts);
                 default -> "";
             };
             if (!body.isBlank()) {
@@ -209,7 +211,8 @@ public final class ContractActualizer {
 
         TsSessions(Path repoRoot, Path nodeHome, List<PlanModel.PlanContract> provided) {
             boolean wanted = provided.stream().anyMatch(c ->
-                    ContractKinds.TS_API.equals(c.kind()) || ContractKinds.REST_CLIENT.equals(c.kind()));
+                    ContractKinds.TS_API.equals(c.kind()) || ContractKinds.REST_CLIENT.equals(c.kind())
+                            || ContractKinds.STREAM_DESCRIPTOR.equals(c.kind()));
             if (!wanted) {
                 return;
             }
@@ -263,6 +266,7 @@ public final class ContractActualizer {
         private final TsSidecar sidecar;
         private TsSidecar.Result callSites;
         private TsSidecar.Result surface;
+        private TsSidecar.Result streams;
         private PackageEntries.Result entries;
 
         TsPackage(String name, Path packageDir, List<Path> files, Path repoRoot, TsSidecar sidecar) {
@@ -278,6 +282,13 @@ public final class ContractActualizer {
                 callSites = sidecar.httpCallSites(repoRoot, files);
             }
             return callSites;
+        }
+
+        TsSidecar.Result streams() {
+            if (streams == null) {
+                streams = sidecar.streamDescriptors(repoRoot, files);
+            }
+            return streams;
         }
 
         JsonNode surfaceNode() {
@@ -410,6 +421,75 @@ public final class ContractActualizer {
             return container;
         }
         return container + (container.indexOf('#') >= 0 ? "." : "#") + client.methodOrSite();
+    }
+
+    /**
+     * A stream registration's two checkable axes, from whichever end of it this repo is.
+     *
+     * <p>The one kind either toolchain can provide, so both extractors run and whichever finds
+     * something wins. That is not a fallback: a repo is one or the other, and asking both is how
+     * the actualizer avoids needing to know which — the same body comes out either way, which is
+     * the entire point of a contract two repos declare identically.
+     */
+    private static String streamDescriptor(List<ModuleSession> sessions, TsSessions ts) {
+        Map<String, Descriptor> descriptors = new LinkedHashMap<>();
+        for (ModuleSession module : sessions) {
+            for (StreamDescriptorExtractor.Descriptor java
+                    : StreamDescriptorExtractor.extract(module.session())) {
+                descriptors.putIfAbsent(java.stream(),
+                        new Descriptor(java.stream(), java.key(), java.channels()));
+            }
+        }
+        for (TsPackage pkg : ts.packages) {
+            TsSidecar.Result result = pkg.streams();
+            if (!result.ok()) {
+                continue;
+            }
+            for (JsonNode node : result.json().path("descriptors")) {
+                Descriptor descriptor = new Descriptor(node.path("stream").asText(),
+                        values(node.path("key")), values(node.path("channels")));
+                descriptors.putIfAbsent(descriptor.stream(), descriptor);
+            }
+        }
+
+        StringBuilder body = new StringBuilder();
+        descriptors.values().forEach(descriptor -> {
+            appendAxis(body, descriptor.stream(), "key", descriptor.key());
+            appendAxis(body, descriptor.stream(), "channels", descriptor.channels());
+        });
+        return body.toString();
+    }
+
+    /** One descriptor as both actualizers see it — the shape is identical by construction, which
+     *  is what lets one contract be declared twice with byte-identical bodies. */
+    private record Descriptor(String stream, List<String> key, List<String> channels) {
+    }
+
+    private static List<String> values(JsonNode array) {
+        List<String> values = new ArrayList<>();
+        array.forEach(value -> values.add(value.isNull() ? null : value.asText()));
+        return values;
+    }
+
+    /**
+     * {@code md key clientId,securityType}. A value that could not be read is written {@code ?}
+     * and marks the whole LINE unresolved, because what failed is one entry in an ordered list:
+     * the list cannot be confirmed, and no narrower claim than that is true.
+     */
+    private static void appendAxis(StringBuilder body, String stream, String axis,
+                                   List<String> values) {
+        if (values.isEmpty()) {
+            return;   // an axis a descriptor genuinely does not have is not an unread one
+        }
+        body.append(stream).append(' ').append(axis).append(' ');
+        for (int i = 0; i < values.size(); i++) {
+            body.append(i == 0 ? "" : ",").append(values.get(i) == null ? "?" : values.get(i));
+        }
+        // Not List.contains(null): an immutable list throws on it, and the key axis is always one.
+        if (values.stream().anyMatch(java.util.Objects::isNull)) {
+            body.append(UNRESOLVED_MARKER);
+        }
+        body.append('\n');
     }
 
     /** Every directory holding a {@code package.json}, which is what makes a directory an npm

@@ -175,4 +175,84 @@ class ContractActualizerTsIT {
         assertThat(actualize("ts-api")).isEmpty();
         assertThat(actualize("rest-client")).isEmpty();
     }
+
+    // -- stream-descriptor ----------------------------------------------------------------------
+
+    /** trading-web-sdk's own MD_STREAM_DESCRIPTOR, copied down to the property order. */
+    private static final String STREAM_ENGINE = """
+            import type { StreamDescriptorDto } from './types.js';
+            export const MD_STREAM_DESCRIPTOR: StreamDescriptorDto = {
+              stream: 'md',
+              owner: 'pricing',
+              products: ['PRODUCT1', 'PRODUCT2', 'PRODUCT3'],
+              activation: 'onSubscribe',
+              key: {
+                fields: [
+                  { name: 'clientId', required: true },
+                  { name: 'securityType', required: true },
+                ],
+                entitlementField: 'clientId',
+                productField: 'securityType',
+              },
+              channels: [
+                { template: 'md.tick.{securityType}.{clientId}', fanout: 'channelKeyed', frameType: 'md.tick' },
+                { template: 'md.reject.{securityType}.{clientId}', fanout: 'channelKeyed', frameType: 'md.reject' },
+                { template: 'feed.status.{securityType}', scope: 'product', fanout: 'channelKeyed', frameType: 'feed.status' },
+              ],
+            };
+            """;
+
+    @Test
+    void aTypeScriptDescriptorActualizesToTheSameTwoAxesTheJavaBuilderDoes() throws Exception {
+        write("package.json", "{\"name\":\"@azastashkov/web-sdk\",\"main\":\"./src/index.ts\"}");
+        write("src/stream-engine.ts", STREAM_ENGINE);
+
+        String body = actualize("stream-descriptor");
+
+        // Byte-identical to what the Java half produces, which is what lets one contract be
+        // declared twice — once per provider — with the same block on both sides.
+        assertThat(body).contains("md key clientId,securityType\n");
+        assertThat(body).contains("md channels md.tick,md.reject,feed.status\n");
+        assertThat(DeclaredContract.parse("stream-descriptor", String.join("\n", List.of(
+                        "md key clientId,securityType",
+                        "md channels md.tick,md.reject,feed.status")))
+                .missingFrom(body)).isEmpty();
+    }
+
+    @Test
+    void aKeyFieldOrderChangeIsADivergence() throws Exception {
+        write("package.json", "{\"name\":\"@azastashkov/web-sdk\",\"main\":\"./src/index.ts\"}");
+        write("src/stream-engine.ts", STREAM_ENGINE);
+
+        // The order decides how a subscription key is encoded on the wire. Two ends that agree on
+        // the set and not the order produce keys that never match, so a set comparison here would
+        // call a live failure agreement.
+        assertThat(DeclaredContract.parse("stream-descriptor", "md key securityType,clientId")
+                .missingFrom(actualize("stream-descriptor")))
+                .containsExactly("md key securityType,clientId");
+    }
+
+    @Test
+    void aComputedDescriptorValueIsMarkedUnreadRatherThanResolved() throws Exception {
+        write("package.json", "{\"name\":\"@acme/lib\",\"main\":\"./src/index.ts\"}");
+        write("src/index.ts", """
+                const TICK = 'md.tick';
+                export const D = {
+                  stream: 'md',
+                  key: { fields: [{ name: 'clientId', required: true }] },
+                  channels: [{ template: 'a', frameType: TICK }, { template: 'b', frameType: 'md.reject' }],
+                };
+                """);
+
+        String body = actualize("stream-descriptor");
+
+        // A descriptor is a wire format. A guess about a wire format that reaches a contract body
+        // is worse than an admission that it could not be read.
+        assertThat(body).contains("md channels ?,md.reject [unresolved]\n");
+        assertThat(DeclaredContract.parse("stream-descriptor", "md channels md.tick,md.reject")
+                .unresolvedMembers(body)).containsExactly("md channels");
+        // ...and it excuses only its own axis, never the key.
+        assertThat(DeclaredContract.parse("stream-descriptor", "md key nope")
+                .unresolvedMembers(body)).doesNotContain("md key");
+    }
 }

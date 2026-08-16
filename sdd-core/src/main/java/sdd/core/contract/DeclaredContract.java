@@ -56,6 +56,7 @@ public record DeclaredContract(String kind, List<String> members, List<String> p
                 // Same grammar as `rest`: a verb and a path is a verb and a path whichever end of
                 // the call declares it, and sharing the parser keeps the two from drifting.
                 case ContractKinds.REST_CLIENT -> parseRestLine(line, members, problems);
+                case ContractKinds.STREAM_DESCRIPTOR -> parseStreamLine(line, members, problems);
                 default -> throw new IllegalStateException("unreachable: " + kind);
             }
         }
@@ -74,6 +75,7 @@ public record DeclaredContract(String kind, List<String> members, List<String> p
             case ContractKinds.KAFKA -> canonicalizeKafkaActual(actualBody, out);
             case ContractKinds.TS_API -> canonicalizeTsApiActual(actualBody, out);
             case ContractKinds.REST_CLIENT -> canonicalizeRestActual(actualBody, out);
+            case ContractKinds.STREAM_DESCRIPTOR -> canonicalizeStreamActual(actualBody, out);
             default -> throw new IllegalStateException("unreachable: " + kind);
         }
         return out;
@@ -119,6 +121,7 @@ public record DeclaredContract(String kind, List<String> members, List<String> p
             case ContractKinds.REST_CLIENT -> unresolvedRestMembers(actualBody, out);
             case ContractKinds.KAFKA -> unresolvedKafkaMembers(actualBody, out);
             case ContractKinds.TS_API -> unresolvedTsApiMembers(actualBody, out);
+            case ContractKinds.STREAM_DESCRIPTOR -> unresolvedStreamMembers(actualBody, out);
             default -> { } // java-api: no unresolved shape exists
         }
         return out;
@@ -256,6 +259,94 @@ public record DeclaredContract(String kind, List<String> members, List<String> p
             if (currentModule != null && trimmed.endsWith(UNRESOLVED_MARKER)) {
                 out.add(currentModule + "#" + normalizeTsTypes(
                         trimmed.substring(0, trimmed.length() - UNRESOLVED_MARKER.length())));
+            }
+        }
+    }
+
+    // -- stream-descriptor ---------------------------------------------------------------------
+
+    /** The two axes both sides of a stream registration can actually be read for. */
+    private static final Set<String> STREAM_AXES = Set.of("key", "channels");
+
+    /**
+     * {@code <stream> <axis> <v1>,<v2>,…} — e.g. {@code md key clientId,securityType}.
+     *
+     * <p>Order is significant and is preserved: a key's field order decides how a subscription key
+     * is encoded on the wire, and two ends that agree on the SET but not the ORDER produce keys
+     * that never match. Comparing as an unordered set would call that agreement.
+     */
+    private static void parseStreamLine(String line, List<String> members, List<String> problems) {
+        String[] parts = line.strip().split("\\s+", 3);
+        if (parts.length < 3) {
+            problems.add(malformedStream(line));
+            return;
+        }
+        if (!STREAM_AXES.contains(parts[1])) {
+            problems.add("stream-descriptor declaration '" + line + "': '" + parts[1]
+                    + "' is not an axis — expected 'key' or 'channels'. Only those two are"
+                    + " derivable from both the Java builders and the TypeScript built-ins, so"
+                    + " only those two can be checked on both ends");
+            return;
+        }
+        String values = normalizeStreamValues(parts[2]);
+        if (values.isEmpty()) {
+            problems.add(malformedStream(line));
+            return;
+        }
+        members.add(parts[0] + " " + parts[1] + " " + values);
+    }
+
+    private static String malformedStream(String line) {
+        return "malformed stream-descriptor declaration '" + line
+                + "'; expected <stream> key|channels <value>,<value>,…";
+    }
+
+    /** Whitespace around the separators is a writing convenience, never a difference. */
+    private static String normalizeStreamValues(String values) {
+        List<String> out = new ArrayList<>();
+        for (String value : values.split(",", -1)) {
+            String trimmed = value.strip();
+            if (!trimmed.isEmpty()) {
+                out.add(trimmed);
+            }
+        }
+        return String.join(",", out);
+    }
+
+    private static void canonicalizeStreamActual(String body, List<String> out) {
+        for (String raw : body.split("\n", -1)) {
+            String line = raw.strip();
+            if (line.isEmpty() || line.startsWith("#")) {
+                continue;   // the "# actualized (stream-descriptor)" header
+            }
+            if (line.endsWith(UNRESOLVED_MARKER)) {
+                line = line.substring(0, line.length() - UNRESOLVED_MARKER.length()).strip();
+            }
+            String[] parts = line.split("\\s+", 3);
+            if (parts.length == 3) {
+                out.add(parts[0] + " " + parts[1] + " " + normalizeStreamValues(parts[2]));
+            }
+        }
+    }
+
+    /**
+     * A stream axis one of whose values could not be read.
+     *
+     * <p>Keyed on stream AND axis, which together are the whole left-hand side — the only thing
+     * extraction failed at is one entry IN the list, so a marked line means "this list could not
+     * be confirmed" and nothing wider. It cannot excuse the other axis of the same stream, nor
+     * the same axis of another stream.
+     */
+    private static void unresolvedStreamMembers(String body, List<String> out) {
+        for (String raw : body.split("\n", -1)) {
+            String line = raw.strip();
+            if (line.isEmpty() || line.startsWith("#") || !line.endsWith(UNRESOLVED_MARKER)) {
+                continue;
+            }
+            String[] parts = line.substring(0, line.length() - UNRESOLVED_MARKER.length())
+                    .strip().split("\\s+", 3);
+            if (parts.length >= 2) {
+                out.add(parts[0] + " " + parts[1]);
             }
         }
     }

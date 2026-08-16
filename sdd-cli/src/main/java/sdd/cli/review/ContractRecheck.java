@@ -262,6 +262,8 @@ public final class ContractRecheck {
             case ContractKinds.REST -> unresolvedActual.stream().anyMatch(u -> restSamePathAnyVerb(missingMember, u));
             case ContractKinds.KAFKA -> unresolvedActual.stream().anyMatch(u -> kafkaExplains(missingMember, u));
             case ContractKinds.TS_API -> unresolvedActual.stream().anyMatch(u -> tsApiSameMember(missingMember, u));
+            case ContractKinds.STREAM_DESCRIPTOR ->
+                    unresolvedActual.stream().anyMatch(u -> streamSameAxis(missingMember, u));
             // rest-client's unresolved shape is the mirror of rest's: the VERB is read straight off
             // the call and the PATH is what could not be resolved. So the only thing an unresolved
             // entry shares with a missing member is the verb — the coarse half — and excusing on it
@@ -271,6 +273,14 @@ public final class ContractRecheck {
             // printed in the actualized body next to the missing list, where a human can weigh them.
             default -> false; // java-api: no unresolved shape exists
         };
+    }
+
+    /** Stream AND axis — together the whole left-hand side of the declaration, since the only
+     *  thing extraction failed at is one value inside the list. A marked line therefore means
+     *  "this list could not be confirmed" and cannot excuse the other axis of the same stream. */
+    private static boolean streamSameAxis(String missingMember, String unresolvedEntry) {
+        String[] parts = missingMember.split("\\s+", 3);
+        return parts.length >= 2 && unresolvedEntry.equals(parts[0] + " " + parts[1]);
     }
 
     /** Same module AND same member, differing only in the type — the partition rule this kind

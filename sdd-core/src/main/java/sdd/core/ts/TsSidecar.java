@@ -125,6 +125,23 @@ public final class TsSidecar {
     }
 
     /**
+     * Stream descriptors written as exported object literals.
+     *
+     * <p>No entry points are needed: unlike the API surface, a descriptor is identified by naming
+     * its own stream rather than by the specifier it is published under, so the same two axes are
+     * read whether or not the package exports it.
+     */
+    public Result streamDescriptors(Path repoRoot, List<Path> files) {
+        com.fasterxml.jackson.databind.node.ObjectNode request = MAPPER.createObjectNode()
+                .put("version", PROTOCOL_VERSION)
+                .put("mode", "streamDescriptors")
+                .put("repoRoot", repoRoot.toAbsolutePath().toString());
+        var array = request.putArray("files");
+        files.forEach(f -> array.add(f.toAbsolutePath().toString()));
+        return call(request);
+    }
+
+    /**
      * A package's exported surface: which names it publishes under which specifier, and the
      * symbols behind them.
      *

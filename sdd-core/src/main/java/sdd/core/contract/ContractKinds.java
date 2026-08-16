@@ -25,8 +25,25 @@ public final class ContractKinds {
      */
     public static final String REST_CLIENT = "rest-client";
 
+    /**
+     * The shape of a stream registration, declared by BOTH ends of it.
+     *
+     * <p>The only kind whose provider may be either toolchain, because the same descriptor is
+     * built twice — from Java builders in the registering service and from an object literal in
+     * the browser SDK — and the two drifting apart is a live failure with no compiler between
+     * them. The two-owner problem is solved without touching the plan model: declare the contract
+     * twice, once per provider, with identical bodies. Each side is then re-derived and checked
+     * independently, which is exactly what is wanted — a divergence names the side that moved.
+     *
+     * <p>Deliberately scoped to two axes, {@code key} and {@code channels}, because those are the
+     * two both actualizers can see. The wider surface (lvc templates, conflation, interest) is
+     * derivable in Java and absent from the TypeScript built-ins, so declaring it would declare
+     * what one side cannot check.
+     */
+    public static final String STREAM_DESCRIPTOR = "stream-descriptor";
+
     private static final java.util.Set<String> DECLARABLE =
-            java.util.Set.of(JAVA_API, REST, KAFKA, TS_API, REST_CLIENT);
+            java.util.Set.of(JAVA_API, REST, KAFKA, TS_API, REST_CLIENT, STREAM_DESCRIPTOR);
 
     private ContractKinds() {
     }
@@ -37,6 +54,6 @@ public final class ContractKinds {
 
     /** For error messages that list what a contract may be. */
     public static String describeDeclarable() {
-        return String.join(", ", JAVA_API, REST, KAFKA, TS_API, REST_CLIENT);
+        return String.join(", ", JAVA_API, REST, KAFKA, TS_API, REST_CLIENT, STREAM_DESCRIPTOR);
     }
 }

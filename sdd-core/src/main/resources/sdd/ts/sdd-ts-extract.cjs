@@ -889,6 +889,93 @@ function crossPackageRefs(source) {
   return refs;
 }
 
+/**
+ * Stream descriptors written as exported object literals — the browser half of a registration
+ * whose other half is built in Java.
+ *
+ * Only two axes are read, `key.fields[].name` and `channels[].frameType`, because those are the
+ * two the Java builders can also be read for. Anything present on one side and invisible on the
+ * other cannot be a contract: declaring it would declare something one end could never check.
+ *
+ * Every value must be a string LITERAL in the object literal itself. A computed one is reported
+ * as null rather than resolved — a descriptor is a wire format, and a guess about a wire format
+ * that reaches a contract body is worse than an admission that it was not readable.
+ */
+function extractStreamDescriptors(request) {
+  const repoRoot = request.repoRoot;
+  const files = request.files || [];
+  const program = buildProgram(files, request.compilerOptions || {});
+  const descriptors = [];
+
+  for (const file of files) {
+    const source = program.getSourceFile(file);
+    if (!source) continue;
+    for (const statement of source.statements) {
+      if (!ts.isVariableStatement(statement) || !isExported(statement)) continue;
+      for (const decl of statement.declarationList.declarations) {
+        if (!decl.initializer || !ts.isObjectLiteralExpression(decl.initializer)) continue;
+        const descriptor = descriptorOf(decl.initializer);
+        if (descriptor) {
+          descriptor.file = relPath(repoRoot, file);
+          descriptor.export = ts.isIdentifier(decl.name) ? decl.name.text : null;
+          descriptors.push(descriptor);
+        }
+      }
+    }
+  }
+  return { version: PROTOCOL_VERSION, ok: true, descriptors };
+}
+
+/** An object literal is a descriptor when it names its own stream — nothing else identifies it,
+ *  and an unnamed one could not be declared about in the first place. */
+function descriptorOf(literal) {
+  const stream = literalString(propertyOf(literal, 'stream'));
+  if (stream === null) return null;
+
+  const key = [];
+  const keySpec = propertyOf(literal, 'key');
+  if (keySpec && ts.isObjectLiteralExpression(keySpec)) {
+    const fields = propertyOf(keySpec, 'fields');
+    if (fields && ts.isArrayLiteralExpression(fields)) {
+      for (const field of fields.elements) {
+        if (ts.isObjectLiteralExpression(field)) {
+          key.push(literalString(propertyOf(field, 'name')));
+        } else {
+          key.push(null);
+        }
+      }
+    }
+  }
+
+  const channels = [];
+  const bindings = propertyOf(literal, 'channels');
+  if (bindings && ts.isArrayLiteralExpression(bindings)) {
+    for (const binding of bindings.elements) {
+      channels.push(ts.isObjectLiteralExpression(binding)
+        ? literalString(propertyOf(binding, 'frameType'))
+        : null);
+    }
+  }
+
+  return { stream, key, channels };
+}
+
+/** A named property's initializer, following a shorthand to its declaration is deliberately NOT
+ *  done: a shorthand means the value came from somewhere else, which is exactly the case this
+ *  must report as unreadable rather than chase. */
+function propertyOf(literal, name) {
+  for (const property of literal.properties) {
+    if (!property.name || !ts.isIdentifier(property.name)) continue;
+    if (property.name.text !== name) continue;
+    return ts.isPropertyAssignment(property) ? property.initializer : null;
+  }
+  return null;
+}
+
+function literalString(node) {
+  return node && ts.isStringLiteralLike(node) ? node.text : null;
+}
+
 function extractApiSurface(request) {
   const repoRoot = request.repoRoot;
   const packages = request.packages || [];
@@ -949,6 +1036,9 @@ function main() {
       break;
     case 'httpCallSites':
       response = extractHttpCallSites(request);
+      break;
+    case 'streamDescriptors':
+      response = extractStreamDescriptors(request);
       break;
     case 'ping':
       // Used by `sdd doctor` and by the sidecar's own startup check: proves node runs, the

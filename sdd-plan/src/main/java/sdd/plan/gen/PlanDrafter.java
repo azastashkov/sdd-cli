@@ -36,7 +36,8 @@ public final class PlanDrafter {
     /** Whatever DeclaredContract can parse — the drafter must never be able to propose a kind the
      *  checker cannot re-derive, and the two lists drifting apart is exactly how that happens. */
     private static final Set<String> CONTRACT_KINDS = Set.of(ContractKinds.JAVA_API,
-            ContractKinds.REST, ContractKinds.KAFKA, ContractKinds.TS_API, ContractKinds.REST_CLIENT);
+            ContractKinds.REST, ContractKinds.KAFKA, ContractKinds.TS_API, ContractKinds.REST_CLIENT,
+            ContractKinds.STREAM_DESCRIPTOR);
     private static final Set<String> COMPAT_VALUES = Set.of("binary-compatible", "type-compatible");
     static final String SYSTEM_PROMPT = """
             You draft the repo-by-repo implementation plan for a feature specification across a \
