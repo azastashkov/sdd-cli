@@ -274,13 +274,13 @@ rendered report is written there instead of printed
   `dependency_path`, `impact`, or `search`) and the entities the question
   refers to. Every named entity is resolved against the KB and dropped —
   with a reason appended to the request's `notes()` — if it does not exist
-  (`QuestionInterpreter.java:144-153`); the model is never trusted to have
+  (`QuestionInterpreter.java:180-196`); the model is never trusted to have
   named something real just because it said so. If no model is configured
   (`sdd.yml` missing, `models.planner` absent, or an `api_key` env var
   unresolved) or the call itself fails, interpretation falls back to literal
   whole-word matching of known repo/topic names plus regex-shaped class and
   endpoint candidates in the question text — never inference from keywords
-  (`QuestionInterpreter.java:291-352`, `ExplainCommand.java:159-171`).
+  (`QuestionInterpreter.java:359-405`, `ExplainCommand.java:159-171`).
 - **Deterministic fetch, between the two calls**
   (`EvidenceCollector.collect`, `ExplainCommand.java:103-104`): plain SQL
   against `.sdd/index.db`, dispatched on the interpreted intent — repo,
@@ -320,7 +320,7 @@ working tree at read time, so an answer can be arbitrarily behind the real
 estate while reading as current. Every answer states
 `Provenance: N repos indexed; indexed <earliest> to <latest>`
 (`KbStatus.provenance`, `EvidenceRenderer.java:166-178`,
-`EvidenceCollector.java:49`); an `impact` answer additionally surfaces
+`EvidenceCollector.java:48`); an `impact` answer additionally surfaces
 index-status warnings for degraded/failed/stale repos in its closure, via
 `Closure.expand`'s own status check (`ImpactFacts.java:79-82`,
 `KbStatus.java:19-39`).
@@ -383,7 +383,7 @@ repo-by-repo in dependency order, with the escalation-ladder coding models
 (`sdd.yml`'s `run.escalation_ladder`, default `[coder, planner]`,
 `RunSettings.java:16`). This is the work that happens *between* the two
 gates. A run is identified by `<specId>-v<planVersion>` and persisted under
-`.sdd/runs/<runId>/`. (`ImplementCommand.java:65-423`)
+`.sdd/runs/<runId>/`. (`ImplementCommand.java:67-430`)
 
 **Flags**
 
@@ -393,7 +393,7 @@ gates. A run is identified by `<specId>-v<planVersion>` and persisted under
 | `--resume` | off | Resume a paused or crashed run of this plan from its checkpoints | `ImplementCommand.java:72-73` |
 | `--retry <repo>[,<repo>...]` | none | Re-run these already-settled (`SUCCEEDED` or `FAILED`) repos on resume; repeatable or comma-separated; implies `--resume`; retrying a `SUCCEEDED` repo discards its checkpoint and resets the branch to the plan base | `ImplementCommand.java:75-78, 232-237` |
 | `--wait-endpoint` | off | After a pause caused by an unreachable model endpoint, poll the ladder's endpoints every 30s and auto-resume once they all answer | `ImplementCommand.java:80-82, 93, 104-132` |
-| `<planJsonPath>` (positional, required) | — | The approved `<spec>.plan.json` | `ImplementCommand.java:84` |
+| `<planJsonPath>` (positional, required) | — | The approved `<spec>.plan.json` | `ImplementCommand.java:86-87` |
 
 **Exit codes**
 
@@ -402,14 +402,14 @@ gates. A run is identified by `<specId>-v<planVersion>` and persisted under
 | `0` | every repo `SUCCEEDED` ("COMPLETE") (`Orchestrator.java:139`) |
 | `2` | the run finished but at least one repo did not succeed ("PARTIAL") (`Orchestrator.java:139`) |
 | `3` | the run paused ("PAUSED") — an infra failure, an unreachable model endpoint, or the run's token budget exhausted (`Orchestrator.java:137-155, 230, 269, 331`) — resume with `sdd implement --resume <planJsonPath>` (or `--wait-endpoint`, for the endpoint case) (`ImplementCommand.java:373-382`) |
-| `4` | unusable input: wrong file extension, no run to resume, unknown `--retry` repo, preflight/resume-prep problems, the run's lock is held by another process, or an unhandled exception (`ImplementCommand.java:153-156, 168-171, 207-210, 219-229, 239-247, 267-271, 385-388`, `exitCodeOnInvalidInput = 4` at `ImplementCommand.java:67`) |
+| `4` | unusable input: wrong file extension, no run to resume, unknown `--retry` repo, preflight/resume-prep problems, the run's lock is held by another process, or an unhandled exception (`ImplementCommand.java:153-156, 168-171, 207-210, 219-229, 239-247, 267-271, 385-388`, `exitCodeOnInvalidInput = 4` at `ImplementCommand.java:69`) |
 
 **Writes:** under `.sdd/runs/<runId>/` — `plan.json` and `spec.md`
-(snapshots taken at run start, `RunStore.java:44-51`), `lock` (held for the
+(snapshots taken at run start, `RunStore.java:50-61`), `lock` (held for the
 duration; `RunStore.java:57-77`), atomically-published `state.json`
 (`RunStore.java:106-195`), append-only `events.jsonl` (per-repo state
-transitions; `RunStore.java:201-215`), `propagation.json`
-(cross-repo publish plan; `RunStore.java:295-320`), and, per repo touched, a
+transitions; `RunStore.java:207-226`), `propagation.json`
+(cross-repo publish plan; `RunStore.java:286-306`), and, per repo touched, a
 `<repo>/` subdirectory with `agent-events.jsonl`, `transcript.jsonl` and
 `edits.jsonl` (`RunStore.java:239-278`). When any plan edge needs a
 `mavenLocal` fallback, also writes the Maven-local init script under the run
@@ -427,7 +427,7 @@ command refuses (exit `4`) on every path — not only the mutating ones — whil
 `sdd implement`'s run lock is held, because racing it would report on an
 estate that no longer exists; a *stale* lock only warns and reviews anyway,
 since the crashed run is exactly the one a human needs to see.
-(`ReviewCommand.java:29-181`)
+(`ReviewCommand.java:46-192`)
 
 **Flags**
 
@@ -482,14 +482,14 @@ re-renders `report.md` once at the end of the walk
 reviewed commit and records the new checkpoint. Refuses (does not apply) if
 the repo's own state or its plan-graph invariants disallow it (e.g. an
 unresolved upstream); a refusal is reported, not thrown.
-(`DecisionCommand.java:194-207`)
+(`DecisionCommand.java:205-218, 227-271`)
 
 **Flags**
 
 | Flag | Description | Verified |
 |---|---|---|
-| `<repo>` (positional, required) | The repo to decide on | `DecisionCommand.java:45-46` |
-| `<planJsonPath>` (positional, arity 0..1) | The approved `<spec>.plan.json` | `DecisionCommand.java:51-52` |
+| `<repo>` (positional, required) | The repo to decide on | `DecisionCommand.java:56-57` |
+| `<planJsonPath>` (positional, arity 0..1) | The approved `<spec>.plan.json` | `DecisionCommand.java:62-63` |
 | `--workspace` | inherited from `sdd review` | `ReviewCommand.java:54-56` |
 
 **Exit codes**
@@ -497,27 +497,27 @@ unresolved upstream); a refusal is reported, not thrown.
 | Code | Meaning |
 |---|---|
 | `0` | approved and squashed cleanly (or squash was a no-op because there was nothing to squash) |
-| `2` | the decision itself was refused (`DecisionCommand.java:160-163`), the squash was refused (dirty tree or branch moved off checkpoint; `DecisionCommand.java:233-237`), or the post-squash branch restore failed (`DecisionCommand.java:274-283`) |
-| `4` | missing `<planJsonPath>`, no run found, repo not in the plan, the run's lock is held, or an unhandled exception (`DecisionCommand.java:134-141, 144-152, 188-191`, `exitCodeOnInvalidInput = 4` at `DecisionCommand.java:196`) |
+| `2` | the decision itself was refused (`DecisionCommand.java:171-174`), the squash was refused (dirty tree or branch moved off checkpoint; `DecisionCommand.java:244-249`), or the post-squash branch restore failed (`DecisionCommand.java:285-295`) |
+| `4` | missing `<planJsonPath>`, no run found, repo not in the plan, the run's lock is held, or an unhandled exception (`DecisionCommand.java:145-152, 155-163, 199-202`, `exitCodeOnInvalidInput = 4` at `DecisionCommand.java:207`) |
 
 **Writes:** `.sdd/runs/<runId>/review/decisions.json` (the new verdict, via
 optimistic-retry write with up to 5 attempts on a concurrent-write conflict;
 `DecisionCommand.java:81-127`), an entry appended to the run's top-level
 `events.jsonl` (same file `implement` appends repo-state transitions to;
-`RunStore.java:201-215`), a rewrite of `state.json` with the new checkpoint
-sha on a real squash (`DecisionCommand.java:252-254`), and a re-render of
+`RunStore.java:213-226`), a rewrite of `state.json` with the new checkpoint
+sha on a real squash (`DecisionCommand.java:263-265`), and a re-render of
 `review/report.md`.
 
 ### `sdd review reject <repo> <spec>.plan.json [--reason <text>]`
 
 **What it does:** rejects a repo's run branch — no squash, no downstream
-re-verify. (`DecisionCommand.java:286-295`)
+re-verify. (`DecisionCommand.java:297-306`)
 
 **Flags:** same `<repo>`/`<planJsonPath>` as `approve`, plus:
 
 | Flag | Default | Description | Verified |
 |---|---|---|---|
-| `--reason <text>` | `""` | Why the work was rejected | `DecisionCommand.java:288-289` |
+| `--reason <text>` | `""` | Why the work was rejected | `DecisionCommand.java:299-300` |
 
 **Exit codes:** `0` applied, `2` decision refused, `4` input/lock error — same
 mechanics as `approve` (no squash step, so no squash-specific `2` case).
@@ -530,26 +530,26 @@ as `approve`, minus the `state.json` checkpoint rewrite.
 **What it does:** marks a repo for re-implementation and, unless
 `--no-reverify`, re-verifies its transitive downstream subtree against its
 current checkpoints (design line 67's redo includes re-verify by definition,
-not as an optional extra). (`DecisionCommand.java:297-359`)
+not as an optional extra). (`DecisionCommand.java:308-326, 336-370`)
 
 **Flags**
 
 | Flag | Default | Description | Verified |
 |---|---|---|---|
-| `--reason <text>` | `""` | Why the work must be redone | `DecisionCommand.java:300-301` |
-| `--no-reverify` | off | Skip re-verifying the downstream subtree | `DecisionCommand.java:303-304` |
+| `--reason <text>` | `""` | Why the work must be redone | `DecisionCommand.java:311-312` |
+| `--no-reverify` | off | Skip re-verifying the downstream subtree | `DecisionCommand.java:314-315` |
 
 **Exit codes**
 
 | Code | Meaning |
 |---|---|
 | `0` | redo recorded; downstream re-verify (if run) found nothing wrong |
-| `2` | decision refused, the downstream staging failed, or a downstream repo's branch restore failed (`DecisionCommand.java:342-358`) |
+| `2` | decision refused, the downstream staging failed, or a downstream repo's branch restore failed (`DecisionCommand.java:355-358, 368-369`) |
 | `4` | input/lock error, same as `approve` |
 
 **Writes:** `decisions.json`, `events.jsonl`, re-rendered `report.md`; prints
-`then run: sdd implement --retry <repo> <planJsonPath>` as the next step
-(`DecisionCommand.java:327-328`).
+`then run: sdd implement --workspace <dir> --retry <repo> <planJsonPath>` as the next step
+(`DecisionCommand.java:338-339`).
 
 ## `sdd clean [<spec>.plan.json]`
 
