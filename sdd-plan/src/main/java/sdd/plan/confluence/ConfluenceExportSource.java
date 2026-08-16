@@ -1,6 +1,8 @@
 package sdd.plan.confluence;
 
 import sdd.core.llm.ChatModel;
+import sdd.plan.source.SourceBundle;
+import sdd.plan.source.SourceDoc;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecSource;
 
@@ -8,6 +10,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Locale;
 
 /** v1 Confluence adapter: exported page file -> deterministic extract -> model normalization. */
@@ -32,7 +35,11 @@ public final class ConfluenceExportSource implements SpecSource {
             throw new UncheckedIOException(e);
         }
         ConfluenceExtract.Extracted extracted = ConfluenceExtract.extract(html);
-        return ConfluenceNormalizer.normalize(extracted, planner, modelName, maxTokens, specId(file));
+        String id = specId(file);
+        SourceDoc doc = new SourceDoc(SourceDoc.Kind.CONFLUENCE_PAGE, id, null, null, null,
+                extracted.text(), extracted.attachments());
+        SourceBundle bundle = new SourceBundle(List.of(doc), List.of());
+        return ConfluenceNormalizer.normalize(bundle, planner, modelName, maxTokens, id);
     }
 
     static String specId(Path file) {

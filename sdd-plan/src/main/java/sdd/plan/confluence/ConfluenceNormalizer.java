@@ -7,6 +7,9 @@ import sdd.core.llm.ChatMessage;
 import sdd.core.llm.ChatModel;
 import sdd.core.llm.ChatRequest;
 import sdd.core.llm.ChatResponse;
+import sdd.plan.source.SourceBudget;
+import sdd.plan.source.SourceBundle;
+import sdd.plan.source.SourceDoc;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecItem;
 import sdd.plan.spec.Touchpoint;
@@ -37,15 +40,24 @@ public final class ConfluenceNormalizer {
             - "goal" is 1-3 sentences; longer context belongs in "background".
             - Use "" for owner/status when the document does not state them.
             - Anything you cannot confidently place goes into "unmapped" verbatim.
+            - When multiple sources disagree, prefer the Confluence page over the Jira \
+            description, and record the conflict in "unmapped" so a human resolves it.
             """;
 
     private ConfluenceNormalizer() {
     }
 
-    public static NormalizedSpec normalize(ConfluenceExtract.Extracted extracted, ChatModel planner,
+    /**
+     * Converts a {@link SourceBundle} — one or more Jira/Confluence/free-text documents — into
+     * the internal spec model with a single model call. The bundle is budget-capped first
+     * ({@link SourceBudget}): documents dropped there arrive as {@link SourceBundle#notes()}
+     * exactly like any other bundle-level note, so both flow into Open Questions the same way.
+     */
+    public static NormalizedSpec normalize(SourceBundle bundle, ChatModel planner,
                                            String modelName, int maxTokens, String fallbackId) {
+        SourceBundle capped = SourceBudget.apply(bundle);
         ChatResponse response = planner.complete(new ChatRequest(modelName,
-                List.of(ChatMessage.system(SYSTEM_PROMPT), ChatMessage.user(extracted.text())),
+                List.of(ChatMessage.system(SYSTEM_PROMPT), ChatMessage.user(renderDocs(capped.docs()))),
                 List.of(), maxTokens, 0.15));
         if ("length".equals(response.finishReason())) {
             throw new SpecNormalizationException(
@@ -68,6 +80,9 @@ public final class ConfluenceNormalizer {
                 touchpoints.add(new Touchpoint(kind, value));
             }
         }
+        for (String note : capped.notes()) {
+            questionTexts.add("[source] " + oneLine(note));
+        }
         return new NormalizedSpec(
                 fallbackId,
                 text(root, "title", fallbackId),
@@ -81,7 +96,38 @@ public final class ConfluenceNormalizer {
                 touchpoints,
                 strings(root, "out_of_scope"),
                 numbered("Q", questionTexts),
-                extracted.attachments().stream().map(ConfluenceNormalizer::oneLine).toList());
+                attachmentUnion(capped.docs()));
+    }
+
+    /** "## Source N: <label>\n<text>" per document, blank-line separated — the model sees the
+     *  same document boundaries a human reviewer would, instead of one undifferentiated blob
+     *  once a spec has more than one source. */
+    private static String renderDocs(List<SourceDoc> docs) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < docs.size(); i++) {
+            if (i > 0) {
+                sb.append("\n\n");
+            }
+            SourceDoc doc = docs.get(i);
+            sb.append("## Source ").append(i + 1).append(": ").append(doc.label())
+                    .append('\n').append(doc.text());
+        }
+        return sb.toString();
+    }
+
+    /** Every kept document's attachments, de-duplicated, in first-seen order — a document
+     *  dropped for budget contributes no attachments either, since the model never saw it. */
+    private static List<String> attachmentUnion(List<SourceDoc> docs) {
+        List<String> attachments = new ArrayList<>();
+        for (SourceDoc doc : docs) {
+            for (String attachment : doc.attachments()) {
+                String clean = oneLine(attachment);
+                if (!attachments.contains(clean)) {
+                    attachments.add(clean);
+                }
+            }
+        }
+        return attachments;
     }
 
     private static JsonNode parseJson(String content) {

@@ -45,6 +45,10 @@ class SpecParserTest {
 
             ## Attachments
             - tier-diagram.png
+
+            ## Sources
+            - jira PROJ-123 updated 2026-08-16T09:12:00Z https://jira.corp.local/browse/PROJ-123
+            - confluence 65601 v7 "Order API spec" https://confluence.corp.local/pages/viewpage.action?pageId=65601
             """;
 
     @Test
@@ -72,6 +76,10 @@ class SpecParserTest {
         assertThat(spec.openQuestions()).containsExactly(
                 new SpecItem("Q1", "Which service owns tier configuration?"));
         assertThat(spec.attachments()).containsExactly("tier-diagram.png");
+        assertThat(spec.sources()).containsExactly(
+                "jira PROJ-123 updated 2026-08-16T09:12:00Z https://jira.corp.local/browse/PROJ-123",
+                "confluence 65601 v7 \"Order API spec\" "
+                        + "https://confluence.corp.local/pages/viewpage.action?pageId=65601");
     }
 
     @Test
@@ -97,6 +105,7 @@ class SpecParserTest {
         assertThat(spec.constraints()).isEmpty();
         assertThat(spec.touchpoints()).isEmpty();
         assertThat(spec.attachments()).isEmpty();
+        assertThat(spec.sources()).isEmpty();
     }
 
     @Test

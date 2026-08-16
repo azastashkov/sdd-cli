@@ -5,6 +5,8 @@ import sdd.core.llm.ChatMessage;
 import sdd.core.llm.ChatResponse;
 import sdd.core.llm.Usage;
 import sdd.core.testing.ScriptedChatModel;
+import sdd.plan.source.SourceBundle;
+import sdd.plan.source.SourceDoc;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecItem;
 import sdd.plan.spec.Touchpoint;
@@ -16,8 +18,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ConfluenceNormalizerTest {
 
-    private static final ConfluenceExtract.Extracted EXTRACTED =
-            new ConfluenceExtract.Extracted("# Loyalty\nWe want tiers.", List.of("tiers.png"));
+    private static SourceBundle bundleOf(String text, List<String> attachments) {
+        return new SourceBundle(List.of(new SourceDoc(SourceDoc.Kind.CONFLUENCE_PAGE, "doc-1",
+                null, null, null, text, attachments)), List.of());
+    }
+
+    private static final SourceBundle BUNDLE = bundleOf("# Loyalty\nWe want tiers.", List.of("tiers.png"));
 
     private static ChatResponse response(String content, String finishReason) {
         return new ChatResponse(ChatMessage.assistant(content), finishReason, new Usage(10, 10));
@@ -39,7 +45,7 @@ class ConfluenceNormalizerTest {
     void assignsIdsCarriesAttachmentsAndDemotesUnmappedToOpenQuestions() {
         ScriptedChatModel planner = new ScriptedChatModel(List.of(response(GOOD_JSON, "stop")));
 
-        NormalizedSpec spec = ConfluenceNormalizer.normalize(EXTRACTED, planner, "deepseek-v4-flash",
+        NormalizedSpec spec = ConfluenceNormalizer.normalize(BUNDLE, planner, "deepseek-v4-flash",
                 16384, "spec-loyalty-page");
 
         assertThat(spec.id()).isEqualTo("spec-loyalty-page");
@@ -71,14 +77,14 @@ class ConfluenceNormalizerTest {
     void fencedJsonIsAccepted() {
         ScriptedChatModel planner = new ScriptedChatModel(List.of(
                 response("```json\n" + GOOD_JSON + "\n```", "stop")));
-        NormalizedSpec spec = ConfluenceNormalizer.normalize(EXTRACTED, planner, "m", 100, "id");
+        NormalizedSpec spec = ConfluenceNormalizer.normalize(BUNDLE, planner, "m", 100, "id");
         assertThat(spec.requirements()).hasSize(2);
     }
 
     @Test
     void truncatedResponseFailsExplicitly() {
         ScriptedChatModel planner = new ScriptedChatModel(List.of(response("{", "length")));
-        assertThatThrownBy(() -> ConfluenceNormalizer.normalize(EXTRACTED, planner, "m", 100, "id"))
+        assertThatThrownBy(() -> ConfluenceNormalizer.normalize(BUNDLE, planner, "m", 100, "id"))
                 .isInstanceOf(SpecNormalizationException.class)
                 .hasMessageContaining("finish_reason=length");
     }
@@ -86,7 +92,7 @@ class ConfluenceNormalizerTest {
     @Test
     void malformedJsonFailsWithSnippet() {
         ScriptedChatModel planner = new ScriptedChatModel(List.of(response("not json at all", "stop")));
-        assertThatThrownBy(() -> ConfluenceNormalizer.normalize(EXTRACTED, planner, "m", 100, "id"))
+        assertThatThrownBy(() -> ConfluenceNormalizer.normalize(BUNDLE, planner, "m", 100, "id"))
                 .isInstanceOf(SpecNormalizationException.class)
                 .hasMessageContaining("not valid JSON")
                 .hasMessageContaining("not json at all");
@@ -103,7 +109,7 @@ class ConfluenceNormalizerTest {
                  "out_of_scope": [], "open_questions": [], "unmapped": []}""";
         ScriptedChatModel planner = new ScriptedChatModel(List.of(response(json, "stop")));
 
-        NormalizedSpec spec = ConfluenceNormalizer.normalize(EXTRACTED, planner, "m", 100, "id");
+        NormalizedSpec spec = ConfluenceNormalizer.normalize(BUNDLE, planner, "m", 100, "id");
 
         assertThat(spec.goal()).isEqualTo("Big plan\nAdd tiers.");
         assertThat(spec.requirements()).containsExactly(new SpecItem("R1", "line one line two"));
@@ -123,7 +129,7 @@ class ConfluenceNormalizerTest {
                  "out_of_scope": [], "open_questions": [], "unmapped": []}""";
         ScriptedChatModel planner = new ScriptedChatModel(List.of(response(json, "stop")));
 
-        NormalizedSpec spec = ConfluenceNormalizer.normalize(EXTRACTED, planner, "m", 100, "id");
+        NormalizedSpec spec = ConfluenceNormalizer.normalize(BUNDLE, planner, "m", 100, "id");
 
         assertThat(spec.openQuestions()).containsExactly(
                 new SpecItem("Q1", "[unmapped touchpoint] weird kind: x"));
@@ -145,7 +151,7 @@ class ConfluenceNormalizerTest {
                  "out_of_scope": [], "open_questions": [], "unmapped": []}""";
         ScriptedChatModel planner = new ScriptedChatModel(List.of(response(json, "stop")));
 
-        NormalizedSpec spec = ConfluenceNormalizer.normalize(EXTRACTED, planner, "m", 100, "id");
+        NormalizedSpec spec = ConfluenceNormalizer.normalize(BUNDLE, planner, "m", 100, "id");
 
         assertThat(spec.title()).isEqualTo("T sub");
         assertThat(spec.requirements()).containsExactly(
@@ -155,8 +161,7 @@ class ConfluenceNormalizerTest {
 
     @Test
     void attachmentNamesAreSanitizedBeforeEnteringTheSpec() {
-        ConfluenceExtract.Extracted withBadName = new ConfluenceExtract.Extracted(
-                "text", List.of("dia\ngram.png", "ok.png"));
+        SourceBundle withBadName = bundleOf("text", List.of("dia\ngram.png", "ok.png"));
         ScriptedChatModel planner = new ScriptedChatModel(List.of(response(GOOD_JSON, "stop")));
 
         NormalizedSpec spec = ConfluenceNormalizer.normalize(withBadName, planner, "m", 100, "id");
@@ -164,5 +169,84 @@ class ConfluenceNormalizerTest {
         assertThat(spec.attachments()).containsExactly("dia gram.png", "ok.png");
         assertThat(sdd.plan.spec.SpecParser.parse(sdd.plan.spec.SpecRenderer.render(spec)).attachments())
                 .containsExactly("dia gram.png", "ok.png");
+    }
+
+    @Test
+    void multiDocBundleRendersOneHeaderPerDocumentOmittingTheUrlWhenAbsent() {
+        SourceBundle bundle = new SourceBundle(List.of(
+                new SourceDoc(SourceDoc.Kind.JIRA_ISSUE, "PROJ-123",
+                        "https://jira.corp.local/browse/PROJ-123", "Loyalty tiers", null,
+                        "Jira says tiers.", List.of()),
+                new SourceDoc(SourceDoc.Kind.FREE_TEXT, "text-1", null, null, null,
+                        "Operator free text.", List.of())),
+                List.of());
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(response(GOOD_JSON, "stop")));
+
+        ConfluenceNormalizer.normalize(bundle, planner, "m", 100, "id");
+
+        String userMessage = planner.requests().get(0).messages().get(1).content();
+        assertThat(userMessage).contains(
+                "## Source 1: Loyalty tiers (https://jira.corp.local/browse/PROJ-123)\n"
+                        + "Jira says tiers.");
+        assertThat(userMessage).contains("## Source 2: text-1\nOperator free text.");
+    }
+
+    @Test
+    void bundleNotesBecomeSourcePrefixedOpenQuestionsAfterUnmapped() {
+        SourceBundle bundle = new SourceBundle(
+                List.of(new SourceDoc(SourceDoc.Kind.FREE_TEXT, "text-1", null, null, null,
+                        "text", List.of())),
+                List.of("Confluence page conflicts with Jira description on rollout date"));
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(response(GOOD_JSON, "stop")));
+
+        NormalizedSpec spec = ConfluenceNormalizer.normalize(bundle, planner, "m", 100, "id");
+
+        assertThat(spec.openQuestions()).containsExactly(
+                new SpecItem("Q1", "Who owns tier config?"),
+                new SpecItem("Q2", "[unmapped] Rollout percentage table"),
+                new SpecItem("Q3", "[unmapped touchpoint] service: bogus"),
+                new SpecItem("Q4", "[source] Confluence page conflicts with Jira description on rollout date"));
+    }
+
+    @Test
+    void attachmentsAreTheOrderPreservingDeduplicatedUnionAcrossDocuments() {
+        SourceBundle bundle = new SourceBundle(List.of(
+                new SourceDoc(SourceDoc.Kind.CONFLUENCE_PAGE, "doc-1", null, "Page one", null,
+                        "text one", List.of("a.png", "b.png")),
+                new SourceDoc(SourceDoc.Kind.CONFLUENCE_PAGE, "doc-2", null, "Page two", null,
+                        "text two", List.of("b.png", "c.png"))),
+                List.of());
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(response(GOOD_JSON, "stop")));
+
+        NormalizedSpec spec = ConfluenceNormalizer.normalize(bundle, planner, "m", 100, "id");
+
+        assertThat(spec.attachments()).containsExactly("a.png", "b.png", "c.png");
+    }
+
+    @Test
+    void budgetDropNotesFlowIntoOpenQuestionsAsSourceNotes() {
+        // two documents whose combined text exceeds the 300_000-char bundle budget: the
+        // lower-priority JIRA_COMMENT must be dropped whole and its drop noted, and that note
+        // must reach Open Questions exactly like any other bundle note
+        SourceDoc kept = new SourceDoc(SourceDoc.Kind.FREE_TEXT, "text-1", null, "Kept doc", null,
+                "x".repeat(200_000), List.of());
+        SourceDoc dropped = new SourceDoc(SourceDoc.Kind.JIRA_COMMENT, "j1",
+                "https://jira.corp.local/browse/PROJ-123", "Old comment", null,
+                "x".repeat(150_000), List.of());
+        SourceBundle bundle = new SourceBundle(List.of(kept, dropped), List.of());
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(response(GOOD_JSON, "stop")));
+
+        NormalizedSpec spec = ConfluenceNormalizer.normalize(bundle, planner, "m", 100, "id");
+
+        assertThat(spec.openQuestions()).anySatisfy(q ->
+                assertThat(q.text()).startsWith("[source] dropped for budget: Old comment"));
+        String userMessage = planner.requests().get(0).messages().get(1).content();
+        assertThat(userMessage).doesNotContain("Old comment");
+    }
+
+    @Test
+    void systemPromptStatesConfluenceWinsOverJiraOnConflict() {
+        assertThat(ConfluenceNormalizer.SYSTEM_PROMPT).contains("Confluence").contains("Jira")
+                .contains("unmapped");
     }
 }
