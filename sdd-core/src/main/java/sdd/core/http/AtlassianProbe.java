@@ -6,7 +6,6 @@ import sdd.core.config.ConfigException;
 import sdd.core.diagnostics.DiagnosticWriter;
 
 import javax.net.ssl.SSLException;
-import java.net.URI;
 import java.net.http.HttpClient;
 import java.nio.file.Path;
 import java.util.function.Function;
@@ -98,7 +97,8 @@ public final class AtlassianProbe {
             return new ProbeResult(true, "HTTP 200 as " + label.apply(rc));
         } catch (AtlassianException e) {
             if (e.getCause() instanceof SSLException ssl) {
-                return new ProbeResult(false, HttpClients.tlsFailureMessage(hostOf(site.baseUrl()), truststore, ssl));
+                return new ProbeResult(false,
+                        HttpClients.tlsFailureMessage(UrlHosts.hostOf(site.baseUrl()), truststore, ssl));
             }
             return new ProbeResult(false, e.getMessage());
         } catch (RuntimeException e) {
@@ -114,14 +114,5 @@ public final class AtlassianProbe {
             }
         }
         return "?";
-    }
-
-    private static String hostOf(String baseUrl) {
-        try {
-            String host = URI.create(baseUrl).getHost();
-            return host != null ? host : baseUrl;
-        } catch (IllegalArgumentException e) {
-            return baseUrl;
-        }
     }
 }

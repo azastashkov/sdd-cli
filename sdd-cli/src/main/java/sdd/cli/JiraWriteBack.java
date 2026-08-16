@@ -6,6 +6,7 @@ import sdd.core.config.ConfigException;
 import sdd.core.config.ConfigLoader;
 import sdd.core.config.SddConfig;
 import sdd.core.config.WriteBack;
+import sdd.core.diagnostics.Diagnostics;
 import sdd.core.diagnostics.DiagnosticWriter;
 import sdd.core.http.HttpClients;
 import sdd.core.http.RestClient;
@@ -14,6 +15,7 @@ import sdd.plan.jira.JiraClient;
 import java.io.PrintWriter;
 import java.net.http.HttpClient;
 import java.nio.file.Path;
+import java.time.InstantSource;
 import java.util.List;
 
 /**
@@ -61,10 +63,23 @@ public final class JiraWriteBack {
         post(workspace, jiraKeys, noComment, commentBody, out, err, null);
     }
 
-    /** Same as {@link #post(Path, List, boolean, String, PrintWriter, PrintWriter)}, plus an
-     *  optional {@link DiagnosticWriter} (nullable) the comment POST reports to — Task 8. A
-     *  separate overload, not a nullable parameter added to the existing one, so {@link
-     *  JiraWriteBackTest} keeps compiling unchanged. */
+    /**
+     * Same as {@link #post(Path, List, boolean, String, PrintWriter, PrintWriter)}, plus an
+     * optional {@link DiagnosticWriter} (nullable) the comment POST reports to — Task 8. A separate
+     * overload, not a nullable parameter added to the existing one, so {@link JiraWriteBackTest}
+     * keeps compiling unchanged.
+     *
+     * <p><b>Fix 4 (Task 8 review): a null {@code diagnostics} does not mean "no diagnostics" —
+     * it means "open one HERE".</b> {@code ApproveCommand} (Gate 1) calls the 6-arg overload above
+     * and so always passes null; its own javadoc explains why it must not load config just to
+     * decide whether a diagnostics file is worth opening (every {@code ApproveCommandTest} case
+     * relies on config never being touched when there are no Jira sources). This method already
+     * loads {@code config}/{@code atlassian} itself, and by the time execution reaches this method
+     * a real network call is about to happen — so a self-managed writer is opened right here,
+     * AFTER the early-return guards above, and closed in the {@code finally} below. A caller that
+     * DID pass a writer (Gate 2's {@code ReviewCommand}, via {@code RunContext}) owns it and this
+     * method must not close it — only a writer THIS method opened is closed here.
+     */
     public static void post(Path workspace, List<String> jiraKeys, boolean noComment,
             String commentBody, PrintWriter out, PrintWriter err, DiagnosticWriter diagnostics) {
         if (noComment || jiraKeys.isEmpty()) {
@@ -78,15 +93,26 @@ public final class JiraWriteBack {
                 // brief section 4. Not an error, so this is not inside the catch below.
                 return;
             }
-            JiraClient client = buildClient(atlassian, diagnostics);
-            for (String key : jiraKeys) {
-                try {
-                    client.comment(key, commentBody);
-                    out.println("commented on " + key);
-                } catch (RuntimeException e) {
-                    // Best-effort PER ISSUE: one issue's Jira failure (deleted, no permission,
-                    // transient outage) must not stop the comment attempt on the rest.
-                    err.println("  warn: jira comment failed: " + e.getMessage());
+            boolean ownsDiagnostics = diagnostics == null;
+            DiagnosticWriter effectiveDiagnostics = ownsDiagnostics
+                    ? Diagnostics.open(workspace, "jira-write-back", List.of("jira-write-back"), atlassian,
+                            InstantSource.system(), err)
+                    : diagnostics;
+            try {
+                JiraClient client = buildClient(atlassian, effectiveDiagnostics);
+                for (String key : jiraKeys) {
+                    try {
+                        client.comment(key, commentBody);
+                        out.println("commented on " + key);
+                    } catch (RuntimeException e) {
+                        // Best-effort PER ISSUE: one issue's Jira failure (deleted, no permission,
+                        // transient outage) must not stop the comment attempt on the rest.
+                        err.println("  warn: jira comment failed: " + e.getMessage());
+                    }
+                }
+            } finally {
+                if (ownsDiagnostics) {
+                    effectiveDiagnostics.close();
                 }
             }
         } catch (RuntimeException e) {
@@ -112,7 +138,7 @@ public final class JiraWriteBack {
         }
         HttpClient httpClient = HttpClients.build(atlassian.tls(), atlassian.proxy());
         RestClient restClient = new RestClient("Jira", site.baseUrl(), site.token(), site.tokenVar(),
-                site.timeout(), httpClient, diagnostics);
+                site.timeout(), httpClient, diagnostics, RestClient.TransportContext.of(atlassian.tls(), atlassian.proxy()));
         return new JiraClient(restClient, site.baseUrl());
     }
 }

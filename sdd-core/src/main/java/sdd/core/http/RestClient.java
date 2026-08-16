@@ -3,14 +3,18 @@ package sdd.core.http;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.MissingNode;
+import sdd.core.config.AtlassianProxy;
+import sdd.core.config.AtlassianTls;
 import sdd.core.diagnostics.DiagnosticWriter;
 
+import javax.net.ssl.SSLException;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Path;
 import java.time.Duration;
 
 /**
@@ -40,6 +44,31 @@ public final class RestClient {
      *  shape, not a parallel client API. */
     public record JsonResponse(JsonNode body, HttpHeaders headers) {}
 
+    /**
+     * Task 8 Fix 5: the truststore/proxy this instance's {@link HttpClient} was ALREADY built with
+     * ({@code HttpClients.build}'s inputs) — known only by the caller, carried here purely so a TLS
+     * or connect-shaped failure's diagnostic entry can name the host+truststore / effective-proxy
+     * fact directly, the same enrichment {@code AtlassianProbe} already computes for {@code sdd
+     * doctor}'s probes, reused rather than re-derived (see {@link HttpClients#tlsFailureMessage}/
+     * {@link HttpClients#describeEffectiveProxy}). {@code RestClient} never uses either field to
+     * build anything — the {@link HttpClient} it is handed already has them wired in — so both are
+     * nullable exactly like {@code HttpClients.build}'s own null-means-JDK-default/no-proxy
+     * contract, and {@link #NONE} is the "nothing configured" instance every non-Task-8 and
+     * non-Fix-5 constructor implicitly uses.
+     */
+    public record TransportContext(Path truststore, AtlassianProxy proxy) {
+        public static final TransportContext NONE = new TransportContext(null, null);
+
+        /** Builds a {@link TransportContext} straight from the same {@code atlassian.tls}/{@code
+         *  atlassian.proxy} config {@link HttpClients#build} was already given to construct this
+         *  instance's {@link HttpClient} — the one-line helper every real call site (Fix 5, Task 8
+         *  review) uses instead of each independently null-checking {@code tls} to reach its
+         *  truststore path. */
+        public static TransportContext of(AtlassianTls tls, AtlassianProxy proxy) {
+            return new TransportContext(tls == null ? null : tls.truststore(), proxy);
+        }
+    }
+
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final String siteName;
@@ -51,10 +80,12 @@ public final class RestClient {
     private final HttpClient client;
     private final Sleeper sleeper;
     private final DiagnosticWriter diagnostics;
+    private final TransportContext transport;
 
     public RestClient(String siteName, String baseUrl, String token, String tokenVar, Duration timeout,
             HttpClient client) {
-        this(siteName, baseUrl, token, tokenVar, timeout, Backoff.DEFAULT_MAX_ATTEMPTS, client, Thread::sleep, null);
+        this(siteName, baseUrl, token, tokenVar, timeout, Backoff.DEFAULT_MAX_ATTEMPTS, client, Thread::sleep,
+                null, TransportContext.NONE);
     }
 
     /**
@@ -66,12 +97,28 @@ public final class RestClient {
     public RestClient(String siteName, String baseUrl, String token, String tokenVar, Duration timeout,
             HttpClient client, DiagnosticWriter diagnostics) {
         this(siteName, baseUrl, token, tokenVar, timeout, Backoff.DEFAULT_MAX_ATTEMPTS, client, Thread::sleep,
-                diagnostics);
+                diagnostics, TransportContext.NONE);
+    }
+
+    /** Same as the seven-argument diagnostics constructor, plus Fix 5's {@link TransportContext} —
+     *  the overload {@code BitbucketClients}/{@code JiraWriteBack}/{@code PlanCommand} use once they
+     *  have a truststore/proxy in scope to hand in for failure-message enrichment. */
+    public RestClient(String siteName, String baseUrl, String token, String tokenVar, Duration timeout,
+            HttpClient client, DiagnosticWriter diagnostics, TransportContext transport) {
+        this(siteName, baseUrl, token, tokenVar, timeout, Backoff.DEFAULT_MAX_ATTEMPTS, client, Thread::sleep,
+                diagnostics, transport);
     }
 
     public RestClient(String siteName, String baseUrl, String token, String tokenVar, Duration timeout,
             int maxAttempts, HttpClient client, Sleeper sleeper) {
-        this(siteName, baseUrl, token, tokenVar, timeout, maxAttempts, client, sleeper, null);
+        this(siteName, baseUrl, token, tokenVar, timeout, maxAttempts, client, sleeper, null, TransportContext.NONE);
+    }
+
+    /** Same as the eight-argument diagnostics constructor, plus Fix 5's {@link TransportContext}. */
+    public RestClient(String siteName, String baseUrl, String token, String tokenVar, Duration timeout,
+            int maxAttempts, HttpClient client, Sleeper sleeper, DiagnosticWriter diagnostics) {
+        this(siteName, baseUrl, token, tokenVar, timeout, maxAttempts, client, sleeper, diagnostics,
+                TransportContext.NONE);
     }
 
     /**
@@ -79,10 +126,12 @@ public final class RestClient {
      * when null, every diagnostics call below is skipped — {@code RestClient} stays exactly as
      * testable and dependency-free as before Task 8 for any caller that has no writer to give it
      * (every {@link RestClientTest} case, and every real call site until Task 8's callers are
-     * wired up one command at a time).
+     * wired up one command at a time). {@code transport} is Fix 5's addition, {@link
+     * TransportContext#NONE} when the caller has nothing to hand in.
      */
     public RestClient(String siteName, String baseUrl, String token, String tokenVar, Duration timeout,
-            int maxAttempts, HttpClient client, Sleeper sleeper, DiagnosticWriter diagnostics) {
+            int maxAttempts, HttpClient client, Sleeper sleeper, DiagnosticWriter diagnostics,
+            TransportContext transport) {
         if (maxAttempts < 1) {
             throw new IllegalArgumentException("maxAttempts must be >= 1");
         }
@@ -95,6 +144,7 @@ public final class RestClient {
         this.client = client;
         this.sleeper = sleeper;
         this.diagnostics = diagnostics;
+        this.transport = transport == null ? TransportContext.NONE : transport;
     }
 
     public JsonNode get(String path) {
@@ -185,12 +235,43 @@ public final class RestClient {
      *  tests already pin) untouched. A no-op when there is no writer, or when {@code ex} is null
      *  (the {@code last == null} case is unreachable in practice — {@code maxAttempts >= 1} means
      *  at least one iteration always runs — but this keeps the helper total rather than assuming
-     *  that invariant here too). */
+     *  that invariant here too). Also appends Fix 5's TLS-handshake/effective-proxy enrichment as a
+     *  separate {@link DiagnosticWriter#note} line when the cause chain and {@link #transport} make
+     *  one available — see {@link #transportEnrichment}. */
     private <T extends Throwable> T logFailure(String method, String path, T ex) {
         if (diagnostics != null && ex != null) {
             diagnostics.failure(siteOrGeneric() + " " + method + " " + path, ex);
+            String enrichment = transportEnrichment(ex);
+            if (enrichment != null) {
+                diagnostics.note(enrichment);
+            }
         }
         return ex;
+    }
+
+    /**
+     * Fix 5 (Task 8 review): "only {@code AtlassianProbe}'s doctor path gets the pre-correlated
+     * host+truststore+effective-proxy sentence" — this is that same enrichment for every OTHER
+     * {@code RestClient} caller's failures, reusing {@link HttpClients#tlsFailureMessage}/{@link
+     * HttpClients#describeEffectiveProxy} rather than a second bespoke implementation. Checked in
+     * this order because a TLS failure IS a connect-shaped failure too (an {@link SSLException} is
+     * an {@link IOException}) — the truststore fact is the more specific, more actionable one, so it
+     * wins when both would otherwise apply. Returns null (nothing appended) when the cause chain
+     * carries neither shape, or when {@link #transport} has nothing configured to name.
+     */
+    private String transportEnrichment(Throwable ex) {
+        for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
+            if (cause instanceof SSLException ssl) {
+                return HttpClients.tlsFailureMessage(UrlHosts.hostOf(baseUrl), transport.truststore(), ssl);
+            }
+        }
+        for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
+            if (cause instanceof IOException) {
+                String host = UrlHosts.hostOf(baseUrl);
+                return "effective proxy for " + host + ": " + HttpClients.describeEffectiveProxy(transport.proxy(), host);
+            }
+        }
+        return null;
     }
 
     private String siteOrGeneric() {

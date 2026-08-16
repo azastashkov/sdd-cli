@@ -63,6 +63,29 @@ class DiagnosticWriterTest {
     }
 
     @Test
+    void aSecretStraddlingTheBodySnippetCapBoundaryIsFullyRedactedNotLeftAsAFragment() throws IOException {
+        // Fix 1 (Task 8 review, CRITICAL): the error body is capped to 500 chars for display —
+        // MAX_BODY_SNIPPET_CHARS in the production class. A secret placed so it starts BEFORE that
+        // cutoff and ends AFTER it must still be removed in full: redaction has to run against the
+        // WHOLE body before any truncation, or the surviving fragment no longer exact-substring-
+        // matches the full secret and slips through.
+        Path file = tmp.resolve("d.log");
+        DiagnosticWriter w = writer(file, null);
+        String prefix = "x".repeat(480);   // pushes the secret's start to just before char 500
+        String body = "{\"message\":\"" + prefix + SECRET + "\"}";   // SECRET now spans across index 500
+
+        w.httpRequest("Jira", "GET", "/rest/api/2/myself", 401, 5, 1, false, "application/json", body);
+        w.close();
+
+        String content = Files.readString(file);
+        assertThat(content).doesNotContain(SECRET);
+        // Guard against a redaction that only catches the WHOLE-secret case: no half-length
+        // fragment of it (the part that would have survived a cap-then-redact bug) may appear either.
+        assertThat(content).doesNotContain(SECRET.substring(0, SECRET.length() / 2));
+        assertThat(content).doesNotContain(SECRET.substring(SECRET.length() / 2));
+    }
+
+    @Test
     void failureWalksTheFullCauseChainWithClassAndMessagePerCause() throws IOException {
         Path file = tmp.resolve("d.log");
         DiagnosticWriter w = writer(file, null);

@@ -169,4 +169,24 @@ public final class HttpClients {
         String detail = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
         return "TLS handshake with " + host + " failed using " + using + ": " + detail;
     }
+
+    /**
+     * The effective proxy {@code host} would actually go through given {@code proxy} — Fix 5 (Task
+     * 8 review): a private CA and a corporate proxy are the two most likely failure causes on the
+     * closed network this runs in, and a reader debugging remotely, with no ability to re-run,
+     * should not have to hand-correlate a raw connect-timeout message against the header block's
+     * proxy section themselves. Reuses {@link #bypasses}, the exact match rule {@link
+     * #proxySelector} itself applies, rather than re-deriving it — so this can never disagree with
+     * what a real request actually did.
+     */
+    public static String describeEffectiveProxy(AtlassianProxy proxy, String host) {
+        if (proxy == null) {
+            return "no proxy configured";
+        }
+        String normalizedHost = host == null ? "" : host.toLowerCase(Locale.ROOT);
+        List<String> noProxy = proxy.noProxy().stream().map(s -> s.toLowerCase(Locale.ROOT)).toList();
+        return bypasses(normalizedHost, noProxy)
+                ? "direct (no_proxy matches " + host + ")"
+                : "proxy " + proxy.host() + ":" + proxy.port();
+    }
 }

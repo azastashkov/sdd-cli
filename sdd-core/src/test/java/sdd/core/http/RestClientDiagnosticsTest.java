@@ -10,6 +10,7 @@ import sdd.core.diagnostics.DiagnosticWriter;
 
 import java.io.IOException;
 import java.net.http.HttpClient;
+import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -136,5 +137,83 @@ class RestClientDiagnosticsTest {
 
         assertThat(resp.path("name").asText()).isEqualTo("jsmith");
         wm.verify(getRequestedFor(urlEqualTo("/rest/api/2/myself")));
+    }
+
+    // --- Fix 5 (Task 8 review): TLS/effective-proxy enrichment on RestClient's own failures --------
+
+    private static HttpClient refusing(java.io.IOException toThrow) {
+        return new HttpClient() {
+            @Override public java.util.Optional<Duration> connectTimeout() { return java.util.Optional.empty(); }
+            @Override public Redirect followRedirects() { return Redirect.NEVER; }
+            @Override public java.util.Optional<java.net.ProxySelector> proxy() { return java.util.Optional.empty(); }
+            @Override public javax.net.ssl.SSLContext sslContext() { return null; }
+            @Override public javax.net.ssl.SSLParameters sslParameters() { return null; }
+            @Override public java.util.Optional<java.net.Authenticator> authenticator() { return java.util.Optional.empty(); }
+            @Override public java.util.Optional<java.net.CookieHandler> cookieHandler() { return java.util.Optional.empty(); }
+            @Override public Version version() { return Version.HTTP_1_1; }
+            @Override public java.util.Optional<java.util.concurrent.Executor> executor() { return java.util.Optional.empty(); }
+            @Override public <T> HttpResponse<T> send(java.net.http.HttpRequest req,
+                    HttpResponse.BodyHandler<T> h) throws java.io.IOException {
+                throw toThrow;
+            }
+            @Override public <T> java.util.concurrent.CompletableFuture<HttpResponse<T>> sendAsync(
+                    java.net.http.HttpRequest req, HttpResponse.BodyHandler<T> h) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public <T> java.util.concurrent.CompletableFuture<HttpResponse<T>> sendAsync(
+                    java.net.http.HttpRequest req, HttpResponse.BodyHandler<T> h,
+                    HttpResponse.PushPromiseHandler<T> p) {
+                throw new UnsupportedOperationException();
+            }
+        };
+    }
+
+    @Test
+    void aTlsFailureIsEnrichedWithTheHostAndTruststoreJustLikeAtlassianProbes() throws IOException {
+        Path file = tmp.resolve("d.log");
+        DiagnosticWriter w = writer(file);
+        Path truststore = tmp.resolve("corp-ca.p12");
+        RestClient.TransportContext transport = new RestClient.TransportContext(truststore, null);
+
+        assertThatThrownBy(() -> new RestClient("Jira", "https://jira.corp.local", "sk-token", "JIRA_PAT",
+                Duration.ofSeconds(1), 1, refusing(new javax.net.ssl.SSLHandshakeException("PKIX path building failed")),
+                millis -> { }, w, transport).get("/x"))
+                .isInstanceOf(AtlassianException.class);
+        w.close();
+
+        String content = Files.readString(file);
+        assertThat(content).contains("TLS handshake with jira.corp.local failed using truststore " + truststore)
+                .contains("PKIX path building failed");
+    }
+
+    @Test
+    void aConnectFailureIsEnrichedWithTheEffectiveProxy() throws IOException {
+        Path file = tmp.resolve("d.log");
+        DiagnosticWriter w = writer(file);
+        sdd.core.config.AtlassianProxy proxy = new sdd.core.config.AtlassianProxy("corp-proxy.local", 8080,
+                java.util.List.of());
+        RestClient.TransportContext transport = new RestClient.TransportContext(null, proxy);
+
+        assertThatThrownBy(() -> new RestClient("Jira", "https://jira.corp.local", "sk-token", "JIRA_PAT",
+                Duration.ofSeconds(1), 1, refusing(new java.net.ConnectException("refused")),
+                millis -> { }, w, transport).get("/x"))
+                .isInstanceOf(AtlassianException.class);
+        w.close();
+
+        assertThat(Files.readString(file)).contains("effective proxy for jira.corp.local: proxy corp-proxy.local:8080");
+    }
+
+    @Test
+    void withNoTransportContextConfiguredTheEnrichmentHonestlyReportsNoProxyRatherThanGuessing() throws IOException {
+        Path file = tmp.resolve("d.log");
+        DiagnosticWriter w = writer(file);
+
+        assertThatThrownBy(() -> new RestClient("Jira", "https://jira.corp.local", "sk-token", "JIRA_PAT",
+                Duration.ofSeconds(1), 1, refusing(new java.net.ConnectException("refused")), millis -> { }, w)
+                .get("/x"))
+                .isInstanceOf(AtlassianException.class);
+        w.close();
+
+        assertThat(Files.readString(file)).contains("effective proxy for jira.corp.local: no proxy configured");
     }
 }

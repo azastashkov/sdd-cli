@@ -86,6 +86,24 @@ public final class DiagnosticWriter implements Closeable {
         this.writer = open(file);
     }
 
+    private DiagnosticWriter() {
+        this.redactor = Redactor.of(java.util.Set.of());
+        this.clock = InstantSource.system();
+        this.warnOut = null;
+        this.writer = null;
+    }
+
+    /** A writer that never touches disk at all — not even a failed {@link #open} attempt. Every
+     *  method on it is already a no-op via the {@code writer == null} guard every write method
+     *  shares, so this is simply the cheapest possible instance of that same contract. Used by
+     *  {@link Diagnostics} (Fix 3, Task 8 review) as the fallback when something upstream of even
+     *  constructing a real writer goes wrong — the facade itself must never throw, and returning
+     *  this is how it keeps that promise without a nullable return type forcing every call site to
+     *  null-check. */
+    static DiagnosticWriter noOp() {
+        return new DiagnosticWriter();
+    }
+
     private BufferedWriter open(Path file) {
         try {
             if (file.getParent() != null) {
@@ -107,7 +125,17 @@ public final class DiagnosticWriter implements Closeable {
 
     /** B3's "per Atlassian HTTP request" line. {@code errorBodySnippet} should be null on a 2xx —
      *  callers pass it only when they already have a non-2xx body to report; this method does not
-     *  itself branch on {@code status} so a caller's own on-non-2xx guard is not duplicated here. */
+     *  itself branch on {@code status} so a caller's own on-non-2xx guard is not duplicated here.
+     *
+     *  <p><b>Redact BEFORE truncating, never after (Fix 1, Task 8 review).</b> An earlier version
+     *  capped {@code errorBodySnippet} to {@link #MAX_BODY_SNIPPET_CHARS} here and only redacted the
+     *  assembled line afterward, in {@link #writeRaw}. If a leaked credential in an Atlassian error
+     *  body straddled that 500-char cutoff, the surviving fragment no longer exact-substring-matched
+     *  the full secret {@link Redactor} was built from, so it survived into the file — the very
+     *  failure mode this whole class exists to prevent. The body snippet is now scrubbed FIRST,
+     *  against the FULL body, and only the already-redacted result is truncated; {@link #writeRaw}'s
+     *  own scrub-then-cap on the assembled line is therefore a no-op backstop for this field
+     *  specifically (nothing left to redact), not the only redaction pass. */
     public void httpRequest(String site, String method, String path, int status, long durationMs,
             int attempt, boolean retry, String contentType, String errorBodySnippet) {
         StringBuilder line = new StringBuilder("http site=").append(site).append(" method=").append(method)
@@ -116,7 +144,7 @@ public final class DiagnosticWriter implements Closeable {
                 .append(" attempt=").append(attempt).append(" retry=").append(retry)
                 .append(" content-type=").append(contentType == null ? "-" : contentType);
         if (errorBodySnippet != null) {
-            line.append(" body=").append(cap(errorBodySnippet, MAX_BODY_SNIPPET_CHARS));
+            line.append(" body=").append(cap(redactor.scrub(errorBodySnippet), MAX_BODY_SNIPPET_CHARS));
         }
         writeLine(line.toString());
     }

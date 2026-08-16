@@ -49,8 +49,20 @@ public final class Redactor {
     // Query-parameter values whose KEY name looks credential-shaped. Covers the PAT-creation
     // endpoints this repo actually has (?token=, access_token=) plus the generic names a future
     // endpoint might use, without trying to enumerate every product's exact field name.
+    // "api[-_]?key" (matches api-key, api_key, apikey) deliberately mirrors DiagnosticHeader's
+    // SENSITIVE_FLAG pattern (Fix 2, Task 8 review) so the two credential-name heuristics in this
+    // package do not silently diverge on which spelling of "api key" counts.
     private static final Pattern CRED_QUERY_PARAM = Pattern.compile(
-            "(?i)([?&](?:token|access_token|pat|password|secret|api_key|apikey)=)[^&\\s]+");
+            "(?i)([?&](?:token|access_token|pat|password|secret|api[-_]?key)=)[^&\\s]+");
+
+    // A floor on collected secret length (Fix 2, Task 8 review). Without one, a short or
+    // accidentally-blank configured token (a misconfigured sdd.yml, a test fixture value, a token
+    // mid-rotation) would substring-match everywhere in ordinary prose and silently mangle
+    // unrelated legitimate content via String.replace — corrupting the very file someone is trying
+    // to read, in the opposite direction from the leak this class exists to prevent. Real Atlassian
+    // PATs are dozens of characters; 8 is well below any real token's length while still excluding
+    // the short strings most likely to appear by coincidence in ordinary diagnostic text.
+    private static final int MIN_SECRET_LENGTH = 8;
 
     private final List<String> secrets;
 
@@ -63,15 +75,16 @@ public final class Redactor {
      * opened. Blank/null entries are dropped rather than redacted — an empty-string "secret" would
      * otherwise match everywhere and reduce every write to nothing, which is a bug this
      * constructor forecloses rather than something a caller could accidentally trigger by passing
-     * an unresolved (null) token through. Sorted longest-first so that when one secret's characters
-     * happen to be a prefix of another's (an unlikely but not impossible token-rotation artifact),
-     * the longer one is redacted whole rather than leaving the shorter one's characters exposed in
-     * what remains.
+     * an unresolved (null) token through. Entries shorter than {@link #MIN_SECRET_LENGTH} are
+     * dropped for the same reason, one size up (Fix 2, Task 8 review): see that constant's javadoc.
+     * Sorted longest-first so that when one secret's characters happen to be a prefix of another's
+     * (an unlikely but not impossible token-rotation artifact), the longer one is redacted whole
+     * rather than leaving the shorter one's characters exposed in what remains.
      */
     public static Redactor of(Collection<String> secretValues) {
         List<String> nonBlank = new ArrayList<>();
         for (String s : secretValues) {
-            if (s != null && !s.isBlank()) {
+            if (s != null && !s.isBlank() && s.length() >= MIN_SECRET_LENGTH) {
                 nonBlank.add(s);
             }
         }

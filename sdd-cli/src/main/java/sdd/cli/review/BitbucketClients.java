@@ -9,8 +9,8 @@ import sdd.core.config.ConfigException;
 import sdd.core.diagnostics.DiagnosticWriter;
 import sdd.core.http.HttpClients;
 import sdd.core.http.RestClient;
+import sdd.core.http.UrlHosts;
 
-import java.net.URI;
 import java.net.http.HttpClient;
 import java.nio.file.Path;
 
@@ -61,7 +61,7 @@ final class BitbucketClients {
         }
         HttpClient httpClient = HttpClients.build(atlassian.tls(), atlassian.proxy());
         RestClient restClient = new RestClient("Bitbucket", site.baseUrl(), site.token(), site.tokenVar(),
-                site.timeout(), httpClient, diagnostics);
+                site.timeout(), httpClient, diagnostics, RestClient.TransportContext.of(atlassian.tls(), atlassian.proxy()));
         return new BitbucketClient(restClient, bitbucket.project());
     }
 
@@ -82,7 +82,7 @@ final class BitbucketClients {
      */
     static void push(DiagnosticWriter diagnostics, Path repo, String branch, String cloneUrl, String username,
             String pat, AtlassianTls tls, AtlassianProxy proxy) {
-        String host = hostOf(cloneUrl);
+        String host = UrlHosts.hostOf(cloneUrl);
         String ref = "refs/heads/" + branch;
         try {
             RemoteGit.push(repo, branch, cloneUrl, username, pat, tls, proxy);
@@ -97,15 +97,6 @@ final class BitbucketClients {
                 diagnostics.gitPush(host, ref, null, e.getMessage());
             }
             throw e;
-        }
-    }
-
-    private static String hostOf(String url) {
-        try {
-            String host = URI.create(url).getHost();
-            return host != null ? host : url;
-        } catch (IllegalArgumentException e) {
-            return url;
         }
     }
 }

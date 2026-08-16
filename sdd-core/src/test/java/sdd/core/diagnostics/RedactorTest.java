@@ -79,6 +79,17 @@ class RedactorTest {
     }
 
     @Test
+    void elidesAHyphenatedApiKeyQueryParameterJustLikeTheUnderscoredAndUnseparatedSpellings() {
+        // Fix 2 (Task 8 review): api[-_]? must cover all three spellings this class and
+        // DiagnosticHeader.SENSITIVE_FLAG both need to agree on — api-key, api_key, apikey.
+        Redactor redactor = Redactor.of(Set.of());
+
+        assertThat(redactor.scrub("GET /x?api-key=" + SECRET)).doesNotContain(SECRET);
+        assertThat(redactor.scrub("GET /x?api_key=" + SECRET)).doesNotContain(SECRET);
+        assertThat(redactor.scrub("GET /x?apikey=" + SECRET)).doesNotContain(SECRET);
+    }
+
+    @Test
     void leavesOrdinaryTextAndInternalHostnamesUntouched() {
         Redactor redactor = Redactor.of(Set.of(SECRET));
 
@@ -94,6 +105,18 @@ class RedactorTest {
         String out = redactor.scrub("hello world " + SECRET);
 
         assertThat(out).doesNotContain(SECRET).contains("hello world");
+    }
+
+    @Test
+    void ignoresASecretShorterThanTheMinimumLengthRatherThanManglingUnrelatedText() {
+        // Fix 2 (Task 8 review): a short/misconfigured "secret" would otherwise substring-match
+        // ordinary prose and corrupt the file — the opposite failure from the one this class exists
+        // to prevent. "ab" (2 chars) is far below any real Atlassian PAT's length.
+        Redactor redactor = Redactor.of(Set.of("ab"));
+
+        String out = redactor.scrub("this is a plain sentence about tabs and grabs");
+
+        assertThat(out).isEqualTo("this is a plain sentence about tabs and grabs");
     }
 
     @Test

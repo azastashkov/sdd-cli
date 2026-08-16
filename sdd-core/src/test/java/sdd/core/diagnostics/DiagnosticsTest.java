@@ -7,6 +7,8 @@ import sdd.core.config.AtlassianSite;
 import sdd.core.config.WriteBack;
 
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -67,6 +69,56 @@ class DiagnosticsTest {
             Files.writeString(broken.resolve(".sdd"), "not a directory");
             DiagnosticWriter w = Diagnostics.open(broken, "doctor", List.of("doctor"), null, CLOCK, null);
             w.note("still safe to call");
+            w.close();
+        }).doesNotThrowAnyException();
+    }
+
+    // --- Fix 3 (Task 8 review): the FACADE itself must never throw, not just its collaborators ----
+
+    @Test
+    void openNeverThrowsEvenWhenHeaderRenderingItselfWouldFail() {
+        // A null argv makes DiagnosticHeader.render's own redactArgs NPE internally — a caller
+        // mistake this facade must survive rather than turn into "error: ..." / exit 4 for the
+        // command that was only ever trying to open a diagnostics file.
+        assertThatCode(() -> {
+            DiagnosticWriter w = Diagnostics.open(workspace, "doctor", null, null, CLOCK, null);
+            w.note("still safe to call after a broken header render");
+            w.close();
+        }).doesNotThrowAnyException();
+    }
+
+    @Test
+    void openAtNeverThrowsEvenWhenHeaderRenderingItselfWouldFail() {
+        assertThatCode(() -> {
+            DiagnosticWriter w = Diagnostics.openAt(workspace.resolve("x.log"), null, null, CLOCK, null);
+            w.note("still safe to call");
+            w.close();
+        }).doesNotThrowAnyException();
+    }
+
+    @Test
+    void aFacadeFailureWarnsOnceWhenAWarnWriterIsProvided() {
+        StringWriter errBuf = new StringWriter();
+        PrintWriter err = new PrintWriter(errBuf, true);
+
+        Diagnostics.open(workspace, "doctor", null, null, CLOCK, err);
+
+        assertThat(errBuf.toString()).contains("  warn: ");
+    }
+
+    @Test
+    void theReturnedWriterAfterAFacadeFailureIsStillSafeAndRedactsNormally() throws IOException {
+        // The no-op fallback must not silently swallow LATER, perfectly normal writes either — it
+        // is a safe degraded mode, not a broken object a caller has to know to avoid.
+        DiagnosticWriter w = Diagnostics.open(workspace, "doctor", null, null, CLOCK, null);
+
+        assertThatCode(() -> {
+            w.header("h");
+            w.httpRequest("Jira", "GET", "/x", 200, 1, 1, false, "application/json", null);
+            w.gate2("lib", "event");
+            w.gitPush("host", "ref", true, null);
+            w.failure("ctx", new RuntimeException("boom"));
+            w.note("note");
             w.close();
         }).doesNotThrowAnyException();
     }

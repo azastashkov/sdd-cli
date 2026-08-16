@@ -6,10 +6,10 @@ import sdd.core.config.AtlassianSite;
 import sdd.core.config.AtlassianTls;
 import sdd.core.config.BitbucketSite;
 import sdd.core.http.HttpClients;
+import sdd.core.http.UrlHosts;
 
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
-import java.net.URI;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
@@ -96,7 +96,7 @@ public final class DiagnosticHeader {
             return;
         }
         boolean resolved = site.token() != null && site.tokenError() == null;
-        sb.append(name).append(": configured host=").append(hostOf(site.baseUrl()))
+        sb.append(name).append(": configured host=").append(UrlHosts.hostOf(site.baseUrl()))
                 .append(" token-env-var=").append(site.tokenVar() == null ? "(literal, not a ${VAR})" : site.tokenVar())
                 .append(" resolved=").append(resolved).append('\n');
     }
@@ -129,15 +129,6 @@ public final class DiagnosticHeader {
         }
         sb.append("proxy: ").append(proxy.host()).append(':').append(proxy.port())
                 .append(" no_proxy=").append(proxy.noProxy()).append('\n');
-    }
-
-    private static String hostOf(String baseUrl) {
-        try {
-            String host = URI.create(baseUrl).getHost();
-            return host != null ? host : baseUrl;
-        } catch (IllegalArgumentException | NullPointerException e) {
-            return String.valueOf(baseUrl);
-        }
     }
 
     /** Elides the value immediately following a flag whose name looks credential-shaped — see

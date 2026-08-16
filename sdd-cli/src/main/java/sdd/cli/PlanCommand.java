@@ -222,10 +222,12 @@ public final class PlanCommand implements Callable<Integer> {
         ModelEndpoint planner = config.models().get("planner");
         ChatModel model = plannerForTest != null ? plannerForTest : new HttpChatModel(planner);
         HttpClient httpClient = HttpClients.build(atlassian.tls(), atlassian.proxy());
+        RestClient.TransportContext transport = RestClient.TransportContext.of(atlassian.tls(), atlassian.proxy());
 
         JiraClient jiraClient = null;
         if (!jiraKeys.isEmpty()) {
-            jiraClient = new JiraClient(atlassianRestClient("Jira", atlassian.jira(), httpClient, diagnostics),
+            jiraClient = new JiraClient(
+                    atlassianRestClient("Jira", atlassian.jira(), httpClient, diagnostics, transport),
                     atlassian.jira().baseUrl());
         }
         ConfluenceClient confluenceClient = null;
@@ -239,7 +241,8 @@ public final class PlanCommand implements Callable<Integer> {
             // atlassianRestClient is evaluated first (Java argument order) and raises the
             // deferred-credential message if the token is unset, so site.token() below is only
             // ever reached once that has already succeeded — no second check needed.
-            confluenceClient = new ConfluenceClient(atlassianRestClient("Confluence", site, httpClient, diagnostics),
+            confluenceClient = new ConfluenceClient(
+                    atlassianRestClient("Confluence", site, httpClient, diagnostics, transport),
                     httpClient, site.token(), site.baseUrl(), site.timeout());
             confluenceHost = URI.create(site.baseUrl()).getHost();
         }
@@ -321,12 +324,12 @@ public final class PlanCommand implements Callable<Integer> {
      *  idiom) — it is raised here instead, the point a site's {@link RestClient} is actually
      *  about to be built, exactly like {@code AtlassianProbe} does for {@code sdd doctor}. */
     private static RestClient atlassianRestClient(String siteName, AtlassianSite site, HttpClient httpClient,
-            DiagnosticWriter diagnostics) {
+            DiagnosticWriter diagnostics, RestClient.TransportContext transport) {
         if (site.tokenError() != null) {
             throw new ConfigException(site.tokenError());
         }
         return new RestClient(siteName, site.baseUrl(), site.token(), site.tokenVar(), site.timeout(), httpClient,
-                diagnostics);
+                diagnostics, transport);
     }
 
     private Integer writeNormalized(NormalizedSpec normalized, Path target, PrintWriter outWriter) {
