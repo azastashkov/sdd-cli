@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -185,6 +186,11 @@ public final class Orchestrator {
         Path dtsBaselineDir = runDir.resolve("contracts").resolve(slug(repo) + "-dts-baseline");
         boolean compatGate = false;
         DtsBuilder.Result typeCompatBaseline = null;
+        // What actually happened to each declared gate. Seeded SKIPPED the moment a gate is
+        // DECLARED, so the only way a repo ends up with no record is by declaring nothing —
+        // every path that abandons a gate part-way therefore leaves the truth behind by default,
+        // rather than by remembering to write it.
+        Map<String, CompatGate> gates = new LinkedHashMap<>();
         List<NpmOverlay.Applied> overlaysApplied = List.of();
         try {
             RunGit.startBranch(step.repoRoot(), branch, base);
@@ -195,15 +201,21 @@ public final class Orchestrator {
             // failure or an escalation that never reaches SUCCESS.
             overlaysApplied = applyOverlays(repo, step, events);
             if (needsCompatGate(plan, repo)) {
+                gates.put(BINARY_COMPATIBLE, new CompatGate(BINARY_COMPATIBLE,
+                        CompatGate.Outcome.SKIPPED, "the gate did not reach a verdict"));
                 JarBuilder.Result baseline = buildJars(step, repo, baselineDir);
                 if (baseline.ok() && !baseline.jars().isEmpty()) {
                     compatGate = true;
                 } else {
-                    events.add("japicmp skipped: baseline build failed — "
-                            + summarize(baseline.log()));
+                    String detail = "baseline build failed — " + summarize(baseline.log());
+                    events.add("japicmp skipped: " + detail);
+                    gates.put(BINARY_COMPATIBLE, new CompatGate(BINARY_COMPATIBLE,
+                            CompatGate.Outcome.SKIPPED, detail));
                 }
             }
             if (needsTypeCompatGate(plan, repo)) {
+                gates.put(TYPE_COMPATIBLE, new CompatGate(TYPE_COMPATIBLE,
+                        CompatGate.Outcome.SKIPPED, "the gate did not reach a verdict"));
                 // Same lifecycle as the baseline jars, and for the same reason: the candidate's
                 // sources overwrite the baseline's in this very tree, so the baseline has to exist
                 // as an artifact before the agent touches anything.
@@ -211,8 +223,10 @@ public final class Orchestrator {
                 if (baseline.ok()) {
                     typeCompatBaseline = baseline;
                 } else {
-                    events.add("type-compat skipped: baseline declaration emit failed — "
-                            + summarize(baseline.log()));
+                    String detail = "baseline declaration emit failed — " + summarize(baseline.log());
+                    events.add("type-compat skipped: " + detail);
+                    gates.put(TYPE_COMPATIBLE, new CompatGate(TYPE_COMPATIBLE,
+                            CompatGate.Outcome.SKIPPED, detail));
                 }
             }
             String contracts = contractDigest(runDir, step);
@@ -251,6 +265,7 @@ public final class Orchestrator {
             // The in-flight call (whichever tier was underway when the model call failed) is lost,
             // but every earlier attempt's completed transcript/edits — already accumulated in
             // events/transcript/edits across prior tiers — must still be persisted.
+            store.writeCompatGates(runDir, repo, List.copyOf(gates.values()));
             store.writeAgentEvents(runDir, repo, events);
             store.writeTranscript(runDir, repo, transcript);
             store.writeEdits(runDir, repo, edits);
@@ -266,6 +281,7 @@ public final class Orchestrator {
         } finally {
             restoreOverlays(overlaysApplied, events);
         }
+        store.writeCompatGates(runDir, repo, List.copyOf(gates.values()));
         store.writeAgentEvents(runDir, repo, events);
         store.writeTranscript(runDir, repo, transcript);
         store.writeEdits(runDir, repo, edits);
@@ -290,6 +306,7 @@ public final class Orchestrator {
                     }
                 }
                 events.add("publish " + prop.publish().version() + ": " + summarize(published.log()));
+                store.writeCompatGates(runDir, repo, List.copyOf(gates.values()));
                 store.writeAgentEvents(runDir, repo, events);
                 store.writeTranscript(runDir, repo, transcript);
                 store.writeEdits(runDir, repo, edits);
@@ -311,6 +328,7 @@ public final class Orchestrator {
                 }
             }
             if (!packNpm(repo, step, events)) {
+                store.writeCompatGates(runDir, repo, List.copyOf(gates.values()));
                 store.writeAgentEvents(runDir, repo, events);
                 synchronized (lock) {
                     transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
@@ -342,17 +360,24 @@ public final class Orchestrator {
                 DtsBuilder.Result candidate = new DtsBuilder(nodeHome).build(step.repoRoot(),
                         runDir.resolve("contracts").resolve(slug(repo) + "-dts-candidate"));
                 if (!candidate.ok()) {
-                    events.add("type-compat skipped: candidate declaration emit failed — "
-                            + summarize(candidate.log()));
+                    String detail = "candidate declaration emit failed — " + summarize(candidate.log());
+                    events.add("type-compat skipped: " + detail);
+                    gates.put(TYPE_COMPATIBLE, new CompatGate(TYPE_COMPATIBLE,
+                            CompatGate.Outcome.SKIPPED, detail));
                 } else {
                     DtsCompatCheck.Verdict verdict =
                             DtsCompatCheck.compare(nodeHome, typeCompatBaseline, candidate);
                     // The count goes in the event alongside the verdict: a gate that probed
                     // nothing and a gate that probed forty exports and found nothing wrong are
                     // the same three words otherwise.
+                    String probed = verdict.probed() + " export(s) probed";
                     events.add("type-compat: " + (verdict.typeCompatible() ? "compatible" : "BREAKING")
-                            + " (" + verdict.probed() + " export(s) probed)");
+                            + " (" + probed + ")");
+                    gates.put(TYPE_COMPATIBLE, new CompatGate(TYPE_COMPATIBLE,
+                            verdict.typeCompatible() ? CompatGate.Outcome.PASSED : CompatGate.Outcome.BROKEN,
+                            verdict.typeCompatible() ? probed : summarize(verdict.report())));
                     if (!verdict.typeCompatible()) {
+                        store.writeCompatGates(runDir, repo, List.copyOf(gates.values()));
                         store.writeAgentEvents(runDir, repo, events);
                         store.writeTranscript(runDir, repo, transcript);
                         store.writeEdits(runDir, repo, edits);
@@ -368,10 +393,25 @@ public final class Orchestrator {
                 JarBuilder.Result candidate = buildJars(step, repo,
                         runDir.resolve("contracts").resolve(slug(repo) + "-candidate"));
                 if (!candidate.ok() || candidate.jars().isEmpty()) {
-                    events.add("japicmp skipped: candidate build failed — " + summarize(candidate.log()));
+                    String detail = "candidate build failed — " + summarize(candidate.log());
+                    events.add("japicmp skipped: " + detail);
+                    gates.put(BINARY_COMPATIBLE, new CompatGate(BINARY_COMPATIBLE,
+                            CompatGate.Outcome.SKIPPED, detail));
                 } else {
-                    String drift = compatDrift(baselineDir, candidate.jars(), events);
+                    Drift result = compatDrift(baselineDir, candidate.jars(), events);
+                    String drift = result.drift();
+                    // Zero comparisons is not a pass. Every pair can be skipped — no matching
+                    // baseline jar, a comparator that threw — and the drift report is empty in
+                    // exactly the same way it is when the jars genuinely match.
+                    CompatGate.Outcome gateOutcome = drift != null ? CompatGate.Outcome.BROKEN
+                            : result.compared() > 0 ? CompatGate.Outcome.PASSED
+                            : CompatGate.Outcome.SKIPPED;
+                    gates.put(BINARY_COMPATIBLE, new CompatGate(BINARY_COMPATIBLE, gateOutcome,
+                            drift != null ? drift
+                                    : result.compared() > 0 ? result.compared() + " jar pair(s) compared"
+                                    : "no jar pair could be compared"));
                     if (drift != null) {
+                        store.writeCompatGates(runDir, repo, List.copyOf(gates.values()));
                         store.writeAgentEvents(runDir, repo, events);
                         store.writeTranscript(runDir, repo, transcript);
                         store.writeEdits(runDir, repo, edits);
@@ -383,6 +423,7 @@ public final class Orchestrator {
                     }
                 }
             }
+            store.writeCompatGates(runDir, repo, List.copyOf(gates.values()));
             store.writeAgentEvents(runDir, repo, events);
             store.writeTranscript(runDir, repo, transcript);
             store.writeEdits(runDir, repo, edits);
@@ -506,14 +547,17 @@ public final class Orchestrator {
         return plan.contracts().stream().filter(c -> c.provider().equals(repo)).toList();
     }
 
+    private static final String BINARY_COMPATIBLE = "binary-compatible";
+    private static final String TYPE_COMPATIBLE = "type-compatible";
+
     private boolean needsCompatGate(PlanModel plan, String repo) {
         return providedContracts(plan, repo).stream()
-                .anyMatch(c -> "binary-compatible".equals(c.compat()));
+                .anyMatch(c -> BINARY_COMPATIBLE.equals(c.compat()));
     }
 
     private boolean needsTypeCompatGate(PlanModel plan, String repo) {
         return providedContracts(plan, repo).stream()
-                .anyMatch(c -> "type-compatible".equals(c.compat()));
+                .anyMatch(c -> TYPE_COMPATIBLE.equals(c.compat()));
     }
 
     private String contractDigest(Path runDir, RepoStep step) {
@@ -624,11 +668,22 @@ public final class Orchestrator {
         store.writeState(runDir, state);
     }
 
+    /**
+     * @param drift    a short drift report, or null when nothing incompatible was found
+     * @param compared how many jar PAIRS were actually put through japicmp. Reported separately
+     *                 because "no drift" and "nothing was compared" are the same null otherwise:
+     *                 every pair can be skipped — an unmatched jar, a comparator that threw — and
+     *                 the result still reads as a clean gate. The same distinction
+     *                 {@code DtsCompatCheck} draws with its probe count.
+     */
+    private record Drift(String drift, int compared) {
+    }
+
     /** Compares matched baseline/candidate jars; returns a short drift report or null when clean.
      * Also sweeps baselineDir once for orphans — a baseline jar with no candidate counterpart means
      * its module/artifact was deleted (the maximal breaking change) and must still be evented, per
      * ratified interpretation (e): unmatched jars are skipped with an event, not silently dropped. */
-    private static String compatDrift(Path baselineDir, List<Path> candidates, List<String> events) {
+    private static Drift compatDrift(Path baselineDir, List<Path> candidates, List<String> events) {
         List<Path> baselineJars;
         try (var jars = Files.list(baselineDir)) {
             baselineJars = jars.sorted().toList();
@@ -637,6 +692,7 @@ public final class Orchestrator {
         }
         Set<String> matchedBaselineKeys = new HashSet<>();
         StringBuilder drift = new StringBuilder();
+        int compared = 0;
         for (Path candidate : candidates) {
             String key = versionless(candidate.getFileName().toString());
             Path baseline = baselineJars.stream()
@@ -654,6 +710,7 @@ public final class Orchestrator {
             // whole run, as happened on a live real-estate run.
             try {
                 JapicmpCheck.Verdict verdict = JapicmpCheck.compare(baseline, candidate);
+                compared++;
                 events.add("japicmp " + candidate.getFileName() + ": "
                         + (verdict.binaryCompatible() ? "binary-compatible" : "BREAKING"));
                 if (!verdict.binaryCompatible()) {
@@ -670,10 +727,10 @@ public final class Orchestrator {
             }
         }
         if (drift.isEmpty()) {
-            return null;
+            return new Drift(null, compared);
         }
         String report = drift.toString().replace('\n', ' ').strip();
-        return report.length() > 200 ? report.substring(0, 200) : report;
+        return new Drift(report.length() > 200 ? report.substring(0, 200) : report, compared);
     }
 
     private static String versionless(String jarName) {

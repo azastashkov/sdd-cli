@@ -33,6 +33,8 @@ import java.util.Map;
  * @param restoreFailures    repos left off their original branch/commit after the run
  * @param diffFailures       repos whose per-repo diff could not be produced
  * @param contracts          contract re-check findings
+ * @param skippedGates       repos that declared a compat guarantee whose gate reached no verdict.
+ *                           Its own type, not a fifth {@code List<String>} — see the note above
  * @param decisions          human decisions recorded for this run, keyed by repo
  * @param checkpoints        checkpoint drift and gone-branch findings, read fresh off the estate's git
  * @param runbook            the rendered release runbook
@@ -44,6 +46,7 @@ public record ReportInputs(String runId, PlanModel plan, RunState state,
                            List<String> notLocallyVerified, List<String> stagingFailures,
                            List<String> restoreFailures, List<String> diffFailures,
                            List<ContractRecheck.Finding> contracts,
+                           List<SkippedGates.Skipped> skippedGates,
                            Map<String, DecisionRecord> decisions,
                            RunContext.Checkpoints checkpoints,
                            String runbook, RebuildScope rebuild) {
@@ -53,5 +56,6 @@ public record ReportInputs(String runId, PlanModel plan, RunState state,
         restoreFailures = List.copyOf(restoreFailures);
         diffFailures = List.copyOf(diffFailures);
         contracts = List.copyOf(contracts);
+        skippedGates = List.copyOf(skippedGates);
     }
 }

@@ -890,5 +890,35 @@ class OrchestratorTest {
         assertThat(result.exitCode()).isEqualTo(0);
         assertThat(result.state().stateOf("lib")).isEqualTo(RepoState.SUCCEEDED);
         assertThat(Files.readString(runDir.resolve("lib/agent-events.jsonl"))).contains("japicmp skipped");
+        // The repo is green and the prose event is the only trace — which is precisely why the
+        // outcome is also recorded structurally: sdd review decides an exit code from this, and
+        // deciding it by reading the prose above would be the console-scraping the Gradle side
+        // refuses everywhere else.
+        assertThat(new RunStore(InstantSource.fixed(Instant.EPOCH)).readCompatGates(runDir, "lib"))
+                .singleElement().satisfies(gate -> {
+                    assertThat(gate.compat()).isEqualTo("binary-compatible");
+                    assertThat(gate.outcome()).isEqualTo(CompatGate.Outcome.SKIPPED);
+                });
+    }
+
+    @Test
+    void aGateThatRanAndPassedIsRecordedAsPassed() throws Exception {
+        FixtureRepo lib = repoWith("lib", "exit 0");
+        FixtureRepo svc = repoWith("svc", "exit 0");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of(
+                "lib", new RepoStep("lib", lib.path(), "x", List.of(), List.of(), List.of(), List.of(), List.of()),
+                "svc", new RepoStep("svc", svc.path(), "x", List.of(), List.of(), List.of(), List.of(), List.of()));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"lib ok\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"svc ok\"}")));
+
+        orchestrator(model).run(runDir,
+                planWithContract(lib.headSha(), svc.headSha(), null), steps);   // no gate declared
+
+        // No compat declared means no gate, which must record nothing at all — a repo with an
+        // empty record and a repo with a SKIPPED one are the two halves of the review's decision.
+        assertThat(new RunStore(InstantSource.fixed(Instant.EPOCH)).readCompatGates(runDir, "lib"))
+                .isEmpty();
     }
 }

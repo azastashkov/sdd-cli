@@ -774,4 +774,162 @@ class ReviewCommandTest {
         assertThat(exit).isZero();
         assertThat(f.runDir().resolve("review/report.md")).exists();
     }
+
+    /**
+     * The finding this closes: a repo declaring binary-compatible whose gate never ran was
+     * indistinguishable from one that passed — SUCCEEDED, unmentioned in the report, exit 0.
+     */
+    @Test
+    void aDeclaredGuaranteeWhoseGateNeverRanFailsTheReview() throws Exception {
+        FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
+        Path g = lib.path().resolve("gradlew");
+        Files.writeString(g, "#!/bin/sh\nexit 0\n");
+        Files.setPosixFilePermissions(g, PosixFilePermissions.fromString("rwxr-xr-x"));
+        Path props = lib.path().resolve("gradle/wrapper/gradle-wrapper.properties");
+        Files.createDirectories(props.getParent());
+        Files.writeString(props, "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n");
+        lib.commit("base");
+        String baseSha = lib.headSha();
+        String originalBranch = RunGit.currentBranch(lib.path());
+
+        String runBranch = "sdd/SPEC-9-v1/lib";
+        RunGit.startBranch(lib.path(), runBranch, baseSha);
+        lib.file("A.java", "class A { int x; }\n");
+        lib.commit("checkpoint");
+        String checkpointSha = lib.headSha();
+        RunGit.checkout(lib.path(), originalBranch);
+
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+        Files.writeString(ws.resolve("s.md"), """
+                ---
+                id: SPEC-9
+                title: Tiers
+                owner: me
+                status: approved
+                ---
+
+                ## Goal
+                g
+
+                ## Requirements
+                - R1: Expose tierFor.
+
+                ## Acceptance Criteria
+                - A1: tierFor returns a tier.
+                """);
+        String specSha = sdd.plan.approve.Hashes.sha256(Files.readString(ws.resolve("s.md")));
+        String planJson = """
+                { "spec_id":"SPEC-9","plan_version":1,"spec_sha256":"%s","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],
+                  "contracts":[{"id":"c1","kind":"java-api","provider":"lib","consumers":[],
+                    "body":"b","compat":"binary-compatible"}],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":["c1"],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x to A."}] }
+                """.formatted(specSha, baseSha);
+        Files.writeString(ws.resolve("s.plan.json"), planJson);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", planJson, Files.readString(ws.resolve("s.md")));
+        store.releaseLock(runDir);
+        store.writeState(runDir, new RunState("SPEC-9-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok", null)), null, 15L));
+        store.writeCompatGates(runDir, "lib", List.of(new sdd.cli.implement.CompatGate(
+                "binary-compatible", sdd.cli.implement.CompatGate.Outcome.SKIPPED,
+                "baseline build failed — no such task 'jar'")));
+
+        int exit = new CommandLine(new ReviewCommand()).execute("--workspace", ws.toString(),
+                ws.resolve("s.plan.json").toString());
+
+        // Every repo SUCCEEDED and nothing drifted; the ONLY thing wrong is that the guarantee the
+        // plan declared was never checked. Exit 0 here would be this command asserting it holds.
+        assertThat(exit).isEqualTo(2);
+        String report = Files.readString(ws.resolve(".sdd/runs/SPEC-9-v1/review/report.md"));
+        assertThat(report).contains("## Compatibility gates that did not run");
+        assertThat(report).contains("baseline build failed");
+    }
+
+    @Test
+    void aDeclaredGuaranteeWhoseGatePassedStillReviewsClean() throws Exception {
+        FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
+        Path g = lib.path().resolve("gradlew");
+        Files.writeString(g, "#!/bin/sh\nexit 0\n");
+        Files.setPosixFilePermissions(g, PosixFilePermissions.fromString("rwxr-xr-x"));
+        Path props = lib.path().resolve("gradle/wrapper/gradle-wrapper.properties");
+        Files.createDirectories(props.getParent());
+        Files.writeString(props, "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n");
+        lib.commit("base");
+        String baseSha = lib.headSha();
+        String originalBranch = RunGit.currentBranch(lib.path());
+
+        String runBranch = "sdd/SPEC-9-v1/lib";
+        RunGit.startBranch(lib.path(), runBranch, baseSha);
+        lib.file("A.java", "class A { int x; }\n");
+        lib.commit("checkpoint");
+        String checkpointSha = lib.headSha();
+        RunGit.checkout(lib.path(), originalBranch);
+
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')", lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+        Files.writeString(ws.resolve("s.md"), """
+                ---
+                id: SPEC-9
+                title: Tiers
+                owner: me
+                status: approved
+                ---
+
+                ## Goal
+                g
+
+                ## Requirements
+                - R1: Expose tierFor.
+
+                ## Acceptance Criteria
+                - A1: tierFor returns a tier.
+                """);
+        String specSha = sdd.plan.approve.Hashes.sha256(Files.readString(ws.resolve("s.md")));
+        String planJson = """
+                { "spec_id":"SPEC-9","plan_version":1,"spec_sha256":"%s","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],
+                  "contracts":[{"id":"c1","kind":"java-api","provider":"lib","consumers":[],
+                    "body":"b","compat":"binary-compatible"}],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":["c1"],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x to A."}] }
+                """.formatted(specSha, baseSha);
+        Files.writeString(ws.resolve("s.plan.json"), planJson);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", planJson, Files.readString(ws.resolve("s.md")));
+        store.releaseLock(runDir);
+        store.writeState(runDir, new RunState("SPEC-9-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok", null)), null, 15L));
+        store.writeCompatGates(runDir, "lib", List.of(new sdd.cli.implement.CompatGate(
+                "binary-compatible", sdd.cli.implement.CompatGate.Outcome.PASSED, "2 jar pair(s) compared")));
+
+        int exit = new CommandLine(new ReviewCommand()).execute("--workspace", ws.toString(),
+                ws.resolve("s.plan.json").toString());
+
+        // The other half, and the one that matters more: this must NOT become a review that warns
+        // about every run, or a reader learns to ignore the warning.
+        assertThat(exit).isEqualTo(0);
+        assertThat(Files.readString(ws.resolve(".sdd/runs/SPEC-9-v1/review/report.md")))
+                .doesNotContain("Compatibility gates that did not run");
+    }
 }

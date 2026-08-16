@@ -351,6 +351,50 @@ public class RunStore {
         }
     }
 
+    /**
+     * Records what happened to a repo's compatibility gates.
+     *
+     * <p>Per repo rather than one estate-wide file, because repos run concurrently and a shared
+     * map would need a lock this store has nowhere to put one.
+     */
+    public void writeCompatGates(Path runDir, String repo, List<CompatGate> gates) {
+        try {
+            Path repoDir = runDir.resolve(sanitize(repo));
+            Files.createDirectories(repoDir);
+            Files.writeString(repoDir.resolve("compat-gates.json"),
+                    JSON.writerWithDefaultPrettyPrinter().writeValueAsString(gates));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /**
+     * @return the recorded gates, or an EMPTY list for a repo that declared no compat contract —
+     *         and, deliberately, also for a run made before this file existed. An older run has no
+     *         evidence either way, and inventing a SKIPPED for it would fail reviews of runs that
+     *         were fine.
+     */
+    public List<CompatGate> readCompatGates(Path runDir, String repo) {
+        Path file = runDir.resolve(sanitize(repo)).resolve("compat-gates.json");
+        if (!Files.exists(file)) {
+            return List.of();
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode root = JSON.readTree(Files.readString(file));
+            List<CompatGate> gates = new java.util.ArrayList<>();
+            for (com.fasterxml.jackson.databind.JsonNode node : root) {
+                gates.add(new CompatGate(node.path("compat").asText(),
+                        CompatGate.Outcome.valueOf(node.path("outcome").asText()),
+                        node.path("detail").asText("")));
+            }
+            return gates;
+        } catch (IOException | IllegalArgumentException e) {
+            // An unreadable record is not evidence that a gate was skipped, so it must not be
+            // reported as one — same rule as an absent file.
+            return List.of();
+        }
+    }
+
     public Path reviewDir(Path runDir) {
         return runDir.resolve("review");
     }

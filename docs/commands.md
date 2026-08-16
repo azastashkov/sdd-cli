@@ -447,9 +447,17 @@ rebuilt.
 
 | Code | Meaning |
 |---|---|
-| `0` | every repo `SUCCEEDED`, no rebuild failure, no restore/staging failure, no checkpoint drift, and (if `--interactive`) no follow-up finding |
-| `2` | any of the above conditions failed, OR (if `--interactive`) a follow-up (a refused decision, a squash refusal, a failed re-verify) demanded it — whichever is worse wins (`ReviewCommand.java:157-174`) |
-| `4` | missing `<planJsonPath>`, no run found for it, the run's lock is held by `sdd implement`, or an unhandled exception (`ReviewCommand.java:91-98, 103-107, 175-178`, `exitCodeOnInvalidInput = 4` at `ReviewCommand.java:47`) |
+| `0` | every repo `SUCCEEDED`, no rebuild failure, no restore/staging failure, no checkpoint drift, every declared compatibility guarantee actually checked, and (if `--interactive`) no follow-up finding |
+| `2` | any of the above conditions failed, OR (if `--interactive`) a follow-up (a refused decision, a squash refusal, a failed re-verify) demanded it — whichever is worse wins (`ReviewCommand.java:158-186`) |
+| `4` | missing `<planJsonPath>`, no run found for it, the run's lock is held by `sdd implement`, or an unhandled exception (`ReviewCommand.java:92-98, 104-107, 187-190`, `exitCodeOnInvalidInput = 4` at `ReviewCommand.java:48`) |
+
+A repo that DECLARED `compat: binary-compatible` or `compat: type-compatible` and
+whose gate never reached a verdict fails the review even when everything else is
+green, and gets a `## Compatibility gates that did not run` section naming why.
+Exit `0` on such a run would be `sdd review` asserting a guarantee holds on the
+strength of a check that did not happen. A gate that ran and passed, or a repo
+that declared no guarantee, is silent (`SkippedGates.java`,
+`ReviewCommand.java:170, 177-184`).
 
 **Writes:** `.sdd/runs/<runId>/review/report.md` and one
 `review/<repo>.diff` per `SUCCEEDED` repo with a resolvable checkpoint
