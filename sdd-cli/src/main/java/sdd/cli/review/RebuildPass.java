@@ -10,7 +10,13 @@ import sdd.cli.implement.RunGit;
 import sdd.cli.implement.RunState;
 import sdd.cli.implement.RunStore;
 import sdd.cli.implement.Scheduler;
+import sdd.cli.implement.NpmOverlay;
 import sdd.cli.implement.VerificationTasks;
+import sdd.core.toolchain.Mechanism;
+import sdd.index.extract.BuildModel;
+import sdd.index.npm.NpmExtractor;
+
+import java.io.IOException;
 import sdd.core.config.SddConfig;
 import sdd.core.toolchain.Toolchain;
 import sdd.index.gradle.GradleExtractor;
@@ -68,6 +74,8 @@ public final class RebuildPass {
         // Original position per repo: a branch name, or "detached:<sha>" when the user had a
         // detached HEAD (restoring by sha keeps the estate exactly where review found it).
         Map<String, String> originalPositions = new LinkedHashMap<>();
+        // One pack per provider, reused by every consumer of it in this pass.
+        Map<String, List<PackedPackage>> packedProviders = new LinkedHashMap<>();
         try {
             // Topo order matters twice over: a provider is staged before the consumer that
             // composes its working tree, and rebuilt before it too.
@@ -123,6 +131,15 @@ public final class RebuildPass {
                     notLocallyVerified.add(repo);
                     continue;
                 }
+                // Gradle substitution rides in as flags on the command; npm substitution is
+                // filesystem state that has to be put in place and taken away again. Without it a
+                // consumer is rebuilt against its provider's PUBLISHED version while the report
+                // says the estate was verified as a whole — which is the one thing this pass exists
+                // to be able to say.
+                List<NpmOverlay.Applied> overlays = toolchain == Toolchain.NPM
+                        ? stageNpmProviders(repo, plan, paths, config, runDir, packedProviders,
+                                stagingFailures)
+                        : List.of();
                 try {
                     rebuilds.put(repo, rebuild.verify(root, toolchain,
                             toolchain == Toolchain.NPM ? null : javaHomeFor(config, root),
@@ -135,6 +152,8 @@ public final class RebuildPass {
                     // gets written.
                     rebuilds.put(repo, new EstateRebuild.Result(false,
                             "verification threw: " + e.getMessage()));
+                } finally {
+                    restoreNpmProviders(overlays, config, restoreFailures);
                 }
             }
             // Every SUCCEEDED repo in scope is now simultaneously sitting on its checkpoint
@@ -185,6 +204,108 @@ public final class RebuildPass {
     }
 
     /** Mirrors {@code ImplementCommand}'s settingsFor extraArgs resolution exactly. */
+    /** A provider package packed from its checkpointed tree, ready to overlay. */
+    private record PackedPackage(String packageName, Path tarball) {
+    }
+
+    /**
+     * Packs every NPM_OVERLAY provider of {@code repo} from the tree it is currently staged at, and
+     * overlays the result into the consumer.
+     *
+     * <p>Packing here rather than reusing the implement run's tarballs is deliberate: this pass
+     * verifies the estate as it stands at its CHECKPOINTS, which a {@code review redo} or a later
+     * approval can move. A tarball from earlier in the run would verify a tree that is no longer
+     * the one under review.
+     *
+     * <p>The package names come from each provider's staged {@code package.json} rather than the
+     * knowledge base, for the same reason — the tree being verified is the authority on what it
+     * publishes.
+     *
+     * <p>A substitution that cannot be made is recorded in {@code stagingFailures}, which already
+     * means "verdicts that depend on this are not trustworthy" and which callers must not report a
+     * pass alongside. Verification still runs, so the report has data; the exit code is already
+     * committed by then.
+     */
+    private static List<NpmOverlay.Applied> stageNpmProviders(
+            String repo, PlanModel plan, Map<String, Path> paths, SddConfig config, Path runDir,
+            Map<String, List<PackedPackage>> packedProviders, List<String> stagingFailures) {
+        List<PlanModel.PlanEdge> overlayEdges = plan.edges().stream()
+                .filter(e -> e.fromRepo().equals(repo))
+                .filter(e -> Mechanism.of(e.mechanism()) == Mechanism.NPM_OVERLAY)
+                .toList();
+        if (overlayEdges.isEmpty()) {
+            return List.of();
+        }
+        Path consumerRoot = paths.get(repo);
+        Path store = runDir.resolve("review-npm-store");
+        NpmOverlay overlay = new NpmOverlay(config.nodeHome());
+        List<NpmOverlay.Applied> applied = new ArrayList<>();
+        for (PlanModel.PlanEdge edge : overlayEdges) {
+            Path providerRoot = paths.get(edge.toRepo());
+            if (providerRoot == null) {
+                stagingFailures.add(repo + ": provider " + edge.toRepo() + " has no checkout, so its"
+                        + " change could not be staged into this rebuild");
+                continue;
+            }
+            List<PackedPackage> packed = packedProviders.computeIfAbsent(edge.toRepo(),
+                    provider -> packProvider(provider, providerRoot, overlay, store, stagingFailures));
+            for (PackedPackage one : packed) {
+                try {
+                    applied.add(overlay.apply(consumerRoot, one.packageName(), one.tarball(),
+                            store.resolveSibling("review-overlay-backup")));
+                } catch (IOException e) {
+                    stagingFailures.add(repo + ": could not overlay " + one.packageName() + " from "
+                            + edge.toRepo() + " (" + e.getMessage() + "), so this rebuild used its"
+                            + " published version");
+                }
+            }
+        }
+        return applied;
+    }
+
+    private static List<PackedPackage> packProvider(String provider, Path providerRoot,
+                                                    NpmOverlay overlay, Path store,
+                                                    List<String> stagingFailures) {
+        List<PackedPackage> packed = new ArrayList<>();
+        BuildModel.Extract extract;
+        try {
+            extract = new NpmExtractor().extract(providerRoot);
+        } catch (RuntimeException e) {
+            stagingFailures.add(provider + ": could not read its packages to stage them ("
+                    + e.getMessage() + ")");
+            return packed;
+        }
+        for (BuildModel.Module module : extract.modules()) {
+            if (!"LIBRARY".equals(module.kind()) || module.name() == null) {
+                continue;
+            }
+            // The version in the staged tree, which is what a release from this checkpoint ships.
+            String version = module.version() == null ? "0.0.0-sdd-review" : module.version();
+            NpmOverlay.PackResult result = overlay.pack(module.moduleDir(), version, store);
+            if (!result.ok()) {
+                stagingFailures.add(provider + ": could not pack " + module.name() + " ("
+                        + result.log().lines().findFirst().orElse("") + "), so consumers were"
+                        + " rebuilt against its published version");
+                continue;
+            }
+            packed.add(new PackedPackage(module.name(), result.tarball()));
+        }
+        return packed;
+    }
+
+    private static void restoreNpmProviders(List<NpmOverlay.Applied> applied, SddConfig config,
+                                            List<String> restoreFailures) {
+        NpmOverlay overlay = new NpmOverlay(config.nodeHome());
+        for (NpmOverlay.Applied one : applied) {
+            try {
+                overlay.restore(one);
+            } catch (RuntimeException e) {
+                // The estate is left altered, which is exactly what restoreFailures is for.
+                restoreFailures.add("could not restore " + one.installed() + ": " + e.getMessage());
+            }
+        }
+    }
+
     static List<String> extraArgsFor(PlanModel plan, String repo, Map<String, Path> paths, Path runDir) {
         List<String> extraArgs = new ArrayList<>(Propagation.includeBuildArgs(repo, plan.edges(), paths));
         extraArgs.addAll(Propagation.mavenLocalArgs(plan.edges(), MavenLocalInit.scriptPath(runDir)));
