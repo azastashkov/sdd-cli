@@ -3,6 +3,7 @@ package sdd.plan.approve;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jdbi.v3.core.Jdbi;
+import sdd.core.toolchain.Toolchain;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -18,6 +19,31 @@ import java.util.Set;
  * of both gate artifacts. Deterministic given its inputs and the probe results.
  */
 public final class PlanJson {
+    /**
+     * A repo's toolchain: the knowledge base's recorded answer when it has one, otherwise the
+     * filesystem. The KB is authoritative because it is what the rest of the run reads, but a plan
+     * can legitimately be approved against a workspace indexed by an older binary.
+     */
+    private static Toolchain toolchainOf(Jdbi jdbi, String repo, Path repoRoot) {
+        String recorded = jdbi.withHandle(h -> h.createQuery(
+                        "SELECT build_system FROM repo WHERE name = :repo")
+                .bind("repo", repo).mapTo(String.class).findOne().orElse(null));
+        Toolchain fromKb = Toolchain.of(recorded);
+        return fromKb == Toolchain.UNKNOWN ? Toolchain.detect(repoRoot) : fromKb;
+    }
+
+    /** The npm package a repo publishes, or null. Several would be ambiguous, so several is null. */
+    private static String npmPackageOf(Jdbi jdbi, String repo) {
+        List<String> names = jdbi.withHandle(h -> h.createQuery("""
+                        SELECT a.name FROM artifact a
+                        JOIN module m ON m.id = a.module_id
+                        JOIN repo r ON r.id = m.repo_id
+                        WHERE r.name = :repo AND a.grp = 'npm' AND m.kind = 'LIBRARY'
+                        ORDER BY a.name""")
+                .bind("repo", repo).mapTo(String.class).list());
+        return names.size() == 1 ? names.get(0) : null;
+    }
+
     private static final ObjectMapper JSON = new ObjectMapper();
 
     record Root(String spec_id, int plan_version, String spec_sha256, String plan_sha256,
@@ -69,7 +95,7 @@ public final class PlanJson {
         }
 
         List<Edge> edges = new ArrayList<>();
-        Map<String, SmokeRunner.Result> probeCache = new HashMap<>();
+        Map<String, String> mechanismCache = new HashMap<>();
         List<Map<String, Object>> rows = jdbi.withHandle(h -> h.createQuery("""
                         SELECT rf.name AS from_repo, rt.name AS to_repo, v.mode AS mode
                         FROM v_repo_dep_edge v
@@ -84,24 +110,13 @@ public final class PlanJson {
                 continue;
             }
             String mode = String.valueOf(row.get("mode"));
-            String mechanism;
-            if ("COMPOSITE".equals(mode)) {
-                mechanism = "NONE";
-            } else {
-                String key = from + "->" + to;
-                SmokeRunner.Result result = probeCache.computeIfAbsent(key, k ->
-                        smoke.probe(Path.of(paths.get(from)), Path.of(paths.get(to))));
-                if (result.ok()) {
-                    mechanism = "INCLUDE_BUILD";
-                } else {
-                    mechanism = "MAVEN_LOCAL";
-                    String warning = "edge " + from + "->" + to + ": include-build probe failed ("
-                            + result.detail() + ") — falling back to mavenLocal";
-                    if (!warningsOut.contains(warning)) {
-                        warningsOut.add(warning);
-                    }
-                }
-            }
+            Path consumerRepo = Path.of(paths.get(from));
+            Path providerRepo = Path.of(paths.get(to));
+            String key = from + "->" + to + "@" + mode;
+            String mechanism = mechanismCache.computeIfAbsent(key, k ->
+                    MechanismProbe.decide(from, consumerRepo, toolchainOf(jdbi, from, consumerRepo),
+                            to, providerRepo, toolchainOf(jdbi, to, providerRepo),
+                            npmPackageOf(jdbi, to), mode, smoke, warningsOut).name());
             edges.add(new Edge(from, to, mode, mechanism));
         }
 

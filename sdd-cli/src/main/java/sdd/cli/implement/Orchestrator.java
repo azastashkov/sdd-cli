@@ -53,6 +53,8 @@ public final class Orchestrator {
     private final Map<String, RepoPropagation> propagation;
     private final MavenLocalPublisher publisher;
     private final JarBuilder jarBuilder;
+    /** Where node lives, for the npm substitution; null takes it from PATH. */
+    private final java.nio.file.Path nodeHome;
 
     public record RunResult(int exitCode, RunState state) {
     }
@@ -61,6 +63,13 @@ public final class Orchestrator {
                         Function<String, RunnerSettings> settingsFor, RunStore store, long runTokenBudget,
                         Map<String, RepoPropagation> propagation, MavenLocalPublisher publisher,
                         JarBuilder jarBuilder) {
+        this(runner, ladder, settingsFor, store, runTokenBudget, propagation, publisher, jarBuilder, null);
+    }
+
+    public Orchestrator(RepoStepRunner runner, List<ModelTier> ladder,
+                        Function<String, RunnerSettings> settingsFor, RunStore store, long runTokenBudget,
+                        Map<String, RepoPropagation> propagation, MavenLocalPublisher publisher,
+                        JarBuilder jarBuilder, java.nio.file.Path nodeHome) {
         if (ladder.isEmpty()) {
             throw new IllegalArgumentException("escalation ladder must not be empty");
         }
@@ -72,6 +81,7 @@ public final class Orchestrator {
         this.propagation = Map.copyOf(propagation);
         this.publisher = publisher;
         this.jarBuilder = jarBuilder;
+        this.nodeHome = nodeHome;
     }
 
     public RunResult run(Path runDir, PlanModel plan, Map<String, RepoStep> steps) {
@@ -173,9 +183,15 @@ public final class Orchestrator {
         int usedTier = 0;
         Path baselineDir = runDir.resolve("contracts").resolve(slug(repo) + "-baseline");
         boolean compatGate = false;
+        List<NpmOverlay.Applied> overlaysApplied = List.of();
         try {
             RunGit.startBranch(step.repoRoot(), branch, base);
             applyBumps(repo, step, events);
+            // Overlays live only for as long as this repo is being built. They are filesystem
+            // state rather than a flag, so unlike Gradle's substitution they have to be undone —
+            // the finally below does that on every path out of this block, including a model
+            // failure or an escalation that never reaches SUCCESS.
+            overlaysApplied = applyOverlays(repo, step, events);
             if (needsCompatGate(plan, repo)) {
                 JarBuilder.Result baseline = buildJars(step, repo, baselineDir);
                 if (baseline.ok() && !baseline.jars().isEmpty()) {
@@ -233,6 +249,8 @@ public final class Orchestrator {
                 return false;
             }
             throw e;   // 4xx configuration errors: captured by the unit task into fatal
+        } finally {
+            restoreOverlays(overlaysApplied, events);
         }
         store.writeAgentEvents(runDir, repo, events);
         store.writeTranscript(runDir, repo, transcript);
@@ -277,6 +295,14 @@ public final class Orchestrator {
                     }
                     return true;
                 }
+            }
+            if (!packNpm(repo, step, events)) {
+                store.writeAgentEvents(runDir, repo, events);
+                synchronized (lock) {
+                    transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
+                            attemptTag + "npm pack failed");
+                }
+                return true;
             }
             List<PlanModel.PlanContract> provided = providedContracts(plan, repo);
             Map<String, String> actualized = ContractActualizer.actualize(step.repoRoot(), provided);
@@ -343,6 +369,83 @@ public final class Orchestrator {
         }
         return true;
     }
+
+    /**
+     * Packs every npm package this repo owes its consumers, at its planned version.
+     *
+     * <p>The npm counterpart of publishing to the run-scoped m2, and it fails the repo the same
+     * way: a consumer that goes on to build against the provider's PREVIOUS published version
+     * while the report says the provider succeeded is the specific dishonesty this prevents.
+     */
+    private boolean packNpm(String repo, RepoStep step, List<String> events) {
+        List<RepoPropagation.PackSpec> packs =
+                propagation.getOrDefault(repo, RepoPropagation.none()).packs();
+        if (packs.isEmpty()) {
+            return true;
+        }
+        NpmOverlay overlay = new NpmOverlay(nodeHome);
+        for (RepoPropagation.PackSpec pack : packs) {
+            NpmOverlay.PackResult result =
+                    overlay.pack(pack.packageDir(), pack.version(), pack.storeDir());
+            if (!result.ok()) {
+                events.add("npm pack " + pack.packageName() + "@" + pack.version() + " failed: "
+                        + summarize(result.log()));
+                return false;
+            }
+            events.add("npm pack " + pack.packageName() + "@" + pack.version() + ": "
+                    + result.tarball().getFileName());
+        }
+        return true;
+    }
+
+    /**
+     * Overlays every provider this repo consumes through NPM_OVERLAY.
+     *
+     * <p>A provider whose tarball is missing is reported and skipped rather than failing the repo:
+     * that happens when the provider was not part of this run, in which case building against its
+     * published version is exactly right.
+     */
+    private List<NpmOverlay.Applied> applyOverlays(String repo, RepoStep step, List<String> events) {
+        List<RepoPropagation.OverlaySpec> specs =
+                propagation.getOrDefault(repo, RepoPropagation.none()).overlays();
+        if (specs.isEmpty()) {
+            return List.of();
+        }
+        NpmOverlay overlay = new NpmOverlay(nodeHome);
+        List<NpmOverlay.Applied> applied = new ArrayList<>();
+        for (RepoPropagation.OverlaySpec spec : specs) {
+            java.nio.file.Path tarball = NpmOverlay.findTarball(spec.storeDir(), spec.packageName());
+            if (tarball == null) {
+                events.add("overlay skipped: no packed " + spec.packageName() + " from "
+                        + spec.providerRepo() + " — building against its published version");
+                continue;
+            }
+            try {
+                // Backups live beside the tarball store in the RUN directory. Putting them inside
+                // the checkout would leave an untracked directory in the diff a reviewer reads.
+                applied.add(overlay.apply(step.repoRoot(), spec.packageName(), tarball,
+                        spec.storeDir().resolveSibling("overlay-backup")));
+                events.add("overlay " + spec.packageName() + " from " + spec.providerRepo());
+            } catch (java.io.IOException e) {
+                events.add("overlay " + spec.packageName() + " failed: " + e.getMessage());
+            }
+        }
+        return applied;
+    }
+
+    private void restoreOverlays(List<NpmOverlay.Applied> applied, List<String> events) {
+        NpmOverlay overlay = new NpmOverlay(nodeHome);
+        for (NpmOverlay.Applied one : applied) {
+            try {
+                overlay.restore(one);
+            } catch (RuntimeException e) {
+                // Reported, never rethrown: a failed restore must not mask the repo's real verdict,
+                // but it leaves the checkout altered and a human has to know.
+                events.add("WARNING: could not restore " + one.installed() + ": " + e.getMessage());
+            }
+        }
+    }
+
 
     private void applyBumps(String repo, RepoStep step, List<String> events) {
         for (RepoPropagation.BumpEdit bump : propagation.getOrDefault(repo, RepoPropagation.none()).bumps()) {

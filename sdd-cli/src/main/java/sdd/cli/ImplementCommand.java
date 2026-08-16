@@ -357,7 +357,8 @@ public final class ImplementCommand implements Callable<Integer> {
 
                 Orchestrator orchestrator = new Orchestrator(new RepoStepRunner(jdbi), ladder,
                         settingsFor, store, config.run().tokenBudget(),
-                        activePropagation, new MavenLocalPublisher(), new JarBuilder());
+                        activePropagation, new MavenLocalPublisher(), new JarBuilder(),
+                        config.nodeHome());
                 Orchestrator.RunResult result = initialState == null
                         ? orchestrator.run(runDir, activePlan, activeSteps)
                         : orchestrator.run(runDir, activePlan, activeSteps, initialState);
