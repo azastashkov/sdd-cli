@@ -1,7 +1,9 @@
 package sdd.cli;
 
+import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
 import sdd.core.db.Database;
@@ -13,9 +15,17 @@ import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static com.github.tomakehurst.wiremock.client.WireMock.created;
+import static com.github.tomakehurst.wiremock.client.WireMock.post;
+import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
+import static com.github.tomakehurst.wiremock.client.WireMock.unauthorized;
+import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ApproveCommandTest {
+    @RegisterExtension
+    static WireMockExtension wm = WireMockExtension.newInstance().build();
+
     @TempDir Path ws;
 
     private record Run(int exitCode, String out) {}
@@ -100,6 +110,28 @@ class ApproveCommandTest {
                 """.formatted(resolution));
     }
 
+    /** Same fixture as {@link #writeSpecAndPlan}, plus a "## Sources" bullet naming a fetched
+     *  Jira root issue — the Task 4 write-back's only trigger for actually touching config/network
+     *  (see {@code JiraWriteBack.post}'s empty-{@code jiraKeys} short-circuit). */
+    private void writeSpecWithJiraSourceAndPlan(String resolution) throws Exception {
+        writeSpecAndPlan(resolution);
+        Files.writeString(ws.resolve("loyalty.md"), Files.readString(ws.resolve("loyalty.md")) + """
+
+                ## Sources
+                - jira PROJ-9 updated 2026-08-16T09:12:00Z %s/browse/PROJ-9
+                """.formatted(wm.baseUrl()));
+    }
+
+    private static final String MODELS_YAML = """
+            models:
+              planner:
+                base_url: http://127.0.0.1:1/v1
+                model: deepseek-v4-flash
+              coder:
+                base_url: http://127.0.0.1:1/v1
+                model: qwen
+            """;
+
     @Test
     void cleanPlanApprovesAndWritesPinnedPlanJson() throws Exception {
         seedEstateAndKb();
@@ -178,5 +210,96 @@ class ApproveCommandTest {
 
         assertThat(run.out()).contains("error: approve expects a .plan.md file");
         assertThat(run.exitCode()).isEqualTo(1);
+    }
+
+    @Test
+    void approveCommentsOnEachJiraSourceIssueWhenWriteBackIsConfigured() throws Exception {
+        wm.stubFor(post(urlEqualTo("/rest/api/2/issue/PROJ-9/comment")).willReturn(created()));
+        Files.writeString(ws.resolve("sdd.yml"), MODELS_YAML + """
+                atlassian:
+                  jira:
+                    base_url: %s
+                    token: sk-jira
+                  write_back: comment
+                """.formatted(wm.baseUrl()));
+        seedEstateAndKb();
+        writeSpecWithJiraSourceAndPlan("  - resolution: use tierFor.");
+        ApproveCommand cmd = new ApproveCommand();
+        cmd.smokeForTest = (consumer, provider) -> new SmokeRunner.Result(true, "");
+
+        Run run = approve(cmd, "--workspace", ws.toString(), ws.resolve("loyalty.plan.md").toString());
+
+        assertThat(run.exitCode()).isZero();
+        assertThat(run.out()).contains("plan approved: ").contains("commented on PROJ-9");
+        wm.verify(postRequestedFor(urlEqualTo("/rest/api/2/issue/PROJ-9/comment"))
+                .withRequestBody(com.github.tomakehurst.wiremock.client.WireMock.equalToJson(
+                        "{\"body\": \"sdd: plan approved for `SPEC-7` \\u2014 `1` repos affected, "
+                                + "execution order: `lib-core`\"}")));
+    }
+
+    @Test
+    void approveWithWriteBackNoneOrAbsentPostsNothingAndPrintsNothing() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), MODELS_YAML + """
+                atlassian:
+                  jira:
+                    base_url: %s
+                    token: sk-jira
+                """.formatted(wm.baseUrl()));   // write_back defaults to none
+        seedEstateAndKb();
+        writeSpecWithJiraSourceAndPlan("  - resolution: use tierFor.");
+        ApproveCommand cmd = new ApproveCommand();
+        cmd.smokeForTest = (consumer, provider) -> new SmokeRunner.Result(true, "");
+
+        Run run = approve(cmd, "--workspace", ws.toString(), ws.resolve("loyalty.plan.md").toString());
+
+        assertThat(run.exitCode()).isZero();
+        assertThat(run.out()).doesNotContain("commented on").doesNotContain("jira comment failed");
+        wm.verify(0, postRequestedFor(urlEqualTo("/rest/api/2/issue/PROJ-9/comment")));
+    }
+
+    @Test
+    void approveNoCommentFlagSuppressesEvenWhenWriteBackIsConfigured() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), MODELS_YAML + """
+                atlassian:
+                  jira:
+                    base_url: %s
+                    token: sk-jira
+                  write_back: comment
+                """.formatted(wm.baseUrl()));
+        seedEstateAndKb();
+        writeSpecWithJiraSourceAndPlan("  - resolution: use tierFor.");
+        ApproveCommand cmd = new ApproveCommand();
+        cmd.smokeForTest = (consumer, provider) -> new SmokeRunner.Result(true, "");
+
+        Run run = approve(cmd, "--workspace", ws.toString(), "--no-comment",
+                ws.resolve("loyalty.plan.md").toString());
+
+        assertThat(run.exitCode()).isZero();
+        assertThat(run.out()).doesNotContain("commented on");
+        wm.verify(0, postRequestedFor(urlEqualTo("/rest/api/2/issue/PROJ-9/comment")));
+    }
+
+    @Test
+    void approveWithAFailingJiraCommentWarnsButExitCodeStaysZeroAndPlanJsonStillWritten() throws Exception {
+        wm.stubFor(post(urlEqualTo("/rest/api/2/issue/PROJ-9/comment")).willReturn(unauthorized()));
+        Files.writeString(ws.resolve("sdd.yml"), MODELS_YAML + """
+                atlassian:
+                  jira:
+                    base_url: %s
+                    token: sk-jira
+                  write_back: comment
+                """.formatted(wm.baseUrl()));
+        seedEstateAndKb();
+        writeSpecWithJiraSourceAndPlan("  - resolution: use tierFor.");
+        ApproveCommand cmd = new ApproveCommand();
+        cmd.smokeForTest = (consumer, provider) -> new SmokeRunner.Result(true, "");
+
+        Run run = approve(cmd, "--workspace", ws.toString(), ws.resolve("loyalty.plan.md").toString());
+
+        // The property most likely to regress (Task 4 brief): a failed post must never flip a
+        // successful approval's exit code.
+        assertThat(run.exitCode()).isZero();
+        assertThat(run.out()).contains("  warn: jira comment failed: ");
+        assertThat(Files.exists(ws.resolve("loyalty.plan.json"))).isTrue();
     }
 }
