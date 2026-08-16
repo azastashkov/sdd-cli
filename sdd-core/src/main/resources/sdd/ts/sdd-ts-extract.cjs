@@ -655,6 +655,272 @@ function extractHttpCallSites(request) {
   return { version: PROTOCOL_VERSION, sites, issues: [] };
 }
 
+// ---------------------------------------------------------------------------- api surface
+
+/**
+ * The name a CONSUMER would write for each thing a package exports.
+ *
+ * The checker is doing one job here that nothing else can: following re-export chains. A package
+ * exports `Tick` from its index, the declaration lives in `types.ts`, and a consumer writes
+ * `@acme/web-sdk`. Only the checker can say those are the same symbol, and without that the
+ * provider records `Tick` under a path no consumer ever writes and the two repos never join.
+ */
+function publicExportsOf(checker, program, entries) {
+  const exported = [];
+  for (const entry of entries) {
+    const source = program.getSourceFile(entry.sourceFile);
+    if (!source) continue;
+    const moduleSymbol = checker.getSymbolAtLocation(source);
+    if (!moduleSymbol) continue;
+    for (const symbol of checker.getExportsOfModule(moduleSymbol)) {
+      const target = (symbol.flags & ts.SymbolFlags.Alias)
+        ? checker.getAliasedSymbol(symbol) : symbol;
+      const decls = target.getDeclarations();
+      if (!decls || !decls.length) continue;
+      const decl = decls[0];
+      exported.push({
+        specifier: entry.specifier,
+        exportName: symbol.getName(),
+        declFile: relPath(entry.repoRoot, decl.getSourceFile().fileName),
+        declName: declaredNameOf(decl),
+      });
+    }
+  }
+  return exported;
+}
+
+function declaredNameOf(decl) {
+  return decl.name && ts.isIdentifier(decl.name) ? decl.name.text : null;
+}
+
+/** The kinds sdd records. `default` is kept as itself — that IS what a consumer imports. */
+function symbolKindOf(node) {
+  if (ts.isClassDeclaration(node)) return 'CLASS';
+  if (ts.isInterfaceDeclaration(node)) return 'INTERFACE';
+  if (ts.isEnumDeclaration(node)) return 'ENUM';
+  if (ts.isTypeAliasDeclaration(node)) return 'TYPE_ALIAS';
+  if (ts.isFunctionDeclaration(node)) return 'FUNCTION';
+  if (ts.isModuleDeclaration(node)) return 'NAMESPACE';
+  if (ts.isVariableStatement(node)) return 'CONST';
+  return null;
+}
+
+function isExported(node) {
+  const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
+  return !!modifiers && modifiers.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+}
+
+/**
+ * A member's signature as WRITTEN, never as the checker would print it.
+ *
+ * The Java side takes signatures from JavaParser's asString() for the same reason: a resolved type
+ * is machine- and version-dependent, and the checker without lib files would render half of them
+ * as `any`. What the author wrote is stable and is what a reader compares.
+ */
+function membersOf(node) {
+  const members = [];
+  if (ts.isClassDeclaration(node) || ts.isInterfaceDeclaration(node)) {
+    for (const member of node.members || []) {
+      if (!member.name || !ts.isIdentifier(member.name)) continue;
+      const modifiers = ts.canHaveModifiers(member) ? ts.getModifiers(member) : undefined;
+      const isPrivate = (modifiers || []).some((m) => m.kind === ts.SyntaxKind.PrivateKeyword)
+        || member.name.text.startsWith('#');
+      if (isPrivate) continue;
+      if (ts.isMethodDeclaration(member) || ts.isMethodSignature(member)) {
+        const params = (member.parameters || [])
+          .map((p) => (p.type ? p.type.getText() : 'any')).join(',');
+        members.push({
+          name: member.name.text,
+          signature: member.name.text + '(' + params + ')',
+          returnType: member.type ? member.type.getText() : null,
+        });
+      } else if (ts.isPropertyDeclaration(member) || ts.isPropertySignature(member)) {
+        members.push({
+          name: member.name.text,
+          signature: member.name.text,
+          returnType: member.type ? member.type.getText() : null,
+        });
+      }
+    }
+    return members;
+  }
+  if (ts.isEnumDeclaration(node)) {
+    for (const member of node.members || []) {
+      if (member.name && ts.isIdentifier(member.name)) {
+        members.push({ name: member.name.text, signature: member.name.text, returnType: null });
+      }
+    }
+    return members;
+  }
+  if (ts.isTypeAliasDeclaration(node)) {
+    // An object literal type contributes its properties; anything else — a union, a primitive —
+    // contributes one synthesised member holding the written type, so that WIDENING a union moves
+    // the signature hash. A union that silently grew is a breaking change nobody was told about.
+    if (node.type && ts.isTypeLiteralNode(node.type)) {
+      for (const member of node.type.members || []) {
+        if (member.name && ts.isIdentifier(member.name)) {
+          members.push({
+            name: member.name.text,
+            signature: member.name.text,
+            returnType: member.type ? member.type.getText() : null,
+          });
+        }
+      }
+    } else if (node.type) {
+      members.push({ name: '<value>', signature: '<value>', returnType: node.type.getText() });
+    }
+    return members;
+  }
+  if (ts.isFunctionDeclaration(node) && node.name) {
+    const params = (node.parameters || []).map((p) => (p.type ? p.type.getText() : 'any')).join(',');
+    members.push({
+      name: node.name.text,
+      signature: node.name.text + '(' + params + ')',
+      returnType: node.type ? node.type.getText() : null,
+    });
+  }
+  return members;
+}
+
+/** The first sentence of a doc comment, HTML stripped — the Java side's discipline exactly. */
+function docOf(node, source) {
+  const ranges = ts.getLeadingCommentRanges(source.getFullText(), node.getFullStart()) || [];
+  for (let i = ranges.length - 1; i >= 0; i--) {
+    const text = source.getFullText().slice(ranges[i].pos, ranges[i].end);
+    if (!text.startsWith('/**')) continue;
+    const body = text.replace(/^\/\*\*/, '').replace(/\*\/$/, '')
+      .split('\n').map((line) => line.replace(/^\s*\*ted?/, '').replace(/^\s*\*/, '').trim())
+      .join(' ')
+      // Inline tags FIRST. A block-tag strip run before this one eats `{@link Foo}` as though it
+      // were an @-tag, truncating the sentence mid-word — "Login/session state over {".
+      .replace(/\{@\w+\s+([^}]*)\}/g, '$1')
+      .replace(/(^|\s)@\w+[\s\S]*$/, '')   // block tags describe parameters, not the thing
+      .replace(/<[^<>]*>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return body === '' ? null : body;
+  }
+  return null;
+}
+
+function decoratorsOf(node) {
+  const decorators = ts.canHaveDecorators(node) ? ts.getDecorators(node) : undefined;
+  if (!decorators) return [];
+  return decorators.map((d) => {
+    const expr = ts.isCallExpression(d.expression) ? d.expression.expression : d.expression;
+    return ts.isIdentifier(expr) ? expr.text : expr.getText();
+  });
+}
+
+function symbolsOf(source, repoRoot) {
+  const symbols = [];
+  for (const statement of source.statements) {
+    if (!isExported(statement)) {
+      continue;   // not exported is not surface, exactly as a package-private Java type is not
+    }
+    const kind = symbolKindOf(statement);
+    if (!kind) continue;
+    if (ts.isVariableStatement(statement)) {
+      for (const decl of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(decl.name)) continue;
+        symbols.push({
+          name: decl.name.text,
+          kind: 'CONST',
+          doc: docOf(statement, source),
+          decorators: [],
+          members: decl.type
+            ? [{ name: '<value>', signature: '<value>', returnType: decl.type.getText() }]
+            : [],
+        });
+      }
+      continue;
+    }
+    const name = declaredNameOf(statement);
+    if (!name) continue;
+    symbols.push({
+      name,
+      kind,
+      doc: docOf(statement, source),
+      decorators: decoratorsOf(statement),
+      members: membersOf(statement),
+    });
+  }
+  return symbols;
+}
+
+/**
+ * Imports of OTHER packages, by the specifier the author wrote.
+ *
+ * Only bare specifiers are reported. A relative import stays inside the package and joins nothing
+ * across repos, whereas `@acme/web-sdk` is exactly the string the provider records its exports
+ * under — so the two meet by plain equality, with no resolution and no node_modules involved. That
+ * is the entire cross-repo join for TypeScript.
+ */
+function crossPackageRefs(source) {
+  const refs = [];
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const specifier = statement.moduleSpecifier;
+    if (!ts.isStringLiteral(specifier) || specifier.text.startsWith('.')
+        || specifier.text.startsWith('node:')) {
+      continue;
+    }
+    const clause = statement.importClause;
+    if (!clause) {
+      // `import '@acme/design-system'` — a side effect, with no name to reference. Recorded so the
+      // dependency is visible, exactly as the Java side records an unresolved import.
+      refs.push({ specifier: specifier.text, name: null, kind: 'IMPORT' });
+      continue;
+    }
+    if (clause.name) {
+      refs.push({ specifier: specifier.text, name: 'default', kind: 'IMPORT' });
+    }
+    const bindings = clause.namedBindings;
+    if (bindings && ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements) {
+        // `import { A as B }` references A; B is this file's local name for it.
+        const imported = element.propertyName ? element.propertyName.text : element.name.text;
+        refs.push({ specifier: specifier.text, name: imported, kind: 'IMPORT' });
+      }
+    } else if (bindings && ts.isNamespaceImport(bindings)) {
+      refs.push({ specifier: specifier.text, name: null, kind: 'IMPORT' });
+    }
+  }
+  return refs;
+}
+
+function extractApiSurface(request) {
+  const repoRoot = request.repoRoot;
+  const packages = request.packages || [];
+  const allFiles = [];
+  for (const pkg of packages) {
+    for (const f of pkg.files || []) allFiles.push(f);
+  }
+  const program = buildProgram(allFiles, request.compilerOptions || {});
+  const checker = program.getTypeChecker();
+
+  const out = [];
+  for (const pkg of packages) {
+    const entries = (pkg.entries || []).map((e) => Object.assign({ repoRoot }, e));
+    const files = [];
+    for (const file of pkg.files || []) {
+      const source = program.getSourceFile(file);
+      if (!source) continue;
+      files.push({
+        relPath: relPath(repoRoot, file),
+        symbols: symbolsOf(source, repoRoot),
+        refs: crossPackageRefs(source),
+      });
+    }
+    out.push({
+      modulePath: pkg.modulePath,
+      publicExports: publicExportsOf(checker, program, entries),
+      files,
+    });
+  }
+  return { version: PROTOCOL_VERSION, packages: out, issues: [] };
+}
+
 // ---------------------------------------------------------------------------- main
 
 function main() {
@@ -677,6 +943,9 @@ function main() {
   switch (request.mode) {
     case 'syntax':
       response = syntaxCheck(request);
+      break;
+    case 'apiSurface':
+      response = extractApiSurface(request);
       break;
     case 'httpCallSites':
       response = extractHttpCallSites(request);

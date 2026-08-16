@@ -124,6 +124,31 @@ public final class TsSidecar {
         return call(request);
     }
 
+    /**
+     * A package's exported surface: which names it publishes under which specifier, and the
+     * symbols behind them.
+     *
+     * @param entries specifier to entry source file, resolved on the Java side from the package's
+     *                exports map — the sidecar is told where to look rather than working it out,
+     *                so the estate-specific path arithmetic stays testable without node
+     */
+    public Result apiSurface(Path repoRoot, String modulePath, List<Path> files,
+                             java.util.Map<String, Path> entries) {
+        com.fasterxml.jackson.databind.node.ObjectNode request = MAPPER.createObjectNode()
+                .put("version", PROTOCOL_VERSION)
+                .put("mode", "apiSurface")
+                .put("repoRoot", repoRoot.toAbsolutePath().toString());
+        var packages = request.putArray("packages");
+        var pkg = packages.addObject().put("modulePath", modulePath);
+        var fileArray = pkg.putArray("files");
+        files.forEach(f -> fileArray.add(f.toAbsolutePath().toString()));
+        var entryArray = pkg.putArray("entries");
+        entries.forEach((specifier, source) -> entryArray.addObject()
+                .put("specifier", specifier)
+                .put("sourceFile", source.toAbsolutePath().toString()));
+        return call(request);
+    }
+
     private Result call(JsonNode request) {
         Path requestFile = null;
         Path responseFile = null;

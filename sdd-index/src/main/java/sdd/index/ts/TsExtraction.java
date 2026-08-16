@@ -53,6 +53,8 @@ public final class TsExtraction {
 
         Path repoRoot = Paths2.canonical(repoPath);
         Map<Long, List<SpringModel.ClientInfo>> clientsByModule = new LinkedHashMap<>();
+        Map<Long, List<sdd.index.source.SourceModel.TypeInfo>> typesByModule = new LinkedHashMap<>();
+        Map<Long, List<sdd.index.source.SourceModel.UsageRef>> usagesByModule = new LinkedHashMap<>();
         List<String> failures = new ArrayList<>();
 
         List<Path> allModuleDirs = extract.modules().stream()
@@ -81,13 +83,34 @@ public final class TsExtraction {
                 continue;
             }
             clientsByModule.put(moduleId.get(), clientsOf(result.json()));
+
+            if (module.name() != null) {
+                PackageEntries.Result entries = PackageEntries.of(module.moduleDir(), module.name());
+                java.util.Map<String, Path> entryMap = new LinkedHashMap<>();
+                entries.entries().forEach(e -> entryMap.put(e.specifier(), e.sourceFile()));
+                TsSidecar.Result surface =
+                        sidecar.get().apiSurface(repoRoot, module.path(), files, entryMap);
+                if (surface.ok()) {
+                    JsonNode packageNode = surface.json().path("packages").path(0);
+                    typesByModule.put(moduleId.get(), TsApiSurface.typesOf(packageNode,
+                            module.name(), !"LIBRARY".equals(module.kind()), entries.partial()));
+                    usagesByModule.put(moduleId.get(), TsApiSurface.usagesOf(packageNode));
+                } else {
+                    failures.add(module.path() + ": " + surface.error());
+                }
+            }
         }
 
         // One transaction for the whole repo, matching the Java path: a mid-loop failure must not
         // leave some modules freshly extracted and others stale.
-        jdbi.useTransaction(h -> clientsByModule.forEach((moduleId, clients) ->
-                SpringPersistence.persistModuleSpring(h, moduleId, null,
-                        new SpringModel.SpringExtract(List.of(), clients, List.of(), false))));
+        jdbi.useTransaction(h -> {
+            clientsByModule.forEach((moduleId, clients) ->
+                    SpringPersistence.persistModuleSpring(h, moduleId, null,
+                            new SpringModel.SpringExtract(List.of(), clients, List.of(), false)));
+            typesByModule.forEach((moduleId, types) ->
+                    SourcePersistence.persistModuleSource(h, repoId, moduleId, "TYPESCRIPT",
+                            types, usagesByModule.getOrDefault(moduleId, List.of()), List.of()));
+        });
 
         if (!failures.isEmpty()) {
             SourcePersistence.updateParseStatus(jdbi, repoName, "DEGRADED",
