@@ -3,6 +3,7 @@ package sdd.plan.confluence;
 import com.fasterxml.jackson.databind.JsonNode;
 import sdd.core.http.AtlassianException;
 import sdd.core.http.RestClient;
+import sdd.plan.source.ConfluencePages;
 import sdd.plan.source.SourceDoc;
 
 import java.io.IOException;
@@ -24,7 +25,7 @@ import java.util.regex.Pattern;
  * (the same reason {@link sdd.plan.jira.JiraClient} needs no separate parser for rendered Jira
  * HTML) — this class passes it straight in, unchanged.
  */
-public final class ConfluenceClient {
+public final class ConfluenceClient implements ConfluencePages {
     private static final Pattern PAGES_ID = Pattern.compile("/pages/(\\d+)(?:/|$)");
     private static final Pattern TINY_LINK = Pattern.compile("^/x/[A-Za-z0-9_-]+$");
     private static final Pattern DISPLAY = Pattern.compile("^/display/([^/]+)/(.+)$");
