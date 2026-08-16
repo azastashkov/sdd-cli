@@ -357,9 +357,59 @@ they added — so a repo reached through a REST or Kafka contract never had its
 own consumers expanded. Pre-existing and equally wrong for Java; its regression
 test is a Java-only estate for that reason.
 
-**Deliberately still open.** TypeScript API surfaces are not yet indexed, so
-there is no `ts-api` contract kind and no TypeScript symbol search; npm
-provider substitution during `sdd implement` (the analogue of `--include-build`
-and `publishToMavenLocal`) is not implemented, so a multi-repo npm plan cannot
-yet build a consumer against an unpublished provider; and `sdd graph` renders a
-mixed repo as `unknown` because `MermaidGraph` has no `mixed` class.
+**A TypeScript symbol is recorded under the name a CONSUMER writes** —
+`@azastashkov/web-sdk.Tick`, resolved through the package's `exports` map — not
+under the file it is declared in and not under the `dist` path it is published
+as. Those are three different names for one thing, and only the first joins two
+repos: `UsageLinker` pairs a reference to its provider by string equality on
+`java_type.fqcn`, so recording either of the others leaves every consumer of the
+package pointing at nothing.
+
+**`EntityKind.SYMBOL` is separate from `CLASS`.** `CLASS` resolves a dotless
+name by suffix, which is a Java package convention rather than a fact about
+names. Sharing one kind would make the bare name `Tick` resolve to both a Java
+type and a TypeScript export inside a single citation — a cross-language
+conflation in the one place a reader has no way to notice it. `SYMBOL` is exact
+match only.
+
+**Three contract kinds were added, and the estate decided their grammar.**
+`ts-api` (`<moduleSpecifier>#<Export>[.<member>]: <type>`) is `java-api`'s npm
+counterpart, addressed by specifier for the reason above. `rest-client` reuses
+`rest`'s `<METHOD> <path>` grammar with the CALLER as provider — chosen over
+adding a consumer axis to `rest` specifically because `ContractRecheck`
+actualizes `contract.provider()` and nothing else, so this needed no structural
+change. `stream-descriptor` is the only kind either toolchain can provide,
+because the md/candle/order shapes are built twice — from Java builders in the
+registering service and from an object literal in the browser SDK — with no
+compiler between them. It is scoped to two axes, `key` and `channels`, because
+those are the two BOTH actualizers can see; the wider surface (lvc templates,
+conflation, interest) is derivable in Java and absent from the TypeScript
+built-ins, so declaring it would declare what one end could never check. The
+two-owner problem needed no change to the plan model: the contract is declared
+twice, once per provider, and both extractors produce the same body — verified
+byte-identical on the real `trading-web-sdk` and `trading-platform-libs`.
+
+**Gate 1 pairs compat with kind, and kind with toolchain.** Each compat value
+names a comparison that exists for exactly one kind (japicmp reads bytecode, the
+TypeScript check reads declarations), and a `ts-api` contract whose provider is
+a Gradle repo actualizes to nothing — reported at Gate 1, where the message
+names the typo, rather than at Gate 2 as a wholly missing surface. A repo whose
+`build_system` is still NULL blocks nothing: a plan must not be refused because
+the knowledge base predates a migration.
+
+**`type-compatible` is an assignability probe, not a diff.** A textual diff of
+two `.d.ts` files flags legal widening — an added optional member, a widened
+parameter — as breaking, and compat drift FAILS the repo, so a false positive
+there fails work that was correct. The probe is compiled by the pinned compiler
+with `strict` on: without `strictFunctionTypes` parameters are bivariant and
+narrowing `(id: string | number)` to `(id: string)` reads as compatible. It is
+the one mode that cannot run `noLib` — without `lib.es5`, `Promise` and `Date`
+are unknown and every member compares as broken.
+
+**Deliberately still open.** `RestMatcher` has no exact-path tier, so a call to
+`/api/candles/{}/symbols` matches `/api/candles/{}/{}` as well and lands
+LOW/AMBIGUOUS — and `manual_edges` cannot correct it, because its endpoint
+filter uses the same `templatesMatch`. A skipped compat gate is still invisible
+in the review report: a repo that declared `binary-compatible` or
+`type-compatible` and had its gate skipped still exits 0. Both change existing
+Gradle behaviour, so both are sequenced after everything else and revert alone.
