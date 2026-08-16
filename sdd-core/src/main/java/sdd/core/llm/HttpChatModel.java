@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import sdd.core.config.ConfigException;
 import sdd.core.config.ModelEndpoint;
+import sdd.core.http.Backoff;
 
 import java.io.IOException;
 import java.net.URI;
@@ -16,14 +17,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ThreadLocalRandom;
 
 public final class HttpChatModel implements ChatModel {
     public interface Sleeper { void sleep(long millis) throws InterruptedException; }
 
-    private static final int MAX_ATTEMPTS = 6;
-    private static final long BASE_BACKOFF_MILLIS = 250;
-    private static final long MAX_BACKOFF_MILLIS = 60_000;
+    // Retry/backoff math lives in sdd.core.http.Backoff (Task 2), shared with RestClient. Kept as
+    // a same-valued alias here rather than calling Backoff.DEFAULT_MAX_ATTEMPTS directly at the
+    // point of use below, so this class's own retry contract (6 attempts by default) reads as a
+    // fact about HttpChatModel, not as "whatever Backoff happens to default to today".
+    private static final int MAX_ATTEMPTS = Backoff.DEFAULT_MAX_ATTEMPTS;
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final Set<String> PROTECTED_BODY_KEYS =
             Set.of("model", "messages", "tools", "max_tokens", "temperature", "stream");
@@ -113,11 +115,7 @@ public final class HttpChatModel implements ChatModel {
         if (attempt >= maxAttempts) {
             return;
         }
-        long delay = retryAfterMillis != null
-                ? Math.min(retryAfterMillis, MAX_BACKOFF_MILLIS)
-                : Math.min(MAX_BACKOFF_MILLIS,
-                        BASE_BACKOFF_MILLIS * (1L << (attempt - 1))
-                                + ThreadLocalRandom.current().nextLong(BASE_BACKOFF_MILLIS));
+        long delay = Backoff.delayMillis(attempt, retryAfterMillis);
         try {
             sleeper.sleep(delay);
         } catch (InterruptedException e) {
@@ -127,15 +125,7 @@ public final class HttpChatModel implements ChatModel {
     }
 
     private static Long retryAfterMillis(HttpResponse<String> resp) {
-        return resp.headers().firstValue("Retry-After")
-                .map(v -> {
-                    try {
-                        return Long.parseLong(v.trim()) * 1000L;
-                    } catch (NumberFormatException e) {
-                        // HTTP-date format not supported; fall back to exponential backoff
-                        return null;
-                    }
-                }).orElse(null);
+        return Backoff.retryAfterMillis(resp.headers().firstValue("Retry-After"));
     }
 
     private String toJson(ChatRequest req) {
