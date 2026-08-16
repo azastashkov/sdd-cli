@@ -513,6 +513,227 @@ class ConfigLoaderTest {
         assertThat(ConfigLoader.load(absent).verificationExclusions()).isEmpty();
     }
 
+    // --- atlassian: block --------------------------------------------------------------------
+
+    private static final Function<String, String> ATLASSIAN_ENV = Map.of(
+            "DEEPSEEK_API_KEY", "sk-test-123",
+            "JIRA_PAT", "jira-token-abc",
+            "CORP_TRUSTSTORE_PASSWORD", "trust-pw")::get;
+
+    @Test
+    void absentAtlassianBlockLeavesTheFieldNull() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL), ENV);
+        assertThat(c.atlassian()).isNull();
+    }
+
+    @Test
+    void nonMappingAtlassianFails() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + "atlassian: oops\n"), ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian");
+    }
+
+    @Test
+    void parsesEveryAtlassianKeyIncludingDefaults() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  tls:
+                    truststore: /etc/ssl/corp-ca.jks
+                    truststore_password: ${CORP_TRUSTSTORE_PASSWORD}
+                  proxy:
+                    host: proxy.corp.local
+                    port: 8080
+                    no_proxy: [jira.corp.local, confluence.corp.local, bitbucket.corp.local]
+                  jira:
+                    base_url: https://jira.corp.local
+                    token: ${JIRA_PAT}
+                    timeout_seconds: 45
+                  bitbucket:
+                    base_url: https://bitbucket.corp.local
+                    token: literal-bb-token
+                    project: TRADING
+                    default_reviewers: [alice, bob]
+                  follow_depth: 2
+                  max_pages: 5
+                  max_linked_issues: 3
+                  write_back: comment
+                  pull_requests: true
+                """), ATLASSIAN_ENV);
+
+        AtlassianConfig ac = c.atlassian();
+        assertThat(ac).isNotNull();
+        assertThat(ac.tls().truststore()).isEqualTo(Path.of("/etc/ssl/corp-ca.jks"));
+        assertThat(ac.tls().password()).isEqualTo("trust-pw");
+        assertThat(ac.proxy().host()).isEqualTo("proxy.corp.local");
+        assertThat(ac.proxy().port()).isEqualTo(8080);
+        assertThat(ac.proxy().noProxy()).containsExactly(
+                "jira.corp.local", "confluence.corp.local", "bitbucket.corp.local");
+
+        assertThat(ac.jira().baseUrl()).isEqualTo("https://jira.corp.local");
+        assertThat(ac.jira().token()).isEqualTo("jira-token-abc");
+        assertThat(ac.jira().tokenVar()).isEqualTo("JIRA_PAT");
+        assertThat(ac.jira().tokenError()).isNull();
+        assertThat(ac.jira().timeout()).isEqualTo(Duration.ofSeconds(45));
+
+        assertThat(ac.confluence()).isNull();   // independently optional, not configured here
+
+        assertThat(ac.bitbucket().site().baseUrl()).isEqualTo("https://bitbucket.corp.local");
+        assertThat(ac.bitbucket().site().token()).isEqualTo("literal-bb-token");
+        assertThat(ac.bitbucket().site().tokenVar()).isNull();   // literal, not a ${VAR} reference
+        assertThat(ac.bitbucket().site().timeout()).isEqualTo(Duration.ofSeconds(30));   // default
+        assertThat(ac.bitbucket().project()).isEqualTo("TRADING");
+        assertThat(ac.bitbucket().defaultReviewers()).containsExactly("alice", "bob");
+
+        assertThat(ac.followDepth()).isEqualTo(2);
+        assertThat(ac.maxPages()).isEqualTo(5);
+        assertThat(ac.maxLinkedIssues()).isEqualTo(3);
+        assertThat(ac.writeBack()).isEqualTo(WriteBack.COMMENT);
+        assertThat(ac.pullRequests()).isTrue();
+    }
+
+    @Test
+    void atlassianDefaultsWhenOnlyOneSiteConfigured() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  confluence:
+                    base_url: https://confluence.corp.local
+                """), ATLASSIAN_ENV);
+
+        AtlassianConfig ac = c.atlassian();
+        assertThat(ac.jira()).isNull();
+        assertThat(ac.bitbucket()).isNull();
+        assertThat(ac.tls()).isNull();
+        assertThat(ac.proxy()).isNull();
+        assertThat(ac.confluence().baseUrl()).isEqualTo("https://confluence.corp.local");
+        assertThat(ac.confluence().token()).isNull();
+        assertThat(ac.confluence().tokenVar()).isNull();
+        assertThat(ac.confluence().tokenError()).isNull();
+        assertThat(ac.confluence().timeout()).isEqualTo(Duration.ofSeconds(30));
+
+        assertThat(ac.followDepth()).isEqualTo(1);
+        assertThat(ac.maxPages()).isEqualTo(20);
+        assertThat(ac.maxLinkedIssues()).isEqualTo(10);
+        assertThat(ac.writeBack()).isEqualTo(WriteBack.NONE);
+        assertThat(ac.pullRequests()).isFalse();
+    }
+
+    @Test
+    void jiraBaseUrlIsRequired() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  jira:
+                    token: ${JIRA_PAT}
+                """), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.jira.base_url is required");
+    }
+
+    @Test
+    void bitbucketProjectIsRequired() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  bitbucket:
+                    base_url: https://bitbucket.corp.local
+                """), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.bitbucket.project is required");
+    }
+
+    @Test
+    void unsetTokenEnvVarDoesNotFailLoadingAndCarriesTheDeferredError() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  jira:
+                    base_url: https://jira.corp.local
+                    token: ${JIRA_PAT}
+                """), k -> null);   // no env var resolves
+
+        AtlassianSite jira = c.atlassian().jira();
+        assertThat(jira.token()).isNull();
+        assertThat(jira.tokenVar()).isEqualTo("JIRA_PAT");
+        assertThat(jira.tokenError()).isEqualTo("atlassian.jira.token: environment variable JIRA_PAT is not set");
+    }
+
+    @Test
+    void unsetJiraBaseUrlEnvVarFailsEagerlyNamingTheVar() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  jira:
+                    base_url: ${JIRA_BASE_URL}
+                """), k -> null))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("JIRA_BASE_URL");
+    }
+
+    @Test
+    void writeBackRejectsUnknownValue() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  jira:
+                    base_url: https://jira.corp.local
+                  write_back: delete
+                """), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("write_back");
+    }
+
+    @Test
+    void proxyHostRequiredWhenProxyBlockPresent() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  proxy:
+                    port: 8080
+                """), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.proxy.host is required");
+    }
+
+    @Test
+    void proxyPortRequiredWhenProxyBlockPresent() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  proxy:
+                    host: proxy.corp.local
+                """), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.proxy.port is required");
+    }
+
+    @Test
+    void tlsTruststoreRequiredWhenTlsBlockPresent() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  tls:
+                    truststore_password: ${CORP_TRUSTSTORE_PASSWORD}
+                """), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.tls.truststore is required");
+    }
+
+    @Test
+    void nonIntegerFollowDepthFailsNamingKeyAndValue() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  jira:
+                    base_url: https://jira.corp.local
+                  follow_depth: x
+                """), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.follow_depth must be an integer, got 'x'");
+    }
+
+    @Test
+    void nonBooleanPullRequestsFails() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  jira:
+                    base_url: https://jira.corp.local
+                  pull_requests: maybe
+                """), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.pull_requests");
+    }
+
     @Test
     void rejectsNullValueInExtraBody() throws Exception {
         assertThatThrownBy(() -> ConfigLoader.load(write("""
