@@ -1,237 +1,226 @@
-# Local Atlassian Data Center rig
+# Atlassian Data Center integration — corporate-network runbook
 
-The stand-in for the closed corporate network `sdd`'s Jira/Confluence ingestion and Bitbucket
-source control (Tasks 1–5) were built against, but never yet run against a real Atlassian
-instance. This is the runbook a human follows, in order, to bring the rig up and prove the
-whole feature end to end. Steps marked **HUMAN** cannot be scripted — they need an interactive
-Atlassian account and a browser.
+The three products this integration talks to — Jira, Confluence, Bitbucket Data Center — already
+exist inside the destination corporate network, with tokens already minted and already exported
+from `~/.zshrc`. **There is no local Atlassian rig, and there never will be one built by this
+project**: the live-verification run once planned here — replacing every hand-written WireMock
+fixture with a recording against a real instance, and settling every guessed API shape — is
+cancelled. What stands in for it is `api-verification-report.md` (in the requirements this branch
+was built from), which checked every invented request/response shape against Atlassian's own Data
+Center documentation instead. See [`docs/commands.md`](../../docs/commands.md)'s "Atlassian
+integration: what's verified, what's assumed" section for the full, honest breakdown; this file is
+the step-by-step version — what to configure, what `sdd doctor` should say, the sequence to run,
+and — the part that earns this document — what to check first the moment something disagrees with
+what `sdd` expects.
 
-Nothing in `scripts/atlassian-dc/` or `scripts/bitbucket-dc/` starts a container, obtains a
-licence, or performs the live run itself. Those scripts write the fixtures and wire the
-credentials; a human still has to run them and read what they print.
+The docker-compose rig and the `seed.sh`/`mirror.sh` scripts described at the bottom of this file
+are **not steps to run next**. They remain in the tree for anyone who later wants a local instance
+to test against; they encode working API usage (including the two corrections item 9 of
+`api-verification-report.md` names) and would save that person real time, but standing one up is
+not part of getting this feature running against the real corporate estate.
 
-## 1. Bring up the rig — **HUMAN** (docker) + scripted (config)
+## 1. Configure `<workspace>/sdd.yml`
 
-```
-cd scripts/atlassian-dc
-docker compose up -d
-docker compose ps       # wait for all three to report healthy — first boot can take several
-                         # minutes per product; see docker-compose.yml's healthcheck comments
-```
+Copy the `atlassian:` block from `sdd.yml.example` into `<workspace>/sdd.yml`, uncommented, with
+the corporate network's real shape:
 
-## 2. Obtain three 30-day evaluation licences — **HUMAN, browser required**
+```yaml
+atlassian:
+  tls:
+    truststore: /etc/ssl/corp-ca.jks          # omit if the JDK's default trust store already
+                                                # trusts these three hosts' certificates
+    truststore_password: ${CORP_TRUSTSTORE_PASSWORD}   # omit if the truststore has no password
+  proxy:
+    host: proxy.corp.local                     # omit entirely if these hosts are reachable direct
+    port: 8080
+    no_proxy: [jira.corp.local, confluence.corp.local, bitbucket.corp.local]
 
-Go to <https://my.atlassian.com>, generate a free Data Center evaluation licence for each of
-Jira Software, Confluence, and Bitbucket. This is an interactive Atlassian account action and
-cannot be scripted.
+  jira:
+    base_url: https://jira.corp.local
+    token: ${JIRA_API_KEY}
+  confluence:
+    base_url: https://confluence.corp.local
+    token: ${CONFLUENCE_API_KEY}
+  bitbucket:
+    base_url: https://bitbucket.corp.local
+    token: ${BITBUCKET_API_KEY}
+    project: TRADING            # the Bitbucket project key repos live under, EXACT case
+    default_reviewers: [alice, bob]
 
-## 3. Run the three setup wizards — **HUMAN, browser required**
-
-Visit each product and click through its one-time setup wizard: choose "Data Center", let it
-find the Postgres `docker-compose.yml` already wired up (host/user/password are pre-filled via
-environment variables — nothing to type there), paste the licence key from step 2, and create
-the first admin account. **Use the same admin username and password for all three** — the
-scripts below assume one shared admin identity.
-
-| Product    | URL                     |
-|---|---|
-| Jira       | <http://localhost:8080> |
-| Confluence | <http://localhost:8090> |
-| Bitbucket  | <http://localhost:7990> |
-
-This work lives in the named volumes `docker-compose.yml` declares — a `docker compose down`
-(without `-v`) or a host reboot does not lose it. Only `docker compose down -v` would; no script
-here ever passes `-v`.
-
-## 4. Mint tokens — scripted
-
-```
-./issue-tokens.sh
-```
-
-Prompts for the admin username/password (or reads `ATLASSIAN_ADMIN_USER`/
-`ATLASSIAN_ADMIN_PASSWORD` from the environment), mints a Jira PAT, a Confluence PAT, and a
-Bitbucket access token, and appends them to `~/.zshrc` as `JIRA_PAT` / `CONFLUENCE_PAT` /
-`BITBUCKET_PAT` inside a clearly delimited, idempotent block. Backs up `~/.zshrc` first and
-prints the backup path. Never prints a token in full.
-
-## 5. Reload your shell — **HUMAN**
-
-```
-source ~/.zshrc
+  write_back: comment           # none | comment — off by default; comment posts to Gate-1/Gate-2
+  pull_requests: true           # off by default; true drives sdd review's Bitbucket push + PR
 ```
 
-(or open a new terminal). `sdd doctor` reads these as plain environment variables and cannot see
-them until this happens.
+Each of the three sites is independently optional — declare only the ones this estate uses. The
+`${JIRA_API_KEY}` / `${CONFLUENCE_API_KEY}` / `${BITBUCKET_API_KEY}` names above match what this
+corporate environment exports from `~/.zshrc`; `sdd` itself parses whatever `${VAR}` name is
+actually written in `sdd.yml`, so this is a naming convention this estate follows, not something
+`sdd`'s code hard-codes anywhere (verify yourself with `grep -rn '"JIRA_API_KEY"\|"JIRA_PAT"'
+sdd-core/src/main sdd-cli/src/main sdd-plan/src/main` — nothing matches; the variable name comes
+from a regex match against the `${...}` reference in `ConfigLoader.parseAtlassianSite`).
 
-## 6. Check connectivity
+**A note on `atlassian.bitbucket.project`'s case.** Type it exactly as Bitbucket has it configured
+(conventionally uppercase, e.g. `TRADING`) — the REST API uses this value verbatim. See "First
+contact" item 1 below for exactly why this specific field is the highest-risk value in this whole
+block.
+
+## 2. Run `sdd doctor` first
 
 ```
 sdd doctor
 ```
 
-All three `atlassian:*` lines should read `HTTP 200 as <user>`. If any fails, fix it before
-continuing — every later step depends on all three being reachable.
+On success, each configured site prints one line: `[ OK ] atlassian:jira — <base_url> → HTTP 200
+as <name>` (Confluence and Bitbucket read the same way, with their own base URL and identity
+field). A site with no `atlassian.<site>` block in `sdd.yml` simply prints no line at all —
+`doctor`'s other output (java/config/database/model checks) is unaffected either way.
 
-## 7. Mirror the estate into Bitbucket — scripted
+**Common failures and what they mean** — `doctor`'s messages are built to name the fix, not just
+say "down":
+
+| Symptom | Meaning | Fix |
+|---|---|---|
+| `... rejected the token in $JIRA_API_KEY (HTTP 401) — reissue it` (or 403) | The PAT is expired, revoked, or wrong | Mint a new token for that product and re-export the named variable |
+| `TLS handshake with <host> failed using truststore <path>: ...` (or `(JDK default truststore)`) | A private CA is in play and either isn't configured, or the configured file/password is wrong | Point `atlassian.tls.truststore` at the corporate CA chain (`.jks` or `.p12`), and check `truststore_password` |
+| `transport error talking to <site>: ...` mentioning a timeout or connection refused | Usually the corporate proxy — either not configured, misconfigured, or the host needs a `no_proxy` bypass | Check `atlassian.proxy`; try adding the failing host to `no_proxy` if it should be reachable directly |
+
+Every probe result — including failures — is also written to a diagnostics file under
+`.sdd/diagnostics/`, always, on every `sdd doctor` run. If a failure needs more than the one line
+above to diagnose, run `sdd doctor --report` instead — see "First contact" below for why that flag
+exists.
+
+## 3. The end-to-end sequence
+
+Run each command from `<workspace-dir>` — the directory holding one checkout of every repo in the
+estate, alongside `sdd.yml`.
+
+1. `sdd index` — builds the knowledge base; unrelated to Atlassian, but every later step needs it.
+2. `sdd plan <ISSUE-KEY>` → `<ISSUE-KEY>.spec.md`. **Check by hand before going further:**
+   - Requirements drawn from BOTH the Jira ticket AND its linked Confluence page, if it has one —
+     the page's own Requirements/Acceptance-criteria prose should show up, not just the ticket
+     summary.
+   - A `## Sources` section lists every fetched document (the ticket, any linked issues, any
+     linked Confluence pages) with its version.
+   - Anything unfollowed — over the configured `follow_depth`/`max_pages`/`max_linked_issues` cap,
+     unresolvable, or pointing at a host that isn't one of the configured sites — sits in Open
+     Questions, not silently missing. If something you expected to be pulled in is absent from
+     both `## Sources` and Open Questions, that's a real bug, not a documented limitation.
+3. Edit the spec by hand, same as any other spec.
+4. `sdd plan <ISSUE-KEY>.spec.md` → drafts `plan.md`; edit it by hand.
+5. `sdd plan approve <ISSUE-KEY>.plan.md` → freezes `plan.json`. **A comment appears on the
+   Jira issue** (if `write_back: comment` is configured and the issue key is in `## Sources`) —
+   confirm it in the Jira UI.
+6. `sdd implement <ISSUE-KEY>.plan.json` → run branches exist locally, **and nothing has been
+   pushed to Bitbucket yet** — verify this explicitly (`git -C <repo> log
+   origin/<branch>..<branch>` against Bitbucket's `origin` should fail because the branch doesn't
+   exist there yet, or check Bitbucket's UI directly). This is deliberate: nothing touches the
+   network before Gate 2.
+7. `sdd review <ISSUE-KEY>.plan.json` → `report.md`, one open Bitbucket PR per succeeded repo (if
+   `pull_requests: true`), a second Jira comment.
+8. The three decisions and their PR effect:
+   - `sdd review approve <repo> ...` → the PR is merged (only once the local squash itself
+     succeeds — a refused squash never reaches Bitbucket).
+   - `sdd review reject <repo> ... --reason "..."` → the PR is declined.
+   - `sdd review redo <repo> ... --reason "..."` → the PR is untouched — stays open.
+9. `sdd clean --force <ISSUE-KEY>.plan.json` — deletes local run branches/run dir for anything not
+   approved; does **not** touch Bitbucket-side PRs or branches it already merged/declined.
+
+**Negative cases worth trying once**, each of which should fail with a clear, specific message,
+never a stack trace: an unset credential variable (`sdd plan <KEY>` should name the missing `$VAR`
+in its error); a nonexistent issue key; a Confluence link the token cannot read (a
+permission-restricted space); `atlassian:` absent from `sdd.yml` entirely (every other command
+must behave exactly as before this feature existed); Bitbucket unreachable mid-`sdd review`
+(`report.md` should still be written, with a `` warn: bitbucket: ... `` line, exit code
+unchanged).
+
+## 4. First contact: what to check when something disagrees with what `sdd` expects
+
+Every behaviour below was implemented from Atlassian's documented REST shapes and checked against
+official Data Center documentation (`api-verification-report.md`) — but two of them could not be
+settled by documentation alone, and a further handful were never checked against documentation at
+all because nothing else in this codebase exercises them. **These are the specific things most
+likely to be wrong, ordered by how likely each is to bite, each with the symptom that reveals it —
+read the symptom, jump straight to the cause.**
+
+1. **Bitbucket project-key case-folding.** `atlassian.bitbucket.project` is lowercased for the git
+   clone/push URL (`/scm/<project>/<repo>.git`, matching Bitbucket's documented always-lowercase
+   repo-slug behaviour) but used exactly as configured — usually uppercase — for every REST call
+   (`{projectKey}` path parameter, which Data Center's REST API treats case-sensitively). No
+   documentation confirms whether the `/scm/` path segment is itself case-folded by the server.
+   **Symptom:** not a clean error — a confusing PARTIAL failure. The git push either 404s against
+   a lowercase project segment the server doesn't recognize, or silently succeeds against a
+   different, accidentally-matching project, while the REST pull-request call (verbatim case)
+   succeeds or fails independently. `sdd review` can end up reporting a pushed branch with no
+   matching PR. **Check this first** if Bitbucket push/PR behaviour looks wrong at all.
+2. **Jira `renderedFields.comment.comments[]`'s `id`/`updated` fields.** Assumed to mirror the base
+   `Comment` resource; only the base (non-rendered) resource's shape is documented. **Symptom:**
+   silent, not a crash — a comment's `## Sources` bullet reads "updated unknown" and its doc id
+   ends in `-comment-` (empty), instead of a real timestamp/id.
+3. **A Confluence `/x/AbCd` tiny link's redirect chain** is assumed single-hop and same-origin (the
+   5-hop cap is defensive, not evidence-based). **Symptom:** a legitimate tiny link ends up in Open
+   Questions as "unfollowed" instead of being read.
+4. **jsoup's `element.attr("href")`** is assumed to return the literal, unresolved attribute value
+   against Data Center's real rendered HTML. **Symptom:** a relative link that should have been
+   followed is silently filtered out (or the reverse).
+5. **A Jira "blocking" link type's `name`** is assumed to literally contain "block" or "depend" —
+   the field names themselves (`type.name`/`inward`/`outward`) are confirmed correct, but this
+   substring match is admin-configurable per instance. **Symptom:** a real blocking dependency is
+   missing from `## Sources`, with no error.
+6. **The same rendered HTML string** is assumed to reach both the link-harvester and the spec
+   extractor for a given description/comment body. **Symptom:** the two readers quietly disagree
+   about what a document contains — one follows a link the other doesn't see.
+7. **Bitbucket's `findOpenBySourceBranch`** assumes at most one OPEN pull request per source
+   branch. **Symptom:** if a human manually opens a second PR from the same branch outside `sdd`,
+   only whichever one the API happens to return first is ever read or updated.
+8. **`atlassian.proxy` carries no proxy-authentication credentials.** If the corporate proxy
+   requires its own auth, this was never exercised. **Symptom:** every Atlassian REST call and the
+   git push hang or fail with a generic connect/407 error, indistinguishable at first glance from
+   the network simply being down.
+
+None of the above has ever caused a test failure, by construction — nothing in this repo can
+exercise a real Atlassian server. Their absence from a green `./gradlew build` is not evidence
+they are correct. **If you hit any of these, `sdd doctor --report` is the fastest way to capture
+enough to debug it remotely — see the next section.**
+
+### The single best tool for reporting a problem: `sdd doctor --report`
 
 ```
-../bitbucket-dc/mirror.sh <workspace-dir>
+sdd doctor --report
 ```
 
-`<workspace-dir>` is the directory holding one checkout of every repo in the estate (the same
-directory `sdd.yml`'s `--workspace` points at). Discovers the estate exactly the way
-`WorkspaceScanner` does — every directory directly under `<workspace-dir>` with a `.git` entry —
-creates the `TRADING` Bitbucket project and a same-named repo per checkout, mirrors every branch
-and tag from each checkout's GitHub origin, and re-points `origin` at Bitbucket (preserving the
-original as a `github` remote). Prints the full plan and asks for confirmation before the first
-write (`--yes` skips the prompt). Re-runnable — existing Bitbucket projects/repos are reused.
+writes one self-contained file under `.sdd/diagnostics/` — every configured site's probe result,
+the Java/config/database checks, and (because diagnostics is always on) a tail of the last few
+diagnostic files from whatever command was running when things went wrong. It is built to be
+copied out of this network and pasted to someone who cannot reach it at all. **Known secret
+values — every resolved Atlassian token, the TLS truststore password — are redacted by
+construction; they cannot appear in the file no matter what fails.** Internal hostnames and
+Bitbucket project / Jira / Confluence issue keys DO appear unredacted, because they are necessary
+for diagnosis — the file says so in its own header. Decide for yourself whether that satisfies
+your organization's sharing policy before pasting it anywhere; redact those manually first if it
+doesn't. See [`docs/commands.md`](../../docs/commands.md)'s "Diagnostics" section (under `sdd
+doctor`) for exactly what the file contains, line by line.
 
-## 8. Seed fixture data — scripted
+## 5. The local rig scripts, for anyone who later wants one
 
-```
-./seed.sh --repo <one-of-the-mirrored-repo-names>
-```
+`scripts/atlassian-dc/docker-compose.yml`, `issue-tokens.sh` and `seed.sh`, plus
+`scripts/bitbucket-dc/mirror.sh`, describe a local Jira/Confluence/Bitbucket Data Center rig built
+against Docker Compose evaluation licences. They are not part of the sequence above and nobody
+needs to run them to use this feature against the real corporate estate — but they encode working
+API usage (`issue-tokens.sh` mints real PATs the documented way; `mirror.sh` mirrors an estate into
+a fresh Bitbucket project the same way `sdd review`'s push path does) and are kept in the tree for
+exactly the person who later wants to test against a disposable local instance. `seed.sh` in
+particular would regenerate this repo's hand-written WireMock fixtures under
+`sdd-plan/src/test/resources/{jira,confluence}/` and `sdd-cli/src/test/resources/bitbucket/` from
+real server responses, replacing this project's own best-effort guesses with recordings — exactly
+the live-verification step this branch's brief describes as cancelled, should anyone want to do it
+later.
 
-Default `--repo` is `order-service` — override it to whatever repo in your estate you want the
-seeded spec to be about. Creates a Confluence space + page with real spec prose about that repo,
-a Jira project + issue (`PROJ-1`) whose description links the page as a **named hyperlink**
-*and* a Jira remote link to the same page (both discovery channels), a subtask, an "is blocked
-by" linked issue, and a comment. Then re-fetches everything through the same REST calls `sdd`'s
-own Java clients make, and writes the raw JSON as the new fixtures under
-`sdd-plan/src/test/resources/{jira,confluence}/` and `sdd-cli/src/test/resources/bitbucket/`,
-replacing the Task 3/5 hand-written guesses. Prints exactly which files it wrote.
+**Retained safety notes, unconditionally, whether or not you ever run these scripts:**
 
-## 9. Configure `sdd.yml`
-
-Copy the `atlassian:` block from `sdd.yml.example` into `<workspace>/sdd.yml`, uncommented, with:
-
-```yaml
-atlassian:
-  jira:
-    base_url: http://localhost:8080
-    token: ${JIRA_PAT}
-  confluence:
-    base_url: http://localhost:8090
-    token: ${CONFLUENCE_PAT}
-  bitbucket:
-    base_url: http://localhost:7990
-    token: ${BITBUCKET_PAT}
-    project: TRADING
-  write_back: comment
-  pull_requests: true
-```
-
-## 10. The end-to-end run — **HUMAN**, verify each step
-
-This is what proves the feature works. Run each command from `<workspace-dir>`, in order, and
-check the thing named:
-
-1. `sdd doctor` — all three `atlassian:*` probes report `HTTP 200 as <user>`.
-2. `sdd index` — over the checkouts, whose `origin` is now Bitbucket (step 7 re-pointed it).
-3. `sdd plan PROJ-1` → `PROJ-1.spec.md`. **Check by hand:**
-   - Requirements drawn from BOTH the Jira ticket AND the Confluence page (the page's
-     Requirements/Acceptance-criteria prose should show up, not just the ticket summary).
-   - The subtask and the "is blocked by" issue are both present.
-   - A `## Sources` section lists every fetched document with its version.
-   - Anything unfollowed (over a cap, unresolvable, wrong host) sits in Open Questions, not
-     silently missing.
-4. Edit the spec by hand → `sdd plan` → `sdd plan approve`. **A comment appears on PROJ-1.**
-5. `sdd implement` → run branches exist locally, **and nothing has been pushed yet** — verify
-   this explicitly (e.g. `git -C <repo> log origin/<branch>..<branch>` on Bitbucket's `origin`
-   should show the branch does not exist there yet, or check Bitbucket's UI directly). This
-   invariant — nothing touches the network before Gate 2 — is deliberate; see the design doc's
-   §0 amendment.
-6. `sdd review` → `report.md`, one open Bitbucket PR per succeeded repo, a second Jira comment.
-7. `sdd review approve <repo> ...` → the PR is merged. `reject` → the PR is declined. `redo` →
-   the PR is still open (not merged, not declined).
-8. `sdd clean --force` — note what it does (deletes local run branches/run dir for anything not
-   approved) and does **not** do (nothing to the Bitbucket branches or PRs it already
-   merged/declined — those are Bitbucket-side state this command never touches).
-9. Negative cases — each should fail with a clear, specific message, not a stack trace:
-   - `unset JIRA_PAT` then `sdd plan PROJ-1` — should name `$JIRA_PAT` in the error.
-   - A nonexistent issue key (`sdd plan PROJ-9999`).
-   - A Confluence link the token cannot read (permission-restricted space).
-   - `atlassian:` absent from `sdd.yml` entirely — every other command must behave exactly as
-     it did before this feature existed.
-   - Bitbucket stopped mid-`sdd review` (`docker compose stop bitbucket`) — `report.md` should
-     still be written, with a `warn: bitbucket: ...` line, exit code unchanged.
-10. Regressions — must be byte-for-byte unchanged from before this feature:
-    - `sdd plan --text "..."` and `sdd plan SPEC-101.md` (a plain markdown spec, no Jira/
-      Confluence involved).
-    - A `plan.json`/`report.md` run with no `bitbucket:` block in `sdd.yml` — Gate 2 must
-      produce exactly what it did before Task 5.
-
-## Least-certain API shapes — check these first
-
-Every one of these was implemented from Atlassian's documented REST shapes, not verified
-against a live Data Center instance (that is exactly what this rig is for). If the live run
-disagrees with sdd's behaviour, start here — these are the specific guesses most likely to be
-wrong, gathered from Task 3's and Task 5's own reports plus two new ones this task's `seed.sh`
-had to guess at.
-
-**From Task 3 (Jira/Confluence clients — `sdd-plan/src/main/java/sdd/plan/{jira,confluence}/`):**
-
-1. `renderedFields.comment.comments[]` carrying `id`/`updated` alongside the rendered `body` —
-   assumed to mirror the base comment shape. If wrong: a comment's Sources bullet reads "updated
-   unknown" and its doc id ends in `-comment-` (empty).
-2. `fields.updated`'s exact date format (`yyyy-MM-dd'T'HH:mm:ss.SSSZ`) — instance-configurable,
-   not fixed by the API. Falls back through ISO-offset parsing, then the raw string, so a
-   mismatch degrades (an un-normalized timestamp) rather than fails.
-3. Whether jsoup's `element.attr("href")` returns the literal attribute value, unresolved,
-   against Data Center's actual rendered HTML — assumed yes (a relative href stays relative and
-   gets filtered for having no host).
-4. `/rest/api/content?spaceKey=...&title=...&expand=version`'s response shape (used for the
-   `/display/SPACE/Title` Confluence URL resolution path) — modeled as
-   `{"results": [...], "size": N}` with `results[0].id`, not confirmed against a live response.
-5. `/x/AbCd` tiny-link redirects being single-hop and same-origin — the 5-hop cap is defensive,
-   not evidence-based.
-6. Jira `issuelinks[].type` field names (`name`/`inward`/`outward`) and that a "blocking" link
-   type's name literally contains "block"/"depend" — standard shape, but admin-configurable per
-   instance and could differ from this rig's own seeded "Blocks" type.
-7. Whether `renderedFields.description`/comment bodies are the exact same HTML string both the
-   `a[href]` harvest and `ConfluenceExtract.extract` see — assumed yes (one field, two readers),
-   not verified live.
-
-**From Task 5 (Bitbucket — `sdd-cli/src/main/java/sdd/cli/review/{BitbucketClient,RemoteGit}.java`):**
-
-8. The PR `version` field's presence on every PR-shaped response (`create`, `get`,
-   `findOpenBySourceBranch`, and required as a query param on `merge`/`decline`) — matches
-   Bitbucket's documented optimistic-locking behaviour, not confirmed live.
-9. `merge`/`decline` taking `version` as a QUERY parameter with an empty body, rather than a
-   JSON body field — the brief's exact wording; some API references show the JSON-body form
-   instead.
-10. The clone-URL form lowercasing BOTH `project` and `repo` (`RemoteGit.cloneUrl`), while the
-    REST `{projectKey}` path parameter (`BitbucketClient`) is used exactly as configured,
-    uppercase key included — the single most likely divergence point from a live instance; the
-    two classes' differing treatment of `project` is itself worth re-checking, not just each
-    half separately.
-11. `create`'s `fromRef`/`toRef` shape (`{id, repository: {slug, project: {key}}}`) — matches
-    Bitbucket Server's documented shape from memory, not verified live.
-12. `default-branch`'s response field being `displayId` (unprefixed), not `id`
-    (`refs/heads/...`) — if wrong, `defaultBranch` throws a clear error naming the response
-    rather than silently returning the wrong branch.
-13. The git-over-HTTP PAT username (`"x-token-auth"`, `BitbucketClients.GIT_USERNAME`) —
-    Bitbucket's PAT auth is documented as token-carries-identity, so any non-empty placeholder
-    should work, but this is unverified. `mirror.sh` uses the same placeholder for exactly this
-    reason — if it needs to change, change it in both places.
-14. `findOpenBySourceBranch` assuming at most one open PR per source branch — the first result
-    of the filtered list is returned unconditionally.
-15. The pagination envelope shape (`{"size", "isLastPage", "values": [...]}`) for the PR list
-    endpoint — standard Bitbucket Server shape, not verified live; `findOpenBySourceBranch` never
-    paginates past the first page.
-16. Proxy resolution (`atlassian.proxy`) reads only `host`/`port`/`no_proxy`, never proxy
-    authentication — if a live corporate proxy requires its own auth, both the REST calls and
-    the git push need that added; not specific to this rig, but worth checking here too.
-
-**New in this task (`scripts/atlassian-dc/seed.sh`, `scripts/atlassian-dc/issue-tokens.sh`):**
-
-17. Jira Server/DC project creation's exact body shape
-    (`POST /rest/api/2/project` with `projectTypeKey: "software"`,
-    `projectTemplateKey: "com.pyxis.greenhopper.jira:gh-simplified-agility-kanban"`, `lead`) —
-    this is the best-documented shape available, but genuinely unverified; if it 400s, that is
-    the first thing to fix in `seed.sh`.
-18. Bitbucket's access-token creation body including an `expiryDays` field
-    (`PUT /rest/access-tokens/1.0/users/{user}`) — the brief only names the endpoint, not the
-    body; `expiryDays` is this script's own guess. If the live instance rejects it, drop the
-    field from `issue_bitbucket_token` in `issue-tokens.sh` and mint a token good until revoked.
+- Never pass a Jira/Confluence/Bitbucket token as a command-line argument — it would land in shell
+  history and be visible to `ps` on a shared machine, even briefly. `sdd.yml`'s `${VAR}` reference
+  is the only supported way to hand `sdd` a credential.
+- `issue-tokens.sh` never prints a token in full — only its last 4 characters, masked.
+- `mirror.sh` rewrites real git remotes (`origin` becomes Bitbucket; the original is preserved as
+  `github`) and prints its full plan, asking for confirmation before its first write (`--yes`
+  skips the prompt) — read what it's about to do before confirming.

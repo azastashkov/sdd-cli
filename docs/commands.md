@@ -39,29 +39,245 @@ into two families:
   input or a live run lock. `status` never returns `2` or `3` — it is
   read-only and never judges (`StatusCommand.java:92-93`).
 
+## Atlassian integration: what's verified, what's assumed
+
+**Read this before you trust anything below about Jira, Confluence or
+Bitbucket.** No Jira/Confluence/Bitbucket Data Center instance has ever been
+reachable from this codebase — the live-verification run that was originally
+planned to replace every hand-written fixture with a recording and settle
+every guessed API shape was cancelled (see
+`scripts/atlassian-dc/README.md`). What exists instead is documentation-level
+verification: every invented request/response shape was checked against
+Atlassian's official Data Center documentation and recorded in
+`api-verification-report.md` (repo root of the requirements this branch was
+built from). This section restates that report's findings honestly, in three
+buckets, and does not soften the third one — its whole value is that someone
+debugging at 2am inside a network nobody else can reach finds the honest
+answer instead of a reassuring one.
+
+### 1. Verified by test
+
+The Jira/Confluence/Bitbucket integration is exercised by 1,572 tests
+(`sdd-core` 324, `sdd-cli` 667, `sdd-index` 242, `sdd-plan` 219, `sdd-agent`
+120 — `./gradlew build`, current tree) against WireMock stand-ins for all
+three products and real local bare git repositories for the push/clone path.
+**Say plainly what this proves and does not prove:** it proves `sdd`'s own
+code does what its authors think it does WHEN the server responds exactly
+the way `sdd` assumes it will — the request shapes it sends, the response
+fields it reads, the retry/backoff/redaction behaviour around all of it. It
+proves **nothing** about whether a real Jira/Confluence/Bitbucket Data
+Center server actually responds that way. That gap is exactly what buckets 2
+and 3 below are for.
+
+### 2. Verified against official documentation
+
+`api-verification-report.md` checked every invented Jira/Confluence/Bitbucket
+Data Center request or response shape this codebase uses against Atlassian's
+own Data Center documentation (Cloud-only docs were explicitly discarded, not
+cited). Of 22 numbered assumptions: **18 CORRECT**, **2 WRONG** (both fixed
+in this branch — see below), **2 UNVERIFIABLE** (bucket 3).
+
+| # | Assumption | Verdict |
+|---|---|---|
+| 1 | Jira `GET .../issue/{key}?expand=renderedFields` → `renderedFields.description` is HTML | CORRECT |
+| 3 | Jira `fields.updated` format `yyyy-MM-dd'T'HH:mm:ss.SSSZ` | CORRECT |
+| 4 | Jira `GET .../remotelink` → `object.url` | CORRECT |
+| 5 | Jira `POST .../comment` `{"body": "..."}`, 2xx response | CORRECT |
+| 6 | Jira `issuelinks[].type.name`/`inward`/`outward` field names | CORRECT |
+| 7 | Jira/Confluence PAT auth via `Authorization: Bearer <token>` | CORRECT |
+| 8 | Jira `GET /rest/api/2/myself` is the whoami endpoint | CORRECT |
+| 9 | Jira/Confluence PAT creation method | **WRONG** — was `PUT`, is `POST /rest/pat/latest/tokens`. **Fixed**: `scripts/atlassian-dc/issue-tokens.sh`'s `issue_pat()` |
+| 10 | Confluence `GET .../content/{id}?expand=body.storage,version,space` shape | CORRECT |
+| 11 | Confluence `GET .../content?spaceKey=X&title=Y` search shape | CORRECT |
+| 12 | Confluence URL forms (`viewpage.action`, `/display/`, `/spaces/.../pages/`, `/x/`) are genuine Data Center forms | CORRECT |
+| 13 | Confluence `GET /rest/api/user/current` is the whoami endpoint, `username` field | CORRECT |
+| 14 | Bitbucket default-branch lookup path | **WRONG** — was `.../default-branch`, is `GET .../branches/default`. **Fixed**: `BitbucketClient.defaultBranch` (`sdd-cli/src/main/java/sdd/cli/review/BitbucketClient.java:64-72`) |
+| 15 | Bitbucket `POST .../pull-requests` `fromRef`/`toRef` shape | CORRECT |
+| 16 | Bitbucket open-PR-by-source-branch filter (`at=`, `direction=OUTGOING`, `state=OPEN`) | CORRECT |
+| 17 | Bitbucket PR `version` as a query parameter on `merge`/`decline`, empty body | CORRECT |
+| 18 | A Bitbucket 409 signals a stale `version` | CORRECT |
+| 20 | Bitbucket `X-AUSERNAME` response header carries the authenticated username | CORRECT (header value may be URL-encoded; `AtlassianProbe` reads it raw — cosmetic only) |
+| 22 | Bitbucket git-over-HTTP PAT username `"x-token-auth"` | CORRECT for user-level tokens (which is all `sdd` mints) |
+
+Two more (**21**, path/method/body of Bitbucket PAT creation) are CORRECT
+except for one field, and are listed under bucket 3 below because that field
+IS an open assumption. Items **2** and **19** are the two UNVERIFIABLE
+findings — bucket 3, in full.
+
+### 3. Unverified assumptions — complete and blunt, on purpose
+
+These are real gaps. Nothing below was settled by a test or by
+documentation; each is flagged with the symptom that would appear if it
+turns out to be wrong, so that symptom can point straight back to this
+list.
+
+**The two the documentation review could not settle, and the two most likely
+to bite first:**
+
+- **Bitbucket project-key case-folding in `/scm/` clone URLs.**
+  `RemoteGit.cloneUrl` lowercases BOTH the project and repo segments for the
+  git clone/push URL (`<base>/scm/<project>/<repo>.git`), matching Bitbucket's
+  documented always-lowercase repo-slug behaviour. But `BitbucketClient`'s
+  REST `{projectKey}` path parameter is used exactly as configured in
+  `atlassian.bitbucket.project` — verbatim, usually uppercase (e.g.
+  `TRADING`) — because Data Center's REST API path parameters are
+  case-sensitive. **No documentation settles whether the `/scm/` path
+  segment is itself case-folded by the server**, so if `atlassian.bitbucket
+  .project` is configured in mixed case, the git push (lowercased) and the
+  PR-creation REST call (verbatim) could disagree about which project they
+  mean. **Symptom if wrong:** not a clean error — a *confusing partial
+  failure*: the git push to `/scm/<lowercased>/...` either 404s (if the
+  server's SCM routing is case-sensitive for the project segment and no
+  such lowercase project exists) or succeeds against a DIFFERENT,
+  accidentally-matching project, while the REST PR-creation call against the
+  verbatim uppercase project key succeeds or fails independently — so `sdd
+  review` can report a pushed branch with no matching PR, or a PR opened
+  against the wrong project's repo list, with no single error naming the
+  cause. **First thing to check** if Bitbucket push/PR behaviour looks wrong
+  on a live instance, per `api-verification-report.md` item 19.
+- **Whether Jira's `renderedFields.comment.comments[]` carries `id`/`updated`
+  alongside the rendered `body`.** `JiraClient` assumes the rendered
+  comment sub-shape mirrors the base `Comment` resource's fields; only the
+  base resource's `id`/`updated` fields are documented, not the *rendered*
+  variant specifically. **Symptom if wrong:** silent, not a crash — a
+  comment's Sources bullet reads "updated unknown" and its doc id ends in
+  `-comment-` (empty), rather than the plan citing a real timestamp/id.
+  (`api-verification-report.md` item 2)
+
+**Every other open assumption**, by where it lives and what reveals it:
+
+| Assumption | Where | Symptom if wrong |
+|---|---|---|
+| Bitbucket access-token creation accepts an `expiryDays` field | `scripts/atlassian-dc/issue-tokens.sh`'s `issue_bitbucket_token` (rig-bootstrap only, not `sdd`'s runtime) | The field is rejected by the server; drop it and mint a token good until revoked |
+| A Confluence `/x/AbCd` tiny-link redirect is single-hop and same-origin | `ConfluenceClient`'s tiny-link resolution (5-hop cap is defensive, not evidence-based) | A legitimate tiny link resolves to Open Questions as "unfollowed" instead of being read, because the real redirect chain is longer or cross-origin |
+| jsoup's `element.attr("href")` returns the literal, unresolved attribute value against Data Center's real rendered HTML | Jira/Confluence link-harvesting in `sdd-plan/src/main/java/sdd/plan/{jira,confluence}/` | A relative link that should have been followed is silently filtered out (or a link that should have been filtered is followed) |
+| A "blocking" Jira link type's `name` literally contains "block" or "depend" | Same link-harvesting code — admin-configurable per instance | A blocking dependency the estate actually has is missing from the plan's `## Sources`, with no error — it just never gets classified as blocking |
+| `renderedFields.description`/comment bodies are the exact same HTML string both the link-harvest and `ConfluenceExtract.extract` read | Same area | Two readers of "the same" field quietly diverge — one follows a link the other doesn't see, again with no error |
+| `findOpenBySourceBranch` assuming at most one OPEN PR per source branch | `BitbucketClient.findOpenBySourceBranch` (`sdd-cli/src/main/java/sdd/cli/review/BitbucketClient.java:80-88`) | If a human manually opens a second PR from the same branch outside `sdd`, only the first result the API happens to return is ever read/updated — the other is silently ignored |
+| `atlassian.proxy` never carries proxy authentication credentials | `sdd.core.http.HttpClients` proxy wiring | Every Atlassian REST call AND the git push hang or fail with a generic 407/connect error on a corporate proxy that requires its own auth — indistinguishable at first glance from a plain network-down failure |
+| Jira Server/DC project-creation body shape (`projectTypeKey`, `projectTemplateKey`, `lead`) | `scripts/atlassian-dc/seed.sh` (rig-bootstrap only, never runs without a rig) | A 400 from Jira is the first thing to fix in `seed.sh`, should anyone build a rig later |
+
+None of the items in this bucket have ever caused a test failure — by
+construction, since nothing in this repo can exercise them against a real
+server. Their absence from a green `./gradlew build` is not evidence they
+are correct.
+
 ## `sdd doctor`
 
 **What it does:** checks the local environment is ready to run everything
 else — Java major version, `sdd.yml` loads, `.sdd/index.db` opens (creating it
-if absent), and every configured model endpoint answers a probe.
-(`DoctorCommand.java:17-53`)
+if absent), every configured model endpoint answers a probe, and — when
+`sdd.yml` has an `atlassian:` block — one probe per configured Jira/
+Confluence/Bitbucket site. (`DoctorCommand.java:61-121`)
+
+**The three Atlassian probes**, run only when `config.atlassian() != null`
+(`DoctorCommand.java:106-108`) — a missing `atlassian:` block changes this
+command's output not at all:
+
+| Site | Probe | Success text | Verified |
+|---|---|---|---|
+| `atlassian:jira` | `GET /rest/api/2/myself` | `HTTP 200 as <name or displayName>` | `DoctorCommand.java:177-180` |
+| `atlassian:confluence` | `GET /rest/api/user/current` | `HTTP 200 as <username or displayName>` | `DoctorCommand.java:181-184` |
+| `atlassian:bitbucket` | `GET /rest/api/1.0/projects/{project}` | `HTTP 200 as <X-AUSERNAME header>` | `DoctorCommand.java:185-201` |
+
+Each of the three is **independently optional** — declaring only
+`atlassian.jira` runs only the Jira probe, and the other two lines simply do
+not appear (`DoctorCommand.java:177, 181, 185`). Bitbucket has no
+`/users/self` resource on Data Center's REST 1.0 API, so its probe reuses the
+one authenticated call it already needs (confirming the configured project is
+reachable) and reads the identity off that response's `X-AUSERNAME` header
+instead of making a second call (`DoctorCommand.java:186-193`,
+`AtlassianProbe.java:62-69`).
+
+**Failure diagnostics.** A probe failure's message is built to point at a
+fix, not just report "down": an HTTP 401/403 names the environment variable
+to reissue (`"<site> rejected the token in $<VAR> (HTTP 401) — reissue it"`,
+`RestClient.java:186-187, 285-288`); a TLS handshake failure names the host
+and which truststore was in play (`"TLS handshake with <host> failed using
+truststore <path>: <detail>"`, or `"(JDK default truststore)"` when none is
+configured, `HttpClients.java:167-171`, wired at `AtlassianProbe.java:98-102`);
+any other transport failure (a connect timeout being the common proxy-related
+case) prints the JDK's own message under `"transport error talking to
+<site>: <detail>"` (`RestClient.java:201-203`) — there is no separate
+"effective proxy" sentence on `doctor`'s own stdout for this case (that
+enrichment exists in `RestClient.logFailure` for every OTHER Atlassian
+caller's diagnostics-file entries, `RestClient.java:252-274`, but
+`AtlassianProbe`'s own `RestClient` is built with no `TransportContext`, so it
+does not apply to `doctor`'s probes specifically). A bad
+`atlassian.tls.truststore` (missing file, unreadable, wrong password) is
+reported against every configured site rather than aborting the rest of
+`doctor`'s checks (`DoctorCommand.java:165-174`).
 
 **Flags**
 
 | Flag | Default | Description | Verified |
 |---|---|---|---|
-| `--workspace <dir>` | `.` | Workspace directory | `DoctorCommand.java:19-20` |
+| `--workspace <dir>` | `.` | Workspace directory | `DoctorCommand.java:33-34` |
+| `--report [path]` | off | Also write a self-contained diagnostics report — default path under `.sdd/diagnostics/` when given with no value, or the exact path given; prints the path plus a one-line note on what is/isn't redacted | `DoctorCommand.java:46-49, 80-82, 111-117` |
 
 **Exit codes**
 
 | Code | Meaning |
 |---|---|
 | `0` | every check passed |
-| `1` | at least one check failed (`DoctorCommand.java:52`, `allOk ? 0 : 1`) |
+| `1` | at least one check failed (`DoctorCommand.java:118`, `allOk ? 0 : 1`) |
 
-**Writes to disk:** nothing beyond `Database.open`'s side effect of creating
-`.sdd/index.db` (and the `.sdd/` directory) if it does not already exist —
-same as every other command that opens the database.
+**Writes to disk:** `Database.open`'s side effect of creating `.sdd/index.db`
+(and the `.sdd/` directory) if it does not already exist, same as every other
+command that opens the database — **plus, always, one diagnostics file**
+under `<workspace>/.sdd/diagnostics/` for this invocation (see "Diagnostics"
+below); `--report` either reuses that same file (default path) or writes it
+at the given path instead, and additionally appends a `probe <check>:
+OK|FAIL — <detail>` line for every check (not only the Atlassian ones) plus a
+tail of the 3 most recent other diagnostic files (`DoctorCommand.java:111-147`).
+
+## Diagnostics
+
+**Every `sdd` command that talks to Jira, Confluence or Bitbucket writes one
+diagnostics file per invocation** to `<workspace>/.sdd/diagnostics/`, named
+`<yyyyMMdd-HHmmssSSS>-pid<pid>-<seq>-<command>.log`
+(`DiagnosticsDir.java:82-85`). This is always on for `sdd doctor`, `sdd plan`
+(the Jira/Confluence ref path only), `sdd plan approve`, and `sdd review`
+(including its `approve`/`reject`/`redo` decisions) — there is no flag to
+disable it, only `sdd doctor --report` to also produce one at a chosen path.
+The most recent 20 files are kept; older ones are deleted the next time a
+command allocates a new one (`DiagnosticsDir.java:34, 88-101`).
+
+**What it is for:** a single file, designed to be copied out of a closed
+corporate network and pasted to someone who cannot reach it, that is
+self-contained enough to debug from — every Atlassian HTTP attempt (method,
+path, status, duration, retry), every terminal failure's full cause chain (a
+TLS or proxy-shaped failure gets one extra correlated line naming the
+truststore or effective proxy in play), Gate-2's per-repo decision events,
+and every git-push outcome (`DiagnosticWriter.java:139-203`).
+
+**Redacted by construction, not by caller discipline.** Every resolved
+Atlassian token and the TLS truststore password are collected once, from the
+whole `atlassian:` config, before anything is written, and every string
+written to the file is scrubbed against that set — plus three
+pattern-based rules needing no known-secret list at all: URL userinfo
+elision, `Authorization:` header elision, and a credential-shaped query
+parameter (`token=`/`access_token=`/`pat=`/`password=`/`secret=`/
+`api[-_]?key=`) elision (`Redactor.java:41-56, 97-110`). A secret shorter
+than 8 characters is not collected at all, so a misconfigured or placeholder
+token cannot substring-match and mangle unrelated prose (`Redactor.java:58-65,
+84-93`). A non-2xx response body's first 500 characters are redacted BEFORE
+being truncated to that length, not after, so a leaked credential straddling
+the cutoff cannot survive as an unredacted fragment (`DiagnosticWriter.java:126-150`).
+
+**What is NOT redacted, on purpose:** internal hostnames and Jira/Confluence/
+Bitbucket project and issue keys appear unredacted, because a file with them
+scrubbed out would be useless for diagnosis — the header block says this in
+plain words (`DiagnosticHeader.java:59-71`), and `sdd doctor --report` prints
+the same caveat to stdout (`DoctorCommand.java:114-117`). Decide for yourself
+whether that satisfies your own sharing policy before pasting a file
+anywhere; if not, redact those manually first.
+
+**Never fails the command it instruments.** Opening the file, and every
+write, swallow their own I/O failures and warn at most once
+(`DiagnosticWriter.java:25-32`); the `Diagnostics.open`/`openAt` facade itself
+is wrapped end to end so even a failure in rendering the header cannot turn a
+diagnostics problem into a failed `sdd` command (`Diagnostics.java:16-29`).
 
 ## `sdd index`
 
@@ -113,43 +329,97 @@ Only real syntax counts: a path named in a doc comment is not a call site, so
 `/api/streams` is recorded from the repo that calls it and not from the one
 that merely documents it.
 
-## `sdd plan <ref>`
+## `sdd plan [<ref>...] [--text <text>...]`
 
-**What it does:** has two modes selected by the shape of `<ref>`
-(`SpecSources.isConfluenceExport`, `PlanCommand.java:79-81`):
+**What it does:** dispatches on the SHAPE of each `<ref>` — by pattern alone,
+no network or filesystem access — into one of four kinds
+(`SpecSources.classify`, `sdd-plan/src/main/java/sdd/plan/spec/SpecSources.java:25-43`):
 
-- **Confluence export** (`.html`/`.htm`/`.xhtml`): normalizes it into
-  canonical markdown via the `planner` model, self-checks that the result
-  re-parses, and writes `<ref>.spec.md` (or `--out`). This is spec
-  *normalization*, not impact analysis — it prints
-  `review and edit the spec, then run: sdd plan <path>` and stops.
-  (`PlanCommand.java:88-114`)
-- **Canonical markdown spec** (anything else, typically `.md`): validates the
-  spec, requires a non-empty `.sdd/index.db` (i.e. `sdd index` already run),
-  runs impact analysis (which repos are affected and why), computes an
-  execution order, drafts open questions and a plan narrative with the
-  `planner` model, and writes `<spec-base>.plan.md`.
-  (`PlanCommand.java:116-161`)
+| Kind | Recognised as | Example |
+|---|---|---|
+| `MARKDOWN` | anything not matched below | `SPEC-101.md` |
+| `CONFLUENCE_EXPORT` | `.html`/`.htm`/`.xhtml` filename | `export.html` |
+| `JIRA` | a Jira key (`[A-Z][A-Z0-9_]*-[1-9][0-9]*`), or a URL whose path matches `/browse/<KEY>` | `PROJ-101`, `https://jira.corp.local/browse/PROJ-101` |
+| `CONFLUENCE_PAGE` | a URL whose path contains `/pages/`, `/display/`, or `/x/` | `https://confluence.corp.local/display/SPACE/Title` |
+
+and then into one of two modes:
+
+- **Validate mode — exactly one `MARKDOWN` ref, alone.** Validates the spec,
+  requires a non-empty `.sdd/index.db` (i.e. `sdd index` already run), runs
+  impact analysis (which repos are affected and why), computes an execution
+  order, drafts open questions and a plan narrative with the `planner` model,
+  and writes `<spec-base>.plan.md`. (`PlanCommand.java:113-114, 369-414`)
+- **Normalize mode — everything else** (one or more `CONFLUENCE_EXPORT`/
+  `JIRA`/`CONFLUENCE_PAGE` refs, any mix, plus any number of `--text`):
+  fetches/reads every source, assembles them into one bundle, normalizes it
+  into canonical markdown via the `planner` model, self-checks that the
+  result re-parses, and writes a single `.spec.md`. This is spec
+  *normalization*, not impact analysis — every remote mode stops here and
+  prints `review and edit the spec, then run: sdd plan <path>` rather than
+  running impact analysis itself (`PlanCommand.java:116, 335-353`).
+
+**Combination rules** (`PlanCommand.java:96-103`): a `MARKDOWN` ref is already
+a normalized, reviewable spec — combining it with anything else (a second
+ref, or `--text`) is meaningless and is rejected with `error: a canonical
+spec ref cannot be combined with other sources`. Every other kind composes
+freely: any mix of `CONFLUENCE_EXPORT`, `JIRA` and `CONFLUENCE_PAGE` refs,
+plus any number of `--text` values, is assembled into one `SourceBundle` and
+normalized together (`PlanCommand.java:182-217, 254-311`). `sdd plan` with
+neither a ref nor `--text` fails with `error: missing required parameter:
+<ref>` (`PlanCommand.java:92-95`).
+
+**Atlassian sources need config.** A `JIRA` ref requires `atlassian.jira`;
+a `CONFLUENCE_PAGE` ref requires `atlassian.confluence` — each checked, and
+failed with a `ConfigException` naming the missing block, before any network
+call (`PlanCommand.java:198-204`). A `JIRA` ref additionally follows linked
+Confluence pages when `atlassian.confluence` is configured, bounded by
+`atlassian.follow_depth`/`max_pages`/`max_linked_issues`
+(`PlanCommand.java:239-252`); with no Confluence site configured, Jira
+material is ingested with no link-following rather than erroring
+(`PlanCommand.java:235-239`).
+
+**`--out` and default output paths** (`PlanCommand.java:123-171, 219-311`):
+
+| Refs given | Default target (no `--out`) |
+|---|---|
+| Single `CONFLUENCE_EXPORT` ref, no `--text` | `<ref>.spec.md` |
+| Any mix of `CONFLUENCE_EXPORT`/`--text`, no Jira/Confluence-page ref | first export ref's `<ref>.spec.md`, or (pure `--text`) `<workspace>/<slug of first --text>.spec.md` |
+| One or more `JIRA` refs present | `<workspace>/<first Jira key>.spec.md` — a Jira ref is treated as the primary requirement record and wins over any export/page anchor |
+| `CONFLUENCE_PAGE` ref(s), no Jira ref | first export ref's path if one is also present, else `<workspace>/<fetched page id>.spec.md` |
+
+`--out` overrides all of the above and must itself be a markdown target — a
+Confluence-export-shaped `--out` is rejected (`PlanCommand.java:124-126,
+183-185`). The slug used for a pure-`--text` filename is the first ~6 words
+of the text, lowercased and non-alphanumerics collapsed to `-`
+(`PlanCommand.java:355-367`).
+
+**Diagnostics.** Any invocation that touches a `JIRA` or `CONFLUENCE_PAGE`
+ref opens one diagnostics file under `.sdd/diagnostics/` for the whole
+invocation, covering both the Jira and Confluence REST traffic
+(`PlanCommand.java:206-217`); a plain markdown or Confluence-export-only
+`sdd plan` opens none. See "Diagnostics" under `sdd doctor` above.
 
 **Flags**
 
 | Flag | Default | Description | Verified |
 |---|---|---|---|
-| `--workspace <dir>` | `.` | Workspace directory | `PlanCommand.java:46-47` |
-| `--out <path>` | `<ref>.spec.md` | Where to write the normalized spec (Confluence refs only; rejects a non-markdown target) | `PlanCommand.java:49-51, 89-91` |
-| `<ref>` (positional, arity 0..1) | — | Spec ref: canonical `.md`, or an exported Confluence `.html`/`.htm`/`.xhtml` | `PlanCommand.java:53-55` |
+| `--workspace <dir>` | `.` | Workspace directory | `PlanCommand.java:66-67` |
+| `--out <path>` | see table above | Where to write the normalized spec (rejects a non-markdown target) | `PlanCommand.java:69-71` |
+| `--text <text>` | none | Free-text requirement (repeatable); never inferred from a bare positional | `PlanCommand.java:73-75` |
+| `<ref>` (positional, arity 0..*) | none | Spec refs: canonical `.md`, exported Confluence `.html`/`.htm`/`.xhtml`, a Jira key/URL, or a Confluence page URL | `PlanCommand.java:77-80` |
 
 **Exit codes**
 
 | Code | Meaning |
 |---|---|
 | `0` | normalization or plan-drafting succeeded |
-| `1` | missing `<ref>`, config load failed, spec validation problems, empty/missing knowledge base, or an unhandled exception (`PlanCommand.java:67-70, 74-77, 82-85, 119-124, 129-139`) |
+| `1` | missing ref/text, a canonical ref combined with other sources, config load failed, missing `atlassian.jira`/`atlassian.confluence` for a ref that needs it, spec validation problems, empty/missing knowledge base, or an unhandled exception (`PlanCommand.java:92-120, 198-204, 369-385`) |
 
-**Writes:** `<ref>.spec.md` (normalize mode) or `<spec-base>.plan.md` (validate
-mode), each via `SafeWrite.writeWithBackup` — an existing file at that path is
-backed up first, and the backup path is printed if one was made
-(`PlanCommand.java:104-108, 153-157`).
+**Writes:** the normalized `.spec.md` (normalize mode) or `<spec-base>.plan.md`
+(validate mode), via `SafeWrite.writeWithBackup` — an existing file at that
+path is backed up first, and the backup path is printed if one was made
+(`PlanCommand.java:343-347, 406-410`) — plus, for any Atlassian-sourced run,
+a diagnostics file (above).
 
 ### `sdd plan approve <spec>.plan.md` — Gate 1
 
@@ -160,24 +430,44 @@ plan expects, runs `PlanValidator` (plan-vs-knowledge-base consistency),
 probes each cross-repo edge with a Gradle include-build smoke test (a failed
 probe only warns and falls back to `MAVEN_LOCAL` — it never fails the
 command; `PlanJson.java:92-104`), and on success compiles and writes
-`<spec-base>.plan.json`. (`ApproveCommand.java:31-123`)
+`<spec-base>.plan.json`. (`ApproveCommand.java:31-131`)
+
+**Gate-1 Jira comment.** When the approved spec's `## Sources` section names
+one or more Jira issue keys (`SourceBullet.jiraIssueKeys`), and STRICTLY
+AFTER `plan.json` is durably written, posts one best-effort comment to each
+source issue: `` sdd: plan approved for `<spec-id>` — `<N>` repos affected,
+execution order: `<repo>, <repo>, …` `` (`ApproveCommand.java:125,
+139-152`). A spec with no Jira sources triggers no config load and no output
+at all — the normal case for a hand-written or free-text-derived spec
+(`JiraWriteBack.java:85`). Posting only happens when
+`atlassian.write_back: comment` is configured; the default (`none`, or no
+`atlassian:` block) posts nothing and prints nothing
+(`JiraWriteBack.java:91-95`). Every failure — one issue's comment failing,
+the whole config/credential/network path failing — prints `` warn: jira
+comment failed: <detail> `` and **never changes the exit code**: this method
+never throws (`JiraWriteBack.java:29-34, 104-124`).
 
 **Flags**
 
 | Flag | Default | Description | Verified |
 |---|---|---|---|
-| `--workspace <dir>` | `.` | Workspace directory | `ApproveCommand.java:33-34` |
-| `<planPath>` (positional, required) | — | The reviewed `<spec>.plan.md` | `ApproveCommand.java:36-37` |
+| `--workspace <dir>` | `.` | Workspace directory | `ApproveCommand.java:34-35` |
+| `--no-comment` | off | Suppress the Jira write-back comment even when `atlassian.write_back: comment` is configured | `ApproveCommand.java:40-42` |
+| `<planPath>` (positional, required) | — | The reviewed `<spec>.plan.md` | `ApproveCommand.java:37-38` |
 
 **Exit codes**
 
 | Code | Meaning |
 |---|---|
-| `0` | plan approved, `plan.json` written |
-| `1` | wrong file extension, spec validation problems, empty/missing knowledge base, git-state/plan-validator problems, or an unhandled exception (`ApproveCommand.java:48-52, 60-65, 66-69, 94-101, 118-121`) |
+| `0` | plan approved, `plan.json` written (a failed/suppressed Jira comment does not change this) |
+| `1` | wrong file extension, spec validation problems, empty/missing knowledge base, git-state/plan-validator problems, or an unhandled exception (`ApproveCommand.java:53-56, 65-70, 71-74, 99-106, 128-131`) |
 
-**Writes:** `<spec-base>.plan.json` (`ApproveCommand.java:107-109`). Prints
-the spec and plan SHA-256 hashes that get embedded in the plan JSON.
+**Writes:** `<spec-base>.plan.json` (`ApproveCommand.java:112-114`). Prints
+the spec and plan SHA-256 hashes that get embedded in the plan JSON. Opens no
+diagnostics file of its own for the plan-compilation work above, but the
+Jira write-back (when it runs) opens one under `.sdd/diagnostics/` scoped to
+just that comment attempt (`JiraWriteBack.java:96-100`; see "Diagnostics"
+under `sdd doctor`).
 
 ### `sdd plan revise <spec>.plan.md`
 
@@ -427,29 +717,12 @@ command refuses (exit `4`) on every path — not only the mutating ones — whil
 `sdd implement`'s run lock is held, because racing it would report on an
 estate that no longer exists; a *stale* lock only warns and reviews anyway,
 since the crashed run is exactly the one a human needs to see.
-(`ReviewCommand.java:46-192`)
-
-**Flags**
-
-| Flag | Default | Description | Verified |
-|---|---|---|---|
-| `--workspace <dir>` | `.` | Workspace directory (`scope = INHERIT`, so it also applies to the `approve`/`reject`/`redo` subcommands) | `ReviewCommand.java:54-56` |
-| `--no-rebuild` | off | Skip the estate rebuild verification pass — the report is built from whatever branch the working trees happen to be on | `ReviewCommand.java:58-59, 123-131` |
-| `--interactive` | off | After the report is written, walk every `PENDING` repo in order and prompt `[a]pprove / [r]eject / re[d]o / [v]iew diff / [s]kip / [q]uit` | `ReviewCommand.java:61-63, 147-155` |
-| `<planJsonPath>` (positional, arity 0..1) | — | The approved `<spec>.plan.json` | `ReviewCommand.java:75-76` |
+(`ReviewCommand.java:99-232`)
 
 **Known scope limitation, carried from earlier phases:** the rebuild pass
 covers only repos in state `SUCCEEDED`, not "every affected repo"
 (`RebuildPass.java:24-38`) — a repo that never ran, or that `FAILED`, is not
 rebuilt.
-
-**Exit codes**
-
-| Code | Meaning |
-|---|---|
-| `0` | every repo `SUCCEEDED`, no rebuild failure, no restore/staging failure, no checkpoint drift, every declared compatibility guarantee actually checked, and (if `--interactive`) no follow-up finding |
-| `2` | any of the above conditions failed, OR (if `--interactive`) a follow-up (a refused decision, a squash refusal, a failed re-verify) demanded it — whichever is worse wins (`ReviewCommand.java:158-186`) |
-| `4` | missing `<planJsonPath>`, no run found for it, the run's lock is held by `sdd implement`, or an unhandled exception (`ReviewCommand.java:92-98, 104-107, 187-190`, `exitCodeOnInvalidInput = 4` at `ReviewCommand.java:48`) |
 
 A repo that DECLARED `compat: binary-compatible` or `compat: type-compatible` and
 whose gate never reached a verdict fails the review even when everything else is
@@ -457,24 +730,79 @@ green, and gets a `## Compatibility gates that did not run` section naming why.
 Exit `0` on such a run would be `sdd review` asserting a guarantee holds on the
 strength of a check that did not happen. A gate that ran and passed, or a repo
 that declared no guarantee, is silent (`SkippedGates.java`,
-`ReviewCommand.java:170, 177-184`).
+`ReviewCommand.java:215, 225-228`).
+
+**Gate-2 Jira comment.** Strictly after `report.md` is durably written, and
+only when the run's spec (`<runDir>/spec.md`) names Jira source keys, posts
+one best-effort comment per source issue: `` sdd: review report for
+`<spec-id>` `` plus the same decisions-summary line `report.md` itself
+renders (`ReviewCommand.java:181-187, 234-268`,
+`ReviewReport.decisionsSummaryLine`). Same rules as Gate 1's comment (above):
+gated on `atlassian.write_back: comment`, suppressible with `--no-comment`,
+every failure warns and never changes the exit code
+(`JiraWriteBack.java:29-34, 61-125`). Unlike Gate 1, this reuses the SAME
+diagnostics file `sdd review`'s own Atlassian traffic already writes to,
+rather than opening a second one (`ReviewCommand.java:267`,
+`RunContext.java:94-100`).
+
+**Bitbucket push and pull request, gated on `atlassian.pull_requests: true`.**
+Off by default; with it off (or no `atlassian:` block at all) `sdd review`'s
+behaviour and output are byte-for-byte unchanged from before this feature —
+that check is the very first thing this step does, before any config or
+credential is touched (`BitbucketReview.java:30-33, 45-49`). When on, for
+every repo in state `SUCCEEDED` (`BitbucketReview.java:63-65`): pushes the
+run branch to Bitbucket, then finds an OPEN pull request whose source is that
+branch (updating its title/description if one exists) or opens a new one
+(`BitbucketReview.java:77-121`). The PR description is `ReviewReport
+.renderRepo`'s SAME rendered findings `report.md`'s Repos section carries for
+that repo, plus the run id, spec id, and a link to the source Jira issue —
+the two artifacts can never disagree about what a repo's run produced
+(`BitbucketReview.java:151-160`). Called strictly AFTER `report.md` (and the
+Jira comment, above) are durably written; every failure — one repo's push, or
+its PR call — prints `` warn: bitbucket: <repo>: <detail> `` (or a bare `` warn:
+bitbucket: <detail> `` for a config/credential failure before any repo is
+reached) and never stops the attempt for the rest of the repos, never changes
+the exit code (`BitbucketReview.java:21-34, 45-58, 68-74`).
+
+**Flags**
+
+| Flag | Default | Description | Verified |
+|---|---|---|---|
+| `--workspace <dir>` | `.` | Workspace directory (`scope = INHERIT`, so it also applies to the `approve`/`reject`/`redo` subcommands) | `ReviewCommand.java:63-65` |
+| `--no-rebuild` | off | Skip the estate rebuild verification pass — the report is built from whatever branch the working trees happen to be on | `ReviewCommand.java:67-68, 154-172` |
+| `--interactive` | off | After the report is written, walk every `PENDING` repo in order and prompt `[a]pprove / [r]eject / re[d]o / [v]iew diff / [s]kip / [q]uit` | `ReviewCommand.java:70-72, 193-201` |
+| `--no-comment` | off | Suppress the Jira write-back comment even when `atlassian.write_back: comment` is configured | `ReviewCommand.java:74-76` |
+| `<planJsonPath>` (positional, arity 0..1) | — | The approved `<spec>.plan.json` | `ReviewCommand.java:88-89` |
+
+**Exit codes**
+
+| Code | Meaning |
+|---|---|
+| `0` | every repo `SUCCEEDED`, no rebuild failure, no restore/staging failure, no checkpoint drift, every declared compatibility guarantee actually checked, and (if `--interactive`) no follow-up finding |
+| `2` | any of the above conditions failed, OR (if `--interactive`) a follow-up (a refused decision, a squash refusal, a failed re-verify) demanded it — whichever is worse wins (`ReviewCommand.java:203-231`) — the Jira comment and Bitbucket push/PR step are never part of this: both are best-effort and cannot themselves produce a `2` |
+| `4` | missing `<planJsonPath>`, no run found for it (`ReviewCommand.java:104-111`), the run's lock is held by `sdd implement` (`ReviewCommand.java:134-138`), or an unhandled exception (`ReviewCommand.java:123-126`, `exitCodeOnInvalidInput = 4` at `ReviewCommand.java:56`) |
 
 **Writes:** `.sdd/runs/<runId>/review/report.md` and one
 `review/<repo>.diff` per `SUCCEEDED` repo with a resolvable checkpoint
-(`RunContext.java:84-103, 111-127`). `report.md`'s sections, in the order they
+(`RunContext.java:103-128`). `report.md`'s sections, in the order they
 appear in the document: Summary, Staging failures, Checkpoint drift, Repos,
 Rebuild failures, Contract re-check, Branch restore failures, Diff failures,
-Propagation, Release runbook (`ReviewReport.java:93, 370, 386, 233, 291, 324,
-399, 411, 425, 76`). Summary, Repos and Release runbook always render; the
+Propagation, Release runbook (`ReviewReport.java:87, 409, 425, 222, 308, 363,
+438, 450, 464, 70`). Summary, Repos and Release runbook always render; the
 other six are omitted when they have nothing to report. The order is
 load-bearing rather than
 incidental: staging failures and checkpoint drift precede Repos deliberately,
 because both invalidate what Repos says and a reader who meets "rebuild: OK"
 first has already formed a verdict by the time the caveat arrives
-(`ReviewReport.java:64-65`). If `--interactive` records any decision, it also writes
+(`ReviewReport.java:58-61`). If `--interactive` records any decision, it also writes
 whatever `approve`/`reject`/`redo` write (below) for each decided repo, and
 re-renders `report.md` once at the end of the walk
-(`InteractiveReview.java:158-162`).
+(`InteractiveReview.java:163-167`). With `pull_requests: true`, also rewrites
+`state.json` with the opened/updated PR's id and link per repo
+(`BitbucketReview.java:118-121`). Always opens one diagnostics file under
+`.sdd/diagnostics/` for the whole invocation, covering the Jira comment
+attempt, every Bitbucket REST call, and every git push
+(`RunContext.java:94-100`; see "Diagnostics" under `sdd doctor`).
 
 ### `sdd review approve <repo> <spec>.plan.json` — Gate 2 (decision)
 
@@ -482,7 +810,25 @@ re-renders `report.md` once at the end of the walk
 reviewed commit and records the new checkpoint. Refuses (does not apply) if
 the repo's own state or its plan-graph invariants disallow it (e.g. an
 unresolved upstream); a refusal is reported, not thrown.
-(`DecisionCommand.java:205-218, 227-271`)
+(`DecisionCommand.java:187-192, 219-232, 241-302`)
+
+**Then, only with `atlassian.pull_requests: true` and only after a squash
+that actually applied** (not on a refused squash): force-pushes the squashed
+branch, then merges its pull request — push first so the merge lands the
+exact single commit the human reviewed
+(`BitbucketDecisions.java:35-68`). **The ordering guarantee is the crux of
+this step, and it holds by construction, not by a check:** `squashAndRecord`
+calls `BitbucketDecisions.afterApprove` from only its two branches where
+`SquashApprove` reported `applied()` — the no-op-squash branch and the
+real-squash branch — never from the refusal branch, which returns before
+`BitbucketDecisions` is reached at all (`DecisionCommand.java:258-268,
+269-284, 285-301`). A refused local squash therefore can never be followed by
+a Bitbucket merge. On any failure — the push, or the merge itself — local
+state is already correct (the squash and its checkpoint write-back already
+happened); this only warns (`` warn: bitbucket: could not merge PR for
+<repo> — merge it manually in the Bitbucket UI: <detail> ``) and never
+changes the exit code (`BitbucketDecisions.java:41-68`). With
+`pull_requests` off, or no PR recorded for this repo, nothing is attempted.
 
 **Flags**
 
@@ -490,66 +836,99 @@ unresolved upstream); a refusal is reported, not thrown.
 |---|---|---|
 | `<repo>` (positional, required) | The repo to decide on | `DecisionCommand.java:56-57` |
 | `<planJsonPath>` (positional, arity 0..1) | The approved `<spec>.plan.json` | `DecisionCommand.java:62-63` |
-| `--workspace` | inherited from `sdd review` | `ReviewCommand.java:54-56` |
+| `--workspace` | inherited from `sdd review` | `ReviewCommand.java:63-65` |
 
 **Exit codes**
 
 | Code | Meaning |
 |---|---|
-| `0` | approved and squashed cleanly (or squash was a no-op because there was nothing to squash) |
-| `2` | the decision itself was refused (`DecisionCommand.java:171-174`), the squash was refused (dirty tree or branch moved off checkpoint; `DecisionCommand.java:244-249`), or the post-squash branch restore failed (`DecisionCommand.java:285-295`) |
-| `4` | missing `<planJsonPath>`, no run found, repo not in the plan, the run's lock is held, or an unhandled exception (`DecisionCommand.java:145-152, 155-163, 199-202`, `exitCodeOnInvalidInput = 4` at `DecisionCommand.java:207`) |
+| `0` | approved and squashed cleanly (or squash was a no-op because there was nothing to squash); a failed/skipped Bitbucket merge does not change this |
+| `2` | the decision itself was refused (`DecisionCommand.java:189-192`), the squash was refused (dirty tree or branch moved off checkpoint; `DecisionCommand.java:258-268`), or the post-squash branch restore failed (`DecisionCommand.java:326-336`) |
+| `4` | missing `<planJsonPath>`, no run found, repo not in the plan, the run's lock is held, or an unhandled exception (`DecisionCommand.java:145-152, 173-181, 164-167`, `exitCodeOnInvalidInput = 4` at `DecisionCommand.java:221`) |
 
 **Writes:** `.sdd/runs/<runId>/review/decisions.json` (the new verdict, via
 optimistic-retry write with up to 5 attempts on a concurrent-write conflict;
-`DecisionCommand.java:81-127`), an entry appended to the run's top-level
+`DecisionCommand.java:118-138`), an entry appended to the run's top-level
 `events.jsonl` (same file `implement` appends repo-state transitions to;
 `RunStore.java:213-226`), a rewrite of `state.json` with the new checkpoint
-sha on a real squash (`DecisionCommand.java:263-265`), and a re-render of
-`review/report.md`.
+sha on a real squash (`DecisionCommand.java:290-292`), and a re-render of
+`review/report.md`. With `pull_requests: true`, Gate-2 decision events (one
+line per phase transition — squash refused/applied, checkpoint write,
+merge attempted/succeeded/failed/not-attempted) are appended to the run's
+diagnostics file (`DecisionCommand.java:304-312`,
+`BitbucketDecisions.java:81-92`).
 
 ### `sdd review reject <repo> <spec>.plan.json [--reason <text>]`
 
 **What it does:** rejects a repo's run branch — no squash, no downstream
-re-verify. (`DecisionCommand.java:297-306`)
+re-verify. (`DecisionCommand.java:338-356`)
+
+**Then, only with `atlassian.pull_requests: true` and only if this repo has a
+recorded PR:** declines it (`BitbucketDecisions.java:96-117`). No local git
+side effect to get out of order with, unlike `approve`'s squash-then-merge —
+`decisions.json` already recorded `REJECTED` by the time this runs
+(`BitbucketDecisions.java:27-29`). Best-effort, same as `approve`: a decline
+failure warns (`` warn: bitbucket: could not decline PR for <repo>: <detail> ``)
+and never changes the exit code.
 
 **Flags:** same `<repo>`/`<planJsonPath>` as `approve`, plus:
 
 | Flag | Default | Description | Verified |
 |---|---|---|---|
-| `--reason <text>` | `""` | Why the work was rejected | `DecisionCommand.java:299-300` |
+| `--reason <text>` | `""` | Why the work was rejected | `DecisionCommand.java:340-341` |
 
 **Exit codes:** `0` applied, `2` decision refused, `4` input/lock error — same
-mechanics as `approve` (no squash step, so no squash-specific `2` case).
+mechanics as `approve` (no squash step, so no squash-specific `2` case; a
+failed/skipped PR decline never changes the exit code either).
 
 **Writes:** `decisions.json`, `events.jsonl`, re-rendered `report.md` — same
-as `approve`, minus the `state.json` checkpoint rewrite.
+as `approve`, minus the `state.json` checkpoint rewrite. With
+`pull_requests: true` and a recorded PR, the decline is not itself logged as
+a `gate2` diagnostics event (only `approve`'s squash/merge phases are;
+`BitbucketDecisions.java` has no `gate2(...)` call in `afterReject`).
 
 ### `sdd review redo <repo> <spec>.plan.json [--reason <text>] [--no-reverify]`
 
 **What it does:** marks a repo for re-implementation and, unless
 `--no-reverify`, re-verifies its transitive downstream subtree against its
 current checkpoints (design line 67's redo includes re-verify by definition,
-not as an optional extra). (`DecisionCommand.java:308-326, 336-370`)
+not as an optional extra). (`DecisionCommand.java:358-376, 386-420`)
+
+**No Bitbucket call at all.** `redo` never touches the repo's PR — no push,
+no merge, no decline — so a PR opened by an earlier `sdd review` is left
+exactly as it was: open, neither merged nor declined. A human redoing the
+work is expected to push a new commit later, which the next `sdd review`
+picks up as an update to the SAME open PR (`BitbucketReview.java:111-114`
+finds it by open source branch).
 
 **Flags**
 
 | Flag | Default | Description | Verified |
 |---|---|---|---|
-| `--reason <text>` | `""` | Why the work must be redone | `DecisionCommand.java:311-312` |
-| `--no-reverify` | off | Skip re-verifying the downstream subtree | `DecisionCommand.java:314-315` |
+| `--reason <text>` | `""` | Why the work must be redone | `DecisionCommand.java:361-362` |
+| `--no-reverify` | off | Skip re-verifying the downstream subtree | `DecisionCommand.java:364-365` |
 
 **Exit codes**
 
 | Code | Meaning |
 |---|---|
 | `0` | redo recorded; downstream re-verify (if run) found nothing wrong |
-| `2` | decision refused, the downstream staging failed, or a downstream repo's branch restore failed (`DecisionCommand.java:355-358, 368-369`) |
+| `2` | decision refused, the downstream staging failed, or a downstream repo's branch restore failed (`DecisionCommand.java:405-408, 418`) |
 | `4` | input/lock error, same as `approve` |
 
 **Writes:** `decisions.json`, `events.jsonl`, re-rendered `report.md`; prints
 `then run: sdd implement --workspace <dir> --retry <repo> <planJsonPath>` as the next step
-(`DecisionCommand.java:338-339`).
+(`DecisionCommand.java:388-389`).
+
+**PR lifecycle across the three decisions** (all gated on
+`atlassian.pull_requests: true`; every step below is best-effort and never
+changes any decision's exit code):
+
+| Decision | Effect on the repo's Bitbucket PR |
+|---|---|
+| `approve` | force-pushed squashed branch, then merged — but ONLY when the local squash itself applied; a refused squash never reaches Bitbucket at all |
+| `reject` | declined |
+| `redo` | untouched — stays open; the next `sdd review` updates its description when the redo's new work lands |
 
 ## `sdd clean [<spec>.plan.json]`
 
