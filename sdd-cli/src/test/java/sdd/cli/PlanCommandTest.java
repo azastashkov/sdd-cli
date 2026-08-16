@@ -1,6 +1,8 @@
 package sdd.cli;
 
+import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
 import sdd.core.llm.ChatMessage;
@@ -14,9 +16,15 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
+import static com.github.tomakehurst.wiremock.client.WireMock.get;
+import static com.github.tomakehurst.wiremock.client.WireMock.okJson;
+import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class PlanCommandTest {
+    @RegisterExtension
+    static WireMockExtension wm = WireMockExtension.newInstance().build();
+
     @TempDir Path ws;
 
     private record Run(int exitCode, String out) {}
@@ -567,39 +575,107 @@ class PlanCommandTest {
         assertThat(run.exitCode()).isEqualTo(1);
     }
 
+    // Task 1's placeholder-rejection tests (bareJiraKeyRefIsRejectedAsNotConfigured and friends,
+    // asserting "error: Jira/Confluence ingestion is not configured") are gone: Task 3 replaces
+    // that placeholder with the real Jira/Confluence ingestion path exercised below. That is the
+    // one expected DoD exception ("every pre-existing test still passes unmodified").
+
     @Test
-    void bareJiraKeyRefIsRejectedAsNotConfigured() throws Exception {
+    void bareJiraKeyRefWithNoAtlassianConfigFailsNamingWhatIsMissing() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+
         Run run = plan(new PlanCommand(), "--workspace", ws.toString(), "PROJ-123");
 
-        assertThat(run.out()).contains("error: Jira/Confluence ingestion is not configured");
-        assertThat(run.exitCode()).isEqualTo(1);
-    }
-
-    @Test
-    void jiraBrowseUrlRefIsRejectedAsNotConfigured() throws Exception {
-        Run run = plan(new PlanCommand(), "--workspace", ws.toString(),
-                "https://jira.corp.local/browse/PROJ-123");
-
-        assertThat(run.out()).contains("error: Jira/Confluence ingestion is not configured");
-        assertThat(run.exitCode()).isEqualTo(1);
-    }
-
-    @Test
-    void confluencePageUrlRefIsRejectedAsNotConfigured() throws Exception {
-        Run run = plan(new PlanCommand(), "--workspace", ws.toString(),
-                "https://confluence.corp.local/pages/viewpage.action?pageId=1");
-
-        assertThat(run.out()).contains("error: Jira/Confluence ingestion is not configured");
+        assertThat(run.out()).contains("error: no atlassian.jira configured in sdd.yml");
         assertThat(run.exitCode()).isEqualTo(1);
     }
 
     @Test
     void jiraRefDoesNotFallThroughToTheConfusingMissingFileError() throws Exception {
-        // a rejected Jira/Confluence ref must never reach MarkdownSpecSource — that would
-        // report "file not found" instead of the honest "not configured" message
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        // a Jira ref must never reach MarkdownSpecSource — that would report a confusing "file
+        // not found" instead of the honest "not configured" message
         Run run = plan(new PlanCommand(), "--workspace", ws.toString(), "PROJ-123");
 
         assertThat(run.out()).doesNotContain("NoSuchFileException").doesNotContain("PROJ-123 (No such file");
+    }
+
+    @Test
+    void confluencePageUrlRefWithNoAtlassianConfluenceConfiguredFailsNamingWhatIsMissing() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+
+        Run run = plan(new PlanCommand(), "--workspace", ws.toString(),
+                "https://confluence.corp.local/pages/viewpage.action?pageId=1");
+
+        assertThat(run.out()).contains("error: no atlassian.confluence configured in sdd.yml");
+        assertThat(run.exitCode()).isEqualTo(1);
+    }
+
+    @Test
+    void jiraBrowseUrlRefWithNoAtlassianConfigFails() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+
+        Run run = plan(new PlanCommand(), "--workspace", ws.toString(),
+                "https://jira.corp.local/browse/PROJ-123");
+
+        assertThat(run.out()).contains("error: no atlassian.jira configured in sdd.yml");
+        assertThat(run.exitCode()).isEqualTo(1);
+    }
+
+    @Test
+    void anUnsetJiraPatSurfacesTheDeferredCredentialMessageAtPointOfUse() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml() + """
+                atlassian:
+                  jira:
+                    base_url: https://jira.corp.local
+                    token: ${JIRA_PAT}
+                """);
+
+        Run run = plan(new PlanCommand(), "--workspace", ws.toString(), "PROJ-123");
+
+        assertThat(run.out()).contains("error: atlassian.jira.token: environment variable JIRA_PAT is not set");
+        assertThat(run.exitCode()).isEqualTo(1);
+    }
+
+    @Test
+    void jiraRefEndToEndWritesTheGateFileWithSourcesAndPreservesTheHumanGate() throws Exception {
+        wm.stubFor(get(urlEqualTo("/rest/api/2/issue/PROJ-1"
+                + "?expand=renderedFields&fields=summary,description,issuelinks,subtasks,comment,status,updated"))
+                .willReturn(okJson("""
+                        {"id": "1", "key": "PROJ-1",
+                         "fields": {"summary": "Order API", "status": {"name": "Open"},
+                                    "updated": "2026-08-16T09:12:00.000+0000", "subtasks": [],
+                                    "issuelinks": [], "comment": {"comments": []}},
+                         "renderedFields": {"description": "<p>Add pagination.</p>",
+                                             "comment": {"comments": []}}}
+                        """)));
+        wm.stubFor(get(urlEqualTo("/rest/api/2/issue/PROJ-1/remotelink")).willReturn(okJson("[]")));
+        Files.writeString(ws.resolve("sdd.yml"), yaml() + """
+                atlassian:
+                  jira:
+                    base_url: %s
+                    token: sk-jira
+                """.formatted(wm.baseUrl()));
+        PlanCommand cmd = new PlanCommand();
+        cmd.plannerForTest = new ScriptedChatModel(List.of(new ChatResponse(
+                ChatMessage.assistant("""
+                        {"title": "Order API", "owner": "", "status": "", "goal": "Add pagination.",
+                         "background": "", "requirements": ["r"], "acceptance": ["a"], "constraints": [],
+                         "touchpoints": [], "out_of_scope": [], "open_questions": [], "unmapped": []}"""),
+                "stop", new Usage(10, 10))));
+
+        Run run = plan(cmd, "--workspace", ws.toString(), "PROJ-1");
+
+        Path written = ws.resolve("PROJ-1.spec.md");
+        assertThat(run.exitCode()).isZero();
+        assertThat(run.out()).contains("normalized spec written: " + written)
+                .contains("review and edit the spec, then run: sdd plan --workspace " + ws + " " + written)
+                // the human gate: this command must never run impact analysis off a bare ticket ref
+                .doesNotContain("impact:");
+        String content = Files.readString(written);
+        assertThat(content).contains("id: PROJ-1")
+                .contains("## Sources")
+                .contains("- jira PROJ-1 updated 2026-08-16T09:12:00Z " + wm.baseUrl() + "/browse/PROJ-1");
     }
 
     @Test

@@ -5,13 +5,19 @@ import picocli.CommandLine.Model.CommandSpec;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 import picocli.CommandLine.Spec;
+import sdd.core.config.AtlassianConfig;
+import sdd.core.config.AtlassianSite;
+import sdd.core.config.ConfigException;
 import sdd.core.config.ConfigLoader;
 import sdd.core.config.ModelEndpoint;
 import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
+import sdd.core.http.HttpClients;
+import sdd.core.http.RestClient;
 import sdd.core.llm.ChatModel;
 import sdd.core.llm.HttpChatModel;
 import sdd.core.retrieve.FtsRetriever;
+import sdd.plan.confluence.ConfluenceClient;
 import sdd.plan.confluence.ConfluenceExportSource;
 import sdd.plan.confluence.ConfluenceNormalizer;
 import sdd.plan.confluence.SpecNormalizationException;
@@ -25,6 +31,8 @@ import sdd.plan.impact.AffectedRepo;
 import sdd.plan.impact.ImpactAnalysis;
 import sdd.plan.impact.ImpactResult;
 import sdd.plan.impact.Seed;
+import sdd.plan.jira.JiraClient;
+import sdd.plan.jira.JiraSpecSource;
 import sdd.plan.source.SourceBundle;
 import sdd.plan.source.SourceDoc;
 import sdd.plan.spec.MarkdownSpecSource;
@@ -37,6 +45,8 @@ import sdd.plan.spec.SpecSources;
 import sdd.plan.spec.SpecValidator;
 
 import java.io.PrintWriter;
+import java.net.URI;
+import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -81,13 +91,6 @@ public final class PlanCommand implements Callable<Integer> {
             return 1;
         }
         List<SpecRefKind> kinds = refs.stream().map(SpecSources::classify).toList();
-        // Ruling R2: Jira/Confluence-page refs are rejected outright in this task — they must
-        // never fall through to MarkdownSpecSource, which would report a confusing "file not
-        // found" instead of the honest "not configured yet".
-        if (kinds.stream().anyMatch(k -> k == SpecRefKind.JIRA || k == SpecRefKind.CONFLUENCE_PAGE)) {
-            errWriter.println("error: Jira/Confluence ingestion is not configured");
-            return 1;
-        }
         long markdownRefs = kinds.stream().filter(k -> k == SpecRefKind.MARKDOWN).count();
         // A canonical spec is already normalized — combining it with any other ref or with
         // --text (including a second canonical ref) is meaningless, so both shapes reject here.
@@ -102,10 +105,12 @@ public final class PlanCommand implements Callable<Integer> {
             errWriter.println("error: " + e.getMessage());
             return 1;
         }
+        boolean hasAtlassianRefs = kinds.stream().anyMatch(k -> k == SpecRefKind.JIRA || k == SpecRefKind.CONFLUENCE_PAGE);
         try {
-            return markdownRefs == 1
-                    ? validate(config, refs.get(0), outWriter, errWriter)
-                    : normalize(config, outWriter);
+            if (markdownRefs == 1) {
+                return validate(config, refs.get(0), outWriter, errWriter);
+            }
+            return hasAtlassianRefs ? normalizeWithAtlassian(config, kinds, outWriter) : normalize(config, outWriter);
         } catch (RuntimeException e) {
             errWriter.println("error: " + e.getMessage());
             return 1;
@@ -160,6 +165,122 @@ public final class PlanCommand implements Callable<Integer> {
         NormalizedSpec normalized =
                 ConfluenceNormalizer.normalize(bundle, model, planner.model(), planner.maxTokens(), fallbackId);
         return writeNormalized(normalized, target, outWriter);
+    }
+
+    /**
+     * The Task 3 path: any mix of JIRA/CONFLUENCE_PAGE refs with {@code --text} and
+     * CONFLUENCE_EXPORT refs, assembled into one bundle. This mirrors {@link #normalize}'s
+     * export/text bundle-building — {@code ConfluenceExportSource.loadDoc} per export ref, one
+     * FREE_TEXT doc per {@code --text} — but routes Jira/Confluence-page material through
+     * {@link JiraSpecSource} instead, so link-following and Sources provenance happen exactly
+     * once, in the one place that already knows how. The human gate is unchanged: this always
+     * ends at {@link #writeNormalized}, never at impact analysis.
+     */
+    private Integer normalizeWithAtlassian(SddConfig config, List<SpecRefKind> kinds, PrintWriter outWriter) {
+        if (out != null && SpecSources.isConfluenceExport(out.toString())) {
+            throw new IllegalArgumentException("--out target must be a markdown file (got " + out + ")");
+        }
+        List<String> jiraKeys = new ArrayList<>();
+        List<String> confluencePageRefs = new ArrayList<>();
+        List<String> exportRefs = new ArrayList<>();
+        for (int i = 0; i < refs.size(); i++) {
+            switch (kinds.get(i)) {
+                case JIRA -> jiraKeys.add(refs.get(i));
+                case CONFLUENCE_PAGE -> confluencePageRefs.add(refs.get(i));
+                case CONFLUENCE_EXPORT -> exportRefs.add(refs.get(i));
+                case MARKDOWN -> { /* unreachable: markdownRefs == 0 whenever this method runs */ }
+            }
+        }
+
+        AtlassianConfig atlassian = config.atlassian();
+        if (!jiraKeys.isEmpty() && (atlassian == null || atlassian.jira() == null)) {
+            throw new ConfigException("no atlassian.jira configured in sdd.yml");
+        }
+        if (!confluencePageRefs.isEmpty() && (atlassian == null || atlassian.confluence() == null)) {
+            throw new ConfigException("no atlassian.confluence configured in sdd.yml");
+        }
+
+        ModelEndpoint planner = config.models().get("planner");
+        ChatModel model = plannerForTest != null ? plannerForTest : new HttpChatModel(planner);
+        HttpClient httpClient = HttpClients.build(atlassian.tls(), atlassian.proxy());
+
+        JiraClient jiraClient = null;
+        if (!jiraKeys.isEmpty()) {
+            jiraClient = new JiraClient(atlassianRestClient("Jira", atlassian.jira(), httpClient),
+                    atlassian.jira().baseUrl());
+        }
+        ConfluenceClient confluenceClient = null;
+        String confluenceHost = null;
+        // Confluence is built whenever there is a direct Confluence-page ref to fetch, OR when
+        // there is Jira material that might link to it — atlassian.confluence is independently
+        // optional, so a Jira-only estate with no Confluence site simply gets no link-following
+        // (JiraSpecSource treats a null ConfluencePages as "nothing to follow", not an error).
+        if (atlassian.confluence() != null && (!confluencePageRefs.isEmpty() || !jiraKeys.isEmpty())) {
+            AtlassianSite site = atlassian.confluence();
+            // atlassianRestClient is evaluated first (Java argument order) and raises the
+            // deferred-credential message if the token is unset, so site.token() below is only
+            // ever reached once that has already succeeded — no second check needed.
+            confluenceClient = new ConfluenceClient(atlassianRestClient("Confluence", site, httpClient),
+                    httpClient, site.token(), site.baseUrl());
+            confluenceHost = URI.create(site.baseUrl()).getHost();
+        }
+
+        JiraSpecSource jiraSpecSource = new JiraSpecSource(jiraClient, confluenceClient, confluenceHost,
+                atlassian.followDepth(), atlassian.maxPages(), atlassian.maxLinkedIssues(),
+                model, planner.model(), planner.maxTokens());
+
+        List<SourceDoc> docs = new ArrayList<>();
+        List<String> notes = new ArrayList<>();
+        if (!jiraKeys.isEmpty()) {
+            JiraSpecSource.Fetched fetched = jiraSpecSource.fetch(jiraKeys);
+            docs.addAll(fetched.docs());
+            notes.addAll(fetched.notes());
+        }
+        for (String ref : confluencePageRefs) {
+            String pageId = confluenceClient.resolvePageId(ref);
+            if (pageId == null) {
+                throw new IllegalArgumentException("cannot resolve Confluence URL: " + ref);
+            }
+            docs.add(confluenceClient.fetchPage(pageId));
+        }
+        String anchorRef = null;
+        String anchorId = null;
+        for (String ref : exportRefs) {
+            SourceDoc doc = ConfluenceExportSource.loadDoc(ref);
+            docs.add(doc);
+            if (anchorRef == null) {
+                anchorRef = ref;
+                anchorId = doc.id();
+            }
+        }
+        for (int i = 0; i < texts.size(); i++) {
+            docs.add(new SourceDoc(SourceDoc.Kind.FREE_TEXT, "text-" + (i + 1), null, null, null,
+                    texts.get(i), List.of()));
+        }
+
+        // The spec's id/filename derive from the Jira key when one is present (Section 5: "keep
+        // it stable, since plan.json and the run directory are named from it") — ahead of any
+        // Confluence-export anchor or --text slug, since a Jira ref is the primary requirement
+        // record whenever one is in the mix.
+        String fallbackId = !jiraKeys.isEmpty() ? jiraKeys.get(0)
+                : anchorId != null ? anchorId : "spec-" + slugify(texts.get(0));
+        Path target = out != null ? out
+                : !jiraKeys.isEmpty() ? workspace.resolve(jiraKeys.get(0) + ".spec.md")
+                : anchorRef != null ? Path.of(anchorRef + ".spec.md")
+                : workspace.resolve(slugify(texts.get(0)) + ".spec.md");
+
+        NormalizedSpec normalized = jiraSpecSource.assemble(docs, notes, fallbackId);
+        return writeNormalized(normalized, target, outWriter);
+    }
+
+    /** An unset {@code ${VAR}} token does not fail config loading (Task 2's deferred-credential
+     *  idiom) — it is raised here instead, the point a site's {@link RestClient} is actually
+     *  about to be built, exactly like {@code AtlassianProbe} does for {@code sdd doctor}. */
+    private static RestClient atlassianRestClient(String siteName, AtlassianSite site, HttpClient httpClient) {
+        if (site.tokenError() != null) {
+            throw new ConfigException(site.tokenError());
+        }
+        return new RestClient(siteName, site.baseUrl(), site.token(), site.tokenVar(), site.timeout(), httpClient);
     }
 
     private Integer writeNormalized(NormalizedSpec normalized, Path target, PrintWriter outWriter) {
