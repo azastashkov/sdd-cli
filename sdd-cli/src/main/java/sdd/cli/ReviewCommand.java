@@ -10,18 +10,24 @@ import sdd.cli.implement.RepoState;
 import sdd.cli.implement.Scheduler;
 import sdd.cli.review.ContractRecheck;
 import sdd.cli.review.DecisionCommand;
+import sdd.cli.review.DecisionRecord;
 import sdd.cli.review.EstateRebuild;
 import sdd.cli.review.InteractiveReview;
 import sdd.cli.review.RebuildPass;
 import sdd.cli.review.RebuildScope;
+import sdd.cli.review.ReviewReport;
 import sdd.cli.review.RunContext;
 import sdd.cli.review.SkippedGates;
+import sdd.plan.source.SourceBullet;
+import sdd.plan.spec.NormalizedSpec;
+import sdd.plan.spec.SpecParser;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -62,6 +68,10 @@ public final class ReviewCommand implements Callable<Integer> {
     @Option(names = "--interactive", description = "Walk PENDING repos and prompt approve/reject/"
             + "redo/view/skip/quit after the report is written")
     boolean interactive;
+
+    @Option(names = "--no-comment", description = "Suppress the Jira write-back comment even when "
+            + "atlassian.write_back: comment is configured")
+    boolean noComment;
 
     /** Test-only injection point: {@code null} in real use, where {@link #call} falls back to
      *  {@code System.in}. {@link InteractiveReview} itself never touches {@code System.in} — this is
@@ -144,6 +154,13 @@ public final class ReviewCommand implements Callable<Integer> {
             RebuildScope scope = noRebuild ? RebuildScope.skipped() : RebuildScope.estate();
             out.println("review written: " + run.writeReport(diffs, rebuilds, notLocallyVerified,
                     stagingFailures, restoreFailures, contracts, scope));
+            // Task 4 (Gate 2 write-back): strictly AFTER report.md is durably written above, and
+            // via JiraWriteBack — which never throws — so a Jira outage can never turn this
+            // review into a failed one. Only the base `sdd review` write, not every re-render a
+            // `sdd review approve/reject/redo` decision triggers (RunContext's own javadoc: those
+            // re-run writeReport so the artifact reflects the run as it stands) — the brief names
+            // exactly two call sites, and repeating this per decision was not one of them.
+            commentOnJiraSources(run, out, err);
 
             int interactiveExit = 0;
             if (interactive) {
@@ -188,5 +205,41 @@ public final class ReviewCommand implements Callable<Integer> {
             err.println("error: " + e.getMessage());
             return 4;
         }
+    }
+
+    /** Task 4 brief section 3's Gate-2 instruction — reuse {@link ReviewReport#decisionsSummaryLine}
+     *  rather than composing a second per-repo summary that can drift out of sync with the report
+     *  itself. The spec's Jira sources are re-read from {@code <runDir>/spec.md} (written once at
+     *  {@code sdd implement} time, see {@code RunStore.create}) rather than threaded through
+     *  {@link RunContext}, which carries the plan/state/config a review needs but not the spec — a
+     *  no-op (no file read, no config load) when there are no Jira source keys, same as Gate 1.
+     *
+     *  <p>Reading/parsing {@code spec.md} is wrapped in its own try/catch, separate from
+     *  {@link JiraWriteBack#post}'s own internal one, and fails SILENTLY (unlike that one) rather
+     *  than warning: {@code spec.md} is the text an already-approved plan was built from (written
+     *  once at {@code sdd implement} time — see {@code RunStore.create} — from a spec {@code sdd
+     *  plan approve} already parsed and validated), so in real use this can never fail; treating an
+     *  unreadable/unparseable {@code spec.md} the same as "no Jira sources found" rather than as a
+     *  reportable failure avoids inventing a warning for a state that only a test fixture (an
+     *  empty/placeholder spec text passed to {@code RunStore.create} where the sources are
+     *  irrelevant to what is being tested) actually produces. This is called after {@code
+     *  report.md} is already on disk either way, so nothing here may propagate and turn an
+     *  otherwise-successful review into exit 4. */
+    private void commentOnJiraSources(RunContext run, PrintWriter out, PrintWriter err) {
+        List<String> jiraKeys;
+        try {
+            String specText = Files.readString(run.runDir().resolve("spec.md"));
+            NormalizedSpec parsedSpec = SpecParser.parse(specText);
+            jiraKeys = SourceBullet.jiraIssueKeys(parsedSpec.sources());
+        } catch (RuntimeException | IOException e) {
+            return;
+        }
+        if (jiraKeys.isEmpty()) {
+            return;
+        }
+        Map<String, DecisionRecord> decisions = run.store().readDecisions(run.runDir());
+        String body = "sdd: review report for `" + run.plan().specId() + "`" + System.lineSeparator()
+                + ReviewReport.decisionsSummaryLine(run.plan(), decisions);
+        JiraWriteBack.post(workspace, jiraKeys, noComment, body, out, err);
     }
 }
