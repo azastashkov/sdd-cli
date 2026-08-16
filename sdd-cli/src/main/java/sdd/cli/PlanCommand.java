@@ -13,6 +13,8 @@ import sdd.core.llm.ChatModel;
 import sdd.core.llm.HttpChatModel;
 import sdd.core.retrieve.FtsRetriever;
 import sdd.plan.confluence.ConfluenceExportSource;
+import sdd.plan.confluence.ConfluenceExtract;
+import sdd.plan.confluence.ConfluenceNormalizer;
 import sdd.plan.confluence.SpecNormalizationException;
 import sdd.plan.gen.ExecutionOrder;
 import sdd.plan.gen.OpenQuestions;
@@ -24,35 +26,48 @@ import sdd.plan.impact.AffectedRepo;
 import sdd.plan.impact.ImpactAnalysis;
 import sdd.plan.impact.ImpactResult;
 import sdd.plan.impact.Seed;
+import sdd.plan.source.SourceBundle;
+import sdd.plan.source.SourceDoc;
 import sdd.plan.spec.MarkdownSpecSource;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecParseException;
 import sdd.plan.spec.SpecParser;
+import sdd.plan.spec.SpecRefKind;
 import sdd.plan.spec.SpecRenderer;
 import sdd.plan.spec.SpecSources;
 import sdd.plan.spec.SpecValidator;
 
+import java.io.IOException;
 import java.io.PrintWriter;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
 
 @Command(name = "plan",
-        description = "Ingest a spec (canonical markdown or Confluence export) and run impact analysis",
+        description = "Ingest one or more specs (canonical markdown, Confluence export, or free text) "
+                + "and run impact analysis",
         subcommands = {ApproveCommand.class, ReviseCommand.class})
 public final class PlanCommand implements Callable<Integer> {
     @Option(names = "--workspace", description = "Workspace directory (default: current dir)")
     Path workspace = Path.of(".");
 
     @Option(names = "--out",
-            description = "Where to write the normalized spec (Confluence refs only; default: <ref>.spec.md)")
+            description = "Where to write the normalized spec (Confluence/text refs only; default derived from ref/text)")
     Path out;
 
-    @Parameters(index = "0", arity = "0..1",
-            description = "Spec ref: canonical .md, or exported Confluence .html/.htm/.xhtml")
-    String ref;
+    @Option(names = "--text", description = "Free-text requirement (repeatable) — never inferred from a "
+            + "positional, since a bare string is indistinguishable from a path")
+    List<String> texts = new ArrayList<>();
+
+    @Parameters(arity = "0..*",
+            description = "Spec refs: canonical .md, or exported Confluence .html/.htm/.xhtml "
+                    + "(0 or more; a canonical .md ref cannot be combined with anything else)")
+    List<String> refs = new ArrayList<>();
 
     @Spec CommandSpec spec;
 
@@ -64,8 +79,23 @@ public final class PlanCommand implements Callable<Integer> {
     public Integer call() {
         PrintWriter outWriter = spec.commandLine().getOut();
         PrintWriter errWriter = spec.commandLine().getErr();
-        if (ref == null) {
+        if (refs.isEmpty() && texts.isEmpty()) {
             errWriter.println("error: missing required parameter: <ref>");
+            return 1;
+        }
+        List<SpecRefKind> kinds = refs.stream().map(SpecSources::classify).toList();
+        // Ruling R2: Jira/Confluence-page refs are rejected outright in this task — they must
+        // never fall through to MarkdownSpecSource, which would report a confusing "file not
+        // found" instead of the honest "not configured yet".
+        if (kinds.stream().anyMatch(k -> k == SpecRefKind.JIRA || k == SpecRefKind.CONFLUENCE_PAGE)) {
+            errWriter.println("error: Jira/Confluence ingestion is not configured");
+            return 1;
+        }
+        long markdownRefs = kinds.stream().filter(k -> k == SpecRefKind.MARKDOWN).count();
+        // A canonical spec is already normalized — combining it with any other ref or with
+        // --text (including a second canonical ref) is meaningless, so both shapes reject here.
+        if (markdownRefs > 1 || (markdownRefs == 1 && (refs.size() > 1 || !texts.isEmpty()))) {
+            errWriter.println("error: a canonical spec ref cannot be combined with other sources");
             return 1;
         }
         SddConfig config;
@@ -76,9 +106,9 @@ public final class PlanCommand implements Callable<Integer> {
             return 1;
         }
         try {
-            return SpecSources.isConfluenceExport(ref)
-                    ? normalize(config, outWriter)
-                    : validate(config, outWriter, errWriter);
+            return markdownRefs == 1
+                    ? validate(config, refs.get(0), outWriter, errWriter)
+                    : normalize(config, outWriter);
         } catch (RuntimeException e) {
             errWriter.println("error: " + e.getMessage());
             return 1;
@@ -91,8 +121,55 @@ public final class PlanCommand implements Callable<Integer> {
         }
         ModelEndpoint planner = config.models().get("planner");
         ChatModel model = plannerForTest != null ? plannerForTest : new HttpChatModel(planner);
+
+        // Single Confluence export ref, nothing else: the pre-existing one-document path,
+        // unchanged, so its behaviour (and the tests pinning it) stay identical.
+        if (refs.size() == 1 && texts.isEmpty()) {
+            String ref = refs.get(0);
+            NormalizedSpec normalized =
+                    new ConfluenceExportSource(model, planner.model(), planner.maxTokens()).load(ref);
+            return writeNormalized(normalized, out != null ? out : Path.of(ref + ".spec.md"), outWriter);
+        }
+
+        // General path: any mix of Confluence-export refs and --text becomes one SourceBundle.
+        List<SourceDoc> docs = new ArrayList<>();
+        String anchorRef = null;
+        for (String ref : refs) {
+            Path file = Path.of(ref);
+            String html;
+            try {
+                html = Files.readString(file);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+            ConfluenceExtract.Extracted extracted = ConfluenceExtract.extract(html);
+            docs.add(new SourceDoc(SourceDoc.Kind.CONFLUENCE_PAGE, confluenceDocId(file), null, null,
+                    null, extracted.text(), extracted.attachments()));
+            if (anchorRef == null) {
+                anchorRef = ref;
+            }
+        }
+        for (int i = 0; i < texts.size(); i++) {
+            docs.add(new SourceDoc(SourceDoc.Kind.FREE_TEXT, "text-" + (i + 1), null, null, null,
+                    texts.get(i), List.of()));
+        }
+        SourceBundle bundle = new SourceBundle(docs, List.of());
+        // Output naming: derive from the first Confluence-export ref exactly like the
+        // single-doc path above; only when there is NO file ref to derive from (pure --text)
+        // does the id/filename come from slugifying the first --text instead.
+        String fallbackId = anchorRef != null ? confluenceDocId(Path.of(anchorRef))
+                : "spec-" + slugify(texts.get(0));
+        // A file ref already carries its own directory (it is the path the operator passed in);
+        // pure --text has no such anchor, so its default target is resolved against --workspace.
+        Path target = out != null ? out
+                : anchorRef != null ? Path.of(anchorRef + ".spec.md")
+                : workspace.resolve(slugify(texts.get(0)) + ".spec.md");
         NormalizedSpec normalized =
-                new ConfluenceExportSource(model, planner.model(), planner.maxTokens()).load(ref);
+                ConfluenceNormalizer.normalize(bundle, model, planner.model(), planner.maxTokens(), fallbackId);
+        return writeNormalized(normalized, target, outWriter);
+    }
+
+    private Integer writeNormalized(NormalizedSpec normalized, Path target, PrintWriter outWriter) {
         String rendered = SpecRenderer.render(normalized);
         try {
             SpecParser.parse(rendered);   // self-check: never hand the human a gate file that cannot re-parse
@@ -100,7 +177,6 @@ public final class PlanCommand implements Callable<Integer> {
             throw new SpecNormalizationException(
                     "normalized spec failed self-check (" + e.getMessage() + ") — rerun normalization", e);
         }
-        Path target = out != null ? out : Path.of(ref + ".spec.md");
         Path backup = SafeWrite.writeWithBackup(target, rendered);
         outWriter.println("normalized spec written: " + target);
         if (backup != null) {
@@ -113,7 +189,34 @@ public final class PlanCommand implements Callable<Integer> {
         return 0;
     }
 
-    private Integer validate(SddConfig config, PrintWriter outWriter, PrintWriter errWriter) {
+    /** Mirrors {@code ConfluenceExportSource.specId} — that method is package-private to
+     *  {@code sdd.plan.confluence}, so its slug SHAPE is reused here rather than the method
+     *  itself; keep the two in sync if either changes. */
+    private static String confluenceDocId(Path file) {
+        String base = file.getFileName().toString();
+        int dot = base.lastIndexOf('.');
+        if (dot > 0) {
+            base = base.substring(0, dot);
+        }
+        return "spec-" + slug(base, "confluence");
+    }
+
+    /** First ~6 words of free text, slugified with the same shape as {@link #confluenceDocId} —
+     *  the one rule for "turn a human-facing name into a filename/id fragment" every source in
+     *  this seam shares, so two ids for "the same" name never diverge by punctuation alone. No
+     *  clock, no random value: the same {@code --text} always produces the same slug. */
+    private static String slugify(String text) {
+        String[] words = text.strip().split("\\s+");
+        String joined = String.join(" ", Arrays.copyOfRange(words, 0, Math.min(6, words.length)));
+        return slug(joined, "spec");
+    }
+
+    private static String slug(String base, String fallback) {
+        String slug = base.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-").replaceAll("(^-|-$)", "");
+        return slug.isBlank() ? fallback : slug;
+    }
+
+    private Integer validate(SddConfig config, String ref, PrintWriter outWriter, PrintWriter errWriter) {
         NormalizedSpec parsed = new MarkdownSpecSource().load(ref);
         List<String> problems = SpecValidator.problems(parsed);
         if (!problems.isEmpty()) {

@@ -274,6 +274,35 @@ class PlanCommandTest {
     }
 
     @Test
+    void approveAndReviseSubcommandsAreNotSwallowedByTheWidenedRefsPositional() throws Exception {
+        // Ruling R1: refs widened from arity "0..1" to "0..*" risks the parser treating
+        // "approve"/"revise" as spec refs instead of routing into the subcommand. Both
+        // subcommands validate their own filename suffix before touching any of PlanCommand's
+        // config/workspace machinery, so their exact error text proves which parser handled
+        // the args — a swallowed "approve" would instead surface PlanCommand's own ref-conflict
+        // or missing-config error, never this one.
+        StringWriter approveOut = new StringWriter();
+        CommandLine approveCmd = new CommandLine(new SddCli());
+        approveCmd.setOut(new PrintWriter(approveOut, true));
+        approveCmd.setErr(new PrintWriter(approveOut, true));
+
+        int approveCode = approveCmd.execute("plan", "approve", "loyalty.md");
+
+        assertThat(approveOut.toString()).contains("error: approve expects a .plan.md file");
+        assertThat(approveCode).isEqualTo(1);
+
+        StringWriter reviseOut = new StringWriter();
+        CommandLine reviseCmd = new CommandLine(new SddCli());
+        reviseCmd.setOut(new PrintWriter(reviseOut, true));
+        reviseCmd.setErr(new PrintWriter(reviseOut, true));
+
+        int reviseCode = reviseCmd.execute("plan", "revise", "loyalty.md");
+
+        assertThat(reviseOut.toString()).contains("error: revise expects a .plan.md file");
+        assertThat(reviseCode).isEqualTo(1);
+    }
+
+    @Test
     void missingConfigFailsCleanly() throws Exception {
         Path spec = ws.resolve("loyalty.md");
         Files.writeString(spec, VALID_SPEC);
@@ -502,5 +531,135 @@ class PlanCommandTest {
         assertThat(run2.exitCode()).isZero();
         assertThat(run2.out()).contains("previous version backed up: " + ws.resolve("loyalty.plan.md.bak"));
         assertThat(Files.exists(ws.resolve("loyalty.plan.md.bak"))).isTrue();
+    }
+
+    // --- section 6: multiple refs and free text -----------------------------------------
+
+    @Test
+    void noRefsAndNoTextFailsWithTheExistingMissingParameterError() throws Exception {
+        Run run = plan(new PlanCommand(), "--workspace", ws.toString());
+
+        assertThat(run.out()).contains("error: missing required parameter: <ref>");
+        assertThat(run.exitCode()).isEqualTo(1);
+    }
+
+    @Test
+    void markdownRefCombinedWithAnotherRefIsRejected() throws Exception {
+        Run run = plan(new PlanCommand(), "--workspace", ws.toString(), "a.md", "page.html");
+
+        assertThat(run.out()).contains("error: a canonical spec ref cannot be combined with other sources");
+        assertThat(run.exitCode()).isEqualTo(1);
+    }
+
+    @Test
+    void markdownRefCombinedWithTextIsRejected() throws Exception {
+        Run run = plan(new PlanCommand(), "--workspace", ws.toString(), "--text", "extra context", "a.md");
+
+        assertThat(run.out()).contains("error: a canonical spec ref cannot be combined with other sources");
+        assertThat(run.exitCode()).isEqualTo(1);
+    }
+
+    @Test
+    void multipleMarkdownRefsAreRejected() throws Exception {
+        Run run = plan(new PlanCommand(), "--workspace", ws.toString(), "a.md", "b.md");
+
+        assertThat(run.out()).contains("error: a canonical spec ref cannot be combined with other sources");
+        assertThat(run.exitCode()).isEqualTo(1);
+    }
+
+    @Test
+    void bareJiraKeyRefIsRejectedAsNotConfigured() throws Exception {
+        Run run = plan(new PlanCommand(), "--workspace", ws.toString(), "PROJ-123");
+
+        assertThat(run.out()).contains("error: Jira/Confluence ingestion is not configured");
+        assertThat(run.exitCode()).isEqualTo(1);
+    }
+
+    @Test
+    void jiraBrowseUrlRefIsRejectedAsNotConfigured() throws Exception {
+        Run run = plan(new PlanCommand(), "--workspace", ws.toString(),
+                "https://jira.corp.local/browse/PROJ-123");
+
+        assertThat(run.out()).contains("error: Jira/Confluence ingestion is not configured");
+        assertThat(run.exitCode()).isEqualTo(1);
+    }
+
+    @Test
+    void confluencePageUrlRefIsRejectedAsNotConfigured() throws Exception {
+        Run run = plan(new PlanCommand(), "--workspace", ws.toString(),
+                "https://confluence.corp.local/pages/viewpage.action?pageId=1");
+
+        assertThat(run.out()).contains("error: Jira/Confluence ingestion is not configured");
+        assertThat(run.exitCode()).isEqualTo(1);
+    }
+
+    @Test
+    void jiraRefDoesNotFallThroughToTheConfusingMissingFileError() throws Exception {
+        // a rejected Jira/Confluence ref must never reach MarkdownSpecSource — that would
+        // report "file not found" instead of the honest "not configured" message
+        Run run = plan(new PlanCommand(), "--workspace", ws.toString(), "PROJ-123");
+
+        assertThat(run.out()).doesNotContain("NoSuchFileException").doesNotContain("PROJ-123 (No such file");
+    }
+
+    @Test
+    void multipleTextArgumentsProduceAValidSlugNamedSpec() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        PlanCommand cmd = new PlanCommand();
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(new ChatResponse(
+                ChatMessage.assistant("""
+                        {"title": "Loyalty tiers", "owner": "", "status": "", "goal": "Add tiers.",
+                         "background": "", "requirements": ["r"], "acceptance": ["a"],
+                         "constraints": [], "touchpoints": [], "out_of_scope": [],
+                         "open_questions": [], "unmapped": []}"""),
+                "stop", new Usage(10, 10))));
+        cmd.plannerForTest = planner;
+
+        Run run = plan(cmd, "--workspace", ws.toString(),
+                "--text", "Add loyalty tiers to the pricing engine",
+                "--text", "Gold customers should see their tier.");
+
+        assertThat(run.exitCode()).isZero();
+        Path written = ws.resolve("add-loyalty-tiers-to-the-pricing.spec.md");
+        assertThat(run.out()).contains("normalized spec written: " + written);
+        assertThat(Files.exists(written)).isTrue();
+        String content = Files.readString(written);
+        assertThat(content).contains("id: spec-add-loyalty-tiers-to-the-pricing");
+
+        String userMessage = planner.requests().get(0).messages().get(1).content();
+        assertThat(userMessage).contains("## Source 1:").contains("Add loyalty tiers to the pricing engine")
+                .contains("## Source 2:").contains("Gold customers should see their tier.");
+
+        // gate round trip, mirroring the Confluence-export gate-file assertion above
+        Run second = plan(new PlanCommand(), "--workspace", ws.toString(), written.toString());
+        assertThat(second.out()).contains("spec OK: spec-add-loyalty-tiers-to-the-pricing")
+                .contains("error: knowledge base is empty — run sdd index first");
+        assertThat(second.exitCode()).isEqualTo(1);
+    }
+
+    @Test
+    void confluenceExportCombinedWithTextBuildsOneBundle() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        Path export = ws.resolve("loyalty-page.html");
+        Files.writeString(export, "<h1>Loyalty tiers</h1><p>Confluence context.</p>");
+        PlanCommand cmd = new PlanCommand();
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(new ChatResponse(
+                ChatMessage.assistant("""
+                        {"title": "Loyalty tiers", "owner": "", "status": "", "goal": "Add tiers.",
+                         "background": "", "requirements": ["r"], "acceptance": ["a"],
+                         "constraints": [], "touchpoints": [], "out_of_scope": [],
+                         "open_questions": [], "unmapped": []}"""),
+                "stop", new Usage(10, 10))));
+        cmd.plannerForTest = planner;
+
+        Run run = plan(cmd, "--workspace", ws.toString(), "--text", "Extra operator context.",
+                export.toString());
+
+        assertThat(run.exitCode()).isZero();
+        Path written = ws.resolve("loyalty-page.html.spec.md");
+        assertThat(run.out()).contains("normalized spec written: " + written);
+        assertThat(Files.exists(written)).isTrue();
+        String userMessage = planner.requests().get(0).messages().get(1).content();
+        assertThat(userMessage).contains("Confluence context.").contains("Extra operator context.");
     }
 }
