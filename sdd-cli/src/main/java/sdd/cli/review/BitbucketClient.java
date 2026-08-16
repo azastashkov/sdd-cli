@@ -50,13 +50,19 @@ public final class BitbucketClient {
     }
 
     /**
-     * {@code GET .../default-branch} (Task 5 brief §2 — Ruling R4: this lookup lives here, in the
-     * REST client, not on {@link RemoteGit}). Reads {@code displayId} ({@code "main"}), not
+     * {@code GET .../branches/default} (Task 5 brief §2 — Ruling R4: this lookup lives here, in
+     * the REST client, not on {@link RemoteGit}). Reads {@code displayId} ({@code "main"}), not
      * {@code id} ({@code "refs/heads/main"}) — the unprefixed form is what {@link #create}'s
      * {@code toRef} and {@link RemoteGit} both expect a bare branch name to look like.
+     *
+     * <p>Task 8 correction (documentation review against Bitbucket Server REST 5.16.0): the
+     * originally-implemented path was {@code .../default-branch}, a plausible-looking guess that
+     * does not exist on a real Data Center instance and 404s every call — see
+     * {@code api-verification-report.md} item 14. {@code branches/default} is the documented
+     * path; {@code displayId} was already correct.
      */
     public String defaultBranch(String repo) {
-        JsonNode node = restClient.get(path(repo) + "/default-branch");
+        JsonNode node = restClient.get(path(repo) + "/branches/default");
         String displayId = node.path("displayId").asText(null);
         if (displayId == null || displayId.isBlank()) {
             throw new AtlassianException("Bitbucket default-branch response for " + repo

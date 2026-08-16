@@ -44,7 +44,7 @@ class BitbucketClientTest {
 
     @Test
     void defaultBranchReadsTheDisplayIdFromTheDefaultBranchResource() {
-        wm.stubFor(get(urlEqualTo("/rest/api/1.0/projects/TRADING/repos/lib/default-branch"))
+        wm.stubFor(get(urlEqualTo("/rest/api/1.0/projects/TRADING/repos/lib/branches/default"))
                 .willReturn(okJson("""
                         {"id":"refs/heads/main","displayId":"main","type":"BRANCH","isDefault":true}
                         """)));

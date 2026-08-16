@@ -127,7 +127,7 @@ class BitbucketReviewTest {
         RunContext run = runContext("lib", repoRun, lib, true);
         ReportInputs in = reportInputs(run);
 
-        wm.stubFor(get(urlEqualTo("/rest/api/1.0/projects/TRADING/repos/lib/default-branch"))
+        wm.stubFor(get(urlEqualTo("/rest/api/1.0/projects/TRADING/repos/lib/branches/default"))
                 .willReturn(okJson("{\"id\":\"refs/heads/main\",\"displayId\":\"main\"}")));
         wm.stubFor(get(urlPathEqualTo("/rest/api/1.0/projects/TRADING/repos/lib/pull-requests"))
                 .willReturn(okJson("{\"size\":0,\"isLastPage\":true,\"values\":[]}")));
@@ -172,7 +172,7 @@ class BitbucketReviewTest {
         RunContext run = runContext("lib", repoRun, lib, true);
         ReportInputs in = reportInputs(run);
 
-        wm.stubFor(get(urlEqualTo("/rest/api/1.0/projects/TRADING/repos/lib/default-branch"))
+        wm.stubFor(get(urlEqualTo("/rest/api/1.0/projects/TRADING/repos/lib/branches/default"))
                 .willReturn(okJson("{\"id\":\"refs/heads/main\",\"displayId\":\"main\"}")));
         wm.stubFor(get(urlPathEqualTo("/rest/api/1.0/projects/TRADING/repos/lib/pull-requests"))
                 .willReturn(okJson("""
@@ -216,7 +216,7 @@ class BitbucketReviewTest {
         RunContext run = runContext("lib", repoRun, lib, true);
         ReportInputs in = reportInputs(run);
 
-        wm.stubFor(get(urlEqualTo("/rest/api/1.0/projects/TRADING/repos/lib/default-branch"))
+        wm.stubFor(get(urlEqualTo("/rest/api/1.0/projects/TRADING/repos/lib/branches/default"))
                 .willReturn(okJson("{\"id\":\"refs/heads/main\",\"displayId\":\"main\"}")));
         wm.stubFor(get(urlPathEqualTo("/rest/api/1.0/projects/TRADING/repos/lib/pull-requests"))
                 .willReturn(okJson("{\"size\":0,\"isLastPage\":true,\"values\":[]}")));

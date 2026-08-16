@@ -16,7 +16,7 @@
 #   - A clarifying comment on PROJ-1.
 #
 # Then it re-fetches everything through the EXACT REST calls sdd's own Java clients make
-# (JiraClient.fetchIssue, ConfluenceClient.fetchPage, BitbucketClient's default-branch/project
+# (JiraClient.fetchIssue, ConfluenceClient.fetchPage, BitbucketClient's branches/default/project
 # lookups) and writes the raw JSON responses into the test fixture directories, replacing the
 # hand-written guesses from Tasks 3 and 5 with recordings of the real thing. It prints exactly
 # which files were written (and which hand-written fixtures were deliberately left untouched,
@@ -437,7 +437,7 @@ bb_project_json="$(bb_curl -f "${BITBUCKET_BASE_URL}/rest/api/1.0/projects/${BIT
     || die "could not fetch Bitbucket project ${BITBUCKET_PROJECT} for fixture dump — did mirror.sh run?"
 write_fixture "sdd-cli/src/test/resources/bitbucket/project.json" "${bb_project_json}"
 
-bb_branch_json="$(bb_curl -f "${BITBUCKET_BASE_URL}/rest/api/1.0/projects/${BITBUCKET_PROJECT}/repos/${bb_repo_slug}/default-branch")" \
+bb_branch_json="$(bb_curl -f "${BITBUCKET_BASE_URL}/rest/api/1.0/projects/${BITBUCKET_PROJECT}/repos/${bb_repo_slug}/branches/default")" \
     || die "could not fetch ${REPO_NAME}'s default branch for fixture dump — did mirror.sh mirror it?"
 write_fixture "sdd-cli/src/test/resources/bitbucket/default-branch.json" "${bb_branch_json}"
 

@@ -158,9 +158,13 @@ mask() {
 
 # --- PAT creation ---------------------------------------------------------------------------
 
-# Jira/Confluence Data Center: PUT /rest/pat/latest/tokens with a JSON body naming the token
+# Jira/Confluence Data Center: POST /rest/pat/latest/tokens with a JSON body naming the token
 # and its expiry, authenticated as the admin (the wizard's admin account — there is no token
 # yet, that's the point of this call). Response body carries the raw token in "rawToken".
+#
+# Task 8 correction (documentation review against "Using Personal Access Tokens"): the
+# originally-scripted method was PUT, which a real Data Center instance rejects with a 405 —
+# the documented method is POST. Path and body were already correct.
 issue_pat() {
     local label="$1" base_url="$2"
     local body response token
@@ -173,7 +177,7 @@ print(json.dumps({"name": name, "expirationDuration": days}))
     response=$(curl -sS -f \
         --netrc-file "${NETRC}" \
         -H "Content-Type: application/json" \
-        -X PUT \
+        -X POST \
         -d "${body}" \
         "${base_url}/rest/pat/latest/tokens") \
         || die "${label}: PAT creation request failed against ${base_url} — is it up and past the setup wizard?"
