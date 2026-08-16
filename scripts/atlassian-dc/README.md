@@ -172,7 +172,13 @@ read the symptom, jump straight to the cause.**
 7. **Bitbucket's `findOpenBySourceBranch`** assumes at most one OPEN pull request per source
    branch. **Symptom:** if a human manually opens a second PR from the same branch outside `sdd`,
    only whichever one the API happens to return first is ever read or updated.
-8. **`atlassian.proxy` carries no proxy-authentication credentials.** If the corporate proxy
+8. **The PR-list pagination envelope's field names** (`size`/`isLastPage`/`values`) were never
+   confirmed against a live response — `api-verification-report.md` checked only the `at=`/
+   `direction=`/`state=` query parameters, not the response shape — and `findOpenBySourceBranch`
+   never requests a second page regardless. A distinct cause from item 7 above, with an
+   overlapping symptom: **if a matching OPEN PR exists but sits on a later page, it is never seen
+   at all**, so `sdd review` opens a duplicate PR instead of updating the existing one.
+9. **`atlassian.proxy` carries no proxy-authentication credentials.** If the corporate proxy
    requires its own auth, this was never exercised. **Symptom:** every Atlassian REST call and the
    git push hang or fail with a generic connect/407 error, indistinguishable at first glance from
    the network simply being down.

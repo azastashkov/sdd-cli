@@ -67,8 +67,8 @@ public final class DiagnosticHeader {
         sb.append("are deleted automatically the next time a command writes a new one.\n");
         sb.append("Unverified: every Jira/Confluence/Bitbucket Data Center API shape this build uses\n");
         sb.append("was checked against Atlassian's documentation but never against a live instance —\n");
-        sb.append("see scripts/atlassian-dc/README.md's \"least-certain API shapes\" section for\n");
-        sb.append("exactly which behaviours that covers.\n");
+        sb.append("see scripts/atlassian-dc/README.md's \"First contact\" section for exactly\n");
+        sb.append("which behaviours that covers.\n");
         sb.append('\n');
         sb.append("sdd version: ").append(sddVersion).append('\n');
         sb.append("git commit: ").append(gitCommit).append('\n');
