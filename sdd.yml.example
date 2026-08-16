@@ -84,6 +84,55 @@ run:
 
 excludes: []              # workspace directories to skip
 
+# Requirement ingestion (Jira issues, Confluence pages) and Bitbucket source control, for a self-
+# hosted Data Center estate on a closed corporate network. The whole block is optional — sdd.yml
+# with no atlassian: key changes sdd doctor's output not at all — and each site under it (jira,
+# confluence, bitbucket) is independently optional too: declare only the ones this estate uses.
+# atlassian:
+#   tls:
+#     # The corporate CA chain, when self-hosted Jira/Confluence/Bitbucket sit behind a certificate
+#     # the JDK's bundled cacerts does not trust (the common case on a closed network). Detected by
+#     # extension: .jks is JKS, .p12/.pfx is PKCS12, anything else defaults to PKCS12 (the JDK's own
+#     # default keystore type). A path that does not exist is a hard error at first use, never a
+#     # quiet fallback to the JDK default truststore — same rule node_home follows above, for the
+#     # same reason: a typo here must not silently change which trust anchors are in play. There is
+#     # no --insecure flag and none will be added; fix the truststore, do not disable verification.
+#     truststore: /etc/ssl/corp-ca.jks
+#     truststore_password: ${CORP_TRUSTSTORE_PASSWORD}
+#   proxy:
+#     # A forward proxy fronting egress. no_proxy lists hosts that bypass it — typically the
+#     # Atlassian hosts themselves, often reachable directly even when the proxy is required for
+#     # everything else. Matches a no_proxy entry on an exact host or a dotted suffix
+#     # (corp.local covers jira.corp.local, not notcorp.local), case-insensitively.
+#     host: proxy.corp.local
+#     port: 8080
+#     no_proxy: [jira.corp.local, confluence.corp.local, bitbucket.corp.local]
+#
+#   # base_url is structural and fails config loading immediately if missing, like models.<name>.
+#   # base_url does above. token resolves ${VAR} the same way models.<name>.api_key does: an unset
+#   # variable does NOT fail loading — sdd index must not need a Bitbucket token it will never use —
+#   # it is raised only when something actually calls this site, naming the variable to reissue
+#   # (PATs expire) in the error.
+#   jira:
+#     base_url: https://jira.corp.local
+#     token: ${JIRA_PAT}
+#     timeout_seconds: 30       # default when omitted
+#   confluence:
+#     base_url: https://confluence.corp.local
+#     token: ${CONFLUENCE_PAT}
+#   bitbucket:
+#     base_url: https://bitbucket.corp.local
+#     token: ${BITBUCKET_PAT}
+#     project: TRADING           # the Bitbucket project key repos live under
+#     default_reviewers: [alice, bob]
+#
+#   follow_depth: 1             # how many hops of linked-issue traversal requirement ingestion follows
+#   max_pages: 20                # paginated-collection page cap, so a huge Jira project cannot run away
+#   max_linked_issues: 10        # linked-issue cap per issue, same reason
+#   write_back: none             # none | comment — off by default; a tool that can silently start
+#                                 # commenting on tickets needs an explicit opt-in
+#   pull_requests: false         # off by default, same reason
+
 # Runtime composition: which repo builds a bundle a host application loads at run time. Declared
 # rather than derived — a manifest says the host loads /mfe/a/trading-mfe-a.js, but which repo
 # BUILDS that bundle lives in a bundler config sdd does not read, so inferring it from the filename
