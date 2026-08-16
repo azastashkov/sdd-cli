@@ -55,8 +55,19 @@ class DecisionCommandBitbucketTest {
 
     /** {@code prId}: null means "sdd review never opened a PR for this repo" (Bitbucket off, or
      *  this run predates it); non-null simulates a PR already on record, the ordinary case by the
-     *  time a human runs {@code approve}/{@code reject}. */
+     *  time a human runs {@code approve}/{@code reject}. Two checkpoint commits, so an approve has
+     *  something real to squash — see {@link #fixtureAlreadySingleCommit} for the no-op case. */
     private Fixture fixture(Integer prId, boolean pullRequests) throws Exception {
+        return fixture(prId, pullRequests, 2);
+    }
+
+    /** {@code checkpointCommits}: how many commits the run branch carries past {@code base} — 2
+     *  (via {@link #fixture(Integer, boolean)}) gives {@code SquashApprove} something real to
+     *  collapse; 1 (via {@link #fixtureAlreadySingleCommit}) drives it into its "already a single
+     *  commit past base_sha" no-op branch instead — {@code result.applied()} is still true there,
+     *  only {@code result.squashed()} is false, which is exactly the case Fix 2 of the review pins:
+     *  the Bitbucket merge attempt must follow this branch too, not just the real-squash one. */
+    private Fixture fixture(Integer prId, boolean pullRequests, int checkpointCommits) throws Exception {
         FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
         Path g = lib.path().resolve("gradlew");
         Files.writeString(g, "#!/bin/sh\nexit 0\n");
@@ -70,7 +81,9 @@ class DecisionCommandBitbucketTest {
         String originalBranch = RunGit.currentBranch(lib.path());
         RunGit.startBranch(lib.path(), BRANCH, base);
         lib.file("A.java", "class A { int x; }\n").commit("sdd: checkpoint 1");
-        lib.file("B.java", "class B {}\n").commit("sdd: checkpoint 2");
+        if (checkpointCommits >= 2) {
+            lib.file("B.java", "class B {}\n").commit("sdd: checkpoint 2");
+        }
         String checkpoint = lib.headSha();
         RunGit.checkout(lib.path(), originalBranch);
 
@@ -127,6 +140,12 @@ class DecisionCommandBitbucketTest {
                 null, 21L));
 
         return new Fixture(lib, base, checkpoint, originalBranch, planPath, runDir);
+    }
+
+    /** Delegates to the 3-arg {@link #fixture(Integer, boolean, int)} with exactly ONE checkpoint
+     *  commit — see that overload's javadoc for why. */
+    private Fixture fixtureAlreadySingleCommit(Integer prId, boolean pullRequests) throws Exception {
+        return fixture(prId, pullRequests, 1);
     }
 
     private record Invocation(int exit, String out, String err) {
@@ -188,6 +207,23 @@ class DecisionCommandBitbucketTest {
 
         assertThat(r.out()).contains("squashed 2 commits");
         assertThat(r.err()).contains("could not merge PR for lib");
+        assertThat(wm.getAllServeEvents()).isNotEmpty();
+    }
+
+    @Test
+    void aNoOpSquashOfAnAlreadySingleCommitBranchStillAttemptsTheBitbucketMerge() throws Exception {
+        // Fix 2 (code review): SquashApprove.approve's OTHER applied=true outcome — the branch was
+        // already a single commit past base_sha, so squashed()=false and NO state.json checkpoint
+        // rewrite happens — must still be treated as a granted approve, not a refusal. Pinned
+        // separately from aGrantedSquashDoesAttemptTheBitbucketMergeUnlikeARefusedOne, which only
+        // ever exercises the OTHER applied=true outcome (a real multi-commit squash).
+        Fixture f = fixtureAlreadySingleCommit(17, true);
+
+        Invocation r = exec("--workspace", ws.toString(), "approve", "lib", f.planPath().toString());
+
+        assertThat(r.out()).contains("already").contains("a single commit past");
+        assertThat(r.out()).doesNotContain("squashed ");   // confirms the no-op branch fired, not a real squash
+        assertThat(r.err()).contains("could not merge PR for lib");   // the attempt was made (and failed, per WireMock not being git)
         assertThat(wm.getAllServeEvents()).isNotEmpty();
     }
 

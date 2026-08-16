@@ -54,7 +54,7 @@ final class BitbucketDecisions {
             BitbucketClient client = BitbucketClients.rest(atlassian);
             String cloneUrl = RemoteGit.cloneUrl(bitbucket.site().baseUrl(), bitbucket.project(), repo);
             RemoteGit.push(root, repoRun.branch(), cloneUrl, BitbucketClients.GIT_USERNAME,
-                    bitbucket.site().token(), atlassian.tls());
+                    bitbucket.site().token(), atlassian.tls(), atlassian.proxy());
             merge(client, repo, repoRun.prId(), out, err);
         } catch (RuntimeException e) {
             err.println("  warn: bitbucket: could not merge PR for " + repo

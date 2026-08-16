@@ -3,9 +3,16 @@ package sdd.cli.review;
 import org.eclipse.jgit.api.Git;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import sdd.core.config.AtlassianProxy;
+import sdd.core.http.HttpClients;
 import sdd.core.testing.FixtureRepo;
 
+import java.net.InetSocketAddress;
+import java.net.Proxy;
+import java.net.ProxySelector;
+import java.net.URI;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -13,13 +20,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * {@link RemoteGit#push} against a local BARE repository created in a {@code @TempDir} — no
  * network, per the Task 5 brief's test section. A bare repo's {@code file://}-shaped path is a
- * plain filesystem transport, so none of this exercises the TLS wiring
- * {@link RemoteGit#push(Path, String, String, String, String, sdd.core.config.AtlassianTls)}'s
- * {@code tls} parameter turns on for HTTP(S) remotes (that parameter is simply passed {@code null}
- * throughout this class) — the TLS wiring itself has no independent unit test in this brief because
- * JGit's only extension point for it ({@code HttpTransport.setConnectionFactory}) is a
- * process-global static, not something a local-transport test can observe without also being a
- * network test. See the Task 5 report's "invented / least certain" section.
+ * plain filesystem transport, so none of {@code push}'s own tests below exercise the TLS/proxy
+ * wiring {@link RemoteGit#push}'s {@code tls}/{@code proxy} parameters turn on for HTTP(S) remotes
+ * (both are simply passed {@code null} throughout this class's push tests) — {@code
+ * installConnectionFactory} itself has no independent test of ITS installation, since JGit's only
+ * extension point for it ({@code HttpTransport.setConnectionFactory}) is a process-global static,
+ * not something a local-transport test can observe without also being a network test. What IS
+ * covered directly, without needing a network: {@link RemoteGit#resolveProxy}, the proxy-selection
+ * logic that installation wires in — see the {@code resolveProxy*} tests below. See the Task 5
+ * report's "invented / least certain" section for what remains unverified against a live instance.
  */
 class RemoteGitTest {
     @TempDir Path tmp;
@@ -36,7 +45,7 @@ class RemoteGitTest {
         sdd.cli.implement.RunGit.startBranch(repo.path(), "sdd/RUN/lib", repo.headSha());
         Path remote = bareRemote("lib");
 
-        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null);
+        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null, null);
 
         try (Git bare = Git.open(remote.toFile())) {
             assertThat(bare.getRepository().resolve("refs/heads/sdd/RUN/lib").name())
@@ -49,10 +58,10 @@ class RemoteGitTest {
         FixtureRepo repo = FixtureRepo.in(tmp, "lib").file("A.java", "class A {}\n").commit("base");
         sdd.cli.implement.RunGit.startBranch(repo.path(), "sdd/RUN/lib", repo.headSha());
         Path remote = bareRemote("lib");
-        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null);
+        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null, null);
 
         repo.file("A.java", "class A { int x; }\n").commit("second");
-        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null);
+        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null, null);
 
         try (Git bare = Git.open(remote.toFile())) {
             assertThat(bare.getRepository().resolve("refs/heads/sdd/RUN/lib").name())
@@ -69,11 +78,11 @@ class RemoteGitTest {
         String base = repo.headSha();
         sdd.cli.implement.RunGit.startBranch(repo.path(), "sdd/RUN/lib", base);
         Path remote = bareRemote("lib");
-        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null);
+        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null, null);
 
         sdd.cli.implement.RunGit.resetHard(repo.path(), base);
         repo.file("A.java", "class A { int rewritten; }\n").commit("rewritten");
-        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null);
+        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null, null);
 
         try (Git bare = Git.open(remote.toFile())) {
             assertThat(bare.getRepository().resolve("refs/heads/sdd/RUN/lib").name())
@@ -94,12 +103,12 @@ class RemoteGitTest {
         FixtureRepo repo = FixtureRepo.in(tmp, "lib").file("A.java", "class A {}\n").commit("base");
         sdd.cli.implement.RunGit.startBranch(repo.path(), "sdd/RUN/lib", repo.headSha());
         Path remote = bareRemote("lib");
-        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null);
+        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null, null);
 
         pushUnrelatedCommitFromAClone(remote);
         repo.file("A.java", "class A { int mine; }\n").commit("my own unrelated change");
 
-        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null);
+        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null, null);
 
         try (Git bare = Git.open(remote.toFile())) {
             assertThat(bare.getRepository().resolve("refs/heads/sdd/RUN/lib").name())
@@ -112,7 +121,7 @@ class RemoteGitTest {
         FixtureRepo repo = FixtureRepo.in(tmp, "lib").file("A.java", "class A {}\n").commit("base");
         sdd.cli.implement.RunGit.startBranch(repo.path(), "sdd/RUN/lib", repo.headSha());
         Path remote = bareRemote("lib");
-        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null);
+        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null, null);
         String staleExpected = repo.headSha();   // what we (wrongly) still believe the remote is
 
         // An unrelated writer moves the remote branch forward, entirely outside RemoteGit.
@@ -156,5 +165,58 @@ class RemoteGitTest {
     void cloneUrlStripsATrailingSlashOnTheBaseUrl() {
         assertThat(RemoteGit.cloneUrl("https://bitbucket.corp.local/", "P", "r"))
                 .isEqualTo("https://bitbucket.corp.local/scm/p/r.git");
+    }
+
+    // --- resolveProxy (the proxy half of installConnectionFactory) ----------------------------
+
+    @Test
+    void resolveProxyPassesTheFallbackThroughUnchangedWhenNoSelectorIsConfigured() throws Exception {
+        // No atlassian.proxy configured: JGit's own negotiated proxy (or a direct connection) must
+        // survive untouched, never silently overridden by some other proxy decision.
+        Proxy negotiated = new Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("other-proxy", 3128));
+
+        assertThat(RemoteGit.resolveProxy(null, URI.create("https://bitbucket.corp.local/x").toURL(), negotiated))
+                .isSameAs(negotiated);
+    }
+
+    @Test
+    void resolveProxyRoutesThroughTheConfiguredProxyForAnOrdinaryHost() throws Exception {
+        ProxySelector selector = HttpClients.proxySelector(
+                new AtlassianProxy("proxy.corp.local", 8080, List.of("no.proxy.corp.local")));
+
+        Proxy resolved = RemoteGit.resolveProxy(selector,
+                URI.create("https://bitbucket.corp.local/scm/p/r.git").toURL(), Proxy.NO_PROXY);
+
+        assertThat(resolved.address()).isEqualTo(InetSocketAddress.createUnresolved("proxy.corp.local", 8080));
+    }
+
+    @Test
+    void resolveProxyBypassesTheConfiguredProxyForANoProxyHost() throws Exception {
+        // Same no_proxy bypass HttpClientsTest already pins for the REST client — RemoteGit reuses
+        // HttpClients.proxySelector directly, so a Bitbucket host listed in no_proxy connects
+        // directly for the push too, exactly like it would for the REST calls.
+        ProxySelector selector = HttpClients.proxySelector(
+                new AtlassianProxy("proxy.corp.local", 8080, List.of("bitbucket.corp.local")));
+
+        Proxy resolved = RemoteGit.resolveProxy(selector,
+                URI.create("https://bitbucket.corp.local/scm/p/r.git").toURL(), Proxy.NO_PROXY);
+
+        assertThat(resolved).isEqualTo(Proxy.NO_PROXY);
+    }
+
+    @Test
+    void installingAConnectionFactoryWithAProxyNeverMutatesTheJvmWideDefaultProxySelector() throws Exception {
+        // The whole point of resolving proxies locally (see installConnectionFactory's javadoc)
+        // rather than calling ProxySelector.setDefault: this must be provably a NO-OP on global
+        // proxy state, unlike the (rejected) alternative design.
+        ProxySelector before = ProxySelector.getDefault();
+        FixtureRepo repo = FixtureRepo.in(tmp, "lib").file("A.java", "class A {}\n").commit("base");
+        sdd.cli.implement.RunGit.startBranch(repo.path(), "sdd/RUN/lib", repo.headSha());
+        Path remote = bareRemote("lib");
+
+        RemoteGit.push(repo.path(), "sdd/RUN/lib", remote.toUri().toString(), "sdd", "pat", null,
+                new AtlassianProxy("proxy.corp.local", 8080, List.of()));
+
+        assertThat(ProxySelector.getDefault()).isSameAs(before);
     }
 }

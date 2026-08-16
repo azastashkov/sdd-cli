@@ -14,16 +14,20 @@ import org.eclipse.jgit.transport.http.HttpConnection;
 import org.eclipse.jgit.transport.http.HttpConnectionFactory;
 import org.eclipse.jgit.transport.http.JDKHttpConnection;
 import org.eclipse.jgit.transport.http.JDKHttpConnectionFactory;
+import sdd.core.config.AtlassianProxy;
 import sdd.core.config.AtlassianTls;
 import sdd.core.http.HttpClients;
 
 import javax.net.ssl.TrustManager;
 import java.io.IOException;
 import java.net.Proxy;
+import java.net.ProxySelector;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.util.Collection;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -37,7 +41,11 @@ import java.util.Locale;
  *
  * <p><b>Git-over-HTTP with a PAT, never SSH</b> (Task 5 brief §1): no key distribution on a closed
  * corporate network, and it reuses the exact same credential {@link sdd.core.http.RestClient}
- * already authenticates Bitbucket's REST API with.
+ * already authenticates Bitbucket's REST API with. The corporate TLS truststore AND forward proxy
+ * are both wired through {@code sdd.core.http.HttpClients}' own logic (see
+ * {@link #installConnectionFactory}) — on a closed network the proxy is often the only route to
+ * Bitbucket at all, so a push that ignored it while {@link BitbucketClient}'s REST calls honoured
+ * it would leave {@code sdd review} half-working: PRs opened, branches never pushed.
  *
  * <p><b>Force-with-lease, not a plain force-push.</b> {@code sdd review redo} restarts a run
  * branch from its base SHA and produces a different history than whatever this class pushed last
@@ -63,19 +71,28 @@ public final class RemoteGit {
      *                 checked. Least-certain detail, see the Task 5 report.
      * @param pat      the Bitbucket PAT — the caller names the environment variable it came from in
      *                 any error message; this method itself never logs or echoes the value.
-     * @param tls      the corporate truststore/proxy config, or null when none is configured
-     *                 (mirrors {@link HttpClients#build}'s own null-means-JDK-default contract).
-     *                 Wired into JGit via a custom {@link HttpConnectionFactory} rather than a
-     *                 second, independent truststore load — see {@link HttpClients#trustManagers}.
+     * @param tls      the corporate truststore config, or null when none is configured (mirrors
+     *                 {@link HttpClients#build}'s own null-means-JDK-default contract). Wired into
+     *                 JGit via a custom {@link HttpConnectionFactory} rather than a second,
+     *                 independent truststore load — see {@link HttpClients#trustManagers}.
+     * @param proxy    the corporate forward-proxy config, or null when none is configured — same
+     *                 null contract as {@code tls}. On a closed network the proxy is frequently the
+     *                 ONLY route to Bitbucket, so this is not optional: without it, {@code sdd
+     *                 review} would open a PR over REST (which already honours this same config via
+     *                 {@link HttpClients#build}) and then fail to push the branch it describes.
+     *                 Wired through the exact same {@link HttpClients#proxySelector} the REST client
+     *                 uses (including its {@code no_proxy} bypass), resolved once per {@link #push}
+     *                 call rather than mutating {@link ProxySelector#setDefault} — see
+     *                 {@link #installConnectionFactory}'s javadoc for why that distinction matters.
      * @throws RuntimeException on any transport failure, auth failure, or a lease violation (the
      *                          remote branch was not where this call expected it to be) — the
      *                          caller (Task 5's best-effort Bitbucket integration) turns this into a
      *                          {@code warn:} line, never a thrown-through failure.
      */
     public static void push(Path repo, String branch, String cloneUrl, String username, String pat,
-            AtlassianTls tls) {
-        if (tls != null) {
-            installTrustingConnectionFactory(tls);
+            AtlassianTls tls, AtlassianProxy proxy) {
+        if (tls != null || proxy != null) {
+            installConnectionFactory(tls, proxy);
         }
         String refName = "refs/heads/" + branch;
         UsernamePasswordCredentialsProvider credentials = new UsernamePasswordCredentialsProvider(username, pat);
@@ -146,36 +163,55 @@ public final class RemoteGit {
     }
 
     /**
-     * Installs a JGit {@link HttpConnectionFactory} that trusts the corporate CA {@code tls} names,
-     * wired through {@link HttpClients#trustManagers} so the truststore file is loaded exactly
-     * once, not re-parsed independently of {@link sdd.core.http.RestClient}'s own TLS setup.
+     * Installs a JGit {@link HttpConnectionFactory} that trusts the corporate CA {@code tls} names
+     * and routes through the corporate forward proxy {@code proxy} names — both wired through the
+     * SAME {@link HttpClients} logic the REST client uses ({@link HttpClients#trustManagers},
+     * {@link HttpClients#proxySelector}), so neither the truststore file nor the {@code no_proxy}
+     * bypass table is parsed a second, independent time. Either argument may be null (mirrors
+     * {@link HttpClients#build}'s own contract); a null {@code proxy} here means "let JGit's
+     * negotiated proxy through unchanged" for the 2-arg {@link HttpConnectionFactory#create}, and
+     * "connect directly" for the 1-arg one — never "fall back to whatever the JVM-wide default
+     * {@link ProxySelector} says", which is the mutation this method deliberately does NOT make.
      *
-     * <p>{@link HttpTransport#setConnectionFactory} is a process-global static — JGit exposes no
-     * per-{@code PushCommand} way to configure TLS, so there is no narrower hook available. Called
-     * on every {@link #push} rather than once at startup: the cost is rebuilding a small
-     * {@code TrustManager[]} array and installing a lambda, and doing it per-call means a config
+     * <p><b>One process-global mutation, not two.</b> {@link HttpTransport#setConnectionFactory} is
+     * a process-global static — JGit exposes no per-{@code PushCommand} way to configure TLS or a
+     * proxy, so there is no narrower hook available for either, and installing this factory is
+     * unavoidably global. What this method deliberately avoids is a SECOND global mutation on top
+     * of that one: it would have been simpler to make JGit's own proxy negotiation see the
+     * corporate proxy by calling {@code ProxySelector.setDefault(HttpClients.proxySelector(proxy))}
+     * once, but that changes proxy behaviour for every socket connection in the whole JVM, not just
+     * this push — including, in principle, a future feature that opens a direct connection on
+     * purpose. Instead, {@code proxySelector} below is used as a plain local function (its
+     * {@code select(URI)} called directly), never installed anywhere global; the only global state
+     * this method touches is the one connection factory JGit requires regardless.
+     *
+     * <p>Called on every {@link #push} rather than once at startup: the cost is rebuilding a small
+     * {@code TrustManager[]} array and a {@link ProxySelector}, and doing it per-call means a config
      * reload mid-process (unlikely in this CLI's actual lifetime, but never assumed away) is always
      * honoured rather than silently stuck with whatever was first installed.
      */
-    private static void installTrustingConnectionFactory(AtlassianTls tls) {
-        TrustManager[] trustManagers = HttpClients.trustManagers(tls);
+    private static void installConnectionFactory(AtlassianTls tls, AtlassianProxy proxy) {
+        TrustManager[] trustManagers = tls == null ? null : HttpClients.trustManagers(tls);
+        ProxySelector proxySelector = proxy == null ? null : HttpClients.proxySelector(proxy);
         HttpTransport.setConnectionFactory(new HttpConnectionFactory() {
             @Override
             public HttpConnection create(URL url) throws IOException {
-                return configure(new JDKHttpConnectionFactory().create(url));
+                Proxy resolved = resolveProxy(proxySelector, url, Proxy.NO_PROXY);
+                return configureTls(new JDKHttpConnectionFactory().create(url, resolved));
             }
 
             @Override
-            public HttpConnection create(URL url, Proxy proxy) throws IOException {
-                return configure(new JDKHttpConnectionFactory().create(url, proxy));
+            public HttpConnection create(URL url, Proxy negotiated) throws IOException {
+                Proxy resolved = resolveProxy(proxySelector, url, negotiated);
+                return configureTls(new JDKHttpConnectionFactory().create(url, resolved));
             }
 
-            private HttpConnection configure(HttpConnection connection) throws IOException {
+            private HttpConnection configureTls(HttpConnection connection) throws IOException {
                 // Only for https: JDKHttpConnection.configure's own contract (setting an
                 // SSLSocketFactory) only makes sense against an HttpsURLConnection, and calling it
                 // on a plain http:// connection is untested territory this class deliberately does
                 // not exercise — see the Task 5 report's least-certain list.
-                if (connection instanceof JDKHttpConnection jdkConnection
+                if (trustManagers != null && connection instanceof JDKHttpConnection jdkConnection
                         && "https".equalsIgnoreCase(connection.getURL().getProtocol())) {
                     try {
                         jdkConnection.configure(null, trustManagers, null);
@@ -186,6 +222,24 @@ public final class RemoteGit {
                 return connection;
             }
         });
+    }
+
+    /** {@code selector == null} (no {@code atlassian.proxy} configured) passes {@code fallback}
+     *  through unchanged — JGit's own negotiated proxy for the 2-arg {@code create}, direct for the
+     *  1-arg one. Otherwise resolves fresh per URL via {@code selector.select}, the same call
+     *  {@code java.net.http.HttpClient} itself makes against a configured {@link ProxySelector} —
+     *  so a {@code no_proxy}-bypassed host (the Bitbucket host itself, typically) still connects
+     *  directly even when the proxy is required for everything else, exactly like the REST client. */
+    static Proxy resolveProxy(ProxySelector selector, URL url, Proxy fallback) {
+        if (selector == null) {
+            return fallback;
+        }
+        try {
+            List<Proxy> proxies = selector.select(url.toURI());
+            return proxies.isEmpty() ? Proxy.NO_PROXY : proxies.get(0);
+        } catch (URISyntaxException e) {
+            return fallback;
+        }
     }
 
     /**
