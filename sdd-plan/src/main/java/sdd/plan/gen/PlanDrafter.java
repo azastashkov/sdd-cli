@@ -17,12 +17,15 @@ import sdd.plan.impact.ImpactResult;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecItem;
 import sdd.plan.spec.SpecRenderer;
+import sdd.plan.spec.Touchpoint;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * The plan-drafting model call (the only model call Phase 3C-1 adds). Output is validated
@@ -324,9 +327,14 @@ public final class PlanDrafter {
             input.append('\n');
         }
         input.append("\n# Knowledge-base evidence\n");
+        Set<String> specTerms = salientTerms(spec);
         for (AffectedRepo repo : result.affected()) {
+            // The repo's own impact reasons carry the touchpoints and hits that put it in the plan,
+            // so they rank its evidence alongside the spec's own vocabulary.
+            Set<String> terms = new HashSet<>(specTerms);
+            terms.addAll(tokens(String.join(" ", repo.reasons())));
             input.append("\n## ").append(repo.repo()).append('\n');
-            input.append(evidence(jdbi, repo.repo()));
+            input.append(evidence(jdbi, repo.repo(), terms));
         }
         if (!priorQa.isBlank()) {
             input.append("\n# Prior questions and human resolutions\n\n").append(priorQa);
@@ -334,23 +342,42 @@ public final class PlanDrafter {
         return input.toString();
     }
 
-    private static String evidence(Jdbi jdbi, String repo) {
+    /**
+     * Evidence for one repo, ranked by what the spec is actually about.
+     *
+     * <p>The budgets below are unchanged; what changed is which rows fill them. They used to be
+     * filled by whatever sorted first, which on any real package is an accident: trading-web-sdk
+     * has 260 api_members, so an alphabetical window of 40 ends in the C's and never reaches the
+     * type the plan is being written about. A model cannot declare a member it was never shown,
+     * and the prompt tells it to omit rather than guess — so undeclared contracts were the
+     * predictable outcome rather than model reticence.
+     *
+     * <p>Ranking is a stable partition, not a score: rows the spec names come first in their
+     * existing order, everything else follows in its existing order. That keeps the output a
+     * deterministic function of the knowledge base and the spec — which it has to be, because
+     * {@code sdd plan approve} hashes the plan.md this text produces. It also means
+     * {@link #EVIDENCE_CAP} now truncates the least relevant lines rather than the last ones
+     * alphabetically.
+     */
+    private static String evidence(Jdbi jdbi, String repo, Set<String> terms) {
         StringBuilder evidence = new StringBuilder();
         jdbi.useHandle(h -> {
-            for (Map<String, Object> row : h.createQuery("""
+            List<Map<String, Object>> types = h.createQuery("""
                             SELECT t.fqcn AS fqcn, t.kind AS kind, t.file_path AS path,
                                    t.language AS lang
                             FROM java_type t
                             JOIN module m ON m.id = t.module_id
                             JOIN repo r ON r.id = m.repo_id
-                            WHERE r.name = :r ORDER BY t.is_api DESC, t.fqcn LIMIT 25""")
-                    .bind("r", repo).mapToMap().list()) {
+                            WHERE r.name = :r ORDER BY t.is_api DESC, t.fqcn LIMIT 400""")
+                    .bind("r", repo).mapToMap().list();
+            for (Map<String, Object> row : ranked(types, TYPE_BUDGET,
+                    row -> names(terms, String.valueOf(row.get("fqcn"))))) {
                 String fqcn = String.valueOf(row.get("fqcn"));
                 evidence.append("- ").append(isTypeScript(row) ? TsNames.address(fqcn) : fqcn)
                         .append(" (").append(row.get("kind"))
                         .append(") @ ").append(row.get("path")).append('\n');
             }
-            for (Map<String, Object> row : h.createQuery("""
+            List<Map<String, Object>> members = h.createQuery("""
                             SELECT jt.fqcn AS fqcn, am.name AS mname, am.signature AS sig,
                                    am.return_type AS ret, jt.language AS lang
                             FROM api_member am
@@ -358,8 +385,11 @@ public final class PlanDrafter {
                             JOIN module m ON m.id = jt.module_id
                             JOIN repo r ON r.id = m.repo_id
                             WHERE r.name = :r AND jt.is_api = 1
-                            ORDER BY jt.fqcn, am.signature LIMIT 40""")
-                    .bind("r", repo).mapToMap().list()) {
+                            ORDER BY jt.fqcn, am.signature LIMIT 1200""")
+                    .bind("r", repo).mapToMap().list();
+            for (Map<String, Object> row : ranked(members, MEMBER_BUDGET,
+                    row -> names(terms, String.valueOf(row.get("fqcn")))
+                            || terms.contains(lower(String.valueOf(row.get("mname")))))) {
                 String fqcn = String.valueOf(row.get("fqcn"));
                 String sig = String.valueOf(row.get("sig"));
                 // A declaration is copied from this line, so it has to BE a declaration. The
@@ -392,5 +422,66 @@ public final class PlanDrafter {
     /** A row's language, tolerant of the NULL a pre-npm knowledge base carries on every row. */
     private static boolean isTypeScript(Map<String, Object> row) {
         return "TYPESCRIPT".equals(row.get("lang"));
+    }
+
+    private static final int TYPE_BUDGET = 25;
+    private static final int MEMBER_BUDGET = 40;
+
+    /** Rows the spec names, in their existing order, then the rest in theirs — capped at budget. */
+    private static List<Map<String, Object>> ranked(List<Map<String, Object>> rows, int budget,
+                                                    Predicate<Map<String, Object>> relevant) {
+        List<Map<String, Object>> named = new ArrayList<>();
+        List<Map<String, Object>> rest = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            (relevant.test(row) ? named : rest).add(row);
+        }
+        named.addAll(rest);
+        return named.size() <= budget ? named : new ArrayList<>(named.subList(0, budget));
+    }
+
+    /**
+     * Whether the spec names this type, by its simple name.
+     *
+     * <p>Exact identifier match, case-insensitively — a spec that means a type almost always writes
+     * its name. Deliberately NOT fuzzy: this decides what a model is shown, and a loose match would
+     * fill the budget with near-misses, which is the failure being fixed rather than a milder
+     * version of it. The simple name is everything after the last dot, which is the class for Java
+     * and the export for TypeScript.
+     */
+    private static boolean names(Set<String> terms, String fqcn) {
+        return terms.contains(lower(fqcn.substring(fqcn.lastIndexOf('.') + 1)));
+    }
+
+    /** Every identifier-shaped token in the spec: its prose, its IDs' text, and its touchpoints. */
+    static Set<String> salientTerms(NormalizedSpec spec) {
+        StringBuilder text = new StringBuilder(spec.title()).append(' ')
+                .append(spec.goal()).append(' ').append(spec.background());
+        for (SpecItem item : spec.requirements()) {
+            text.append(' ').append(item.text());
+        }
+        for (SpecItem item : spec.acceptance()) {
+            text.append(' ').append(item.text());
+        }
+        for (SpecItem item : spec.constraints()) {
+            text.append(' ').append(item.text());
+        }
+        for (Touchpoint touchpoint : spec.touchpoints()) {
+            text.append(' ').append(touchpoint.value());
+        }
+        return tokens(text.toString());
+    }
+
+    private static Set<String> tokens(String text) {
+        Set<String> tokens = new HashSet<>();
+        for (String token : text.split("[^A-Za-z0-9_]+")) {
+            if (token.length() >= 3) {
+                tokens.add(lower(token));
+            }
+        }
+        return tokens;
+    }
+
+    private static String lower(String s) {
+        return s.toLowerCase(java.util.Locale.ROOT);
     }
 }

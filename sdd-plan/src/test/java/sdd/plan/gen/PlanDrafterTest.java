@@ -135,6 +135,65 @@ class PlanDrafterTest {
         assertThat(input).contains("- @acme/web-sdk#Tick (INTERFACE) @ src/types.ts");
     }
 
+    /** A repo with more surface than the evidence budget, where the type the spec is about sorts
+     *  last. This is trading-web-sdk's shape: 260 api_members, so an alphabetical window ends in
+     *  the C's and never reaches the type the plan is being written about. */
+    private ImpactResult seedCrowdedRepo() {
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO repo(name, path, kind) VALUES ('big-lib','/w/3','LIBRARY')");
+            h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (3,':','LIBRARY')");
+            for (int i = 0; i < 40; i++) {
+                String name = String.format("com.acme.Filler%02d", i);
+                h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path) "
+                        + "VALUES (3,?,'CLASS',1,'src/main/java/Filler.java')", name);
+                h.execute("INSERT INTO api_member(type_id, name, signature, return_type) "
+                        + "VALUES ((SELECT id FROM java_type WHERE fqcn = ?),'a','a()','void')", name);
+                h.execute("INSERT INTO api_member(type_id, name, signature, return_type) "
+                        + "VALUES ((SELECT id FROM java_type WHERE fqcn = ?),'b','b()','void')", name);
+            }
+            h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path) "
+                    + "VALUES (3,'com.acme.ZebraTarget','CLASS',1,'src/main/java/ZebraTarget.java')");
+            h.execute("INSERT INTO api_member(type_id, name, signature, return_type) VALUES "
+                    + "((SELECT id FROM java_type WHERE fqcn = 'com.acme.ZebraTarget'),"
+                    + "'target','target()','String')");
+        });
+        return new ImpactResult(List.of(),
+                List.of(new AffectedRepo("big-lib", "seed", "SEED", List.of("R1"),
+                        List.of("touchpoint class:ZebraTarget"))),
+                List.of(), List.of(), List.of(), List.of(), List.of());
+    }
+
+    private static NormalizedSpec specNaming(String term) {
+        return new NormalizedSpec("S-2", "T", "o", "draft", "Change " + term + ".", "",
+                List.of(new SpecItem("R1", "extend " + term + " with a field")),
+                List.of(new SpecItem("A1", "acc")),
+                List.of(), List.of(), List.of(), List.of(), List.of());
+    }
+
+    @Test
+    void evidenceLeadsWithWhatTheSpecNamesRatherThanWhatSortsFirst() {
+        ImpactResult impact = seedCrowdedRepo();
+
+        String input = PlanDrafter.composeInput(db.jdbi(), specNaming("ZebraTarget"), impact,
+                ExecutionOrder.order(db.jdbi(), impact), "");
+
+        // Without ranking the window is filled by Filler00..Filler19 and the one type the plan is
+        // about never reaches the model — which is why ts-api contracts were drafted undeclared.
+        assertThat(input).contains("com.acme.ZebraTarget (CLASS)");
+        assertThat(input).contains("- com.acme.ZebraTarget#target(): String");
+    }
+
+    @Test
+    void anUnnamedRepoStillGetsEvidenceInItsExistingOrder() {
+        ImpactResult impact = seedCrowdedRepo();
+
+        String input = PlanDrafter.composeInput(db.jdbi(), specNaming("NothingHere"), impact,
+                ExecutionOrder.order(db.jdbi(), impact), "");
+
+        // Nothing matches, so the budget is filled exactly as it was before ranking existed.
+        assertThat(input).contains("com.acme.Filler00 (CLASS)");
+    }
+
     @Test
     void validatesEveryUntrustedFieldWithNotes() {
         ScriptedChatModel planner = new ScriptedChatModel(List.of(response(GOOD_JSON, "stop")));

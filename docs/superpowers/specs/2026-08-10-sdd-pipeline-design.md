@@ -465,3 +465,43 @@ SKIPPED, not PASSED.
 
 Both of the above change existing Gradle behaviour, which is why they were
 sequenced after everything else and revert alone.
+
+## Amendment (2026-08-16): Gate-1 evidence is ranked by relevance
+
+The knowledge-base evidence `PlanDrafter` gives the planner had fixed budgets —
+25 types, 40 API members per repo — filled by whatever sorted first. On a real
+package that is an accident rather than a selection: `trading-web-sdk` has 260
+API members, so an alphabetical window of 40 ends in the C's, and the type a
+plan is being written about is never shown. Two live drafting runs produced
+`ts-api` contracts with no declarations at all, and the reason was not model
+reticence — the prompt tells it to omit rather than guess, and it had nothing to
+copy. Fixing the declaration grammar (above) was necessary and not sufficient;
+this is what actually made the axis reachable.
+
+Rows whose simple name the spec mentions now come first, then everything else.
+Three properties are deliberate. It is a **stable partition, not a score**: both
+groups keep their existing order, so the output stays a deterministic function of
+the knowledge base and the spec — required, because `sdd plan approve` hashes the
+plan.md this text produces. Matching is **exact on the identifier**, case
+insensitive, because a loose match would fill the budget with near-misses, which
+is a milder version of the bug rather than a fix for it. And the **budgets are
+unchanged** — what changed is which rows fill them, so `EVIDENCE_CAP` now
+truncates the least relevant lines instead of the last ones alphabetically.
+
+The relevance signal is the spec's own vocabulary (title, goal, background,
+requirement/acceptance/constraint text, touchpoint values) plus each repo's
+impact reasons, which carry the touchpoints and hits that put it in the plan.
+
+Verified end to end against the real estate: the drafter emitted a twelve-member
+`ts-api` declaration for `SubmitOrderRequest`/`SubmitOrderResponse`, which parse
+with no problems, actualize to 559 chars rather than the package's ~53kB, and
+contain every declared member — `DECLARED_MET` on a real npm package from a
+model-drafted plan, which had not happened before.
+
+Not addressed here, and recorded so it is not mistaken for solved: a declaration
+is most valuable when the surface is NEW, and that is exactly when the drafter
+correctly refuses to write one. On the time-in-force spec the model raised a
+blocking question asking the field's exact name rather than declaring it. Making
+Gate 2 able to check surface that does not exist yet is a change to what a
+declaration MEANS — a design claim to be checked, rather than an observation to
+be copied — and belongs in its own phase.
