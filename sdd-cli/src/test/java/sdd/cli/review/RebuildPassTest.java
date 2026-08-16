@@ -516,7 +516,7 @@ class RebuildPassTest {
                 List.of(new PlanModel.PlanRepo("web", "seed", "SEED", "none", "sha")),
                 List.of(List.of("web")), List.of(), List.of(), List.of());
         SddConfig config = new SddConfig(ws, java.util.Map.of(), java.util.Map.of(), null,
-                List.of(), java.util.Map.of(), List.of(),
+                List.of(), java.util.Map.of(), List.of(), List.of(),
                 sdd.core.config.RunSettings.defaults(), java.util.Map.of());
 
         List<String> viaGateTwo = RebuildPass.tasksFor(plan, config, "web", repo);

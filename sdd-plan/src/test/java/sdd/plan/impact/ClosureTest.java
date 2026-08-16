@@ -162,4 +162,46 @@ class ClosureTest {
         assertThat(expansion.warnings()).anySatisfy(w ->
                 assertThat(w).contains("BOM_MANAGED").contains("svc-orders").contains("declaration site not identifiable"));
     }
+    @Test
+    void aHostThatLoadsAnAffectedRepoAtRuntimeIsAffectedToo() {
+        // A micro-frontend host ships the composition: a change to a bundle it loads reaches users
+        // through it, and nothing in any manifest or package.json says so.
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO repo(name, path, kind) VALUES ('shell','/w/shell','SERVICE')");   // repo 7
+            h.execute("INSERT INTO runtime_edge(host_repo_id, module_repo_id, remote_name, resolution) "
+                    + "SELECT (SELECT id FROM repo WHERE name='shell'), "
+                    + "(SELECT id FROM repo WHERE name='svc-orders'), 'mfe_a', 'CONFIGURED'");
+        });
+
+        Closure.Expansion expansion = Closure.expand(db.jdbi(), Set.of("svc-orders"));
+
+        assertThat(expansion.added()).extracting(AffectedRepo::repo).contains("shell");
+        assertThat(expansion.added()).filteredOn(r -> r.repo().equals("shell")).singleElement()
+                .satisfies(r -> {
+                    assertThat(r.role()).isEqualTo("runtime");
+                    assertThat(r.annotation()).isEqualTo("PENDING_RUNTIME");
+                    assertThat(r.reasons()).anySatisfy(reason ->
+                            assertThat(reason).contains("loads svc-orders at runtime")
+                                    .contains("mfe_a"));
+                });
+    }
+
+    @Test
+    void aRuntimeHostIsNotPulledInWhenTheModuleIsUnaffected() {
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO repo(name, path, kind) VALUES ('shell','/w/shell','SERVICE')");
+            // 'unrelated' sits outside every dependency, contract and topic in this estate.
+            h.execute("INSERT INTO repo(name, path, kind) VALUES ('unrelated','/w/u','SERVICE')");
+            h.execute("INSERT INTO runtime_edge(host_repo_id, module_repo_id, remote_name, resolution) "
+                    + "SELECT (SELECT id FROM repo WHERE name='shell'), "
+                    + "(SELECT id FROM repo WHERE name='unrelated'), 'mfe_a', 'CONFIGURED'");
+        });
+
+        Closure.Expansion expansion = Closure.expand(db.jdbi(), Set.of("lib-core"));
+
+        // The host only joins when something it loads is actually changing.
+        assertThat(expansion.added()).extracting(AffectedRepo::repo)
+                .doesNotContain("shell").doesNotContain("unrelated");
+    }
+
 }

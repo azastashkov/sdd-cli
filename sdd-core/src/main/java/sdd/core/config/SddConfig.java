@@ -28,5 +28,10 @@ public record SddConfig(
         List<String> excludes,
         Map<String, String> artifactOverrides,
         List<ManualEdge> manualEdges,
+        /**
+         * Human-declared runtime composition: which repo builds a bundle a host loads at run
+         * time. Not derivable — see {@link RuntimeEdge}.
+         */
+        List<RuntimeEdge> runtimeEdges,
         RunSettings run,
         Map<String, List<String>> verificationExclusions) {}

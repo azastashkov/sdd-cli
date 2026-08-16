@@ -20,10 +20,16 @@ import java.util.Map;
  */
 final class DbDump {
     /** Every table in the schema. Dump order here doesn't matter — Jackson sorts keys on output. */
+    /**
+     * Every table the golden estate pins. A new table absent from this list is silently omitted
+     * from the golden, so the file goes on looking complete while covering less than it did — add
+     * to it whenever a migration adds a table.
+     */
     private static final List<String> TABLES = List.of(
             "repo", "module", "artifact", "dep_edge", "java_type", "api_member", "api_usage",
             "file_ref", "rest_endpoint", "rest_client", "rest_call_edge", "kafka_topic",
-            "kafka_role", "config_property", "repo_card", "fts_symbol");
+            "kafka_role", "config_property", "repo_card", "fts_symbol",
+            "runtime_remote", "runtime_edge");
 
     private DbDump() {}
 

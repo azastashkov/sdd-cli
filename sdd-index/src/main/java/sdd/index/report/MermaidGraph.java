@@ -8,9 +8,15 @@ import java.util.Map;
 
 /**
  * Renders the knowledge base's estate graph as Mermaid (design amendment 2026-08-12).
- * Read-only, model-free, deterministic: same KB => byte-identical output. Repo nodes are
- * styled by kind; Gradle edges carry the consumption mode; REST and Kafka links use
- * distinct arrow styles so the three relationship families read apart at a glance.
+ * Read-only, model-free, deterministic: same KB => byte-identical output.
+ *
+ * <p>Two independent things are encoded on a repo node, and keeping them independent is the point:
+ * FILL says what the repo is (service, library, both, unknown) and SHAPE says which ecosystem
+ * builds it. Overloading fill with both would make a mixed-ecosystem estate unreadable, and the
+ * questions "is this a library?" and "is this npm?" are asked separately.
+ *
+ * <p>Dependency edges carry the consumption mode whatever the ecosystem; REST and Kafka links use
+ * distinct arrow styles so the relationship families read apart at a glance.
  */
 public final class MermaidGraph {
 
@@ -22,22 +28,32 @@ public final class MermaidGraph {
         md.append("  classDef service fill:#1f6feb,color:#ffffff\n");
         md.append("  classDef library fill:#2da44e,color:#ffffff\n");
         md.append("  classDef unknown fill:#6e7781,color:#ffffff\n");
+        // rollupKind has always been able to return MIXED — a repo that both publishes a library
+        // and deploys a service — and without a class of its own it fell through to `unknown`,
+        // which reads as "we could not tell" rather than "it is both". A workspaces monorepo makes
+        // that common rather than rare.
+        md.append("  classDef mixed fill:#8250df,color:#ffffff\n");
 
         Map<String, String> idOf = new LinkedHashMap<>();
         jdbi.useHandle(h -> {
             for (Map<String, Object> row : h.createQuery(
-                            "SELECT name, kind FROM repo ORDER BY name")
+                            "SELECT name, kind, build_system FROM repo ORDER BY name")
                     .mapToMap().list()) {
                 String name = String.valueOf(row.get("name"));
                 String kind = String.valueOf(row.get("kind"));
                 String styleClass = switch (kind) {
                     case "SERVICE" -> "service";
                     case "LIBRARY" -> "library";
+                    case "MIXED" -> "mixed";
                     default -> "unknown";
                 };
                 String id = uniqueId(idOf, name);
                 idOf.put(name, id);
-                md.append("  ").append(id).append("[\"").append(name).append("\"]:::")
+                // Rounded for npm, square for everything else. Shape rather than colour so the
+                // ecosystem is legible without spending the fill, which already means kind.
+                boolean npm = "NPM".equals(String.valueOf(row.get("build_system")));
+                md.append("  ").append(id).append(npm ? "(\"" : "[\"").append(name)
+                        .append(npm ? "\")" : "\"]").append(":::")
                         .append(styleClass).append('\n');
             }
             for (Map<String, Object> row : h.createQuery("""

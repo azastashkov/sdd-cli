@@ -40,6 +40,21 @@ public final class CurationReport {
                 row -> "- `%s` [%s] `%s` — `%s`".formatted(row.get("repo"), row.get("kind"),
                         row.get("site"), orDash(row.get("raw_expr"))));
 
+        // Runtime composition the estate declares but nobody has told sdd who builds. Which repo
+        // produces a bundle lives in a bundler config the indexer does not read, so this is a
+        // question for a human rather than something to infer from a filename resemblance.
+        appendSection(md, jdbi, "Runtime remotes with no mapped repo", """
+                        SELECT r.name AS host, rr.name AS remote, rr.url AS url,
+                               rr.source_file AS source_file
+                        FROM runtime_remote rr
+                        JOIN repo r ON r.id = rr.repo_id
+                        WHERE NOT EXISTS(SELECT 1 FROM runtime_edge re
+                                         WHERE re.remote_name = rr.name)""",
+                "r.name, rr.name",
+                row -> "- `%s` declares remote `%s` -> `%s` (%s) — add a runtime_edges entry in sdd.yml"
+                        .formatted(row.get("host"), row.get("remote"), row.get("url"),
+                                row.get("source_file")));
+
         appendSection(md, jdbi, "Absolute-URL clients", """
                         SELECT r.name AS repo, c.uri_template AS uri_template
                         FROM rest_client c

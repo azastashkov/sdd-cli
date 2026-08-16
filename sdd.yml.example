@@ -83,3 +83,13 @@ run:
 # node_home: /Users/me/.nvm/versions/node/v22.11.0
 
 excludes: []              # workspace directories to skip
+
+# Runtime composition: which repo builds a bundle a host application loads at run time. Declared
+# rather than derived — a manifest says the host loads /mfe/a/trading-mfe-a.js, but which repo
+# BUILDS that bundle lives in a bundler config sdd does not read, so inferring it from the filename
+# would put a guess in the knowledge base wearing the same clothes as a parsed fact. Any remote
+# left unmapped is listed in the curation report.
+# runtime_edges:
+#   - host_repo: trading-frontend-root-config
+#     remote: mfe_a
+#     module_repo: trading-mfe-a

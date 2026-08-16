@@ -99,6 +99,24 @@ public final class ConfigLoader {
             throw new ConfigException("manual_edges must be a list, got: " + manualEdgesNode);
         }
 
+        List<RuntimeEdge> runtimeEdges = new java.util.ArrayList<>();
+        Object runtimeEdgesNode = root.get("runtime_edges");
+        if (runtimeEdgesNode == null) {
+            // empty
+        } else if (runtimeEdgesNode instanceof List<?> edges) {
+            for (int i = 0; i < edges.size(); i++) {
+                if (!(edges.get(i) instanceof Map<?, ?> e)) {
+                    throw new ConfigException("runtime_edges[" + i + "] must be a mapping");
+                }
+                runtimeEdges.add(new RuntimeEdge(
+                        requiredEdgeKey(e, "host_repo", i, env),
+                        requiredEdgeKey(e, "remote", i, env),
+                        requiredEdgeKey(e, "module_repo", i, env)));
+            }
+        } else {
+            throw new ConfigException("runtime_edges must be a list, got: " + runtimeEdgesNode);
+        }
+
         RunSettings run = RunSettings.defaults();
         Object runNode = root.get("run");
         if (runNode instanceof Map<?, ?> rm) {
@@ -176,8 +194,8 @@ public final class ConfigLoader {
         }
 
         return new SddConfig(workspace, Map.copyOf(models), Map.copyOf(jdkHomes), nodeHome,
-                excludes, Map.copyOf(artifactOverrides), List.copyOf(manualEdges), run,
-                Map.copyOf(verificationExclusions));
+                excludes, Map.copyOf(artifactOverrides), List.copyOf(manualEdges),
+                List.copyOf(runtimeEdges), run, Map.copyOf(verificationExclusions));
     }
 
     // No EmbeddingsRetriever exists and every command retrieves with SQLite FTS5 regardless of this

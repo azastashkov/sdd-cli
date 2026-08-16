@@ -12,7 +12,8 @@ import java.util.TreeSet;
 
 /**
  * {@code impact} intent: "what breaks if this changes", answered by {@link Closure#expand} alone
- * — the deterministic reverse closure over the Gradle dependency graph, plus BOM declaration
+ * — the deterministic reverse closure over the package dependency graph (Gradle and npm
+ * alike), plus BOM declaration
  * sites, REST/Kafka contract hops and SCC cycles. No model participates: {@link #of} takes no
  * {@code ChatModel}, by signature, and this class never reaches for {@code ImpactAnalysis} /
  * {@code ModelSeeder} — that pipeline would add a third model call and let a model contribute

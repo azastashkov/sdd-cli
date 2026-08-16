@@ -59,7 +59,7 @@ public final class EvidenceCollector {
      *
      * <p>Unlike {@code RepoFacts.of}/{@code DependencyFacts.of}, this cites REPO-kind entities
      * too rather than skipping them as a "redundant echo": {@link ConsumerFacts}' four
-     * repo-consumer sections (Gradle, API usage, REST, Kafka) can all legitimately be empty for a
+     * repo-consumer sections (package deps, API usage, REST, Kafka) can all legitimately be empty for a
      * repo nobody depends on, and without a citation fact that makes {@link Evidence#isEmpty()}
      * read exactly like "this repo is not in the knowledge base" — the confusion {@code sdd
      * explain} exists to prevent. Citing unconditionally keeps repo and non-repo kinds symmetric

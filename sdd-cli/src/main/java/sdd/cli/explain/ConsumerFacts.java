@@ -62,7 +62,10 @@ final class ConsumerFacts {
                         WHERE r1.name = :r ORDER BY r2.name""")
                 .bind("r", repo).mapTo(String.class).list());
         List<Fact> facts = names.stream().map(Fact::new).toList();
-        return Section.capped("Consumers via Gradle: " + repo, "v_repo_dep_edge", facts, Section.DEFAULT_LIMIT);
+        // Not "via Gradle": this view carries npm edges too, and naming one ecosystem in a
+        // heading makes the other's consumers look like they are missing.
+        return Section.capped("Consumers via package dependency: " + repo, "v_repo_dep_edge",
+                facts, Section.DEFAULT_LIMIT);
     }
 
     private static Section apiUsageConsumers(Jdbi jdbi, String repo) {

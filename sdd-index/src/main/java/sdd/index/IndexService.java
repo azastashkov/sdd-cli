@@ -13,6 +13,8 @@ import sdd.core.ts.TsSidecar;
 import sdd.index.npm.NpmExtractor;
 import sdd.index.ts.TsExtraction;
 import sdd.index.report.CurationReport;
+import sdd.index.runtime.RuntimeEdgeLinker;
+import sdd.index.runtime.RuntimeRemotes;
 import sdd.index.scan.RepoScan;
 import sdd.index.scan.WorkspaceScanner;
 import sdd.index.source.SourceExtraction;
@@ -42,6 +44,7 @@ public final class IndexService {
     private ArtifactLinker.LinkReport lastLinkReport;
     private UsageLinker.Report lastUsageReport;
     private RestMatcher.Report lastRestReport;
+    private RuntimeEdgeLinker.Report lastRuntimeReport;
     private int lastTopicsCleaned;
     private RepoCardGenerator.CardResult lastCardResult;
     private String lastCardError;
@@ -136,6 +139,7 @@ public final class IndexService {
         lastLinkReport = ArtifactLinker.link(db.jdbi(), config.artifactOverrides());
         lastUsageReport = UsageLinker.link(db.jdbi());
         lastRestReport = RestMatcher.match(db.jdbi(), config.manualEdges());
+        lastRuntimeReport = RuntimeEdgeLinker.link(db.jdbi(), config.runtimeEdges());
         lastTopicsCleaned = TopicJanitor.clean(db.jdbi());
         lastCardResult = generateCards(db.jdbi(), config.workspace());
         // Always runs, regardless of --no-cards/model availability: it only reads already-persisted
@@ -181,6 +185,11 @@ public final class IndexService {
 
     public RestMatcher.Report lastRestReport() {
         return lastRestReport;
+    }
+
+    /** Runtime composition edges declared in sdd.yml, and the remotes left unmapped. */
+    public RuntimeEdgeLinker.Report lastRuntimeReport() {
+        return lastRuntimeReport;
     }
 
     public int lastTopicsCleaned() {
@@ -242,6 +251,7 @@ public final class IndexService {
         try {
             BuildModel.Extract extract = extractor.extract(scan.path());
             IndexPersistence.persistRepo(jdbi, scan, extract, extractor.buildSystem(), "OK", null);
+            persistRuntimeRemotes(jdbi, scan);
             String parseStatus = runSourceExtraction(jdbi, scan, extract);
             return new RepoResult(scan.name(), "OK", parseStatus, extract.modules().size(), 0, false, null);
         } catch (ExtractionException buildFailure) {
@@ -314,6 +324,20 @@ public final class IndexService {
      * and it is the one Error this pipeline provokes by itself, so it is named explicitly rather
      * than swallowing every Error — an OutOfMemoryError still ends the run, as it should.
      */
+    /**
+     * Records any checked-in remotes manifest. Reading it is unconditional and cheap, and a repo
+     * that has none simply records none — a manifest is a fact about the repo whatever builds it.
+     */
+    private void persistRuntimeRemotes(Jdbi jdbi, RepoScan scan) {
+        try {
+            long repoId = jdbi.withHandle(h -> h.createQuery("SELECT id FROM repo WHERE name=:n")
+                    .bind("n", scan.name()).mapTo(Long.class).one());
+            RuntimeRemotes.persist(jdbi, repoId, RuntimeRemotes.read(scan.path()));
+        } catch (RuntimeException e) {
+            // A manifest that cannot be read is not a reason to fail a repo's whole index.
+        }
+    }
+
     private String runSourceExtraction(Jdbi jdbi, RepoScan scan, BuildModel.Extract extract) {
         try {
             long repoId = jdbi.withHandle(h -> h.createQuery("SELECT id FROM repo WHERE name=:n")

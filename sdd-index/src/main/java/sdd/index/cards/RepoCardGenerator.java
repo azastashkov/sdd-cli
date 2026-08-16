@@ -31,7 +31,7 @@ public final class RepoCardGenerator {
     private static final int MAX_ENDPOINTS = 50;
     private static final int MAX_KEY_FILE_CHARS = 12000;
     private static final String SYSTEM_PROMPT =
-            "You summarize Java repositories for an engineering knowledge base. Describe ONLY what "
+            "You summarize source repositories for an engineering knowledge base. Describe ONLY what "
             + "is evidenced in the provided data. No speculation, no filler. Respond with a single "
             + "JSON object: {\"card_line\": string (one sentence, max 30 words), \"card_md\": string "
             + "(markdown, max 300 words, sections: Purpose, Modules, Integrations, Conventions)}";
@@ -50,7 +50,12 @@ public final class RepoCardGenerator {
             long repoId = ((Number) repo.get("id")).longValue();
             String name = (String) repo.get("name");
             String input = composeInput(jdbi, repoId, name, workspace);
-            String hash = sha256(input + "\n" + modelName);
+            // The system prompt is part of the input in every sense that matters: change it and the
+            // model is being asked a different question, so a cached card no longer answers the
+            // question that would be asked now. Leaving it out made a prompt-only change a
+            // permanent no-op for every repo that already had a card — the fix would ship, and
+            // nothing would ever regenerate to use it.
+            String hash = sha256(input + "\n" + modelName + "\n" + SYSTEM_PROMPT);
             boolean upToDate = jdbi.withHandle(h -> h.createQuery(
                             "SELECT count(*) FROM repo_card WHERE repo_id=:r AND input_hash=:h")
                     .bind("r", repoId).bind("h", hash).mapTo(Integer.class).one()) > 0;
@@ -129,9 +134,19 @@ public final class RepoCardGenerator {
         return jdbi.withHandle(h -> {
             StringBuilder sb = new StringBuilder();
 
-            String kind = h.createQuery("SELECT kind FROM repo WHERE id = :r")
-                    .bind("r", repoId).mapTo(String.class).one();
-            sb.append("Repo: ").append(repoName).append(" (").append(kind).append(")\n\n");
+            Map<String, Object> repo = h.createQuery(
+                            "SELECT kind, build_system FROM repo WHERE id = :r")
+                    .bind("r", repoId).mapToMap().one();
+            String kind = String.valueOf(repo.get("kind"));
+            Object buildSystem = repo.get("build_system");
+            // The ecosystem is stated because it changes what everything else in this summary
+            // means — "modules" are Gradle projects or npm packages, and a model told nothing will
+            // describe whichever it assumes.
+            sb.append("Repo: ").append(repoName).append(" (").append(kind);
+            if (buildSystem != null) {
+                sb.append(", ").append(String.valueOf(buildSystem).toLowerCase(java.util.Locale.ROOT));
+            }
+            sb.append(")\n\n");
 
             appendModules(sb, h, repoId);
             appendEndpoints(sb, h, repoId);
@@ -253,6 +268,15 @@ public final class RepoCardGenerator {
 
     private static List<String> keyFilePaths(Handle h, long repoId) {
         List<String> paths = new ArrayList<>();
+        // Every signal below is read out of java_type, which an npm repo has none of, so without
+        // this such a repo contributes no key file at all. Its package.json is the equivalent: it
+        // names the package, its entry points and its dependencies in a few lines.
+        boolean npm = h.createQuery("SELECT build_system FROM repo WHERE id = :r")
+                .bind("r", repoId).mapTo(String.class).findOne()
+                .map("NPM"::equals).orElse(false);
+        if (npm) {
+            paths.add("package.json");
+        }
         String springBootFile = h.createQuery("""
                         SELECT file_path FROM java_type jt JOIN module m ON m.id = jt.module_id
                         WHERE m.repo_id = :r AND jt.annotations LIKE '%SpringBootApplication%'
