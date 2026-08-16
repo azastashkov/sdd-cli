@@ -3,6 +3,7 @@ package sdd.plan.approve;
 import org.jdbi.v3.core.Jdbi;
 import sdd.core.contract.ContractKinds;
 import sdd.core.contract.DeclaredContract;
+import sdd.core.toolchain.Toolchain;
 import sdd.plan.gen.ExecutionOrder;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecItem;
@@ -11,6 +12,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -22,6 +24,18 @@ import java.util.regex.Pattern;
  * graph, and live git state.
  */
 public final class PlanValidator {
+
+    /** Which contract kind each compat guarantee can actually be checked on. */
+    private static final Map<String, String> COMPAT_KINDS = Map.of(
+            "binary-compatible", ContractKinds.JAVA_API,
+            "type-compatible", ContractKinds.TS_API);
+
+    /** Which toolchain can provide a kind at all — a Java repo has no npm package surface. */
+    private static final Map<String, String> TOOLCHAIN_KINDS = Map.of(
+            ContractKinds.JAVA_API, "GRADLE",
+            ContractKinds.TS_API, "NPM",
+            ContractKinds.REST_CLIENT, "NPM");
+
     private static final Set<String> VERSION_ACTIONS = Set.of("none", "patch", "minor", "major");
     private static final Pattern TOKEN = Pattern.compile("[^A-Za-z0-9/{}.-]+");
 
@@ -33,6 +47,20 @@ public final class PlanValidator {
     }
 
     private PlanValidator() {
+    }
+
+    /**
+     * Each repo's recorded build system. UNKNOWN when a repo has not been re-indexed since the
+     * column was added, and an UNKNOWN is never used to raise a problem — a plan must not be
+     * blocked because the knowledge base predates a migration.
+     */
+    private static Map<String, Toolchain> toolchainsOf(Jdbi jdbi) {
+        Map<String, Toolchain> toolchains = new HashMap<>();
+        jdbi.useHandle(h -> h.createQuery("SELECT name, build_system FROM repo")
+                .mapToMap().forEach(row -> toolchains.put(String.valueOf(row.get("name")),
+                        Toolchain.of(row.get("build_system") == null
+                                ? null : String.valueOf(row.get("build_system"))))));
+        return toolchains;
     }
 
     public static Verdict validate(Jdbi jdbi, PlanDocument plan, NormalizedSpec spec,
@@ -58,13 +86,32 @@ public final class PlanValidator {
                 problems.add("repo '" + repo.repo() + "' appears more than once in Affected Repos");
             }
         }
+        Map<String, Toolchain> toolchains = toolchainsOf(jdbi);
         Set<String> contractIds = new LinkedHashSet<>();
         for (PlanDocument.PlanContract contract : plan.contracts()) {
             if (!contractIds.add(contract.id())) {
                 problems.add("duplicate contract id '" + contract.id() + "'");
             }
-            if (contract.compat() != null && !"java-api".equals(contract.kind())) {
-                problems.add("contract '" + contract.id() + "': compat is only valid on java-api contracts");
+            // Each compat value names a comparison that exists for exactly one kind: japicmp reads
+            // JVM bytecode, and the TypeScript check reads declaration files. Pairing them keeps a
+            // plan from declaring a guarantee nothing can check.
+            String requiredKind = contract.compat() == null ? null : COMPAT_KINDS.get(contract.compat());
+            if (contract.compat() != null && !contract.kind().equals(requiredKind)) {
+                problems.add("contract '" + contract.id() + "' (" + contract.kind() + "): compat '"
+                        + contract.compat() + "' is only valid on " + requiredKind + " contracts");
+            }
+            String expectedToolchain = TOOLCHAIN_KINDS.get(contract.kind());
+            if (expectedToolchain != null) {
+                Toolchain actual = toolchains.getOrDefault(contract.provider(), Toolchain.UNKNOWN);
+                if (actual != Toolchain.UNKNOWN && !actual.name().equals(expectedToolchain)) {
+                    // Without this the actualizer finds nothing, the body comes back empty, and
+                    // Gate 2 reports the grossest divergence available for a one-word typo.
+                    problems.add("contract '" + contract.id() + "' (" + contract.kind()
+                            + "): provider '" + contract.provider() + "' is a "
+                            + actual.name().toLowerCase(Locale.ROOT) + " repo, and " + contract.kind()
+                            + " contracts can only be provided by "
+                            + expectedToolchain.toLowerCase(Locale.ROOT) + " repos");
+                }
             }
         }
         Map<String, PlanDocument.PlanStep> stepByRepo = new HashMap<>();

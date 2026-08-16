@@ -120,7 +120,11 @@ public final class FtsSymbolWriter {
         symbols.addAll(handle.createQuery("""
                         SELECT t.module_id AS module_id, t.fqcn AS fqcn, m.name AS name
                         FROM api_member m JOIN java_type t ON t.id = m.type_id
-                        WHERE m.name <> '<init>'
+                        -- Any angle-bracketed name is synthetic, not something a human searches
+                        -- for: <init> from Java, <value> from a TypeScript type alias or const.
+                        -- Mirrored in SourcePersistence.insertType; if the two disagree, a rebuilt
+                        -- index ranks differently from a freshly written one.
+                        WHERE m.name NOT LIKE '<%'
                         GROUP BY m.type_id, m.name
                         ORDER BY m.type_id, m.name""")
                 .map((rs, ctx) -> new Symbol(rs.getLong("module_id"),

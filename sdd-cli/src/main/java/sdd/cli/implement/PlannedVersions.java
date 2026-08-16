@@ -55,14 +55,38 @@ public final class PlannedVersions {
         };
     }
 
-    /** The repo's current KB root-module version, or null when unindexed. */
+    /**
+     * The repo's current version: its root module's, or — when that has none — the single
+     * publishable module's.
+     *
+     * <p>The fallback exists because "one version per repo" is a Gradle assumption that npm
+     * workspaces break. A workspaces root is frequently a private shell with no version at all,
+     * while the thing consumers actually depend on lives in a member package. Reading only the root
+     * reports "no computable version" for such a repo and turns every pin onto it into a pre-flight
+     * problem, when the version was sitting one module away.
+     *
+     * <p>Deliberately only when there is exactly ONE publishable module. Two would mean the repo
+     * has two independent versions and no single answer to bump, which is a question for a human
+     * rather than a default to pick.
+     */
     public static String current(Jdbi jdbi, String repo) {
-        return jdbi.withHandle(h -> h.createQuery(
+        String rootVersion = jdbi.withHandle(h -> h.createQuery(
                         "SELECT m.version FROM module m JOIN repo r ON r.id = m.repo_id "
                                 + "WHERE r.name = :repo AND m.gradle_path = ':'")
                 .bind("repo", repo)
                 .mapTo(String.class)
                 .findFirst()
                 .orElse(null));
+        if (rootVersion != null && !rootVersion.isBlank()) {
+            return rootVersion;
+        }
+        java.util.List<String> published = jdbi.withHandle(h -> h.createQuery("""
+                        SELECT m.version FROM module m
+                        JOIN repo r ON r.id = m.repo_id
+                        WHERE r.name = :repo AND m.kind = 'LIBRARY'
+                          AND m.version IS NOT NULL AND m.version <> ''
+                        ORDER BY m.gradle_path""")
+                .bind("repo", repo).mapTo(String.class).list());
+        return published.size() == 1 ? published.get(0) : null;
     }
 }

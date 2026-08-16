@@ -5,11 +5,16 @@ import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
 import sdd.core.llm.ChatModel;
 import sdd.index.cards.RepoCardGenerator;
+import sdd.index.extract.BuildExtractor;
+import sdd.index.extract.BuildModel;
+import sdd.index.extract.GradleBuildExtractor;
 import sdd.index.gradle.ExtractionException;
-import sdd.index.gradle.GradleExtractor;
-import sdd.index.gradle.GradleModel;
-import sdd.index.gradle.StaticGradleParser;
+import sdd.core.ts.TsSidecar;
+import sdd.index.npm.NpmExtractor;
+import sdd.index.ts.TsExtraction;
 import sdd.index.report.CurationReport;
+import sdd.index.runtime.RuntimeEdgeLinker;
+import sdd.index.runtime.RuntimeRemotes;
 import sdd.index.scan.RepoScan;
 import sdd.index.scan.WorkspaceScanner;
 import sdd.index.source.SourceExtraction;
@@ -29,31 +34,66 @@ public final class IndexService {
     public record RepoResult(String repo, String status, String parseStatus, int modules,
                              int internalDeps, boolean skipped, String error) {}
 
-    /** Seam over {@link GradleExtractor#extract} so failure handling is testable without Gradle. */
-    @FunctionalInterface
-    interface Extractor {
-        GradleModel.Extract extract(java.nio.file.Path repoDir);
-    }
+    private static final BuildModel.Extract EMPTY_EXTRACT =
+            new BuildModel.Extract(List.of(), List.of());
 
-    private final Extractor injectedExtractor;
+    private final BuildExtractor injectedExtractor;
     private final ChatModel cardModel;
     private final String cardModelName;
 
     private ArtifactLinker.LinkReport lastLinkReport;
     private UsageLinker.Report lastUsageReport;
     private RestMatcher.Report lastRestReport;
+    private RuntimeEdgeLinker.Report lastRuntimeReport;
     private int lastTopicsCleaned;
     private RepoCardGenerator.CardResult lastCardResult;
     private String lastCardError;
     private Path lastReportPath;
 
     public IndexService() {
-        this(null);
+        this((BuildExtractor) null);   // cast disambiguates from the ExtractFn test seam
     }
 
-    /** Seam so tests can inject a stub {@link Extractor} without shelling out to Gradle. */
-    IndexService(Extractor extractor) {
+    /** Seam so tests can inject a stub {@link BuildExtractor} without shelling out to Gradle. */
+    IndexService(BuildExtractor extractor) {
         this(extractor, null, null);
+    }
+
+    /**
+     * A plain function standing in for a whole {@link BuildExtractor}, so a test that only cares
+     * what the pipeline does with a given model does not have to spell out detection and fallback.
+     * It reports {@code GRADLE}, because that is what every caller of this seam is standing in for.
+     * Production never takes this path: {@link #run} always dispatches through a detected
+     * extractor.
+     */
+    @FunctionalInterface
+    interface ExtractFn {
+        BuildModel.Extract extract(Path repoDir);
+    }
+
+    IndexService(ExtractFn fn) {
+        this(asExtractor(fn), null, null);
+    }
+
+    IndexService(ExtractFn fn, ChatModel cardModel, String cardModelName) {
+        this(asExtractor(fn), cardModel, cardModelName);
+    }
+
+    private static BuildExtractor asExtractor(ExtractFn fn) {
+        return new BuildExtractor() {
+            @Override public boolean detects(Path repoDir) {
+                return true;
+            }
+            @Override public String buildSystem() {
+                return GradleBuildExtractor.BUILD_SYSTEM;
+            }
+            @Override public BuildModel.Extract extract(Path repoDir) {
+                return fn.extract(repoDir);
+            }
+            @Override public BuildModel.Extract fallback(Path repoDir) {
+                return new BuildModel.Extract(List.of(), List.of());
+            }
+        };
     }
 
     /**
@@ -62,7 +102,7 @@ public final class IndexService {
      * the real {@link GradleExtractor}). Public so callers outside this package (the CLI) can wire
      * a real {@link ChatModel} without reaching for the package-private test seam.
      */
-    public IndexService(Extractor extractor, ChatModel cardModel, String cardModelName) {
+    public IndexService(BuildExtractor extractor, ChatModel cardModel, String cardModelName) {
         this.injectedExtractor = extractor;
         this.cardModel = cardModel;
         this.cardModelName = cardModelName;
@@ -84,12 +124,14 @@ public final class IndexService {
     public List<RepoResult> run(SddConfig config, Database db, boolean force) {
         List<String> scanFailures = new ArrayList<>();
         List<RepoScan> scans = WorkspaceScanner.scan(config.workspace(), config.excludes(), scanFailures);
-        Extractor extractor = injectedExtractor != null
-                ? injectedExtractor
-                : new GradleExtractor(config.jdkHomes())::extract;
+        // Detection order is significant: a Spring service that ships a package.json for its
+        // frontend assets must stay a Gradle repo, so Gradle is offered every repo first.
+        List<BuildExtractor> extractors = injectedExtractor != null
+                ? List.of(injectedExtractor)
+                : List.of(new GradleBuildExtractor(config.jdkHomes()), new NpmExtractor());
         List<RepoResult> results = new ArrayList<>();
         for (RepoScan scan : scans) {
-            results.add(indexRepo(db.jdbi(), extractor, scan, force));
+            results.add(indexRepo(db.jdbi(), extractors, scan, force));
         }
         for (String failure : scanFailures) {
             results.add(scanFailureResult(db.jdbi(), config.workspace(), failure));
@@ -97,6 +139,7 @@ public final class IndexService {
         lastLinkReport = ArtifactLinker.link(db.jdbi(), config.artifactOverrides());
         lastUsageReport = UsageLinker.link(db.jdbi());
         lastRestReport = RestMatcher.match(db.jdbi(), config.manualEdges());
+        lastRuntimeReport = RuntimeEdgeLinker.link(db.jdbi(), config.runtimeEdges());
         lastTopicsCleaned = TopicJanitor.clean(db.jdbi());
         lastCardResult = generateCards(db.jdbi(), config.workspace());
         // Always runs, regardless of --no-cards/model availability: it only reads already-persisted
@@ -144,6 +187,11 @@ public final class IndexService {
         return lastRestReport;
     }
 
+    /** Runtime composition edges declared in sdd.yml, and the remotes left unmapped. */
+    public RuntimeEdgeLinker.Report lastRuntimeReport() {
+        return lastRuntimeReport;
+    }
+
     public int lastTopicsCleaned() {
         return lastTopicsCleaned;
     }
@@ -162,32 +210,52 @@ public final class IndexService {
         return lastReportPath;
     }
 
-    RepoResult indexRepo(Jdbi jdbi, Extractor extractor, RepoScan scan) {
-        return indexRepo(jdbi, extractor, scan, false);
+    RepoResult indexRepo(Jdbi jdbi, List<BuildExtractor> extractors, RepoScan scan) {
+        return indexRepo(jdbi, extractors, scan, false);
+    }
+
+    /** Test seam; see {@link ExtractFn}. */
+    RepoResult indexRepo(Jdbi jdbi, ExtractFn fn, RepoScan scan) {
+        return indexRepo(jdbi, List.of(asExtractor(fn)), scan, false);
     }
 
     /** @param force bypasses only the fingerprint short-circuit below; see {@link #run(SddConfig, Database, boolean)}. */
-    RepoResult indexRepo(Jdbi jdbi, Extractor extractor, RepoScan scan, boolean force) {
+    RepoResult indexRepo(Jdbi jdbi, List<BuildExtractor> extractors, RepoScan scan, boolean force) {
         // A FAILED parse_status must not be treated as "unchanged, skip": with repo-atomic source
         // writes, a failed extraction leaves the previous (pre-failure) data intact, so retrying
         // on the next run is coherent and cheap — unlike a gradle-status skip, nothing was lost.
         // A NULL parse_status is not "parsed fine" either: rows written before source extraction
         // existed have one, and skipping them would leave those repos without source data forever.
+        // A NULL build_system is not "unchanged" either: it means the row predates the V4 migration
+        // and so has never been through an extractor that records which build system produced it.
+        // Without this clause a workspace upgraded to V4 reports "(unchanged, skipped)" for every
+        // repo and the new column stays NULL forever on a plain `sdd index` — the same trap the V2
+        // and V3 upgrades hit, whose documented remedy was the easily-missed `sdd index --force`.
+        // Costing one full re-index on upgrade buys back a workspace that heals itself.
         Optional<String> stored = jdbi.withHandle(h -> h.createQuery("""
                         SELECT head_commit || ':' || dirty_hash FROM repo
                         WHERE name=:n AND gradle_status='OK'
-                          AND parse_status IS NOT NULL AND parse_status != 'FAILED'""")
+                          AND parse_status IS NOT NULL AND parse_status != 'FAILED'
+                          AND build_system IS NOT NULL""")
                 .bind("n", scan.name()).mapTo(String.class).findOne());
         if (!force && stored.isPresent() && stored.get().equals(scan.fingerprint())) {
             return new RepoResult(scan.name(), "OK", null, 0, 0, true, null);
         }
+        BuildExtractor extractor = extractors.stream()
+                .filter(e -> e.detects(scan.path()))
+                .findFirst()
+                .orElse(null);
+        if (extractor == null) {
+            return unsupported(jdbi, extractors, scan);
+        }
         try {
-            GradleModel.Extract extract = extractor.extract(scan.path());
-            IndexPersistence.persistRepo(jdbi, scan, extract, "OK", null);
+            BuildModel.Extract extract = extractor.extract(scan.path());
+            IndexPersistence.persistRepo(jdbi, scan, extract, extractor.buildSystem(), "OK", null);
+            persistRuntimeRemotes(jdbi, scan);
             String parseStatus = runSourceExtraction(jdbi, scan, extract);
-            return new RepoResult(scan.name(), "OK", parseStatus, extract.projects().size(), 0, false, null);
-        } catch (ExtractionException gradleFailure) {
-            return degraded(jdbi, scan, describe(gradleFailure));
+            return new RepoResult(scan.name(), "OK", parseStatus, extract.modules().size(), 0, false, null);
+        } catch (ExtractionException buildFailure) {
+            return degraded(jdbi, extractor, scan, describe(buildFailure));
         } catch (RuntimeException unexpected) {
             // Anything the extractor throws beyond ExtractionException must stay confined to
             // this repo — one bad repo may never sink the whole run.
@@ -195,22 +263,45 @@ public final class IndexService {
         }
     }
 
-    private RepoResult degraded(Jdbi jdbi, RepoScan scan, String gradleError) {
+    private RepoResult degraded(Jdbi jdbi, BuildExtractor extractor, RepoScan scan, String buildError) {
         try {
-            GradleModel.Extract fallback = StaticGradleParser.parse(scan.path());
-            if (fallback.projects().isEmpty() && hasRows(jdbi, scan.name())) {
+            BuildModel.Extract fallback = extractor.fallback(scan.path());
+            if (fallback.modules().isEmpty() && hasRows(jdbi, scan.name())) {
                 // Persisting an empty DEGRADED extract would delete modules and edges we already
                 // have. Keep the previous (now stale) picture instead.
-                IndexPersistence.markStale(jdbi, scan.name(), gradleError);
-                return new RepoResult(scan.name(), "STALE_OK", null, 0, 0, false, gradleError);
+                IndexPersistence.markStale(jdbi, scan.name(), buildError);
+                return new RepoResult(scan.name(), "STALE_OK", null, 0, 0, false, buildError);
             }
-            IndexPersistence.persistRepo(jdbi, scan, fallback, "DEGRADED", gradleError);
+            IndexPersistence.persistRepo(jdbi, scan, fallback, extractor.buildSystem(), "DEGRADED", buildError);
             String parseStatus = runSourceExtraction(jdbi, scan, fallback);
             return new RepoResult(scan.name(), "DEGRADED", parseStatus,
-                    fallback.projects().size(), 0, false, gradleError);
+                    fallback.modules().size(), 0, false, buildError);
         } catch (RuntimeException fallbackFailure) {
             return staleOrFailed(jdbi, scan, describe(fallbackFailure));
         }
+    }
+
+    /**
+     * A repo no extractor claims. Distinct from FAILED on purpose: FAILED means "we tried to read
+     * this build and could not", which is a problem to investigate, while UNSUPPORTED means "this
+     * is not a kind of repo sdd understands", which is a fact about the workspace. Before build
+     * system detection existed every such repo — a docs repo, a Terraform repo — was handed to the
+     * Gradle extractor and recorded as FAILED with a misleading Gradle error attached.
+     *
+     * <p>Recorded with {@code build_system='UNKNOWN'} rather than NULL so it is distinguishable
+     * from a row that predates the V4 migration.
+     */
+    private RepoResult unsupported(Jdbi jdbi, List<BuildExtractor> extractors, RepoScan scan) {
+        String tried = extractors.stream().map(BuildExtractor::buildSystem).collect(java.util.stream.Collectors.joining(", "));
+        String error = "no supported build system found (tried: " + tried + ")";
+        if (hasRows(jdbi, scan.name())) {
+            // It had a build once. Keeping the previous picture is better than deleting facts
+            // because a build file was moved or a checkout is mid-rebase.
+            IndexPersistence.markStale(jdbi, scan.name(), error);
+            return new RepoResult(scan.name(), "STALE_OK", null, 0, 0, false, error);
+        }
+        IndexPersistence.persistRepo(jdbi, scan, EMPTY_EXTRACT, "UNKNOWN", "UNSUPPORTED", error);
+        return new RepoResult(scan.name(), "UNSUPPORTED", null, 0, 0, false, error);
     }
 
     private RepoResult staleOrFailed(Jdbi jdbi, RepoScan scan, String error) {
@@ -218,8 +309,7 @@ public final class IndexService {
             IndexPersistence.markStale(jdbi, scan.name(), error);
             return new RepoResult(scan.name(), "STALE_OK", null, 0, 0, false, error);
         }
-        IndexPersistence.persistRepo(jdbi, scan,
-                new GradleModel.Extract(List.of(), List.of()), "FAILED", error);
+        IndexPersistence.persistRepo(jdbi, scan, EMPTY_EXTRACT, "UNKNOWN", "FAILED", error);
         return new RepoResult(scan.name(), "FAILED", "FAILED", 0, 0, false, error);
     }
 
@@ -234,10 +324,33 @@ public final class IndexService {
      * and it is the one Error this pipeline provokes by itself, so it is named explicitly rather
      * than swallowing every Error — an OutOfMemoryError still ends the run, as it should.
      */
-    private String runSourceExtraction(Jdbi jdbi, RepoScan scan, GradleModel.Extract extract) {
+    /**
+     * Records any checked-in remotes manifest. Reading it is unconditional and cheap, and a repo
+     * that has none simply records none — a manifest is a fact about the repo whatever builds it.
+     */
+    private void persistRuntimeRemotes(Jdbi jdbi, RepoScan scan) {
         try {
             long repoId = jdbi.withHandle(h -> h.createQuery("SELECT id FROM repo WHERE name=:n")
                     .bind("n", scan.name()).mapTo(Long.class).one());
+            RuntimeRemotes.persist(jdbi, repoId, RuntimeRemotes.read(scan.path()));
+        } catch (RuntimeException e) {
+            // A manifest that cannot be read is not a reason to fail a repo's whole index.
+        }
+    }
+
+    private String runSourceExtraction(Jdbi jdbi, RepoScan scan, BuildModel.Extract extract) {
+        try {
+            long repoId = jdbi.withHandle(h -> h.createQuery("SELECT id FROM repo WHERE name=:n")
+                    .bind("n", scan.name()).mapTo(Long.class).one());
+            // Which reader a repo gets follows from its modules, not from its build system: the two
+            // happen to agree today, but the language is what decides whether JavaParser or the
+            // TypeScript compiler can say anything useful about a file.
+            boolean typescript = extract.modules().stream()
+                    .anyMatch(m -> "TYPESCRIPT".equals(m.language()));
+            if (typescript) {
+                return TsExtraction.extractRepo(jdbi, repoId, scan.name(), scan.path(), extract,
+                        TsSidecar.create(null));
+            }
             return SourceExtraction.extractRepo(jdbi, repoId, scan.name(), scan.path(), extract);
         } catch (RuntimeException | StackOverflowError e) {
             SourcePersistence.updateParseStatus(jdbi, scan.name(), "FAILED",

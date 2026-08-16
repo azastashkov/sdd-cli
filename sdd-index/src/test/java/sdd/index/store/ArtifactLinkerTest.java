@@ -4,6 +4,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import sdd.core.db.Database;
+import sdd.index.extract.BuildModel;
+import sdd.index.extract.GradleBuildExtractor;
 import sdd.index.gradle.GradleModel;
 import sdd.index.scan.RepoScan;
 
@@ -31,25 +33,25 @@ class ArtifactLinkerTest {
         // lib-core: publishes com.acme:lib-core
         IndexPersistence.persistRepo(db.jdbi(),
                 new RepoScan("lib-core", Path.of("/w/lib-core"), "b".repeat(40), "main", ""),
-                new GradleModel.Extract(List.of(project("lib-core", "com.acme",
-                        List.of("java-library", "maven-publish"), List.of())), List.of()),
-                "OK", null);
+                GradleBuildExtractor.adapt(new GradleModel.Extract(List.of(project("lib-core", "com.acme",
+                        List.of("java-library", "maven-publish"), List.of())), List.of())),
+                "GRADLE", "OK", null);
         // svc-orders: depends on lib-core (pinned) and lib-included (composite via includedBuilds)
         IndexPersistence.persistRepo(db.jdbi(),
                 new RepoScan("svc-orders", Path.of("/w/svc-orders"), "a".repeat(40), "main", ""),
-                new GradleModel.Extract(List.of(project("svc-orders", "com.acme",
+                GradleBuildExtractor.adapt(new GradleModel.Extract(List.of(project("svc-orders", "com.acme",
                         List.of("java", "org.springframework.boot"),
                         List.of(new GradleModel.DeclaredDep("com.acme", "lib-core", "1.0"),
                                 new GradleModel.DeclaredDep("com.acme", "lib-included", "1.0"),
                                 new GradleModel.DeclaredDep("org.apache.commons", "commons-lang3", "3.14.0")))),
-                        List.of(Path.of("/w/lib-included"))),
-                "OK", null);
+                        List.of(Path.of("/w/lib-included")))),
+                "GRADLE", "OK", null);
         // lib-included: composite producer
         IndexPersistence.persistRepo(db.jdbi(),
                 new RepoScan("lib-included", Path.of("/w/lib-included"), "c".repeat(40), "main", ""),
-                new GradleModel.Extract(List.of(project("lib-included", "com.acme",
-                        List.of("java-library", "maven-publish"), List.of())), List.of()),
-                "OK", null);
+                GradleBuildExtractor.adapt(new GradleModel.Extract(List.of(project("lib-included", "com.acme",
+                        List.of("java-library", "maven-publish"), List.of())), List.of())),
+                "GRADLE", "OK", null);
     }
 
     @Test

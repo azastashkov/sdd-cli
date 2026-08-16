@@ -15,6 +15,7 @@ import sdd.cli.review.InteractiveReview;
 import sdd.cli.review.RebuildPass;
 import sdd.cli.review.RebuildScope;
 import sdd.cli.review.RunContext;
+import sdd.cli.review.SkippedGates;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -128,7 +129,7 @@ public final class ReviewCommand implements Callable<Integer> {
                 stagingFailures = List.of();
                 restoreFailures = List.of();
                 contracts = ContractRecheck.check(run.plan(), run.state(), run.paths(),
-                        run.store(), run.runDir());
+                        run.store(), run.runDir(), run.config().nodeHome());
             } else {
                 RebuildPass.Outcome outcome = RebuildPass.run(Scheduler.sequence(run.plan().order()),
                         run.plan(), run.state(), run.paths(), run.config(), run.runDir(), run.store(),
@@ -161,6 +162,12 @@ public final class ReviewCommand implements Callable<Integer> {
             // rewrites the checkpoint, so drift computed earlier would describe a run that has
             // since been decided.
             List<String> drift = run.checkpoints(run.store().readDecisions(run.runDir())).drift();
+            // A declared compatibility guarantee whose gate never ran is the fourth. Exit 0 on it
+            // would be this command asserting the guarantee holds on the strength of a check that
+            // did not happen — the one claim a review must never make. Reported rather than
+            // silently tolerated even though it can fail a run that is otherwise green, because
+            // the alternative is a green review that means less than a reader takes it to mean.
+            List<SkippedGates.Skipped> skippedGates = run.skippedGates();
             // A failed restore leaves a repo stranded off its original branch — the report's own
             // legend calls that a failed checkout, so it must fail the review too. A staging
             // failure is a failed checkout by another name, and worse: it silently invalidates
@@ -168,7 +175,12 @@ public final class ReviewCommand implements Callable<Integer> {
             // is the third: every diff and runbook line below describes a checkpoint the branch no
             // longer carries, so a human acting on this report would act on the wrong tree.
             int baseExit = allSucceeded && !anyRebuildFailed && restoreFailures.isEmpty()
-                    && stagingFailures.isEmpty() && drift.isEmpty() ? 0 : 2;
+                    && stagingFailures.isEmpty() && drift.isEmpty() && skippedGates.isEmpty()
+                    ? 0 : 2;
+            for (SkippedGates.Skipped gate : skippedGates) {
+                err.println("warn: " + gate.repo() + " declared " + gate.compat()
+                        + " but its gate did not run — " + gate.detail());
+            }
             // Worse wins: a squash refusal or a failed downstream re-verify inside the interactive
             // walk must not be masked by an otherwise-clean base review, or vice versa.
             return Math.max(baseExit, interactiveExit);

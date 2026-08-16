@@ -57,13 +57,19 @@ final class RepoFacts {
 
     private static Section repoRow(Handle h, String repo) {
         Map<String, Object> row = h.createQuery(
-                        "SELECT name, kind, gradle_status, parse_status, indexed_at FROM repo WHERE name = :r")
+                        "SELECT name, kind, build_system, gradle_status, parse_status, indexed_at FROM repo WHERE name = :r")
                 .bind("r", repo).mapToMap().findOne().orElse(null);
         if (row == null) {
             return Section.of("Repo: " + repo, "repo", List.of());
         }
         StringBuilder text = new StringBuilder(String.valueOf(row.get("name")))
                 .append(" (").append(row.get("kind")).append(')');
+        // The column keeps its name in the rendered text — a citation should say what the row says,
+        // and `gradle_status` is what a reader will grep for. The ecosystem is added beside it so
+        // an npm repo reporting `gradle_status=OK` is legible rather than baffling.
+        if (row.get("build_system") != null) {
+            text.append(", build_system=").append(row.get("build_system"));
+        }
         if (row.get("gradle_status") != null) {
             text.append(", gradle_status=").append(row.get("gradle_status"));
         }

@@ -32,8 +32,24 @@ public final class SourcePersistence {
         jdbi.useTransaction(h -> persistModuleSource(h, repoId, moduleId, types, usages, fileRefs));
     }
 
+    /** As above, for a module whose sources are not Java. */
+    public static void persistModuleSource(Jdbi jdbi, long repoId, long moduleId, String language,
+                                           java.util.List<SourceModel.TypeInfo> types,
+                                           java.util.List<SourceModel.UsageRef> usages,
+                                           java.util.List<SourceModel.FileRef> fileRefs) {
+        jdbi.useTransaction(h ->
+                persistModuleSource(h, repoId, moduleId, language, types, usages, fileRefs));
+    }
+
     /** Handle-based overload — see {@link #clearRepoFileRefs(Handle, long)}. */
     public static void persistModuleSource(Handle h, long repoId, long moduleId,
+                                           java.util.List<SourceModel.TypeInfo> types,
+                                           java.util.List<SourceModel.UsageRef> usages,
+                                           java.util.List<SourceModel.FileRef> fileRefs) {
+        persistModuleSource(h, repoId, moduleId, "JAVA", types, usages, fileRefs);
+    }
+
+    public static void persistModuleSource(Handle h, long repoId, long moduleId, String language,
                                            java.util.List<SourceModel.TypeInfo> types,
                                            java.util.List<SourceModel.UsageRef> usages,
                                            java.util.List<SourceModel.FileRef> fileRefs) {
@@ -41,7 +57,7 @@ public final class SourcePersistence {
         h.createUpdate("DELETE FROM api_usage WHERE from_module_id=:m").bind("m", moduleId).execute();
         FtsSymbolWriter.deleteForModule(h, moduleId);
         for (SourceModel.TypeInfo t : types) {
-            insertType(h, moduleId, t);
+            insertType(h, moduleId, language, t);
         }
         for (SourceModel.UsageRef u : usages) {
             h.createUpdate("INSERT INTO api_usage(from_module_id, target_fqcn, ref_kind) "
@@ -57,7 +73,7 @@ public final class SourcePersistence {
         }
     }
 
-    private static void insertType(Handle h, long moduleId, SourceModel.TypeInfo t) {
+    private static void insertType(Handle h, long moduleId, String language, SourceModel.TypeInfo t) {
         String annotationsJson;
         try {
             annotationsJson = JSON.writeValueAsString(t.annotations());
@@ -66,12 +82,14 @@ public final class SourcePersistence {
         }
         h.createUpdate("""
                         INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path,
-                                              signature_hash, api_confidence, annotations, javadoc)
-                        VALUES (:m, :fqcn, :kind, :api, :file, :hash, :conf, :ann, :javadoc)""")
+                                              signature_hash, api_confidence, annotations, javadoc,
+                                              language)
+                        VALUES (:m, :fqcn, :kind, :api, :file, :hash, :conf, :ann, :javadoc, :lang)""")
                 .bind("m", moduleId).bind("fqcn", t.fqcn()).bind("kind", t.kind())
                 .bind("api", t.isApi() ? 1 : 0).bind("file", t.relPath())
                 .bind("hash", t.signatureHash()).bind("conf", t.apiConfidence())
-                .bind("ann", annotationsJson).bind("javadoc", t.javadoc()).execute();
+                .bind("ann", annotationsJson).bind("javadoc", t.javadoc())
+                .bind("lang", language).execute();
         long typeId = h.createQuery("SELECT last_insert_rowid()").mapTo(Long.class).one();
         String simpleName = t.fqcn().substring(t.fqcn().lastIndexOf('.') + 1);
         FtsSymbolWriter.insert(h, moduleId, simpleName, t.fqcn(), t.javadoc());
@@ -84,7 +102,10 @@ public final class SourcePersistence {
             // Members carry no doc text: member-level javadoc is out of scope, and repeating the
             // type's summary on each of its members would let one doc comment match a query once
             // per member and swamp the ranking of the type it actually describes.
-            if (!m.name().equals("<init>") && ftsEmitted.add(m.name())) {
+            // Mirrors FtsSymbolWriter.rebuildFrom's filter: an angle-bracketed name is synthetic
+            // (<init>, or <value> for a type alias whose right-hand side is a union) and is not
+            // something anyone searches for.
+            if (!m.name().startsWith("<") && ftsEmitted.add(m.name())) {
                 FtsSymbolWriter.insert(h, moduleId, m.name(), t.fqcn(), "");
             }
         }

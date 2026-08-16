@@ -217,6 +217,7 @@
     "is_api" : 1,
     "javadoc" : null,
     "kind" : "CLASS",
+    "language" : "JAVA",
     "module_id" : 1,
     "signature_hash" : "18b0107ef5547df855c5675a3d4eccab1e910799a4c9a0b045c132ef19c72553"
   }, {
@@ -228,6 +229,7 @@
     "is_api" : 0,
     "javadoc" : null,
     "kind" : "INTERFACE",
+    "language" : "JAVA",
     "module_id" : 2,
     "signature_hash" : "507767bf7abaad88723e984d1ebe4a2faa26acb94e9ea8b94203390071e0c8ae"
   }, {
@@ -239,6 +241,7 @@
     "is_api" : 0,
     "javadoc" : null,
     "kind" : "CLASS",
+    "language" : "JAVA",
     "module_id" : 2,
     "signature_hash" : "448703d3884da21b4b332980f67d5b78ddbb26e3530674c9a1ca3eb322915163"
   }, {
@@ -250,6 +253,7 @@
     "is_api" : 0,
     "javadoc" : null,
     "kind" : "CLASS",
+    "language" : "JAVA",
     "module_id" : 2,
     "signature_hash" : "105e940b00bfc63f083ae27a28722ddb625f1e40a716137a9a10ddc9c2ae3bf3"
   }, {
@@ -261,6 +265,7 @@
     "is_api" : 0,
     "javadoc" : "Builds an order from a Map<String,String> of request fields.",
     "kind" : "CLASS",
+    "language" : "JAVA",
     "module_id" : 2,
     "signature_hash" : "b96125c5d3dc1a09c22e8c7721acdde351952dc6290a644e075b0f984989fa00"
   }, {
@@ -272,6 +277,7 @@
     "is_api" : 0,
     "javadoc" : null,
     "kind" : "CLASS",
+    "language" : "JAVA",
     "module_id" : 2,
     "signature_hash" : "09c5da1e41f5bedd1ae12b5cf97c7425182963f5c6fa47956823396f144984ed"
   } ],
@@ -306,6 +312,7 @@
     "id" : 1,
     "kafka_status" : null,
     "kind" : "LIBRARY",
+    "language" : "JAVA",
     "name" : "lib-pricing",
     "repo_id" : 1,
     "spring_app_name" : null,
@@ -317,6 +324,7 @@
     "id" : 2,
     "kafka_status" : null,
     "kind" : "SERVICE",
+    "language" : "JAVA",
     "name" : "svc-orders",
     "repo_id" : 2,
     "spring_app_name" : "order-service",
@@ -324,6 +332,7 @@
   } ],
   "repo" : [ {
     "branch" : "main",
+    "build_system" : "GRADLE",
     "dirty_hash" : "<scrubbed>",
     "error" : null,
     "gradle_status" : "OK",
@@ -337,6 +346,7 @@
     "path" : "lib-pricing"
   }, {
     "branch" : "main",
+    "build_system" : "GRADLE",
     "dirty_hash" : "<scrubbed>",
     "error" : null,
     "gradle_status" : "OK",
@@ -375,5 +385,7 @@
     "profile" : null,
     "request_type" : null,
     "response_type" : "String"
-  } ]
+  } ],
+  "runtime_edge" : [ ],
+  "runtime_remote" : [ ]
 }

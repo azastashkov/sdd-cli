@@ -14,6 +14,10 @@ slf4j-nop = "2.0.13"
 javaparser = "3.26.2"
 jsoup = "1.18.3"
 japicmp = "0.23.1"
+# The TypeScript compiler, shipped as a jar so the sidecar needs no network at run time and no
+# 9 MB blob in git. Pin deliberately: the API surface a repo reports must not shift under it
+# because a transitive resolution moved.
+typescript = "5.5.4"
 
 [libraries]
 picocli = { module = "info.picocli:picocli", version.ref = "picocli" }
@@ -32,6 +36,7 @@ slf4j-nop = { module = "org.slf4j:slf4j-nop", version.ref = "slf4j-nop" }
 javaparser-symbol-solver = { module = "com.github.javaparser:javaparser-symbol-solver-core", version.ref = "javaparser" }
 jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
 japicmp = { module = "com.github.siom79.japicmp:japicmp", version.ref = "japicmp" }
+typescript = { module = "org.webjars.npm:typescript", version.ref = "typescript" }
 
 [bundles]
 test = ["junit-jupiter", "assertj"]

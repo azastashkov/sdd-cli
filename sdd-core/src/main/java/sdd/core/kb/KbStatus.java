@@ -19,8 +19,8 @@ public final class KbStatus {
     public static List<String> warnings(Jdbi jdbi, Set<String> repos) {
         List<Map<String, Object>> rows = jdbi.withHandle(h -> h.createQuery("""
                         SELECT name, gradle_status, parse_status FROM repo
-                        WHERE (gradle_status IN ('DEGRADED','FAILED','STALE_OK')
-                               OR parse_status IN ('DEGRADED','FAILED','STALE_OK'))
+                        WHERE (gradle_status IN ('DEGRADED','FAILED','STALE_OK','UNSUPPORTED')
+                               OR parse_status IN ('DEGRADED','FAILED','STALE_OK','UNSUPPORTED'))
                         ORDER BY name""")
                 .mapToMap().list());
         List<String> warnings = new ArrayList<>();

@@ -232,4 +232,119 @@ class DeclaredContractTest {
                   f(int): int [unresolved]
                 """)).isEmpty();
     }
+
+    // -- ts-api ---------------------------------------------------------------------------------
+
+    /** The body ContractActualizer writes for a TypeScript package, used by every ts-api test
+     *  below so the two halves of the protocol are exercised against one shape. */
+    private static final String TS_ACTUAL = """
+            # actualized (ts-api)
+            @azastashkov/web-sdk
+              Tick: interface
+              Tick.price: number
+              Tick.receivedAt: Date
+              login(LoginRequest): Promise<Session>
+            @azastashkov/web-sdk/contract
+              ShellContext: interface
+              ShellContext.registry: import("/Users/who/repo/src/types").Registry
+            """;
+
+    @Test
+    void aTsApiDeclarationCanonicalizesToTheActualizersOwnShape() {
+        DeclaredContract declared = DeclaredContract.parse("ts-api",
+                "@azastashkov/web-sdk#Tick.price: number");
+
+        assertThat(declared.members()).containsExactly("@azastashkov/web-sdk#Tick.price:number");
+        assertThat(declared.problems()).isEmpty();
+        assertThat(declared.missingFrom(TS_ACTUAL)).isEmpty();
+    }
+
+    @Test
+    void aTsApiMemberOnADifferentSubpathIsNotSatisfiedByTheRootEntry() {
+        // The two specifiers are different published entry points, and a consumer importing one
+        // gets nothing from the other. Matching on the export name alone would call a contract
+        // satisfied by a symbol the consumer cannot reach.
+        assertThat(DeclaredContract.parse("ts-api",
+                "@azastashkov/web-sdk#ShellContext: interface").missingFrom(TS_ACTUAL))
+                .containsExactly("@azastashkov/web-sdk#ShellContext:interface");
+    }
+
+    @Test
+    void aFunctionExportIsDeclaredWithItsSignatureAndNoRepeatedName() {
+        assertThat(DeclaredContract.parse("ts-api",
+                "@azastashkov/web-sdk#login(LoginRequest): Promise<Session>")
+                .missingFrom(TS_ACTUAL)).isEmpty();
+    }
+
+    @Test
+    void anAbsoluteImportPathInATypeIsStrippedFromBothSides() {
+        // The checker renders a cross-file reference as import("<absolute path>").Foo. Compared
+        // verbatim, the same contract would pass on one machine and fail on another.
+        assertThat(DeclaredContract.parse("ts-api",
+                "@azastashkov/web-sdk/contract#ShellContext.registry: Registry")
+                .missingFrom(TS_ACTUAL)).isEmpty();
+    }
+
+    @Test
+    void aBareNameIsRejectedAsAModuleSpecifier() {
+        DeclaredContract declared = DeclaredContract.parse("ts-api", "Tick#price: number");
+
+        // 'Tick' is a type name, not something a consumer can import. Left to Gate 2 it actualizes
+        // to nothing and reports a wholly missing surface for a notation slip.
+        assertThat(declared.members()).isEmpty();
+        assertThat(declared.problems()).singleElement().satisfies(problem ->
+                assertThat(problem).contains("must be the module specifier a consumer imports"));
+    }
+
+    @Test
+    void aTsApiLineWithNoTypeIsMalformed() {
+        assertThat(DeclaredContract.parse("ts-api", "@acme/lib#Tick").problems())
+                .singleElement().satisfies(problem -> assertThat(problem)
+                        .contains("expected <moduleSpecifier>#<Export>[.<member>]: <type>"));
+    }
+
+    @Test
+    void anUnresolvedTsApiEntryKeepsItsModuleSoItCanOnlyExcuseItsOwnMember() {
+        String actual = """
+                # actualized (ts-api)
+                @azastashkov/web-sdk
+                  Tick: interface
+                  Tick.price: ? [unresolved]
+                  Tick.symbol: string
+                """;
+
+        // Same module AND same member — the type is the only part extraction could not read.
+        assertThat(DeclaredContract.parse("ts-api", "@azastashkov/web-sdk#Tick.price: number")
+                .unresolvedMembers(actual)).containsExactly("@azastashkov/web-sdk#Tick.price:?");
+        // Without the module header the entry would be a bare 'Tick.price:?', which matches no
+        // missing member at all — the excusal rule would look implemented and never fire.
+        assertThat(DeclaredContract.parse("ts-api", "@azastashkov/web-sdk#Tick.price: number")
+                .unresolvedMembers(actual)).allSatisfy(entry ->
+                assertThat(entry).startsWith("@azastashkov/web-sdk#"));
+    }
+
+    // -- rest-client ----------------------------------------------------------------------------
+
+    @Test
+    void aRestClientDeclarationSharesRestsGrammarAndDropsTheCallSite() {
+        DeclaredContract declared = DeclaredContract.parse("rest-client", "POST /api/orders");
+
+        assertThat(declared.members()).containsExactly("POST /api/orders");
+        assertThat(declared.problems()).isEmpty();
+        assertThat(declared.missingFrom("""
+                # actualized (rest-client)
+                GET /api/blotter/snapshot -> src/blotter.ts#BlotterModule.snapshot
+                POST /api/orders -> src/blotter.ts#BlotterModule.submit
+                """)).isEmpty();
+    }
+
+    @Test
+    void anUnresolvedCallSiteIsNeverMistakenForAPath() {
+        // '?' is not a legal path, so a dynamic site can never accidentally satisfy a declaration.
+        assertThat(DeclaredContract.parse("rest-client", "PUT /api/admin/groups/{}")
+                .missingFrom("""
+                        # actualized (rest-client)
+                        PUT ? -> src/api.ts#AdminClient.updateGroup [unresolved]
+                        """)).containsExactly("PUT /api/admin/groups/{}");
+    }
 }

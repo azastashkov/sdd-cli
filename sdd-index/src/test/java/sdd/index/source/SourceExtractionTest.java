@@ -3,6 +3,8 @@ package sdd.index.source;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import sdd.core.db.Database;
+import sdd.index.extract.BuildModel;
+import sdd.index.extract.GradleBuildExtractor;
 import sdd.index.gradle.GradleModel;
 
 import java.io.IOException;
@@ -17,13 +19,13 @@ import static org.junit.jupiter.api.Assumptions.abort;
 class SourceExtractionTest {
     @TempDir Path ws;
 
-    private static GradleModel.Extract extractAt(Path projectDir) {
-        return new GradleModel.Extract(List.of(new GradleModel.Project(
+    private static BuildModel.Extract extractAt(Path projectDir) {
+        return GradleBuildExtractor.adapt(new GradleModel.Extract(List.of(new GradleModel.Project(
                 ":", "lib-core", "com.acme", "1.0", projectDir,
                 List.of("java-library"), false, List.of(),
                 Map.of("compileClasspath", new GradleModel.DepConfig(
                         List.of(), List.of(), List.of())))),
-                List.of());
+                List.of()));
     }
 
     /**

@@ -2,7 +2,7 @@ package sdd.index.source;
 
 import com.github.javaparser.ParserConfiguration;
 import org.jdbi.v3.core.Jdbi;
-import sdd.index.gradle.GradleModel;
+import sdd.index.extract.BuildModel;
 import sdd.index.spring.ConfigFileParser;
 import sdd.index.spring.SpringConfigPersistence;
 import sdd.index.spring.SpringExtraction;
@@ -22,7 +22,7 @@ public final class SourceExtraction {
     private SourceExtraction() {}
 
     public static String extractRepo(Jdbi jdbi, long repoId, String repoName,
-                                     Path repoPath, GradleModel.Extract extract) {
+                                     Path repoPath, BuildModel.Extract extract) {
         record ModuleWork(long moduleId, boolean library, SourceParser.Session session,
                           ConfigFileParser.Result config, List<Path> jars) {}
         record EligibleProject(long moduleId, boolean library, Path projectDir, List<Path> jars) {}
@@ -33,17 +33,17 @@ public final class SourceExtraction {
         Path repoRoot = Paths2.canonical(repoPath);
 
         List<EligibleProject> eligible = new ArrayList<>();
-        for (GradleModel.Project p : extract.projects()) {
+        for (BuildModel.Module p : extract.modules()) {
             Optional<Long> moduleId = jdbi.withHandle(h -> h.createQuery(
                             "SELECT id FROM module WHERE repo_id=:r AND gradle_path=:p")
                     .bind("r", repoId).bind("p", p.path()).mapTo(Long.class).findOne());
             if (moduleId.isEmpty()) {
                 continue;
             }
-            List<Path> jars = Optional.ofNullable(p.configurations().get("compileClasspath"))
+            List<Path> jars = Optional.ofNullable(p.scopes().get("compileClasspath"))
                     .map(c -> c.resolved().stream().flatMap(r -> r.files().stream()).toList())
                     .orElse(List.of());
-            Path projectDir = Paths2.canonical(p.projectDir());
+            Path projectDir = Paths2.canonical(p.moduleDir());
             boolean library = jdbi.withHandle(h -> h.createQuery(
                             "SELECT kind FROM module WHERE id=:m").bind("m", moduleId.get())
                     .mapTo(String.class).one()).equals("LIBRARY");

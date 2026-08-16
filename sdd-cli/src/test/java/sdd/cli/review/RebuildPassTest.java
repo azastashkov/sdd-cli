@@ -504,4 +504,26 @@ class RebuildPassTest {
         assertThat(RunGit.currentBranch(lib.path())).isEqualTo(libOriginalBranch);
         assertThat(RunGit.currentBranch(other.path())).isEqualTo(otherOriginalBranch);
     }
+    @Test
+    void gateTwoResolvesTheSameVerificationTasksAsImplement() throws Exception {
+        // The invariant that was actually broken. RebuildPass carried its own copy of the
+        // resolution, so Gate 2 could verify something different from what the agent was held to —
+        // and for an npm repo the copy resolved to `check`, a task npm cannot run at all.
+        java.nio.file.Path repo = java.nio.file.Files.createDirectories(ws.resolve("web"));
+        java.nio.file.Files.writeString(repo.resolve("package.json"),
+                "{\"name\":\"web\",\"scripts\":{\"typecheck\":\"tsc --noEmit\",\"test\":\"vitest run\"}}");
+        PlanModel plan = new PlanModel("SPEC-9", 1, "", "",
+                List.of(new PlanModel.PlanRepo("web", "seed", "SEED", "none", "sha")),
+                List.of(List.of("web")), List.of(), List.of(), List.of());
+        SddConfig config = new SddConfig(ws, java.util.Map.of(), java.util.Map.of(), null,
+                List.of(), java.util.Map.of(), List.of(), List.of(),
+                sdd.core.config.RunSettings.defaults(), java.util.Map.of());
+
+        List<String> viaGateTwo = RebuildPass.tasksFor(plan, config, "web", repo);
+        List<String> viaImplement = sdd.cli.implement.VerificationTasks.resolve(
+                sdd.core.toolchain.Toolchain.detect(repo), repo, List.of(), List.of());
+
+        assertThat(viaGateTwo).isEqualTo(viaImplement).containsExactly("typecheck", "test");
+    }
+
 }

@@ -1,16 +1,15 @@
 package sdd.cli.implement;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import sdd.core.toolchain.EnvPolicy;
+import sdd.core.toolchain.Subprocess;
+
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Orchestrator-owned, run-scoped jar assembly: {@code ./gradlew assemble <extraArgs...>
@@ -24,7 +23,6 @@ import java.util.concurrent.TimeUnit;
  * patterns apply unchanged. Feeds japicmp baseline/candidate jars for the compat gate (design line 62).
  */
 public final class JarBuilder {
-    private static final List<String> KEEP_ENV = List.of("PATH", "HOME", "LANG", "TMPDIR");
     private static final int MAX_LOG = 200_000;
 
     private final Duration timeout;
@@ -45,9 +43,7 @@ public final class JarBuilder {
         if (!Files.isExecutable(gradlew)) {
             return new Result(false, List.of(), "no gradle wrapper in " + repoRoot);
         }
-        Path log = null;
         try {
-            log = Files.createTempFile("sdd-jarbuild", ".log");
             List<String> command = new ArrayList<>();
             command.add("./gradlew");
             command.add("assemble");
@@ -55,22 +51,17 @@ public final class JarBuilder {
             command.add("--no-configuration-cache");
             command.add("--no-daemon");
             command.add("-q");
-            ProcessBuilder builder = new ProcessBuilder(command);
-            builder.directory(repoRoot.toFile());
-            builder.redirectErrorStream(true);
-            builder.redirectOutput(log.toFile());
-            scrub(builder.environment(), javaHome);
-            Process process = builder.start();
-            if (!process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
-                process.descendants().forEach(ProcessHandle::destroyForcibly);
-                process.destroyForcibly();
+            Subprocess.Outcome outcome = Subprocess.run(command, repoRoot,
+                    EnvPolicy.scrubbedJvm(javaHome), timeout,
+                    Subprocess.KillPolicy.PROCESS_TREE, "sdd-jarbuild");
+            if (outcome.timedOut()) {
                 return new Result(false, List.of(), "timed out after " + timeout.toSeconds() + "s");
             }
-            String output = Files.readString(log, StandardCharsets.UTF_8);
+            String output = outcome.output();
             if (output.length() > MAX_LOG) {
                 output = output.substring(0, MAX_LOG);
             }
-            boolean ok = process.exitValue() == 0;
+            boolean ok = outcome.exitCode() == 0;
             List<Path> jars = List.of();
             if (ok) {
                 try {
@@ -79,20 +70,12 @@ public final class JarBuilder {
                     return new Result(false, List.of(), "jar collection failed after exit 0: " + e.getMessage());
                 }
             }
-            return new Result(ok, jars, "exit " + process.exitValue() + "\n" + output);
+            return new Result(ok, jars, "exit " + outcome.exitCode() + "\n" + output);
         } catch (IOException e) {
             return new Result(false, List.of(), "build failed: " + e.getMessage());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new Result(false, List.of(), "interrupted");
-        } finally {
-            if (log != null) {
-                try {
-                    Files.deleteIfExists(log);
-                } catch (IOException ignored) {
-                    // best-effort temp cleanup
-                }
-            }
         }
     }
 
@@ -133,18 +116,4 @@ public final class JarBuilder {
         return copied;
     }
 
-    private static void scrub(Map<String, String> env, Path javaHome) {
-        Map<String, String> keep = new HashMap<>();
-        for (String name : KEEP_ENV) {
-            String value = System.getenv(name);
-            if (value != null) {
-                keep.put(name, value);
-            }
-        }
-        env.clear();
-        env.putAll(keep);
-        if (javaHome != null) {
-            env.put("JAVA_HOME", javaHome.toAbsolutePath().toString());
-        }
-    }
 }

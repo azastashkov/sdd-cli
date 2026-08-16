@@ -251,7 +251,7 @@ class EvidenceCollectorTest {
         Evidence evidence = collect(request);
 
         assertThat(texts(section(evidence, "Dependency path"))).singleElement().satisfies(t ->
-                assertThat(t).isEqualTo("no internal Gradle dependency path from " + ExplainFixture.SVC_BILLING
+                assertThat(t).isEqualTo("no internal package dependency path from " + ExplainFixture.SVC_BILLING
                         + " to " + ExplainFixture.SVC_ORDERS + " in the knowledge base"));
         assertThat(evidence.sections()).noneMatch(s -> s.title().equals("Dependency edges"));
         assertThat(evidence.sections()).noneMatch(s -> s.title().equals("API usage"));
@@ -295,7 +295,7 @@ class EvidenceCollectorTest {
         Evidence evidence = collect(request);
 
         assertThat(texts(section(evidence, "Dependency path"))).singleElement().satisfies(t ->
-                assertThat(t).isEqualTo("no internal Gradle dependency path from " + ExplainFixture.SVC_ORDERS
+                assertThat(t).isEqualTo("no internal package dependency path from " + ExplainFixture.SVC_ORDERS
                         + " to " + ExplainFixture.SVC_ORDERS + " in the knowledge base"));
     }
 
@@ -420,7 +420,7 @@ class EvidenceCollectorTest {
 
         Evidence evidence = collect(request);
 
-        assertThat(texts(section(evidence, "Consumers via Gradle: " + ExplainFixture.LIB_API)))
+        assertThat(texts(section(evidence, "Consumers via package dependency: " + ExplainFixture.LIB_API)))
                 .containsExactly(ExplainFixture.SVC_ORDERS);
         assertThat(texts(section(evidence, "Consumers via API usage: " + ExplainFixture.LIB_API)))
                 .containsExactly(ExplainFixture.SVC_ORDERS + " uses " + ExplainFixture.PRICE_API_FQCN + " (IMPORT)");
@@ -450,7 +450,7 @@ class EvidenceCollectorTest {
 
         Evidence evidence = collect(request);
 
-        assertThat(texts(section(evidence, "Consumers via Gradle: " + ExplainFixture.SVC_ORDERS))).isEmpty();
+        assertThat(texts(section(evidence, "Consumers via package dependency: " + ExplainFixture.SVC_ORDERS))).isEmpty();
         assertThat(texts(section(evidence, "Consumers via API usage: " + ExplainFixture.SVC_ORDERS))).isEmpty();
         assertThat(texts(section(evidence, "Consumers via REST (contract): " + ExplainFixture.SVC_ORDERS)))
                 .containsExactly(ExplainFixture.SVC_BILLING + " calls GET /orders/{} on " + ExplainFixture.SVC_ORDERS

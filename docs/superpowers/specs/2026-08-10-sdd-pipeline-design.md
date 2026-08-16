@@ -304,3 +304,134 @@ Three rules keep the command honest, each deterministic rather than left to a pr
 Deliberately out of scope: conversational follow-up (each invocation is independent), any git
 freshness check against the working tree, and fixing `SddConfig.retrieval` being dead config — the
 search section is instead labelled with the backend that actually answered.
+
+## Amendment (2026-08-16): npm/TypeScript repos, and the cross-language REST join
+
+The Context above says "Java Spring services + shared Java libraries, Gradle
+everywhere". That is no longer true of the estate: the micro-frontends moved
+into their own TypeScript/npm/Vite repos, and half the estate now builds with
+npm. This amendment records what changed and, more importantly, what was
+refused.
+
+**Build systems are detected, not assumed.** `sdd.index.extract.BuildExtractor`
+reads a repo into a neutral `BuildModel`; `GradleModel` stays exactly as it was,
+because it is the deserialization shape of the `sdd-init.gradle` JSON contract.
+Gradle is offered every repo first, so a Spring service shipping a
+`package.json` for frontend assets stays a Gradle repo. A repo no extractor
+claims is `UNSUPPORTED`, which is a fact about the workspace, rather than
+`FAILED`, which is a problem to investigate.
+
+**npm coordinates are `("npm", <full package name>)`.** Splitting `@scope/pkg`
+into group and name was the obvious alternative and is wrong: an unscoped
+package like `react` would carry an empty group, and `ArtifactRef.parse`
+requires both halves of a `grp:name` reference to be non-empty, so those
+packages would be unaddressable in specs and in `sdd explain`.
+
+**Version grammar is per-ecosystem.** `ModeClassifier` encodes Maven rules,
+under which `^0.2.1` reads as PINNED — the exact opposite of what it means.
+Every internal specifier in this estate is a caret range, so sharing one
+classifier would have mislabelled every npm edge and reported nothing. Both
+classification sites dispatch on the consuming module's language.
+
+**TypeScript is read by the TypeScript compiler**, run under `node`, with the
+compiler shipped as an ordinary jar dependency. Two rules govern it: only real
+syntax counts, and anything unresolvable is marked rather than guessed. The
+first is not hypothetical — the SDK documents `/api/streams` in a JSDoc block
+and does not call it, so a text scraper invents a caller that does not exist.
+
+**TypeScript call sites go into `rest_client`**, the table the Spring extractor
+already fills. `RestMatcher`, `ContractEdges`, the impact closure and every
+explain fact read that table and none of them mention a language, so a
+TypeScript caller became visible everywhere a Java one is without new query
+code.
+
+**No cross-language edge is HIGH confidence.** A browser talks to one origin
+and an ingress fans it out, so which service serves a path is genuinely absent
+from TypeScript source. MEDIUM — exactly one endpoint in the estate matches
+this verb and path — is the strongest claim the evidence supports. HIGH
+requires a human, via `manual_edges`.
+
+**A bug this exposed, fixed independently:** `Closure.expand` drained its
+build-edge BFS and only then applied contract edges, without re-enqueueing what
+they added — so a repo reached through a REST or Kafka contract never had its
+own consumers expanded. Pre-existing and equally wrong for Java; its regression
+test is a Java-only estate for that reason.
+
+**A TypeScript symbol is recorded under the name a CONSUMER writes** —
+`@azastashkov/web-sdk.Tick`, resolved through the package's `exports` map — not
+under the file it is declared in and not under the `dist` path it is published
+as. Those are three different names for one thing, and only the first joins two
+repos: `UsageLinker` pairs a reference to its provider by string equality on
+`java_type.fqcn`, so recording either of the others leaves every consumer of the
+package pointing at nothing.
+
+**`EntityKind.SYMBOL` is separate from `CLASS`.** `CLASS` resolves a dotless
+name by suffix, which is a Java package convention rather than a fact about
+names. Sharing one kind would make the bare name `Tick` resolve to both a Java
+type and a TypeScript export inside a single citation — a cross-language
+conflation in the one place a reader has no way to notice it. `SYMBOL` is exact
+match only.
+
+**Three contract kinds were added, and the estate decided their grammar.**
+`ts-api` (`<moduleSpecifier>#<Export>[.<member>]: <type>`) is `java-api`'s npm
+counterpart, addressed by specifier for the reason above. `rest-client` reuses
+`rest`'s `<METHOD> <path>` grammar with the CALLER as provider — chosen over
+adding a consumer axis to `rest` specifically because `ContractRecheck`
+actualizes `contract.provider()` and nothing else, so this needed no structural
+change. `stream-descriptor` is the only kind either toolchain can provide,
+because the md/candle/order shapes are built twice — from Java builders in the
+registering service and from an object literal in the browser SDK — with no
+compiler between them. It is scoped to two axes, `key` and `channels`, because
+those are the two BOTH actualizers can see; the wider surface (lvc templates,
+conflation, interest) is derivable in Java and absent from the TypeScript
+built-ins, so declaring it would declare what one end could never check. The
+two-owner problem needed no change to the plan model: the contract is declared
+twice, once per provider, and both extractors produce the same body — verified
+byte-identical on the real `trading-web-sdk` and `trading-platform-libs`.
+
+**Gate 1 pairs compat with kind, and kind with toolchain.** Each compat value
+names a comparison that exists for exactly one kind (japicmp reads bytecode, the
+TypeScript check reads declarations), and a `ts-api` contract whose provider is
+a Gradle repo actualizes to nothing — reported at Gate 1, where the message
+names the typo, rather than at Gate 2 as a wholly missing surface. A repo whose
+`build_system` is still NULL blocks nothing: a plan must not be refused because
+the knowledge base predates a migration.
+
+**`type-compatible` is an assignability probe, not a diff.** A textual diff of
+two `.d.ts` files flags legal widening — an added optional member, a widened
+parameter — as breaking, and compat drift FAILS the repo, so a false positive
+there fails work that was correct. The probe is compiled by the pinned compiler
+with `strict` on: without `strictFunctionTypes` parameters are bivariant and
+narrowing `(id: string | number)` to `(id: string)` reads as compatible. It is
+the one mode that cannot run `noLib` — without `lib.es5`, `Promise` and `Date`
+are unknown and every member compares as broken.
+
+**A specific path is no longer ambiguous against a wildcard it merely overlaps.**
+`templatesMatch` treats `{}` as a wildcard on BOTH sides, so a call to
+`/api/candles/{}/symbols` matched `/api/candles/{}/{}` as well and landed
+LOW/AMBIGUOUS against an endpoint it plainly is not — and `manual_edges` could
+not correct it, because its own endpoint filter used the same `templatesMatch`
+and so selected both endpoints too. `RestMatcher` now narrows a fuzzy candidate
+set to exact template matches when any exist, exactly as
+`KbEntities.resolveEndpoint` already did after the same symptom. Confidence
+stays MEDIUM: narrowing says WHICH endpoint, not that the client reaches that
+service. Purely a narrowing — when nothing matches exactly the original set is
+returned untouched, so a genuinely templated client is unaffected. On the real
+estate this turned four LOW/AMBIGUOUS edges into the two correct MEDIUM ones,
+and every call site in the estate now resolves to exactly one endpoint.
+
+**A compatibility gate that did not run now fails the review.** A repo that
+DECLARED `binary-compatible` or `type-compatible` and whose gate never reached a
+verdict was indistinguishable from one that passed: SUCCEEDED, unmentioned in
+the report, exit 0. The outcome is recorded structurally per repo rather than
+scraped back out of the prose agent events, and `sdd review` exits 2 with a
+`## Compatibility gates that did not run` section. Deliberately narrow: a gate
+that BROKE already failed the repo, a repo that never succeeded is not listed,
+and a plan declaring no guarantee stays silent — a review that warns about every
+run teaches a reader to skip the warning. Writing the record exposed a second
+instance of the same bug, that `compatDrift` returned the same empty report
+whether the jars matched or every pair had been skipped; zero comparisons is now
+SKIPPED, not PASSED.
+
+Both of the above change existing Gradle behaviour, which is why they were
+sequenced after everything else and revert alone.

@@ -59,7 +59,7 @@ final class DependencyFacts {
 
         if (path == null) {
             sections.add(Section.of("Dependency path", "v_repo_dep_edge", List.of(new Fact(
-                    "no internal Gradle dependency path from " + subject.value() + " to "
+                    "no internal package dependency path from " + subject.value() + " to "
                             + object.value() + " in the knowledge base"))));
         } else {
             sections.add(Section.of("Dependency path", "v_repo_dep_edge",
@@ -199,7 +199,7 @@ final class DependencyFacts {
 
     /**
      * REST contract edges where both sides are among the repos in play (either resolved side of
-     * the question) — relevant even (especially) when there is no internal Gradle path, since a
+     * the question) — relevant even (especially) when there is no internal dependency path, since a
      * REST call is a real cross-repo relationship the dependency graph does not capture.
      */
     private static Section restEdges(Jdbi jdbi, List<String> fromRepos, List<String> toRepos) {

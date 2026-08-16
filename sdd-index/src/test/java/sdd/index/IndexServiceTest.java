@@ -11,6 +11,8 @@ import sdd.core.llm.Usage;
 import sdd.core.testing.FixtureRepo;
 import sdd.core.testing.ScriptedChatModel;
 import sdd.index.gradle.ExtractionException;
+import sdd.index.extract.BuildModel;
+import sdd.index.extract.GradleBuildExtractor;
 import sdd.index.gradle.GradleModel;
 import sdd.index.scan.RepoScan;
 import sdd.index.store.IndexPersistence;
@@ -27,21 +29,21 @@ class IndexServiceTest {
     @TempDir Path ws;
 
     private SddConfig config() {
-        return new SddConfig(ws, Map.of(), Map.of(), List.of(), Map.of(), List.of(), RunSettings.defaults(), Map.of());
+        return new SddConfig(ws, Map.of(), Map.of(), null, List.of(), Map.of(), List.of(), List.of(), RunSettings.defaults(), Map.of());
     }
 
-    private static GradleModel.Extract oneModule(String name) {
+    private static BuildModel.Extract oneModule(String name) {
         return oneModuleAt(name, Path.of("/w/" + name));
     }
 
-    private static GradleModel.Extract oneModuleAt(String name, Path projectDir) {
-        return new GradleModel.Extract(List.of(new GradleModel.Project(
+    private static BuildModel.Extract oneModuleAt(String name, Path projectDir) {
+        return GradleBuildExtractor.adapt(new GradleModel.Extract(List.of(new GradleModel.Project(
                 ":", name, "com.acme", "1.0.0", projectDir,
                 List.of("java"), false, List.of(),
                 Map.of("compileClasspath", new GradleModel.DepConfig(
                         List.of(new GradleModel.DeclaredDep("com.acme", "lib-core", "2.3.0")),
                         List.of(), List.of())))),
-                List.of());
+                List.of()));
     }
 
     private Path wreckedRepo(String name) throws Exception {
@@ -92,7 +94,7 @@ class IndexServiceTest {
         try (Database db = Database.open(ws)) {
             IndexPersistence.persistRepo(db.jdbi(),
                     new RepoScan("wrecked", dir, "a".repeat(40), "main", ""),
-                    oneModule("wrecked"), "OK", null);
+                    oneModule("wrecked"), "GRADLE", "OK", null);
 
             List<IndexService.RepoResult> results = new IndexService().run(config(), db);
 
@@ -123,7 +125,7 @@ class IndexServiceTest {
         Path dir = Files.createDirectories(ws.resolve("retry-me"));
         try (Database db = Database.open(ws)) {
             RepoScan scan = new RepoScan("retry-me", dir, "a".repeat(40), "main", "");
-            IndexPersistence.persistRepo(db.jdbi(), scan, oneModule("retry-me"), "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scan, oneModule("retry-me"), "GRADLE", "OK", null);
             // Simulate what a prior run's mid-repo source-extraction failure would have left behind:
             // the gradle picture is OK and the fingerprint is unchanged, but the source parse failed.
             db.jdbi().useHandle(h -> h.execute(
@@ -146,7 +148,7 @@ class IndexServiceTest {
         Files.writeString(dir.resolve("src/main/java/L.java"), "public class L {}\n");
         try (Database db = Database.open(ws)) {
             RepoScan scan = new RepoScan("legacy", dir, "a".repeat(40), "main", "");
-            IndexPersistence.persistRepo(db.jdbi(), scan, oneModuleAt("legacy", dir), "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scan, oneModuleAt("legacy", dir), "GRADLE", "OK", null);
             // a row written by a pre-source-extraction build: gradle status OK, fingerprint
             // current, but parse_status never set — it must not be mistaken for "already parsed"
             db.jdbi().useHandle(h -> h.execute("UPDATE repo SET parse_status=NULL WHERE name='legacy'"));
@@ -231,7 +233,7 @@ class IndexServiceTest {
         try (Database db = Database.open(ws)) {
             IndexPersistence.persistRepo(db.jdbi(),
                     new RepoScan("half-broken", dir, "a".repeat(40), "main", ""),
-                    oneModule("half-broken"), "OK", null);
+                    oneModule("half-broken"), "GRADLE", "OK", null);
 
             IndexService.RepoResult r = new IndexService().indexRepo(db.jdbi(),
                     p -> { throw new ExtractionException("gradle kaput"); },
@@ -258,6 +260,78 @@ class IndexServiceTest {
                         assertThat(r.skipped()).isTrue();
                         assertThat(r.status()).isEqualTo("OK");
                     });
+        }
+    }
+
+    @Test
+    void repoWithNoRecognisedBuildIsUnsupportedRatherThanFailed() throws Exception {
+        // Before detection existed every repo was handed to the Gradle extractor, so a docs repo or
+        // a Terraform repo was recorded as FAILED with a Gradle error attached — "we tried to read
+        // this build and could not", which is a problem to investigate. UNSUPPORTED says the true
+        // thing instead: this is not a kind of repo sdd understands.
+        FixtureRepo.in(ws, "just-docs").file("README.md", "# docs\n").commit("init");
+        try (Database db = Database.open(ws)) {
+            List<IndexService.RepoResult> results = new IndexService().run(config(), db);
+
+            assertThat(results).singleElement().satisfies(r -> {
+                assertThat(r.repo()).isEqualTo("just-docs");
+                assertThat(r.status()).isEqualTo("UNSUPPORTED");
+                assertThat(r.error()).contains("no supported build system found").contains("GRADLE");
+            });
+            assertThat(repoStatus(db, "just-docs")).isEqualTo("UNSUPPORTED");
+            // UNKNOWN rather than NULL: NULL is reserved for "row predates the V4 migration", and
+            // conflating the two would make a migrated workspace look like an unsupported one.
+            String buildSystem = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT build_system FROM repo WHERE name='just-docs'").mapTo(String.class).one());
+            assertThat(buildSystem).isEqualTo("UNKNOWN");
+        }
+    }
+
+    @Test
+    void unsupportedRepoThatOnceHadModulesKeepsThemAsStale() throws Exception {
+        // A build file moved, or the checkout is mid-rebase. Deleting everything sdd knows about the
+        // repo because this one run could not classify it would lose facts that are still true.
+        FixtureRepo.in(ws, "was-gradle").file("README.md", "# no build files\n").commit("init");
+        try (Database db = Database.open(ws)) {
+            IndexPersistence.persistRepo(db.jdbi(),
+                    new RepoScan("was-gradle", ws.resolve("was-gradle"), "a".repeat(40), "main", ""),
+                    oneModule("was-gradle"), "GRADLE", "OK", null);
+
+            List<IndexService.RepoResult> results = new IndexService().run(config(), db);
+
+            assertThat(results).singleElement().satisfies(r -> {
+                assertThat(r.status()).isEqualTo("STALE_OK");
+                assertThat(r.error()).contains("no supported build system found");
+            });
+            assertThat(moduleCount(db, "was-gradle")).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void repoMigratedFromBeforeV4ReindexesOnAPlainRunWithoutForce() throws Exception {
+        // The trap this closes: V2 and V3 both left upgraded workspaces needing an explicit
+        // `sdd index --force`, because the fingerprint short-circuit saw an unchanged head/dirty
+        // pair and skipped — so the newly-added column stayed empty indefinitely and nothing said
+        // so. Simulating the migrated state directly (a row that is otherwise perfectly healthy but
+        // has no build_system) is the whole point: it must NOT be treated as unchanged.
+        FixtureRepo.in(ws, "has-source").file("src/main/java/P.java", "public class P {}\n").commit("init");
+        try (Database db = Database.open(ws)) {
+            IndexService service = new IndexService(repoDir -> oneModuleAt("has-source", repoDir));
+            service.run(config(), db);
+            db.jdbi().useHandle(h ->
+                    h.execute("UPDATE repo SET build_system=NULL WHERE name='has-source'"));
+
+            List<IndexService.RepoResult> second = service.run(config(), db);   // note: no --force
+
+            assertThat(second).filteredOn(r -> r.repo().equals("has-source")).first()
+                    .satisfies(r -> {
+                        assertThat(r.skipped()).isFalse();
+                        assertThat(r.status()).isEqualTo("OK");
+                    });
+            String refilled = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT build_system FROM repo WHERE name='has-source'")
+                    .mapTo(String.class).one());
+            assertThat(refilled).isEqualTo("GRADLE");
         }
     }
 

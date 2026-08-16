@@ -53,12 +53,14 @@ public final class RestMatcher {
             int medium = 0;
             int low = 0;
             for (Client c : clients) {
-                List<Endpoint> candidates = endpoints.stream()
+                List<Endpoint> loose = endpoints.stream()
                         .filter(e -> verbsCompatible(c.verb(), e.verb())
                                 && templatesMatch(c.norm(), e.norm())).toList();
-                if (candidates.isEmpty()) {
+                if (loose.isEmpty()) {
                     continue;   // unmatched — curation report material
                 }
+                List<Endpoint> candidates = preferExact(loose, Endpoint::norm, c.norm());
+                boolean exact = candidates.size() < loose.size();
                 List<Endpoint> named = c.kind().equals("FEIGN") && c.targetHint() != null
                         ? candidates.stream().filter(e -> c.targetHint()
                                 .equalsIgnoreCase(e.springAppName())).toList()
@@ -69,7 +71,11 @@ public final class RestMatcher {
                         high++;
                     }
                 } else if (candidates.size() == 1) {
-                    insertEdge(h, c.id(), candidates.get(0).id(), "MEDIUM", "UNIQUE_PATH");
+                    // Still MEDIUM. Narrowing says WHICH endpoint, not that the client necessarily
+                    // reaches this service — a browser talks to one origin and an ingress fans it
+                    // out — so the reason changes and the confidence does not.
+                    insertEdge(h, c.id(), candidates.get(0).id(), "MEDIUM",
+                            exact ? "EXACT_PATH" : "UNIQUE_PATH");
                     medium++;
                 } else {
                     for (Endpoint e : candidates) {
@@ -82,16 +88,20 @@ public final class RestMatcher {
             int manual = 0;
             for (ManualEdge edge : manualEdges) {
                 String norm = Routes.normalize(edge.path());
-                List<Long> clientIds = clients.stream()
+                // Exact-first here too, and this half is the point of the tier: without it a
+                // human could not correct an ambiguous match at all, because a manual edge naming
+                // /api/candles/{}/symbols selected BOTH that endpoint and /api/candles/{}/{} —
+                // the very ambiguity it was written to resolve.
+                List<Long> clientIds = preferExact(clients.stream()
                         .filter(c -> c.repo().equals(edge.clientRepo())
                                 && verbsCompatible(c.verb(), edge.httpMethod())
-                                && templatesMatch(c.norm(), norm))
-                        .map(Client::id).toList();
-                List<Long> endpointIds = endpoints.stream()
+                                && templatesMatch(c.norm(), norm)).toList(), Client::norm, norm)
+                        .stream().map(Client::id).toList();
+                List<Long> endpointIds = preferExact(endpoints.stream()
                         .filter(e -> e.repo().equals(edge.providerRepo())
                                 && verbsCompatible(edge.httpMethod(), e.verb())
-                                && templatesMatch(norm, e.norm()))
-                        .map(Endpoint::id).toList();
+                                && templatesMatch(norm, e.norm())).toList(), Endpoint::norm, norm)
+                        .stream().map(Endpoint::id).toList();
                 if (clientIds.isEmpty() || endpointIds.isEmpty()) {
                     warnings.add("manual edge unmatched: " + edge);
                     continue;
@@ -123,6 +133,24 @@ public final class RestMatcher {
             return new int[]{high, medium, low, manual};
         });
         return new Report(counts[0], counts[1], counts[2], counts[3], List.copyOf(warnings));
+    }
+
+    /**
+     * Narrows a fuzzy candidate set to the rows whose template matches EXACTLY, when any do.
+     *
+     * <p>{@code templatesMatch} treats {@code {}} as a wildcard on both sides, so
+     * {@code /api/candles/{}/symbols} matches {@code /api/candles/{}/{}} as well as itself, and a
+     * call with a perfectly specific path lands AMBIGUOUS against an endpoint it plainly is not.
+     * Exact-first is the same shape {@code KbEntities.resolveEndpoint} already applies, for the
+     * same reason and after the same symptom.
+     *
+     * <p>Only a narrowing: when nothing matches exactly the original set comes back untouched, so
+     * a genuinely templated client keeps behaving exactly as it did.
+     */
+    private static <T> List<T> preferExact(List<T> candidates, java.util.function.Function<T, String> norm,
+                                           String target) {
+        List<T> exact = candidates.stream().filter(c -> target.equals(norm.apply(c))).toList();
+        return exact.isEmpty() ? candidates : exact;
     }
 
     private static void insertEdge(Handle h, long clientId, long endpointId,

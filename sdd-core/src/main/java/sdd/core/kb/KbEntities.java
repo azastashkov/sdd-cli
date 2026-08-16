@@ -27,6 +27,7 @@ public final class KbEntities {
             case ENDPOINT -> resolveEndpoint(jdbi, value);
             case TOPIC -> resolveTopic(jdbi, value);
             case CLASS -> resolveClass(jdbi, value);
+            case SYMBOL -> resolveSymbol(jdbi, value);
             case ARTIFACT -> resolveArtifact(jdbi, value);
         };
         return new Resolution(kind, value, matches);
@@ -38,6 +39,9 @@ public final class KbEntities {
             case ENDPOINT -> "no endpoint matches";
             case TOPIC -> "no known topic with roles";
             case CLASS -> "no such type in the knowledge base";
+            case SYMBOL -> "no such exported symbol in the knowledge base"
+                    + " (a symbol is named by the specifier a consumer imports,"
+                    + " e.g. @acme/web-sdk.Tick)";
             case ARTIFACT -> "not linked to any indexed module";
         };
     }
@@ -162,13 +166,37 @@ public final class KbEntities {
                         SELECT r.name AS repo, t.fqcn AS fqcn FROM java_type t
                         JOIN module m ON m.id = t.module_id
                         JOIN repo r ON r.id = m.repo_id
-                        WHERE t.fqcn = :v OR (:dotless AND t.fqcn LIKE '%.' || :v)
+                        WHERE t.language = 'JAVA'
+                          AND (t.fqcn = :v OR (:dotless AND t.fqcn LIKE '%.' || :v))
                         ORDER BY r.name""")
                 .bind("v", value)
                 .bind("dotless", !value.contains("."))
                 .mapToMap().list());
         return rows.stream()
                 .map(row -> new EntityMatch(String.valueOf(row.get("repo")), String.valueOf(row.get("fqcn")), "java_type"))
+                .toList();
+    }
+
+    /**
+     * A TypeScript export, by EXACT name only.
+     *
+     * <p>No suffix rule. {@code resolveClass}'s dotless fallback exists because a Java reader
+     * writes {@code TierResolver} for {@code com.trading.pricing.TierResolver} and the package is
+     * a convention every Java name follows. A TypeScript specifier is not a package path — it is
+     * the string the consumer literally typed in an import — so a suffix match on it would pair a
+     * name with whatever package happened to end the same way.
+     */
+    private static List<EntityMatch> resolveSymbol(Jdbi jdbi, String value) {
+        List<Map<String, Object>> rows = jdbi.withHandle(h -> h.createQuery("""
+                        SELECT r.name AS repo, t.fqcn AS fqcn FROM java_type t
+                        JOIN module m ON m.id = t.module_id
+                        JOIN repo r ON r.id = m.repo_id
+                        WHERE t.language = 'TYPESCRIPT' AND t.fqcn = :v
+                        ORDER BY r.name""")
+                .bind("v", value).mapToMap().list());
+        return rows.stream()
+                .map(row -> new EntityMatch(String.valueOf(row.get("repo")),
+                        String.valueOf(row.get("fqcn")), "java_type"))
                 .toList();
     }
 

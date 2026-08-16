@@ -248,7 +248,56 @@ class PlanValidatorTest {
         PlanValidator.Verdict verdict = PlanValidator.validate(db.jdbi(), doc, spec(), freshStates());
 
         assertThat(verdict.problems()).anySatisfy(p -> assertThat(p).isEqualTo(
-                "contract 'C-1': compat is only valid on java-api contracts"));
+                "contract 'C-1' (rest): compat 'binary-compatible' is only valid on "
+                        + "java-api contracts"));
+    }
+
+    /** The compat guarantee and the kind it can be checked on move together. */
+    @Test
+    void typeCompatiblePairsWithTsApiAndNothingElse() {
+        PlanValidator.Verdict ok = verdictsFor("ts-api", "type-compatible");
+        assertThat(ok.problems()).noneMatch(p -> p.contains("compat"));
+
+        assertThat(verdictsFor("java-api", "type-compatible").problems()).anySatisfy(p ->
+                assertThat(p).isEqualTo("contract 'C-1' (java-api): compat 'type-compatible' "
+                        + "is only valid on ts-api contracts"));
+        assertThat(verdictsFor("ts-api", "binary-compatible").problems()).anySatisfy(p ->
+                assertThat(p).isEqualTo("contract 'C-1' (ts-api): compat 'binary-compatible' "
+                        + "is only valid on java-api contracts"));
+    }
+
+    @Test
+    void aTsApiContractProvidedByAGradleRepoIsCaughtAtGateOne() {
+        db.jdbi().useHandle(h -> h.execute("UPDATE repo SET build_system='GRADLE' WHERE name='lib-core'"));
+
+        // Left to Gate 2 this actualizes to nothing and reports the grossest divergence
+        // available — a wholly missing surface — for what is a one-word typo.
+        assertThat(verdictsFor("ts-api", null).problems()).anySatisfy(p -> assertThat(p).isEqualTo(
+                "contract 'C-1' (ts-api): provider 'lib-core' is a gradle repo, and ts-api "
+                        + "contracts can only be provided by npm repos"));
+    }
+
+    @Test
+    void aRepoIndexedBeforeTheBuildSystemColumnExistedBlocksNothing() {
+        // build_system is NULL until the repo is re-indexed. A plan must not be refused because
+        // the knowledge base predates a migration.
+        assertThat(verdictsFor("ts-api", null).problems())
+                .noneMatch(p -> p.contains("can only be provided by"));
+    }
+
+    private PlanValidator.Verdict verdictsFor(String kind, String compat) {
+        PlanDocument doc = new PlanDocument("SPEC-9", 1, "S.", List.of(),
+                List.of(new PlanDocument.PlanRepo("lib-core", "seed", "SEED", List.of("R1"), "w"),
+                        new PlanDocument.PlanRepo("svc-a", "dependent", "CODE_CHANGE_LIKELY", List.of(), "w")),
+                List.of(), List.of(List.of("lib-core"), List.of("svc-a")),
+                List.of(new PlanDocument.PlanContract("C-1", kind, "lib-core",
+                        List.of("svc-a"), "b", compat, List.of())),
+                List.of(new PlanDocument.PlanStep("lib-core", List.of("R1", "R2"), "minor",
+                        List.of("C-1"), List.of(), List.of(), List.of(), "s"),
+                        new PlanDocument.PlanStep("svc-a", List.of(), "none",
+                                List.of(), List.of("C-1"), List.of(), List.of(), "s")),
+                List.of());
+        return PlanValidator.validate(db.jdbi(), doc, spec(), freshStates());
     }
 
     @Test

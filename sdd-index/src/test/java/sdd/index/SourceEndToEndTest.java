@@ -7,6 +7,8 @@ import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
 import sdd.core.retrieve.FtsRetriever;
 import sdd.core.testing.FixtureRepo;
+import sdd.index.extract.BuildModel;
+import sdd.index.extract.GradleBuildExtractor;
 import sdd.index.gradle.GradleModel;
 
 import java.nio.file.Files;
@@ -19,14 +21,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SourceEndToEndTest {
     @TempDir Path ws;
 
-    private static GradleModel.Extract extractFor(Path repoDir, String name, String grp,
+    private static BuildModel.Extract extractFor(Path repoDir, String name, String grp,
                                                   List<String> plugins,
                                                   List<GradleModel.DeclaredDep> deps) {
-        return new GradleModel.Extract(List.of(new GradleModel.Project(
+        return GradleBuildExtractor.adapt(new GradleModel.Extract(List.of(new GradleModel.Project(
                 ":", name, grp, "1.0", repoDir, plugins, false, List.of(),
                 Map.of("compileClasspath",
                         new GradleModel.DepConfig(deps, List.of(), List.of())))),
-                List.of());
+                List.of()));
     }
 
     @Test
@@ -116,7 +118,7 @@ class SourceEndToEndTest {
                         """)
                 .commit("init");
 
-        SddConfig config = new SddConfig(ws, Map.of(), Map.of(), List.of(), Map.of(), List.of(), RunSettings.defaults(), Map.of());
+        SddConfig config = new SddConfig(ws, Map.of(), Map.of(), null, List.of(), Map.of(), List.of(), List.of(), RunSettings.defaults(), Map.of());
         try (Database db = Database.open(ws)) {
             IndexService service = new IndexService(repoDir -> {
                 String name = repoDir.getFileName().toString();

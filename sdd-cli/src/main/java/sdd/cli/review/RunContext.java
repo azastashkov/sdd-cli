@@ -125,9 +125,16 @@ public record RunContext(String runId, Path runDir, RunStore store, PlanModel pl
         String runbook = ReleaseRunbook.render(plan, state);
         String report = ReviewReport.render(new ReportInputs(runId, plan, state, diffs.stats(),
                 rebuilds, notLocallyVerified, stagingFailures, restoreFailures, diffs.failures(),
-                contracts, decisions, checkpoints(decisions), runbook, rebuild));
+                contracts, skippedGates(), decisions, checkpoints(decisions), runbook, rebuild));
         store.writeReview(runDir, "report.md", report);
         return store.reviewDir(runDir).resolve("report.md");
+    }
+
+    /** Declared compatibility guarantees whose gate reached no verdict. Read here rather than
+     *  passed in, because it comes from the run's own recorded artifacts and every caller of
+     *  {@link #writeReport} would otherwise have to derive the same thing identically. */
+    public List<SkippedGates.Skipped> skippedGates() {
+        return SkippedGates.of(plan, state, store, runDir);
     }
 
     /**

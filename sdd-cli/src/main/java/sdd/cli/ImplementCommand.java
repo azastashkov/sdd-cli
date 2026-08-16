@@ -20,6 +20,7 @@ import sdd.cli.implement.PlanModel;
 import sdd.cli.implement.PlannedVersions;
 import sdd.cli.implement.PreFlight;
 import sdd.cli.implement.Propagation;
+import sdd.cli.implement.VerificationTasks;
 import sdd.cli.implement.PropagationPlanner;
 import sdd.cli.implement.RepoPropagation;
 import sdd.cli.implement.RepoRun;
@@ -330,32 +331,34 @@ public final class ImplementCommand implements Callable<Integer> {
                 }
                 Function<String, RunnerSettings> settingsFor = repo -> {
                     Path root = activeSteps.get(repo).repoRoot();
+                    sdd.core.toolchain.Toolchain toolchain = sdd.core.toolchain.Toolchain.detect(root);
+                    List<String> rawVerification = activePlan.step(repo)
+                            .map(PlanModel.PlanStep::verification)
+                            .orElse(List.of());
+                    List<String> tasks = VerificationTasks.resolve(toolchain, root, rawVerification,
+                            config.verificationExclusions().getOrDefault(repo, List.of()));
+                    AgentBudget budget = new AgentBudget(config.run().agentTurns(),
+                            AgentBudget.defaults().maxWall(), config.run().agentTokens());
+                    if (toolchain == sdd.core.toolchain.Toolchain.NPM) {
+                        // No JDK, and no substitution flags: npm appends passthrough arguments to
+                        // the end of the whole script string, where they would land on the wrong
+                        // command. Provider substitution for npm is done by overlaying
+                        // node_modules, not by flags.
+                        return RunnerSettings.npm(config.nodeHome(), tasks, gradlePermits, budget);
+                    }
                     Path javaHome = config.jdkHomes()
                             .get(GradleExtractor.jdkMajorFor(GradleExtractor.wrapperVersion(root)));
                     List<String> extraArgs = new ArrayList<>(Propagation.includeBuildArgs(
                             repo, activePlan.edges(), paths));
                     extraArgs.addAll(Propagation.mavenLocalArgs(
                             activePlan.edges(), MavenLocalInit.scriptPath(activeRunDir)));
-                    List<String> rawVerification = activePlan.step(repo)
-                            .map(PlanModel.PlanStep::verification)
-                            .orElse(List.of());
-                    List<String> tasks = new ArrayList<>(rawVerification.isEmpty()
-                            ? List.of("check") : rawVerification);
-                    tasks.retainAll(GradleTool.allowedTasks());   // prose verification entries are
-                                                                   // acceptance-only, not runnable tasks
-                    if (!rawVerification.isEmpty() && tasks.isEmpty()) {
-                        tasks = new ArrayList<>(List.of("check"));   // prose-only list still means
-                                                                      // "verify normally", not "skip"
-                    }
-                    tasks.removeAll(config.verificationExclusions().getOrDefault(repo, List.of()));
-                    AgentBudget budget = new AgentBudget(config.run().agentTurns(),
-                            AgentBudget.defaults().maxWall(), config.run().agentTokens());
                     return RunnerSettings.custom(javaHome, extraArgs, tasks, gradlePermits, budget);
                 };
 
                 Orchestrator orchestrator = new Orchestrator(new RepoStepRunner(jdbi), ladder,
                         settingsFor, store, config.run().tokenBudget(),
-                        activePropagation, new MavenLocalPublisher(), new JarBuilder());
+                        activePropagation, new MavenLocalPublisher(), new JarBuilder(),
+                        config.nodeHome());
                 Orchestrator.RunResult result = initialState == null
                         ? orchestrator.run(runDir, activePlan, activeSteps)
                         : orchestrator.run(runDir, activePlan, activeSteps, initialState);
@@ -405,11 +408,17 @@ public final class ImplementCommand implements Callable<Integer> {
                 out.println("warn: " + repo + ": all verification tasks excluded by sdd.yml — "
                         + "will be marked not locally verified");
             }
-            List<String> nonAllowlisted = new ArrayList<>(planned);
-            nonAllowlisted.removeAll(GradleTool.allowedTasks());
+            // Asked of the toolchain that will actually run them. Subtracting Gradle's allowlist
+            // whatever the repo was described a different repo than the one about to be built: an
+            // npm script the repo really defines was announced as unrunnable prose, while `check`
+            // — which no npm repo defines — passed unmentioned and was then silently dropped.
+            Path repoRoot = steps.get(repo).repoRoot();
+            sdd.core.toolchain.Toolchain toolchain = sdd.core.toolchain.Toolchain.detect(repoRoot);
+            List<String> nonAllowlisted = VerificationTasks.notRunnable(toolchain, repoRoot, planned);
             if (!nonAllowlisted.isEmpty()) {
-                out.println("warn: " + repo + ": verification entries not runnable as gradle tasks "
-                        + "(kept as acceptance prose): " + nonAllowlisted);
+                out.println("warn: " + repo + ": verification entries not runnable as "
+                        + VerificationTasks.runnableLabel(toolchain)
+                        + " (kept as acceptance prose): " + nonAllowlisted);
             }
         }
     }

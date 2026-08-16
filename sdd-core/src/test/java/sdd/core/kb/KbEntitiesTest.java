@@ -36,6 +36,10 @@ class KbEntitiesTest {
             h.execute("INSERT INTO kafka_role(module_id, topic_id, role) VALUES (1,1,'CONSUMER')");
             h.execute("INSERT INTO java_type(module_id, fqcn, kind) VALUES (3,'com.acme.pricing.LoyaltyTier','CLASS')");
             h.execute("INSERT INTO artifact(grp, name, module_id) VALUES ('com.acme','lib-core',3)");
+            // A TypeScript export whose SIMPLE name is the same as the Java type's — the exact
+            // collision the two kinds exist to keep apart.
+            h.execute("INSERT INTO java_type(module_id, fqcn, kind, language) "
+                    + "VALUES (3,'@acme/web-sdk.LoyaltyTier','INTERFACE','TYPESCRIPT')");
         });
     }
 
@@ -283,5 +287,35 @@ class KbEntitiesTest {
         assertThat(r.isEmpty()).isTrue();
         assertThat(r.matches()).isEmpty();
         assertThat(KbEntities.missReason(EntityKind.ENDPOINT)).isEqualTo("no endpoint matches");
+    }
+
+    @Test
+    void aSymbolResolvesByTheSpecifierAConsumerImports() {
+        Resolution r = KbEntities.resolve(db.jdbi(), EntityKind.SYMBOL, "@acme/web-sdk.LoyaltyTier");
+
+        assertThat(r.matches()).extracting(EntityMatch::repo, EntityMatch::detail)
+                .containsExactly(tuple("lib-core", "@acme/web-sdk.LoyaltyTier"));
+    }
+
+    @Test
+    void aBareNameNeverResolvesToASymbol() {
+        // CLASS resolves a dotless name by suffix because a Java package is a convention every
+        // Java name follows. A module specifier is not a package path — it is the string the
+        // consumer literally typed — so a suffix match would pair a name with whatever package
+        // happened to end the same way.
+        assertThat(KbEntities.resolve(db.jdbi(), EntityKind.SYMBOL, "LoyaltyTier").matches())
+                .isEmpty();
+    }
+
+    @Test
+    void theTwoLanguagesNeverAnswerForEachOther() {
+        // The whole reason SYMBOL is a separate kind: one bare name resolving to both a Java type
+        // and a TypeScript export would be a silent cross-language conflation inside a citation,
+        // which is the one place a reader trusts absolutely.
+        assertThat(KbEntities.resolve(db.jdbi(), EntityKind.CLASS, "LoyaltyTier").matches())
+                .extracting(EntityMatch::detail)
+                .containsExactly("com.acme.pricing.LoyaltyTier");
+        assertThat(KbEntities.resolve(db.jdbi(), EntityKind.CLASS, "@acme/web-sdk.LoyaltyTier")
+                .matches()).isEmpty();
     }
 }

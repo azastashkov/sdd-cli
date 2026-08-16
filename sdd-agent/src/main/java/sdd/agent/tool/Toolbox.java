@@ -16,16 +16,16 @@ public final class Toolbox {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final FileTools files;
-    private final GradleTool gradle;
+    private final BuildTool build;
     private final sdd.agent.run.OutputCompactor compactor;   // null = raw (no compaction), 4A path
 
-    public Toolbox(FileTools files, GradleTool gradle) {
-        this(files, gradle, null);
+    public Toolbox(FileTools files, BuildTool build) {
+        this(files, build, null);
     }
 
-    public Toolbox(FileTools files, GradleTool gradle, sdd.agent.run.OutputCompactor compactor) {
+    public Toolbox(FileTools files, BuildTool build, sdd.agent.run.OutputCompactor compactor) {
         this.files = files;
-        this.gradle = gradle;
+        this.build = build;
         this.compactor = compactor;
     }
 
@@ -40,23 +40,30 @@ public final class Toolbox {
                 new ToolSpec("apply_edit",
                         "Replace a search block with a replacement (empty search = create the file).",
                         editSchema()),
-                new ToolSpec("run_gradle", "Run one allowlisted Gradle task.",
-                        obj("task", "string", "help|compileJava|classes|testClasses|assemble|check|test|build")),
+                new ToolSpec(build.toolName(), runDescription(),
+                        obj("task", "string", build.taskDescription())),
                 new ToolSpec("done", "Finish: result is 'success' or 'blocked'.",
                         doneSchema()));
     }
 
+    private String runDescription() {
+        return "Run one allowlisted "
+                + ("run_npm".equals(build.toolName()) ? "npm script." : "Gradle task.");
+    }
+
     public String dispatch(String name, String argsJson) {
         JsonNode args = parse(name, argsJson);
+        // Checked before the switch because the build tool's name varies by toolchain and a switch
+        // label cannot: a repo advertises run_gradle or run_npm, never both.
+        if (name.equals(build.toolName())) {
+            String task = str(args, "task");
+            return compactor == null ? build.run(task) : compactor.compact(build.runFull(task), task);
+        }
         return switch (name) {
             case "read_file" -> files.readFile(str(args, "path"));
             case "list_files" -> files.listFiles(str(args, "dir"));
             case "search" -> files.search(str(args, "regex"));
             case "apply_edit" -> files.applyEdit(str(args, "path"), str(args, "search"), str(args, "replace"));
-            case "run_gradle" -> {
-                String task = str(args, "task");
-                yield compactor == null ? gradle.run(task) : compactor.compact(gradle.runFull(task), task);
-            }
             case "done" -> throw new MalformedCallException("done is handled by the loop, not dispatched");
             default -> throw new MalformedCallException("unknown tool: " + name);
         };

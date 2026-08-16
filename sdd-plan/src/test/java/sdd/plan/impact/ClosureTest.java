@@ -54,6 +54,38 @@ class ClosureTest {
     }
 
     @Test
+    void repoPulledInByAContractEdgePropagatesOverBuildEdges() {
+        // Deliberately a Java-only estate: this is a pre-existing bug, not something multi-toolchain
+        // support introduced. expand() drained its BFS queue and only THEN called contracts(), which
+        // adds repos without re-enqueueing them — so a repo reached through a REST or Kafka contract
+        // never had its own consumers expanded, and the blast radius stopped one repo short.
+        //
+        // svc-billing calls svc-orders' endpoint (seeded above); svc-downstream depends on
+        // svc-billing the ordinary way. Changing svc-orders must reach both.
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO repo(name, path, kind) VALUES ('svc-downstream','/w/7','SERVICE')");
+            h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (7,':','UNKNOWN')");
+            h.execute("INSERT INTO dep_edge(from_module_id, to_grp, to_name, configuration, "
+                    + "declared_version, declared_via, mode, is_internal, to_module_id) "
+                    + "VALUES (7,'com.acme','svc-billing','compileClasspath','1.0','DIRECT','PINNED',1,4)");
+        });
+
+        Closure.Expansion expansion = Closure.expand(db.jdbi(), Set.of("svc-orders"));
+
+        assertThat(expansion.added()).extracting(AffectedRepo::repo)
+                .contains("svc-billing", "svc-downstream");
+        assertThat(expansion.added())
+                .filteredOn(r -> r.repo().equals("svc-downstream"))
+                .singleElement()
+                .satisfies(r -> {
+                    // It arrives as an ordinary build-edge dependent, not as a contract consumer:
+                    // the one-contract-hop rule still holds, and only build edges recurse.
+                    assertThat(r.role()).isEqualTo("dependent");
+                    assertThat(r.reasons()).anySatisfy(reason -> assertThat(reason).contains("svc-billing"));
+                });
+    }
+
+    @Test
     void expandsTransitivelyWithAnnotationsContractsAndBomSites() {
         Closure.Expansion expansion = Closure.expand(db.jdbi(), Set.of("lib-core"));
 
@@ -130,4 +162,46 @@ class ClosureTest {
         assertThat(expansion.warnings()).anySatisfy(w ->
                 assertThat(w).contains("BOM_MANAGED").contains("svc-orders").contains("declaration site not identifiable"));
     }
+    @Test
+    void aHostThatLoadsAnAffectedRepoAtRuntimeIsAffectedToo() {
+        // A micro-frontend host ships the composition: a change to a bundle it loads reaches users
+        // through it, and nothing in any manifest or package.json says so.
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO repo(name, path, kind) VALUES ('shell','/w/shell','SERVICE')");   // repo 7
+            h.execute("INSERT INTO runtime_edge(host_repo_id, module_repo_id, remote_name, resolution) "
+                    + "SELECT (SELECT id FROM repo WHERE name='shell'), "
+                    + "(SELECT id FROM repo WHERE name='svc-orders'), 'mfe_a', 'CONFIGURED'");
+        });
+
+        Closure.Expansion expansion = Closure.expand(db.jdbi(), Set.of("svc-orders"));
+
+        assertThat(expansion.added()).extracting(AffectedRepo::repo).contains("shell");
+        assertThat(expansion.added()).filteredOn(r -> r.repo().equals("shell")).singleElement()
+                .satisfies(r -> {
+                    assertThat(r.role()).isEqualTo("runtime");
+                    assertThat(r.annotation()).isEqualTo("PENDING_RUNTIME");
+                    assertThat(r.reasons()).anySatisfy(reason ->
+                            assertThat(reason).contains("loads svc-orders at runtime")
+                                    .contains("mfe_a"));
+                });
+    }
+
+    @Test
+    void aRuntimeHostIsNotPulledInWhenTheModuleIsUnaffected() {
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO repo(name, path, kind) VALUES ('shell','/w/shell','SERVICE')");
+            // 'unrelated' sits outside every dependency, contract and topic in this estate.
+            h.execute("INSERT INTO repo(name, path, kind) VALUES ('unrelated','/w/u','SERVICE')");
+            h.execute("INSERT INTO runtime_edge(host_repo_id, module_repo_id, remote_name, resolution) "
+                    + "SELECT (SELECT id FROM repo WHERE name='shell'), "
+                    + "(SELECT id FROM repo WHERE name='unrelated'), 'mfe_a', 'CONFIGURED'");
+        });
+
+        Closure.Expansion expansion = Closure.expand(db.jdbi(), Set.of("lib-core"));
+
+        // The host only joins when something it loads is actually changing.
+        assertThat(expansion.added()).extracting(AffectedRepo::repo)
+                .doesNotContain("shell").doesNotContain("unrelated");
+    }
+
 }

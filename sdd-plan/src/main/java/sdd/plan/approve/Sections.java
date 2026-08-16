@@ -9,7 +9,10 @@ import java.util.regex.Pattern;
 final class Sections {
     private static final Pattern ORDER_LINE = Pattern.compile("(\\d+)\\. (.+?)( \\(co-scheduled\\))?");
     private static final Pattern CONTRACT_HEAD =
-            Pattern.compile("### (.+?) \\((java-api|rest|kafka)(?:, (binary-compatible))?\\) — (\\S+)(?: -> (.+))?");
+            // Every contract kind must appear here or a plan declaring one is simply unparseable,
+            // with an error that points at the heading rather than at the missing alternative.
+            Pattern.compile("### (.+?) \\((java-api|rest|kafka|ts-api|rest-client|stream-descriptor)"
+                    + "(?:, (binary-compatible|type-compatible))?\\) — (\\S+)(?: -> (.+))?");
     private static final Pattern STEP_SCALAR = Pattern.compile("- (covers|version_action|provides|consumes): (.+)");
 
     private Sections() {

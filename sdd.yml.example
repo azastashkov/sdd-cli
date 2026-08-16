@@ -60,7 +60,8 @@ run:
   agent_turns: 100        # per-attempt turn cap (default 40)
   agent_tokens: 6000000   # per-attempt token cap (default 1500000)
   token_budget: 30000000  # whole-run cap; the run pauses at exit 3 when it is hit
-  gradle_workers: 2       # concurrent gradle subprocesses
+  gradle_workers: 2       # concurrent build subprocesses, gradle and npm alike — the resource
+                          # being protected is the machine, so one pool covers both
   model_concurrency: 2    # concurrent model calls
 
 # Verification tasks to skip per repo — the report marks these "not locally verified"
@@ -74,4 +75,21 @@ run:
 #   17: /Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home
 #   21: /Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home
 
+# Where node lives, for reading TypeScript and running npm scripts. The npm analogue of
+# jdk_homes, and needed for the same reason: repos pin their node version with .nvmrc, and under
+# nvm the executable sits somewhere an interactive shell's PATH knows about but a launcher's does
+# not. Omit to take node from PATH. A node_home that does not exist is an error rather than a
+# quiet fallback, so a typo here cannot silently change which compiler reads the estate.
+# node_home: /Users/me/.nvm/versions/node/v22.11.0
+
 excludes: []              # workspace directories to skip
+
+# Runtime composition: which repo builds a bundle a host application loads at run time. Declared
+# rather than derived — a manifest says the host loads /mfe/a/trading-mfe-a.js, but which repo
+# BUILDS that bundle lives in a bundler config sdd does not read, so inferring it from the filename
+# would put a guess in the knowledge base wearing the same clothes as a parsed fact. Any remote
+# left unmapped is listed in the curation report.
+# runtime_edges:
+#   - host_repo: trading-frontend-root-config
+#     remote: mfe_a
+#     module_repo: trading-mfe-a

@@ -3,6 +3,7 @@ package sdd.plan.gen;
 import com.fasterxml.jackson.core.JacksonException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import sdd.core.contract.ContractKinds;
 import org.jdbi.v3.core.Jdbi;
 import sdd.core.contract.Markdown;
 import sdd.core.llm.ChatMessage;
@@ -32,7 +33,12 @@ public final class PlanDrafter {
     private static final ObjectMapper JSON = new ObjectMapper();
     static final int EVIDENCE_CAP = 4000;
     private static final Set<String> VERSION_ACTIONS = Set.of("none", "patch", "minor", "major");
-    private static final Set<String> CONTRACT_KINDS = Set.of("java-api", "rest", "kafka");
+    /** Whatever DeclaredContract can parse — the drafter must never be able to propose a kind the
+     *  checker cannot re-derive, and the two lists drifting apart is exactly how that happens. */
+    private static final Set<String> CONTRACT_KINDS = Set.of(ContractKinds.JAVA_API,
+            ContractKinds.REST, ContractKinds.KAFKA, ContractKinds.TS_API, ContractKinds.REST_CLIENT,
+            ContractKinds.STREAM_DESCRIPTOR);
+    private static final Set<String> COMPAT_VALUES = Set.of("binary-compatible", "type-compatible");
     static final String SYSTEM_PROMPT = """
             You draft the repo-by-repo implementation plan for a feature specification across a \
             multi-repo estate. You receive the spec, the impact analysis (which repos and why), \
@@ -40,10 +46,12 @@ public final class PlanDrafter {
             endpoints). Return exactly ONE JSON object, no markdown fences:
             {"summary": string,
              "questions": [{"text": string, "blocking": boolean}, ...],
-             "contracts": [{"id": string, "kind": "java-api"|"rest"|"kafka", "provider": string,
+             "contracts": [{"id": string, "kind": "java-api"|"rest"|"kafka"|"ts-api"|"rest-client",
+                            "provider": string,
                             "consumers": [string, ...], "body": string,
-                            "compat": "binary-compatible" (OPTIONAL, java-api only — declare it \
-            when consumers must keep binary compatibility),
+                            "compat": "binary-compatible" (OPTIONAL, java-api only) or \
+            "type-compatible" (OPTIONAL, ts-api only) — declare it when consumers must keep \
+            compatibility,
                             "declarations": [string, ...] (OPTIONAL — the machine-checkable \
             members this contract exposes, one exact line per member, no prose, using EXACTLY \
             this grammar for the contract's kind: java-api "<fqcn>#<signature>: <returnType>" \
@@ -51,7 +59,13 @@ public final class PlanDrafter {
             (the type before '#' MUST be fully qualified — it is matched against the extracted \
             type's full name); \
             rest "<METHOD> <path>" e.g. "GET /api/admin/tier-spreads"; kafka \
-            "produces <topic>" or "consumes <topic>" e.g. "produces orders.v1". Omit this list, \
+            "produces <topic>" or "consumes <topic>" e.g. "produces orders.v1"; ts-api \
+            "<moduleSpecifier>#<Export>[.<member>]: <type>" e.g. \
+            "@azastashkov/web-sdk#Tick.price: number" (the specifier is what a consumer IMPORTS, \
+            never a file path); rest-client "<METHOD> <path>" e.g. "POST /api/orders" — same \
+            grammar as rest, but the provider is the repo making the calls. The last two kinds \
+            belong to npm/TypeScript repos and the first three to Gradle repos; a kind on the \
+            wrong kind of repo is rejected before the plan is approved. Omit this list, \
             or leave it empty, whenever you are not certain of the exact signature or path — an \
             invented declaration is checked against the real implementation later and reports a \
             false alarm)}, ...],
@@ -186,7 +200,9 @@ public final class PlanDrafter {
                 }
             }
             String compat = node.path("compat").asText(null);
-            if (compat != null && !"binary-compatible".equals(compat)) {
+            // Only the vocabulary is checked here. Whether a compat value is legal ON THIS KIND is
+            // PlanValidator's call, which is where the message a human can act on already lives.
+            if (compat != null && !COMPAT_VALUES.contains(compat)) {
                 notes.add("drafter contract '" + id + "' compat '" + compat + "' dropped");
                 compat = null;
             }

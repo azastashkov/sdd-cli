@@ -58,16 +58,33 @@ public final class PreFlight {
         return new Result(problems.isEmpty(), problems);
     }
 
-    /** Checkout exists, gradlew is executable, base SHA is present. Returns false (and has already
-     *  recorded a problem) when the checkout itself is missing, since the remaining checks need it. */
+    /** Checkout exists, the repo's toolchain is usable, base SHA is present. Returns false (and has
+     *  already recorded a problem) when the checkout itself is missing, since the rest need it. */
     private static boolean environment(String repo, RepoStep step, PlanModel plan, List<String> problems) {
         var root = step.repoRoot();
         if (!Files.isDirectory(root)) {
             problems.add(repo + ": checkout not found at " + root);
             return false;
         }
-        if (!Files.isExecutable(root.resolve("gradlew"))) {
-            problems.add(repo + ": no executable gradle wrapper at " + root.resolve("gradlew"));
+        switch (sdd.core.toolchain.Toolchain.detect(root)) {
+            case GRADLE -> {
+                if (!Files.isExecutable(root.resolve("gradlew"))) {
+                    problems.add(repo + ": no executable gradle wrapper at " + root.resolve("gradlew"));
+                }
+            }
+            case NPM -> {
+                // sdd must never run `npm install` itself: it mutates the tree mid-run, is slow,
+                // and can reach the network at an arbitrary moment. Refusing with an actionable
+                // message is better than every verification failing with `sh: vitest: command not
+                // found` while the agent burns its whole escalation ladder on an environment
+                // problem it cannot fix.
+                if (!Files.isDirectory(root.resolve("node_modules"))) {
+                    problems.add(repo + ": node_modules is not installed at " + root
+                            + " — run npm install (or npm ci) before sdd implement");
+                }
+            }
+            case UNKNOWN -> problems.add(repo + ": cannot determine build system at " + root
+                    + " (no gradle build files, no package.json)");
         }
         String base = plan.repo(repo).map(PlanModel.PlanRepo::baseSha).orElse("");
         if (base.isEmpty()) {

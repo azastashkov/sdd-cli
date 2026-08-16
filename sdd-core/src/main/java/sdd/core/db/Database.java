@@ -16,12 +16,16 @@ import java.util.List;
 
 public final class Database implements AutoCloseable {
     private static final List<String> MIGRATIONS =
-            List.of("V1__init.sql", "V2__fts_porter.sql", "V3__type_javadoc.sql");
+            List.of("V1__init.sql", "V2__fts_porter.sql", "V3__type_javadoc.sql",
+                    "V4__multi_language.sql", "V5__runtime_remotes.sql");
 
     /**
      * The migration that recreates fts_symbol and so has to repopulate it — see
      * {@link #applyMigration}. V3 only widens {@code java_type}; it leaves fts_symbol alone and
-     * must not trigger a rebuild.
+     * must not trigger a rebuild. V4 is the same: it widens {@code repo}, {@code module} and
+     * {@code java_type} and adds an index, but never touches fts_symbol. Moving this constant
+     * without first extending {@link FtsSymbolWriter#rebuildFrom} to carry {@code java_type.javadoc}
+     * across would silently drop every doc row on upgrade.
      */
     private static final int FTS_REBUILD_VERSION = 2;
 

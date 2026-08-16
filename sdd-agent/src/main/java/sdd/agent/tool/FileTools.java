@@ -25,14 +25,24 @@ public final class FileTools {
 
     private final PathJail jail;
     private final List<AppliedEdit> appliedEdits = new ArrayList<>();
+    /** Optional: absent when node could not be found, in which case TS edits are not gated. */
+    private final java.util.Optional<sdd.core.ts.TsSidecar> tsSidecar;
+    /** Recorded once per attempt so a missing gate is visible rather than merely absent. */
+    private String tsGateUnavailable;
 
     /** One successfully applied edit — recorded only after the write lands (a syntax-reverted or
      *  failed edit never reaches this). action is "create" when the search block was empty, else "edit". */
     public record AppliedEdit(String path, String action, int searchLines, int replaceLines) {
     }
 
+    /** No TypeScript gate: the Java and JSON checks still apply. */
     public FileTools(PathJail jail) {
+        this(jail, java.util.Optional.empty());
+    }
+
+    public FileTools(PathJail jail, java.util.Optional<sdd.core.ts.TsSidecar> tsSidecar) {
         this.jail = jail;
+        this.tsSidecar = tsSidecar;
     }
 
     /** An immutable snapshot of every edit successfully applied so far, in application order. */
@@ -176,12 +186,7 @@ public final class FileTools {
             original = readOrEmpty(file);
         }
         String updated = creating ? replaceBlock : applyBlock(path, original, searchBlock, replaceBlock);
-        if (path.endsWith(".java")) {
-            var error = JavaSyntax.firstError(updated);
-            if (error.isPresent()) {
-                throw new ToolException("edit rejected — result has a syntax error: " + error.get());
-            }
-        }
+        syntaxGate(path, updated);
         try {
             Files.createDirectories(file.getParent());
             Files.writeString(file, updated, StandardCharsets.UTF_8);
@@ -191,6 +196,80 @@ public final class FileTools {
         appliedEdits.add(new AppliedEdit(path, creating ? "create" : "edit",
                 lineCount(searchBlock), lineCount(replaceBlock)));
         return (creating ? "created " : "edited ") + path;
+    }
+
+    /**
+     * Refuses an edit that would leave the file unparseable. The point is not correctness — a
+     * type error is the build's job — but that a syntactically broken file makes every subsequent
+     * read and edit the agent performs meaningless, and it usually cannot tell.
+     *
+     * <p>Java is checked in process. TypeScript is checked by the sidecar, which parses the single
+     * file with the real compiler: no program, no type checking, no module resolution, so it costs
+     * about a millisecond. A hand-rolled bracket heuristic was rejected because valid TypeScript
+     * defeats it — {@code a < b, c > (d)} and JSX both read as unbalanced — and a false rejection
+     * is strictly worse than no gate, since the agent cannot fix an error that is not there.
+     *
+     * <p>JSON is checked because package.json is now load-bearing: a malformed one breaks
+     * dependency reading, version bumping and every npm invocation, with an error that points
+     * nowhere near the edit.
+     *
+     * <p>When the TypeScript gate cannot run it FAILS OPEN, loudly and once. Rejecting an edit
+     * because the checker is missing would wedge the agent against an error it has no way to
+     * resolve, burning the whole escalation ladder; the real gate is the type-check verification,
+     * which is exit-code driven and cannot be fooled by an absent syntax check.
+     */
+    private void syntaxGate(String path, String updated) {
+        if (path.endsWith(".java")) {
+            var error = JavaSyntax.firstError(updated);
+            if (error.isPresent()) {
+                throw new ToolException("edit rejected — result has a syntax error: " + error.get());
+            }
+            return;
+        }
+        if (path.endsWith(".json")) {
+            try {
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(updated);
+            } catch (com.fasterxml.jackson.core.JacksonException e) {
+                throw new ToolException("edit rejected — result is not valid JSON: "
+                        + e.getOriginalMessage());
+            }
+            return;
+        }
+        if (!isTypeScript(path)) {
+            return;
+        }
+        if (tsSidecar.isEmpty()) {
+            noteTsGateUnavailable("node not found");
+            return;
+        }
+        var result = tsSidecar.get().syntaxCheck(path, updated);
+        if (!result.ok()) {
+            noteTsGateUnavailable(result.error());
+            return;
+        }
+        if (!result.json().path("ok").asBoolean(true)) {
+            throw new ToolException("edit rejected — result has a syntax error: "
+                    + result.json().path("error").asText());
+        }
+    }
+
+    private static boolean isTypeScript(String path) {
+        return path.endsWith(".ts") || path.endsWith(".tsx")
+                || path.endsWith(".mts") || path.endsWith(".cts");
+    }
+
+    private void noteTsGateUnavailable(String reason) {
+        if (tsGateUnavailable == null) {
+            tsGateUnavailable = reason;
+        }
+    }
+
+    /**
+     * Null unless the TypeScript syntax gate could not run, in which case this is why. The runner
+     * surfaces it as an agent event so an unchecked edit is a recorded fact rather than silence.
+     */
+    public String tsGateUnavailable() {
+        return tsGateUnavailable;
     }
 
     private static int lineCount(String text) {

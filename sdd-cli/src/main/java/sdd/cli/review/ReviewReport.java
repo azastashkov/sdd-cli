@@ -69,6 +69,7 @@ public final class ReviewReport {
                 voidedBy, checkpoints.branchGone());
         appendRebuildFailures(md, rebuilds);
         appendContracts(md, contracts, unstaged);
+        appendSkippedGates(md, in.skippedGates());
         appendRestoreFailures(md, restoreFailures);
         appendDiffFailures(md, diffFailures);
         appendPropagation(md, plan);
@@ -294,6 +295,28 @@ public final class ReviewReport {
             String excerpt = log == null ? "" : log.substring(0, Math.min(400, log.length()));
             md.append("### ").append(entry.getKey()).append("\n\n```\n").append(excerpt).append("\n```\n\n");
         }
+    }
+
+    /**
+     * Declared-but-unchecked compatibility guarantees.
+     *
+     * <p>Its own section rather than a line inside Contracts, because it is not a finding ABOUT a
+     * contract — the contract may be perfectly conformant. It is a statement about what this
+     * report does not know, and a reader who has already read "0 mismatches" needs it said
+     * separately or they will not read it as a caveat at all.
+     */
+    private static void appendSkippedGates(StringBuilder md, List<SkippedGates.Skipped> skipped) {
+        if (skipped.isEmpty()) {
+            return;
+        }
+        md.append("## Compatibility gates that did not run\n\n");
+        md.append("These repos declared a compatibility guarantee that was never checked. The plan "
+                + "says the guarantee holds; nothing in this run confirms it.\n\n");
+        for (SkippedGates.Skipped gate : skipped) {
+            md.append("- **").append(gate.repo()).append("** (").append(gate.compat()).append("): ")
+                    .append(gate.detail()).append('\n');
+        }
+        md.append('\n');
     }
 
     private static void appendContracts(StringBuilder md, List<ContractRecheck.Finding> contracts,

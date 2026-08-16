@@ -22,13 +22,20 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class DatabaseTest {
+    /**
+     * The version a freshly-opened workspace lands on: {@code Database.MIGRATIONS.size()}. Named
+     * once so adding a migration is a one-line change here rather than a hunt through a dozen
+     * literals — which is exactly how the number silently drifts out of agreement with production.
+     */
+    private static final int CURRENT = 5;
+
     @TempDir Path ws;
 
     @Test
     void createsDbFileAndAppliesSchema() throws Exception {
         try (Database db = Database.open(ws)) {
             assertThat(Files.exists(ws.resolve(".sdd/index.db"))).isTrue();
-            assertThat(db.schemaVersion()).isEqualTo(3);
+            assertThat(db.schemaVersion()).isEqualTo(CURRENT);
             List<String> tables = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
                             .mapTo(String.class).list());
@@ -47,7 +54,7 @@ class DatabaseTest {
                     "INSERT INTO repo(name, path, kind) VALUES ('r1', '/x', 'SERVICE')"));
         }
         try (Database again = Database.open(ws)) {
-            assertThat(again.schemaVersion()).isEqualTo(3);
+            assertThat(again.schemaVersion()).isEqualTo(CURRENT);
             Integer count = again.jdbi().withHandle(h ->
                     h.createQuery("SELECT count(*) FROM repo").mapTo(Integer.class).one());
             assertThat(count).isEqualTo(1);
@@ -70,7 +77,7 @@ class DatabaseTest {
         // Simulate by opening a db, then attempting a second migrate with a bad script
         // via the package-visible seam.
         try (Database db = Database.open(ws)) {
-            assertThat(db.schemaVersion()).isEqualTo(3);
+            assertThat(db.schemaVersion()).isEqualTo(CURRENT);
         }
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                 Database.applyMigrationForTest(ws, 999, "CREATE TABLE t_ok(id INTEGER);\n;\nCREATE BROKEN SYNTAX"))
@@ -115,7 +122,7 @@ class DatabaseTest {
         List<String> symbolsBefore = symbolRows(v1);
 
         try (Database db = Database.open(ws)) {
-            assertThat(db.schemaVersion()).isEqualTo(3);
+            assertThat(db.schemaVersion()).isEqualTo(CURRENT);
             List<String> repos = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT name FROM repo ORDER BY id").mapTo(String.class).list());
             assertThat(repos).containsExactly("pricing");
@@ -125,7 +132,7 @@ class DatabaseTest {
                     "com.acme.pricing.TierResolver", "com.acme.pricing.LoyaltyTier");
             Integer members = db.jdbi().withHandle(h ->
                     h.createQuery("SELECT count(*) FROM api_member").mapTo(Integer.class).one());
-            assertThat(members).isEqualTo(4);
+            assertThat(members).isEqualTo(4);   // the four api_member rows seeded above, not a version
             // The table really was recreated with the new tokenizer and the new column...
             String ddl = db.jdbi().withHandle(h -> h.createQuery(
                     "SELECT sql FROM sqlite_master WHERE name='fts_symbol'").mapTo(String.class).one());
@@ -145,7 +152,10 @@ class DatabaseTest {
     @Test
     void concurrentOpensOfAV1WorkspaceLeaveItUpgradedAndStillOpenable() throws Exception {
         // The corruption this guards: every process reads schema_version before any of them takes a
-        // lock, so all of them see 1 and all of them queue up to run V2 and V3. Re-running V2 is
+        // lock, so all of them see 1 and all of them queue up to run every later migration. The
+        // named-migration reasoning below is about V2 and V3 because those are where the two
+        // failure shapes first appear; V4 behaves like V3 (ADD COLUMN, so a re-run is an error).
+        // Re-running V2 is
         // harmless in effect (DROP + CREATE + rebuild reconstructs fts_symbol from java_type and
         // api_member, which neither migration touches, so it reproduces the same rows) but re-running
         // V3 is an error (duplicate column javadoc) — and because the version stamp for V2 has already
@@ -167,7 +177,7 @@ class DatabaseTest {
                 }));
             }
             for (Future<Integer> f : reported) {
-                assertThat(f.get(30, TimeUnit.SECONDS)).isEqualTo(3);
+                assertThat(f.get(30, TimeUnit.SECONDS)).isEqualTo(CURRENT);
             }
         } finally {
             pool.shutdownNow();
@@ -176,7 +186,7 @@ class DatabaseTest {
         // The state that matters is the one left behind: a bricked database still reports 3 to
         // whichever opener won, and only fails the next reader.
         try (Database after = Database.open(ws)) {
-            assertThat(after.schemaVersion()).isEqualTo(3);
+            assertThat(after.schemaVersion()).isEqualTo(CURRENT);
             String ddl = after.jdbi().withHandle(h -> h.createQuery(
                     "SELECT sql FROM sqlite_master WHERE name='fts_symbol'").mapTo(String.class).one());
             assertThat(ddl).contains("porter").contains("doc");
@@ -189,12 +199,12 @@ class DatabaseTest {
         // arrive at a database that has already recorded them. The script here would be plainly
         // visible if it ran, so "no-op" is asserted rather than assumed.
         try (Database db = Database.open(ws)) {
-            assertThat(db.schemaVersion()).isEqualTo(3);
+            assertThat(db.schemaVersion()).isEqualTo(CURRENT);
         }
 
-        int reported = Database.applyMigrationForTest(ws, 3, "CREATE TABLE t_reapplied(id INTEGER)");
+        int reported = Database.applyMigrationForTest(ws, CURRENT, "CREATE TABLE t_reapplied(id INTEGER)");
 
-        assertThat(reported).isEqualTo(3);
+        assertThat(reported).isEqualTo(CURRENT);
         try (Database db = Database.open(ws)) {
             List<String> tables = db.jdbi().withHandle(h -> h.createQuery(
                     "SELECT name FROM sqlite_master WHERE type='table'").mapTo(String.class).list());
@@ -208,12 +218,61 @@ class DatabaseTest {
         // binary reading a newer database reported its own count — a diagnostic lying in exactly the
         // mixed-version situation someone reads it to diagnose.
         try (Database db = Database.open(ws)) {
-            assertThat(db.schemaVersion()).isEqualTo(3);
+            assertThat(db.schemaVersion()).isEqualTo(CURRENT);
         }
-        rawJdbi(ws).useHandle(h -> h.execute("UPDATE meta SET value='4' WHERE key='schema_version'"));
+        rawJdbi(ws).useHandle(h -> h.execute("UPDATE meta SET value='" + (CURRENT + 1) + "' WHERE key='schema_version'"));
 
         try (Database db = Database.open(ws)) {
-            assertThat(db.schemaVersion()).isEqualTo(4);
+            assertThat(db.schemaVersion()).isEqualTo(CURRENT + 1);
+        }
+    }
+
+    @Test
+    void v3WorkspaceUpgradesToV4KeepingJavadocAndEverySymbolRow() throws Exception {
+        // V4 widens three tables and must leave fts_symbol strictly alone. The failure this guards
+        // is silent: if V4 ever recreated fts_symbol without FTS_REBUILD_VERSION moving AND
+        // rebuildFrom learning to carry java_type.javadoc across, every upgraded workspace would
+        // come back with an empty or doc-less search index and report no error at all.
+        seedV3Workspace(ws);
+        Jdbi v3 = rawJdbi(ws);
+        v3.useHandle(h -> {
+            h.execute("INSERT INTO repo(id, name, path, kind) VALUES (1, 'pricing', '/w/pricing', 'SERVICE')");
+            h.execute("INSERT INTO module(id, repo_id, gradle_path) VALUES (10, 1, ':')");
+            h.execute("INSERT INTO java_type(id, module_id, fqcn, kind, javadoc) VALUES "
+                    + "(100, 10, 'com.acme.pricing.TierResolver', 'CLASS', 'Resolves a client tier.')");
+            h.execute("INSERT INTO fts_symbol(identifier, fqcn, words, doc, module_id) VALUES "
+                    + "('TierResolver', 'com.acme.pricing.TierResolver', 'tier resolver', "
+                    + "'Resolves a client tier.', 10)");
+        });
+        List<String> symbolsBefore = symbolRows(v3);
+
+        try (Database db = Database.open(ws)) {
+            assertThat(db.schemaVersion()).isEqualTo(CURRENT);
+
+            String javadoc = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT javadoc FROM java_type WHERE id=100").mapTo(String.class).one());
+            assertThat(javadoc).isEqualTo("Resolves a client tier.");
+
+            assertThat(symbolRows(db.jdbi())).isEqualTo(symbolsBefore);
+            String ftsDoc = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT doc FROM fts_symbol WHERE identifier='TierResolver'")
+                    .mapTo(String.class).one());
+            assertThat(ftsDoc).isEqualTo("Resolves a client tier.");
+
+            // The added NOT NULL columns backfill to JAVA, which is true of everything indexed
+            // before this migration existed.
+            String typeLanguage = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT language FROM java_type WHERE id=100").mapTo(String.class).one());
+            assertThat(typeLanguage).isEqualTo("JAVA");
+            String moduleLanguage = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT language FROM module WHERE id=10").mapTo(String.class).one());
+            assertThat(moduleLanguage).isEqualTo("JAVA");
+
+            // build_system deliberately stays NULL: it is the signal IndexService reads as
+            // "this row predates V4, re-extract it" rather than a claim about the build system.
+            java.util.Optional<String> buildSystem = db.jdbi().withHandle(h -> h.createQuery(
+                    "SELECT build_system FROM repo WHERE id=1").mapTo(String.class).findOne());
+            assertThat(buildSystem).isEmpty();
         }
     }
 
@@ -234,6 +293,18 @@ class DatabaseTest {
     private static void seedV1Workspace(Path workspace) throws Exception {
         Files.createDirectories(workspace.resolve(".sdd"));
         Database.applyMigrationForTest(workspace, 1, readMigration("V1__init.sql"));
+    }
+
+    /**
+     * A genuine v3 workspace, built by running the real V1-V3 scripts in order through the
+     * production migration path — so V2's fts_symbol recreation and rebuild really happen, and the
+     * database this leaves behind is the one a pre-V4 binary would have written.
+     */
+    private static void seedV3Workspace(Path workspace) throws Exception {
+        Files.createDirectories(workspace.resolve(".sdd"));
+        Database.applyMigrationForTest(workspace, 1, readMigration("V1__init.sql"));
+        Database.applyMigrationForTest(workspace, 2, readMigration("V2__fts_porter.sql"));
+        Database.applyMigrationForTest(workspace, 3, readMigration("V3__type_javadoc.sql"));
     }
 
     /**

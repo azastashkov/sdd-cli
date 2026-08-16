@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import sdd.core.db.Database;
+import sdd.index.extract.GradleBuildExtractor;
 import sdd.index.scan.WorkspaceScanner;
 import sdd.index.store.ArtifactLinker;
 import sdd.index.store.IndexPersistence;
@@ -54,8 +55,10 @@ class CompositeBuildIT {
         GradleModel.Extract libExtract = new GradleExtractor(Map.of()).extract(ws.resolve("lib-x"));
         try (Database db = Database.open(ws)) {
             var scans = WorkspaceScanner.scan(ws, List.of());
-            IndexPersistence.persistRepo(db.jdbi(), scans.get(0), libExtract, "OK", null);
-            IndexPersistence.persistRepo(db.jdbi(), scans.get(1), svcExtract, "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scans.get(0),
+                    GradleBuildExtractor.adapt(libExtract), "GRADLE", "OK", null);
+            IndexPersistence.persistRepo(db.jdbi(), scans.get(1),
+                    GradleBuildExtractor.adapt(svcExtract), "GRADLE", "OK", null);
             ArtifactLinker.link(db.jdbi(), Map.of());
             String mode = db.jdbi().withHandle(h -> h.createQuery(
                             "SELECT mode FROM dep_edge WHERE to_name='lib-x' AND is_internal=1")
