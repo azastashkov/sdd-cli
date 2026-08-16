@@ -95,4 +95,40 @@ class VerificationTasksTest {
         assertThat(VerificationTasks.resolve(Toolchain.NPM, repo, List.of("release"), List.of()))
                 .containsExactly("test");   // falls back to the default; release is not runnable
     }
+
+    // ------------------------------------------------------------------ what the Gate-1 warning reports
+    //
+    // The warning used to subtract GradleTool.allowedTasks() whatever the repo was, so it described
+    // a different repo than the one about to be built: an npm script the repo really defines was
+    // announced as unrunnable prose, while `check` — which no npm repo defines — passed unmentioned
+    // and was then silently dropped by resolve().
+
+    @Test
+    void anNpmScriptTheRepoDefinesIsNotReportedAsUnrunnable() throws Exception {
+        packageJson("\"typecheck\":\"tsc --noEmit\",\"test\":\"vitest run\"");
+
+        assertThat(VerificationTasks.notRunnable(Toolchain.NPM, repo, List.of("typecheck", "test")))
+                .isEmpty();
+    }
+
+    @Test
+    void aGradleTaskNameIsReportedAsUnrunnableInAnNpmRepo() throws Exception {
+        packageJson("\"test\":\"vitest run\"");
+
+        assertThat(VerificationTasks.notRunnable(Toolchain.NPM, repo, List.of("check", "test")))
+                .containsExactly("check");
+    }
+
+    @Test
+    void proseIsReportedAsUnrunnableInAGradleRepo() {
+        assertThat(VerificationTasks.notRunnable(Toolchain.GRADLE, repo,
+                List.of("check", "Run the tests properly")))
+                .containsExactly("Run the tests properly");
+    }
+
+    @Test
+    void theLabelNamesTheToolchainThatWouldHaveRunTheEntries() {
+        assertThat(VerificationTasks.runnableLabel(Toolchain.NPM)).isEqualTo("npm scripts");
+        assertThat(VerificationTasks.runnableLabel(Toolchain.GRADLE)).isEqualTo("gradle tasks");
+    }
 }

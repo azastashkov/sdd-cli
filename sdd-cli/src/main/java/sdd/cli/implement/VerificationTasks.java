@@ -44,6 +44,21 @@ public final class VerificationTasks {
         return List.copyOf(tasks);
     }
 
+    /**
+     * The plan's verification entries this toolchain cannot run, in plan order — what the Gate-1
+     * warning reports as kept-for-acceptance prose.
+     */
+    public static List<String> notRunnable(Toolchain toolchain, Path repoRoot,
+                                           List<String> planVerification) {
+        Set<String> runnable = allowedFor(toolchain, repoRoot);
+        return planVerification.stream().filter(entry -> !runnable.contains(entry)).toList();
+    }
+
+    /** What the runnable entries would have been, named for the toolchain that runs them. */
+    public static String runnableLabel(Toolchain toolchain) {
+        return toolchain == Toolchain.NPM ? "npm scripts" : "gradle tasks";
+    }
+
     private static Set<String> allowedFor(Toolchain toolchain, Path repoRoot) {
         return toolchain == Toolchain.NPM ? NpmTool.advertised(repoRoot) : GradleTool.allowedTasks();
     }

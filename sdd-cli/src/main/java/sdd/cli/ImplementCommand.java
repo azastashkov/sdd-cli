@@ -408,11 +408,17 @@ public final class ImplementCommand implements Callable<Integer> {
                 out.println("warn: " + repo + ": all verification tasks excluded by sdd.yml — "
                         + "will be marked not locally verified");
             }
-            List<String> nonAllowlisted = new ArrayList<>(planned);
-            nonAllowlisted.removeAll(GradleTool.allowedTasks());
+            // Asked of the toolchain that will actually run them. Subtracting Gradle's allowlist
+            // whatever the repo was described a different repo than the one about to be built: an
+            // npm script the repo really defines was announced as unrunnable prose, while `check`
+            // — which no npm repo defines — passed unmentioned and was then silently dropped.
+            Path repoRoot = steps.get(repo).repoRoot();
+            sdd.core.toolchain.Toolchain toolchain = sdd.core.toolchain.Toolchain.detect(repoRoot);
+            List<String> nonAllowlisted = VerificationTasks.notRunnable(toolchain, repoRoot, planned);
             if (!nonAllowlisted.isEmpty()) {
-                out.println("warn: " + repo + ": verification entries not runnable as gradle tasks "
-                        + "(kept as acceptance prose): " + nonAllowlisted);
+                out.println("warn: " + repo + ": verification entries not runnable as "
+                        + VerificationTasks.runnableLabel(toolchain)
+                        + " (kept as acceptance prose): " + nonAllowlisted);
             }
         }
     }
