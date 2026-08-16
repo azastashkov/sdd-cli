@@ -3,6 +3,7 @@ package sdd.cli.implement;
 import com.fasterxml.jackson.databind.JsonNode;
 import sdd.core.contract.ContractKinds;
 import sdd.core.contract.DeclaredContract;
+import sdd.core.contract.TsNames;
 import sdd.index.source.ApiSurfaceExtractor;
 import sdd.index.source.SourceModel;
 import sdd.index.source.SourceParser;
@@ -390,26 +391,19 @@ public final class ContractActualizer {
         return exports;
     }
 
-    /** The synthetic member name the sidecar gives a const's or a non-object alias's written type —
-     *  the whole export IS that type, so it supersedes the kind line rather than adding to it. */
-    private static final String TS_VALUE_MEMBER = "<value>";
-
     private static void appendExport(StringBuilder body, SourceModel.TypeInfo export) {
-        String name = export.fqcn().substring(export.fqcn().lastIndexOf('.') + 1);
+        String name = TsNames.exportOf(export.fqcn());
+        // A `<value>` member IS the export's written type, so it supersedes the kind line rather
+        // than adding to it.
         boolean valueTyped = export.members().stream()
-                .anyMatch(m -> TS_VALUE_MEMBER.equals(m.name()));
+                .anyMatch(m -> TsNames.VALUE_MEMBER.equals(m.name()));
         if (!valueTyped) {
             body.append("  ").append(name).append(": ").append(tsKind(export.kind())).append('\n');
         }
         for (SourceModel.MemberInfo member : export.members()) {
-            String left;
-            if (TS_VALUE_MEMBER.equals(member.name()) || member.name().equals(name)) {
-                // A function's single member, or a const's written type: the export and the member
-                // are the same thing, so prefixing would read as `login.login(...)`.
-                left = name + member.signature().substring(member.name().length());
-            } else {
-                left = name + "." + member.signature();
-            }
+            // Shared with PlanDrafter's evidence: a declaration copied from that evidence has to
+            // match the body it will be checked against, and two copies of this rule drifted once.
+            String left = TsNames.memberLabel(name, member.name(), member.signature());
             body.append("  ").append(left).append(": ");
             if (member.returnType() == null) {
                 body.append('?').append(UNRESOLVED_MARKER);

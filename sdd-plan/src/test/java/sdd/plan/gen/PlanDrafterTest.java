@@ -93,6 +93,48 @@ class PlanDrafterTest {
                 .contains("- GET /price/{} req=null res=PriceResponse");
     }
 
+    /** An npm repo whose one export is recorded the way the indexer records it: {@code
+     *  <specifier>.<Export>}, which is NOT how a ts-api declaration addresses it. */
+    private ImpactResult seedTypeScriptRepo() {
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO repo(name, path, kind) VALUES ('web-sdk','/w/3','LIBRARY')");
+            h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (3,':','LIBRARY')");
+            h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path, language) "
+                    + "VALUES (3,'@acme/web-sdk.Tick','INTERFACE',1,'src/types.ts','TYPESCRIPT')");
+            h.execute("INSERT INTO api_member(type_id, name, signature, return_type) "
+                    + "VALUES (2,'price','price','number')");
+        });
+        return new ImpactResult(List.of(),
+                List.of(new AffectedRepo("web-sdk", "seed", "SEED", List.of("R1"),
+                        List.of("touchpoint repo:web-sdk"))),
+                List.of(), List.of(), List.of(), List.of(), List.of());
+    }
+
+    @Test
+    void aTypeScriptMemberIsRenderedInTheGrammarItsDeclarationMustUse() {
+        ImpactResult impact = seedTypeScriptRepo();
+
+        String input = PlanDrafter.composeInput(db.jdbi(), spec(), impact,
+                ExecutionOrder.order(db.jdbi(), impact), "");
+
+        // The java-api template transposes BOTH separators for TypeScript: the knowledge base
+        // records `<specifier>.<Export>` while a ts-api declaration addresses `<specifier>#<Export>`,
+        // so the one line the prompt tells a model to copy from cannot be copied — and the prompt
+        // also tells it to omit rather than guess, which is exactly what it does.
+        assertThat(input).contains("- @acme/web-sdk#Tick.price: number");
+        assertThat(input).doesNotContain("@acme/web-sdk.Tick#price");
+    }
+
+    @Test
+    void aTypeScriptTypeIsNamedByTheSpecifierAConsumerImports() {
+        ImpactResult impact = seedTypeScriptRepo();
+
+        String input = PlanDrafter.composeInput(db.jdbi(), spec(), impact,
+                ExecutionOrder.order(db.jdbi(), impact), "");
+
+        assertThat(input).contains("- @acme/web-sdk#Tick (INTERFACE) @ src/types.ts");
+    }
+
     @Test
     void validatesEveryUntrustedFieldWithNotes() {
         ScriptedChatModel planner = new ScriptedChatModel(List.of(response(GOOD_JSON, "stop")));

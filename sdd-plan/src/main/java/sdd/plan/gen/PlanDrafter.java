@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import sdd.core.contract.ContractKinds;
 import org.jdbi.v3.core.Jdbi;
 import sdd.core.contract.Markdown;
+import sdd.core.contract.TsNames;
 import sdd.core.llm.ChatMessage;
 import sdd.core.llm.ChatModel;
 import sdd.core.llm.ChatRequest;
@@ -337,17 +338,21 @@ public final class PlanDrafter {
         StringBuilder evidence = new StringBuilder();
         jdbi.useHandle(h -> {
             for (Map<String, Object> row : h.createQuery("""
-                            SELECT t.fqcn AS fqcn, t.kind AS kind, t.file_path AS path
+                            SELECT t.fqcn AS fqcn, t.kind AS kind, t.file_path AS path,
+                                   t.language AS lang
                             FROM java_type t
                             JOIN module m ON m.id = t.module_id
                             JOIN repo r ON r.id = m.repo_id
                             WHERE r.name = :r ORDER BY t.is_api DESC, t.fqcn LIMIT 25""")
                     .bind("r", repo).mapToMap().list()) {
-                evidence.append("- ").append(row.get("fqcn")).append(" (").append(row.get("kind"))
+                String fqcn = String.valueOf(row.get("fqcn"));
+                evidence.append("- ").append(isTypeScript(row) ? TsNames.address(fqcn) : fqcn)
+                        .append(" (").append(row.get("kind"))
                         .append(") @ ").append(row.get("path")).append('\n');
             }
             for (Map<String, Object> row : h.createQuery("""
-                            SELECT jt.fqcn AS fqcn, am.signature AS sig, am.return_type AS ret
+                            SELECT jt.fqcn AS fqcn, am.name AS mname, am.signature AS sig,
+                                   am.return_type AS ret, jt.language AS lang
                             FROM api_member am
                             JOIN java_type jt ON jt.id = am.type_id
                             JOIN module m ON m.id = jt.module_id
@@ -355,8 +360,14 @@ public final class PlanDrafter {
                             WHERE r.name = :r AND jt.is_api = 1
                             ORDER BY jt.fqcn, am.signature LIMIT 40""")
                     .bind("r", repo).mapToMap().list()) {
-                evidence.append("- ").append(row.get("fqcn")).append('#').append(row.get("sig"))
-                        .append(": ").append(row.get("ret")).append('\n');
+                String fqcn = String.valueOf(row.get("fqcn"));
+                String sig = String.valueOf(row.get("sig"));
+                // A declaration is copied from this line, so it has to BE a declaration. The
+                // java-api template transposes both separators for TypeScript — see TsNames.
+                String left = isTypeScript(row)
+                        ? TsNames.memberAddress(fqcn, String.valueOf(row.get("mname")), sig)
+                        : fqcn + "#" + sig;
+                evidence.append("- ").append(left).append(": ").append(row.get("ret")).append('\n');
             }
             for (Map<String, Object> row : h.createQuery("""
                             SELECT e.http_method AS verb, e.norm_path AS norm,
@@ -376,5 +387,10 @@ public final class PlanDrafter {
             evidence.append("…(truncated)\n");
         }
         return evidence.toString();
+    }
+
+    /** A row's language, tolerant of the NULL a pre-npm knowledge base carries on every row. */
+    private static boolean isTypeScript(Map<String, Object> row) {
+        return "TYPESCRIPT".equals(row.get("lang"));
     }
 }

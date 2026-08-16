@@ -412,6 +412,21 @@ the reader gets the declared export's full shape, and containment only requires
 the declared members to be present. Truncation is now proportional to what a plan
 declares instead of to how large the provider happens to be.
 
+**The evidence a plan is drafted from must be in the grammar the plan must emit.**
+`PlanDrafter` rendered every knowledge-base row with the java-api template,
+`<fqcn>#<member>`. For TypeScript that transposes both separators: the knowledge
+base records `<specifier>.<Export>` and a declaration addresses
+`<specifier>#<Export>`, so the one place the prompt tells a model to copy from
+disagreed with the grammar it is asked to produce. Since the prompt also tells it
+to omit rather than guess, `ts-api` contracts were drafted with no declarations at
+all — and after the selector above, an undeclared contract is precisely the one
+Gate 2 cannot check. The trap ran both ways: a transposed line VALIDATES, because
+the specifier still starts with `@`, and then selects nothing, so a model that had
+copied the evidence would have produced a contract that passed Gate 1 and
+actualized to nothing. The naming now lives in `sdd.core.contract.TsNames`, used
+by both the evidence renderer and the actualizer, because two hand-mirrored copies
+of it is what drifted in the first place.
+
 **`type-compatible` is an assignability probe, not a diff.** A textual diff of
 two `.d.ts` files flags legal widening — an added optional member, a widened
 parameter — as breaking, and compat drift FAILS the repo, so a false positive
