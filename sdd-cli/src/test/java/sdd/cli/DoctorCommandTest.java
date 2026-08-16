@@ -76,4 +76,88 @@ class DoctorCommandTest {
         assertThat(run.out()).contains("[ OK ] java").contains("[FAIL] config");
         assertThat(run.exitCode()).isEqualTo(1);
     }
+
+    // --- atlassian: block probes -----------------------------------------------------------
+
+    @Test
+    void absentAtlassianBlockChangesDoctorsOutputNotAtAll() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        wm.stubFor(get("/v1/models").willReturn(okJson("{\"data\":[]}")));
+
+        Run run = doctor(ws);
+
+        assertThat(run.out()).doesNotContain("atlassian");
+    }
+
+    @Test
+    void reachableJiraSiteReportsOkWithTheUsername() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml() + """
+                atlassian:
+                  jira:
+                    base_url: %s
+                    token: sk-jira-test
+                """.formatted(wm.baseUrl()));
+        wm.stubFor(get("/v1/models").willReturn(okJson("{\"data\":[]}")));
+        wm.stubFor(get("/rest/api/2/myself").willReturn(okJson("{\"name\":\"jsmith\"}")));
+
+        Run run = doctor(ws);
+
+        assertThat(run.out()).contains("[ OK ] atlassian:jira").contains("HTTP 200 as jsmith");
+        // Independently optional: jira configured alone must not produce confluence/bitbucket lines.
+        assertThat(run.out()).doesNotContain("atlassian:confluence").doesNotContain("atlassian:bitbucket");
+        assertThat(run.exitCode()).isZero();
+    }
+
+    @Test
+    void unreachableJiraSiteFailsAndFailsTheOverallExitCode() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml() + """
+                atlassian:
+                  jira:
+                    base_url: %s
+                    token: sk-jira-test
+                """.formatted(wm.baseUrl()));
+        wm.stubFor(get("/v1/models").willReturn(okJson("{\"data\":[]}")));
+        wm.stubFor(get("/rest/api/2/myself").willReturn(unauthorized()));
+
+        Run run = doctor(ws);
+
+        assertThat(run.out()).contains("[FAIL] atlassian:jira")
+                .contains("Jira rejected the configured token (HTTP 401) — reissue it");
+        assertThat(run.exitCode()).isEqualTo(1);
+    }
+
+    @Test
+    void reachableConfluenceSiteReportsOk() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml() + """
+                atlassian:
+                  confluence:
+                    base_url: %s
+                    token: sk-confluence-test
+                """.formatted(wm.baseUrl()));
+        wm.stubFor(get("/v1/models").willReturn(okJson("{\"data\":[]}")));
+        wm.stubFor(get("/rest/api/user/current").willReturn(okJson("{\"username\":\"jsmith\"}")));
+
+        Run run = doctor(ws);
+
+        assertThat(run.out()).contains("[ OK ] atlassian:confluence").contains("HTTP 200 as jsmith");
+    }
+
+    @Test
+    void bitbucketProbesBothTheUserAndTheProjectEndpoint() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml() + """
+                atlassian:
+                  bitbucket:
+                    base_url: %s
+                    token: sk-bb-test
+                    project: TRADING
+                """.formatted(wm.baseUrl()));
+        wm.stubFor(get("/v1/models").willReturn(okJson("{\"data\":[]}")));
+        wm.stubFor(get("/rest/api/1.0/users/self").willReturn(okJson("{\"name\":\"jsmith\"}")));
+        wm.stubFor(get("/rest/api/1.0/projects/TRADING").willReturn(okJson("{\"key\":\"TRADING\"}")));
+
+        Run run = doctor(ws);
+
+        assertThat(run.out()).contains("[ OK ] atlassian:bitbucket:user").contains("HTTP 200 as jsmith")
+                .contains("[ OK ] atlassian:bitbucket:project").contains("HTTP 200 as TRADING");
+    }
 }
