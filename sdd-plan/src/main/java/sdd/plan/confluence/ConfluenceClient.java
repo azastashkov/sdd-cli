@@ -15,6 +15,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
+import java.time.Duration;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -38,6 +39,7 @@ public final class ConfluenceClient implements ConfluencePages {
     private final HttpClient httpClient;
     private final String token;
     private final String baseUrl;
+    private final Duration timeout;
 
     /**
      * @param httpClient the same {@code HttpClients.build(...)}-constructed client the caller's
@@ -54,12 +56,22 @@ public final class ConfluenceClient implements ConfluencePages {
      *                    {@code viewpage.action} URL for provenance (the Sources bullet, the
      *                    doc's {@code label()}) — resolution itself needs no base URL since every
      *                    URL {@link #resolvePageId} is handed is already absolute.
+     * @param timeout     the same per-request timeout the caller's {@code RestClient} was built
+     *                    with (the configured site's {@code atlassian.confluence.timeout_seconds}).
+     *                    Task 3 review Fix 3: the tiny-link redirect request bypasses
+     *                    {@code RestClient} (see {@code httpClient}'s own doc above) and so does
+     *                    not inherit {@code RestClient.execute}'s {@code .timeout(timeout)} call
+     *                    for free — without this, a hung {@code /x/AbCd} or a proxy that silently
+     *                    drops the connection would block {@code sdd plan} indefinitely instead of
+     *                    degrading to an "unresolvable" note.
      */
-    public ConfluenceClient(RestClient restClient, HttpClient httpClient, String token, String baseUrl) {
+    public ConfluenceClient(RestClient restClient, HttpClient httpClient, String token, String baseUrl,
+            Duration timeout) {
         this.restClient = restClient;
         this.httpClient = httpClient;
         this.token = token;
         this.baseUrl = baseUrl;
+        this.timeout = timeout;
     }
 
     public SourceDoc fetchPage(String pageId) {
@@ -116,7 +128,7 @@ public final class ConfluenceClient implements ConfluencePages {
         if (hopsLeft <= 0) {
             return null;
         }
-        HttpRequest.Builder builder = HttpRequest.newBuilder(uri).GET();
+        HttpRequest.Builder builder = HttpRequest.newBuilder(uri).GET().timeout(timeout);
         if (token != null) {
             builder.header("Authorization", "Bearer " + token);
         }

@@ -35,9 +35,13 @@ class ConfluenceClientTest {
     static WireMockExtension wm = WireMockExtension.newInstance().build();
 
     private ConfluenceClient client() {
+        return client(Duration.ofSeconds(5));
+    }
+
+    private ConfluenceClient client(Duration timeout) {
         RestClient rc = new RestClient("Confluence", wm.baseUrl(), "sk-token", "CONFLUENCE_PAT",
                 Duration.ofSeconds(5), HttpClient.newHttpClient());
-        return new ConfluenceClient(rc, HttpClient.newHttpClient(), "sk-token", wm.baseUrl());
+        return new ConfluenceClient(rc, HttpClient.newHttpClient(), "sk-token", wm.baseUrl(), timeout);
     }
 
     private static String fixture(String name) {
@@ -117,6 +121,21 @@ class ConfluenceClientTest {
         String id = client().resolvePageId(wm.baseUrl() + "/x/AbCd");
 
         assertThat(id).isEqualTo("65601");
+    }
+
+    @Test
+    void resolvingATinyLinkThatHangsTimesOutInsteadOfBlockingForever() {
+        // Task 3 review Fix 3: the tiny-link redirect request bypasses RestClient (the one case
+        // that needs a raw Location header) and so did not inherit RestClient.execute's own
+        // .timeout(...) call. A short client-side timeout here proves the request now actually
+        // bounds its wait rather than hanging on a server that never responds.
+        wm.stubFor(get(urlEqualTo("/x/AbCd")).willReturn(aResponse().withStatus(302)
+                .withHeader("Location", "/pages/viewpage.action?pageId=65601")
+                .withFixedDelay(2000)));
+
+        assertThatThrownBy(() -> client(Duration.ofMillis(200)).resolvePageId(wm.baseUrl() + "/x/AbCd"))
+                .isInstanceOf(AtlassianException.class)
+                .hasMessageContaining("transport error resolving tiny link");
     }
 
     @Test

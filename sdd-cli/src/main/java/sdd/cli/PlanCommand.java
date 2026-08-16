@@ -221,7 +221,7 @@ public final class PlanCommand implements Callable<Integer> {
             // deferred-credential message if the token is unset, so site.token() below is only
             // ever reached once that has already succeeded — no second check needed.
             confluenceClient = new ConfluenceClient(atlassianRestClient("Confluence", site, httpClient),
-                    httpClient, site.token(), site.baseUrl());
+                    httpClient, site.token(), site.baseUrl(), site.timeout());
             confluenceHost = URI.create(site.baseUrl()).getHost();
         }
 
