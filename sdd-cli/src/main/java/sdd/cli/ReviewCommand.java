@@ -109,112 +109,126 @@ public final class ReviewCommand implements Callable<Integer> {
             if (run == null) {
                 return 4;
             }
-            // Every path, not just --interactive: the rebuild pass checks the whole estate out to
-            // its checkpoints and back, which would fight sdd implement over the same working
-            // trees, and the state.json a concurrent run is rewriting cannot be reported on
-            // truthfully. Same refusal DecisionCommand already applies to the scripted decisions.
-            if (run.store().isLockHeld(run.runDir())) {
-                err.println("error: run " + run.runId() + " is in progress (lock held) — wait for "
-                        + "sdd implement to finish");
-                return 4;
+            try {
+                return runReview(run, out, err);
+            } finally {
+                // Task 8: closes the one diagnostics file this invocation opened in
+                // RunContext.load — null when this RunContext was built directly (every existing
+                // test) rather than through load(), matching DiagnosticWriter's own "a null writer
+                // is a no-op" contract.
+                if (run.diagnostics() != null) {
+                    run.diagnostics().close();
+                }
             }
-            if (run.store().isLockStale(run.runDir())) {
-                // Never a refusal: a crashed implement leaves this behind, and that run is the one
-                // a human most needs to review. But the report is about a run that did not finish
-                // cleanly, so the reader is told.
-                err.println("warn: run " + run.runId() + " has a stale lock (the process that held "
-                        + "it is gone) — reviewing anyway; sdd implement may have crashed");
-            }
-
-            RunContext.Diffs diffs = run.collectDiffs();
-
-            Map<String, EstateRebuild.Result> rebuilds;
-            List<String> notLocallyVerified;
-            List<String> stagingFailures;
-            List<String> restoreFailures;
-            List<ContractRecheck.Finding> contracts;
-            if (noRebuild) {
-                // Nothing is checked out, so this reads whatever branch the human happens to
-                // be standing on — the caller (report) still needs the findings either way.
-                rebuilds = Map.of();
-                notLocallyVerified = List.of();
-                stagingFailures = List.of();
-                restoreFailures = List.of();
-                contracts = ContractRecheck.check(run.plan(), run.state(), run.paths(),
-                        run.store(), run.runDir(), run.config().nodeHome());
-            } else {
-                RebuildPass.Outcome outcome = RebuildPass.run(Scheduler.sequence(run.plan().order()),
-                        run.plan(), run.state(), run.paths(), run.config(), run.runDir(), run.store(),
-                        true, err);
-                rebuilds = outcome.rebuilds();
-                notLocallyVerified = outcome.notLocallyVerified();
-                stagingFailures = outcome.stagingFailures();
-                restoreFailures = outcome.restoreFailures();
-                contracts = outcome.contracts();
-            }
-
-            RebuildScope scope = noRebuild ? RebuildScope.skipped() : RebuildScope.estate();
-            // Built once and reused for report.md AND (Task 5) the Bitbucket pull-request
-            // description, via ReviewReport.renderRepo — so the two artifacts can never disagree
-            // about what a repo's run produced.
-            ReportInputs reportInputs = run.reportInputs(diffs, rebuilds, notLocallyVerified,
-                    stagingFailures, restoreFailures, contracts, scope);
-            out.println("review written: " + run.writeReport(reportInputs));
-            // Task 4 (Gate 2 write-back): strictly AFTER report.md is durably written above, and
-            // via JiraWriteBack — which never throws — so a Jira outage can never turn this
-            // review into a failed one. Only the base `sdd review` write, not every re-render a
-            // `sdd review approve/reject/redo` decision triggers (RunContext's own javadoc: those
-            // re-run writeReport so the artifact reflects the run as it stands) — the brief names
-            // exactly two call sites, and repeating this per decision was not one of them.
-            commentOnJiraSources(run, out, err);
-            // Task 5: same "strictly after report.md" rule, same best-effort discipline (never
-            // throws, never changes the exit code below), same "only the base sdd review write"
-            // restriction — see BitbucketReview's own javadoc.
-            BitbucketReview.run(run, reportInputs, out, err);
-
-            int interactiveExit = 0;
-            if (interactive) {
-                BufferedReader reader = in != null ? in
-                        : new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
-                RebuildPass.Outcome baseline = new RebuildPass.Outcome(rebuilds, notLocallyVerified,
-                        stagingFailures, restoreFailures, contracts);
-                interactiveExit = InteractiveReview.run(reader, out, err,
-                        new InteractiveReview.Context(run, workspace, planJsonPath, baseline, scope));
-            }
-
-            boolean allSucceeded = Scheduler.sequence(run.plan().order()).stream()
-                    .allMatch(repo -> run.state().stateOf(repo) == RepoState.SUCCEEDED);
-            boolean anyRebuildFailed = rebuilds.values().stream().anyMatch(r -> !r.ok());
-            // Read AFTER the interactive walk, not before: an approve squashes the branch and
-            // rewrites the checkpoint, so drift computed earlier would describe a run that has
-            // since been decided.
-            List<String> drift = run.checkpoints(run.store().readDecisions(run.runDir())).drift();
-            // A declared compatibility guarantee whose gate never ran is the fourth. Exit 0 on it
-            // would be this command asserting the guarantee holds on the strength of a check that
-            // did not happen — the one claim a review must never make. Reported rather than
-            // silently tolerated even though it can fail a run that is otherwise green, because
-            // the alternative is a green review that means less than a reader takes it to mean.
-            List<SkippedGates.Skipped> skippedGates = run.skippedGates();
-            // A failed restore leaves a repo stranded off its original branch — the report's own
-            // legend calls that a failed checkout, so it must fail the review too. A staging
-            // failure is a failed checkout by another name, and worse: it silently invalidates
-            // every verdict downstream of it, so it can never be reported as a clean pass. Drift
-            // is the third: every diff and runbook line below describes a checkpoint the branch no
-            // longer carries, so a human acting on this report would act on the wrong tree.
-            int baseExit = allSucceeded && !anyRebuildFailed && restoreFailures.isEmpty()
-                    && stagingFailures.isEmpty() && drift.isEmpty() && skippedGates.isEmpty()
-                    ? 0 : 2;
-            for (SkippedGates.Skipped gate : skippedGates) {
-                err.println("warn: " + gate.repo() + " declared " + gate.compat()
-                        + " but its gate did not run — " + gate.detail());
-            }
-            // Worse wins: a squash refusal or a failed downstream re-verify inside the interactive
-            // walk must not be masked by an otherwise-clean base review, or vice versa.
-            return Math.max(baseExit, interactiveExit);
         } catch (RuntimeException | IOException e) {
             err.println("error: " + e.getMessage());
             return 4;
         }
+    }
+
+    private Integer runReview(RunContext run, PrintWriter out, PrintWriter err) throws IOException {
+        // Every path, not just --interactive: the rebuild pass checks the whole estate out to
+        // its checkpoints and back, which would fight sdd implement over the same working
+        // trees, and the state.json a concurrent run is rewriting cannot be reported on
+        // truthfully. Same refusal DecisionCommand already applies to the scripted decisions.
+        if (run.store().isLockHeld(run.runDir())) {
+            err.println("error: run " + run.runId() + " is in progress (lock held) — wait for "
+                    + "sdd implement to finish");
+            return 4;
+        }
+        if (run.store().isLockStale(run.runDir())) {
+            // Never a refusal: a crashed implement leaves this behind, and that run is the one
+            // a human most needs to review. But the report is about a run that did not finish
+            // cleanly, so the reader is told.
+            err.println("warn: run " + run.runId() + " has a stale lock (the process that held "
+                    + "it is gone) — reviewing anyway; sdd implement may have crashed");
+        }
+
+        RunContext.Diffs diffs = run.collectDiffs();
+
+        Map<String, EstateRebuild.Result> rebuilds;
+        List<String> notLocallyVerified;
+        List<String> stagingFailures;
+        List<String> restoreFailures;
+        List<ContractRecheck.Finding> contracts;
+        if (noRebuild) {
+            // Nothing is checked out, so this reads whatever branch the human happens to
+            // be standing on — the caller (report) still needs the findings either way.
+            rebuilds = Map.of();
+            notLocallyVerified = List.of();
+            stagingFailures = List.of();
+            restoreFailures = List.of();
+            contracts = ContractRecheck.check(run.plan(), run.state(), run.paths(),
+                    run.store(), run.runDir(), run.config().nodeHome());
+        } else {
+            RebuildPass.Outcome outcome = RebuildPass.run(Scheduler.sequence(run.plan().order()),
+                    run.plan(), run.state(), run.paths(), run.config(), run.runDir(), run.store(),
+                    true, err);
+            rebuilds = outcome.rebuilds();
+            notLocallyVerified = outcome.notLocallyVerified();
+            stagingFailures = outcome.stagingFailures();
+            restoreFailures = outcome.restoreFailures();
+            contracts = outcome.contracts();
+        }
+
+        RebuildScope scope = noRebuild ? RebuildScope.skipped() : RebuildScope.estate();
+        // Built once and reused for report.md AND (Task 5) the Bitbucket pull-request
+        // description, via ReviewReport.renderRepo — so the two artifacts can never disagree
+        // about what a repo's run produced.
+        ReportInputs reportInputs = run.reportInputs(diffs, rebuilds, notLocallyVerified,
+                stagingFailures, restoreFailures, contracts, scope);
+        out.println("review written: " + run.writeReport(reportInputs));
+        // Task 4 (Gate 2 write-back): strictly AFTER report.md is durably written above, and
+        // via JiraWriteBack — which never throws — so a Jira outage can never turn this
+        // review into a failed one. Only the base `sdd review` write, not every re-render a
+        // `sdd review approve/reject/redo` decision triggers (RunContext's own javadoc: those
+        // re-run writeReport so the artifact reflects the run as it stands) — the brief names
+        // exactly two call sites, and repeating this per decision was not one of them.
+        commentOnJiraSources(run, out, err);
+        // Task 5: same "strictly after report.md" rule, same best-effort discipline (never
+        // throws, never changes the exit code below), same "only the base sdd review write"
+        // restriction — see BitbucketReview's own javadoc.
+        BitbucketReview.run(run, reportInputs, out, err);
+
+        int interactiveExit = 0;
+        if (interactive) {
+            BufferedReader reader = in != null ? in
+                    : new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+            RebuildPass.Outcome baseline = new RebuildPass.Outcome(rebuilds, notLocallyVerified,
+                    stagingFailures, restoreFailures, contracts);
+            interactiveExit = InteractiveReview.run(reader, out, err,
+                    new InteractiveReview.Context(run, workspace, planJsonPath, baseline, scope));
+        }
+
+        boolean allSucceeded = Scheduler.sequence(run.plan().order()).stream()
+                .allMatch(repo -> run.state().stateOf(repo) == RepoState.SUCCEEDED);
+        boolean anyRebuildFailed = rebuilds.values().stream().anyMatch(r -> !r.ok());
+        // Read AFTER the interactive walk, not before: an approve squashes the branch and
+        // rewrites the checkpoint, so drift computed earlier would describe a run that has
+        // since been decided.
+        List<String> drift = run.checkpoints(run.store().readDecisions(run.runDir())).drift();
+        // A declared compatibility guarantee whose gate never ran is the fourth. Exit 0 on it
+        // would be this command asserting the guarantee holds on the strength of a check that
+        // did not happen — the one claim a review must never make. Reported rather than
+        // silently tolerated even though it can fail a run that is otherwise green, because
+        // the alternative is a green review that means less than a reader takes it to mean.
+        List<SkippedGates.Skipped> skippedGates = run.skippedGates();
+        // A failed restore leaves a repo stranded off its original branch — the report's own
+        // legend calls that a failed checkout, so it must fail the review too. A staging
+        // failure is a failed checkout by another name, and worse: it silently invalidates
+        // every verdict downstream of it, so it can never be reported as a clean pass. Drift
+        // is the third: every diff and runbook line below describes a checkpoint the branch no
+        // longer carries, so a human acting on this report would act on the wrong tree.
+        int baseExit = allSucceeded && !anyRebuildFailed && restoreFailures.isEmpty()
+                && stagingFailures.isEmpty() && drift.isEmpty() && skippedGates.isEmpty()
+                ? 0 : 2;
+        for (SkippedGates.Skipped gate : skippedGates) {
+            err.println("warn: " + gate.repo() + " declared " + gate.compat()
+                    + " but its gate did not run — " + gate.detail());
+        }
+        // Worse wins: a squash refusal or a failed downstream re-verify inside the interactive
+        // walk must not be masked by an otherwise-clean base review, or vice versa.
+        return Math.max(baseExit, interactiveExit);
     }
 
     /** Task 4 brief section 3's Gate-2 instruction — reuse {@link ReviewReport#decisionsSummaryLine}
@@ -250,6 +264,6 @@ public final class ReviewCommand implements Callable<Integer> {
         Map<String, DecisionRecord> decisions = run.store().readDecisions(run.runDir());
         String body = "sdd: review report for `" + run.plan().specId() + "`" + System.lineSeparator()
                 + ReviewReport.decisionsSummaryLine(run.plan(), decisions);
-        JiraWriteBack.post(workspace, jiraKeys, noComment, body, out, err);
+        JiraWriteBack.post(workspace, jiraKeys, noComment, body, out, err, run.diagnostics());
     }
 }

@@ -6,6 +6,7 @@ import sdd.core.config.ConfigException;
 import sdd.core.config.ConfigLoader;
 import sdd.core.config.SddConfig;
 import sdd.core.config.WriteBack;
+import sdd.core.diagnostics.DiagnosticWriter;
 import sdd.core.http.HttpClients;
 import sdd.core.http.RestClient;
 import sdd.plan.jira.JiraClient;
@@ -57,6 +58,15 @@ public final class JiraWriteBack {
      */
     public static void post(Path workspace, List<String> jiraKeys, boolean noComment,
             String commentBody, PrintWriter out, PrintWriter err) {
+        post(workspace, jiraKeys, noComment, commentBody, out, err, null);
+    }
+
+    /** Same as {@link #post(Path, List, boolean, String, PrintWriter, PrintWriter)}, plus an
+     *  optional {@link DiagnosticWriter} (nullable) the comment POST reports to — Task 8. A
+     *  separate overload, not a nullable parameter added to the existing one, so {@link
+     *  JiraWriteBackTest} keeps compiling unchanged. */
+    public static void post(Path workspace, List<String> jiraKeys, boolean noComment,
+            String commentBody, PrintWriter out, PrintWriter err, DiagnosticWriter diagnostics) {
         if (noComment || jiraKeys.isEmpty()) {
             return;
         }
@@ -68,7 +78,7 @@ public final class JiraWriteBack {
                 // brief section 4. Not an error, so this is not inside the catch below.
                 return;
             }
-            JiraClient client = buildClient(atlassian);
+            JiraClient client = buildClient(atlassian, diagnostics);
             for (String key : jiraKeys) {
                 try {
                     client.comment(key, commentBody);
@@ -91,7 +101,7 @@ public final class JiraWriteBack {
     /** Mirrors {@code PlanCommand.atlassianRestClient}'s deferred-credential idiom: an unset
      *  {@code ${VAR}} token does not fail config loading, so it is raised here instead, the point a
      *  {@link RestClient} for Jira is actually about to be built. */
-    private static JiraClient buildClient(AtlassianConfig atlassian) {
+    private static JiraClient buildClient(AtlassianConfig atlassian, DiagnosticWriter diagnostics) {
         AtlassianSite site = atlassian.jira();
         if (site == null) {
             throw new ConfigException(
@@ -102,7 +112,7 @@ public final class JiraWriteBack {
         }
         HttpClient httpClient = HttpClients.build(atlassian.tls(), atlassian.proxy());
         RestClient restClient = new RestClient("Jira", site.baseUrl(), site.token(), site.tokenVar(),
-                site.timeout(), httpClient);
+                site.timeout(), httpClient, diagnostics);
         return new JiraClient(restClient, site.baseUrl());
     }
 }

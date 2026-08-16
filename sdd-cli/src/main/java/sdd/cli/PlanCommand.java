@@ -12,6 +12,8 @@ import sdd.core.config.ConfigLoader;
 import sdd.core.config.ModelEndpoint;
 import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
+import sdd.core.diagnostics.DiagnosticWriter;
+import sdd.core.diagnostics.Diagnostics;
 import sdd.core.http.HttpClients;
 import sdd.core.http.RestClient;
 import sdd.core.llm.ChatModel;
@@ -49,6 +51,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -200,13 +203,29 @@ public final class PlanCommand implements Callable<Integer> {
             throw new ConfigException("no atlassian.confluence configured in sdd.yml");
         }
 
+        // Task 8: one diagnostics file for this invocation, opened only once the config checks
+        // above have already passed — an unconfigured site is a config error (reported the same
+        // way it always was), not something worth a diagnostics file of its own.
+        DiagnosticWriter diagnostics = Diagnostics.open(workspace, "plan", commandLine(), atlassian,
+                InstantSource.system(), spec.commandLine().getErr());
+        try {
+            return normalizeWithAtlassian(config, atlassian, jiraKeys, confluencePageRefs, exportRefs,
+                    outWriter, diagnostics);
+        } finally {
+            diagnostics.close();
+        }
+    }
+
+    private Integer normalizeWithAtlassian(SddConfig config, AtlassianConfig atlassian, List<String> jiraKeys,
+            List<String> confluencePageRefs, List<String> exportRefs, PrintWriter outWriter,
+            DiagnosticWriter diagnostics) {
         ModelEndpoint planner = config.models().get("planner");
         ChatModel model = plannerForTest != null ? plannerForTest : new HttpChatModel(planner);
         HttpClient httpClient = HttpClients.build(atlassian.tls(), atlassian.proxy());
 
         JiraClient jiraClient = null;
         if (!jiraKeys.isEmpty()) {
-            jiraClient = new JiraClient(atlassianRestClient("Jira", atlassian.jira(), httpClient),
+            jiraClient = new JiraClient(atlassianRestClient("Jira", atlassian.jira(), httpClient, diagnostics),
                     atlassian.jira().baseUrl());
         }
         ConfluenceClient confluenceClient = null;
@@ -220,7 +239,7 @@ public final class PlanCommand implements Callable<Integer> {
             // atlassianRestClient is evaluated first (Java argument order) and raises the
             // deferred-credential message if the token is unset, so site.token() below is only
             // ever reached once that has already succeeded — no second check needed.
-            confluenceClient = new ConfluenceClient(atlassianRestClient("Confluence", site, httpClient),
+            confluenceClient = new ConfluenceClient(atlassianRestClient("Confluence", site, httpClient, diagnostics),
                     httpClient, site.token(), site.baseUrl(), site.timeout());
             confluenceHost = URI.create(site.baseUrl()).getHost();
         }
@@ -288,14 +307,26 @@ public final class PlanCommand implements Callable<Integer> {
         return writeNormalized(normalized, target, outWriter);
     }
 
+    /** {@code ["plan", ...the exact tokens this invocation was called with]} — mirrors {@code
+     *  DoctorCommand}'s identically-shaped helper; see that class for why {@code originalArgs()}
+     *  rather than reconstructing the argv from individual option fields. */
+    private List<String> commandLine() {
+        List<String> argv = new ArrayList<>();
+        argv.add(spec.name());
+        argv.addAll(spec.commandLine().getParseResult().originalArgs());
+        return argv;
+    }
+
     /** An unset {@code ${VAR}} token does not fail config loading (Task 2's deferred-credential
      *  idiom) — it is raised here instead, the point a site's {@link RestClient} is actually
      *  about to be built, exactly like {@code AtlassianProbe} does for {@code sdd doctor}. */
-    private static RestClient atlassianRestClient(String siteName, AtlassianSite site, HttpClient httpClient) {
+    private static RestClient atlassianRestClient(String siteName, AtlassianSite site, HttpClient httpClient,
+            DiagnosticWriter diagnostics) {
         if (site.tokenError() != null) {
             throw new ConfigException(site.tokenError());
         }
-        return new RestClient(siteName, site.baseUrl(), site.token(), site.tokenVar(), site.timeout(), httpClient);
+        return new RestClient(siteName, site.baseUrl(), site.token(), site.tokenVar(), site.timeout(), httpClient,
+                diagnostics);
     }
 
     private Integer writeNormalized(NormalizedSpec normalized, Path target, PrintWriter outWriter) {

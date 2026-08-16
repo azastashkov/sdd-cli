@@ -41,22 +41,27 @@ final class BitbucketDecisions {
     static void afterApprove(RunContext run, String repo, Path root, PrintWriter out, PrintWriter err) {
         AtlassianConfig atlassian = run.config().atlassian();
         if (atlassian == null || !atlassian.pullRequests()) {
+            gate2(run, repo, "merge not attempted (pull_requests off)");
             return;
         }
         // Re-read AFTER squashAndRecord's own state.json write-back — same RunState instance, so
         // this sees the checkpoint that write-back just set, and the prId/prUrl it preserved.
         RepoRun repoRun = run.byName().get(repo);
         if (repoRun == null || repoRun.prId() == null || repoRun.branch() == null) {
+            gate2(run, repo, "merge not attempted (no PR recorded for this repo)");
             return;
         }
         try {
             BitbucketSite bitbucket = BitbucketClients.requireBitbucket(atlassian);
-            BitbucketClient client = BitbucketClients.rest(atlassian);
+            BitbucketClient client = BitbucketClients.rest(atlassian, run.diagnostics());
             String cloneUrl = RemoteGit.cloneUrl(bitbucket.site().baseUrl(), bitbucket.project(), repo);
-            RemoteGit.push(root, repoRun.branch(), cloneUrl, BitbucketClients.GIT_USERNAME,
+            BitbucketClients.push(run.diagnostics(), root, repoRun.branch(), cloneUrl, BitbucketClients.GIT_USERNAME,
                     bitbucket.site().token(), atlassian.tls(), atlassian.proxy());
+            gate2(run, repo, "merge attempted");
             merge(client, repo, repoRun.prId(), out, err);
+            gate2(run, repo, "merge succeeded");
         } catch (RuntimeException e) {
+            gate2(run, repo, "merge failed: " + e.getMessage());
             err.println("  warn: bitbucket: could not merge PR for " + repo
                     + " — merge it manually in the Bitbucket UI: " + e.getMessage());
         }
@@ -73,6 +78,19 @@ final class BitbucketDecisions {
         out.println("merged PR #" + prId);
     }
 
+    /** Task 8 B3's Gate-2 decision events — a no-op when {@code run} has no diagnostics writer
+     *  (every existing test's directly-built {@link RunContext}). See {@code DecisionCommand}'s
+     *  {@code squashAndRecord} for the squash/checkpoint half of the same per-repo event stream;
+     *  this class contributes only the merge/decline half, which is why the ordering guarantee this
+     *  class's own javadoc describes (a refused squash never reaches this class at all) is directly
+     *  visible from the log: no "merge" line for a repo means {@link #afterApprove} was never
+     *  called for it. */
+    private static void gate2(RunContext run, String repo, String event) {
+        if (run.diagnostics() != null) {
+            run.diagnostics().gate2(repo, event);
+        }
+    }
+
     /** Declines the PR — brief §4's table: {@code review reject} declines, with no local git side
      *  effect (the run branch is left as-is). */
     static void afterReject(RunContext run, String repo, PrintWriter out, PrintWriter err) {
@@ -85,7 +103,7 @@ final class BitbucketDecisions {
             return;
         }
         try {
-            decline(BitbucketClients.rest(atlassian), repo, repoRun.prId(), out, err);
+            decline(BitbucketClients.rest(atlassian, run.diagnostics()), repo, repoRun.prId(), out, err);
         } catch (RuntimeException e) {
             err.println("  warn: bitbucket: could not decline PR for " + repo + ": " + e.getMessage());
         }

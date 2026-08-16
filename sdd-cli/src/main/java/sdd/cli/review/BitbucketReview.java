@@ -51,7 +51,7 @@ public final class BitbucketReview {
         BitbucketClient client;
         try {
             bitbucket = BitbucketClients.requireBitbucket(atlassian);
-            client = BitbucketClients.rest(atlassian);
+            client = BitbucketClients.rest(atlassian, run.diagnostics());
         } catch (RuntimeException e) {
             err.println("  warn: bitbucket: " + e.getMessage());
             return;
@@ -83,7 +83,7 @@ public final class BitbucketReview {
             return;
         }
         String cloneUrl = RemoteGit.cloneUrl(bitbucket.site().baseUrl(), bitbucket.project(), repo);
-        RemoteGit.push(root, repoRun.branch(), cloneUrl, BitbucketClients.GIT_USERNAME,
+        BitbucketClients.push(run.diagnostics(), root, repoRun.branch(), cloneUrl, BitbucketClients.GIT_USERNAME,
                 bitbucket.site().token(), atlassian.tls(), atlassian.proxy());
         openOrUpdate(client, run, in, repo, repoRun, root, bitbucket.defaultReviewers(), title, jiraUrl,
                 out, err);

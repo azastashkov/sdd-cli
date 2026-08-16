@@ -2,12 +2,17 @@ package sdd.cli.review;
 
 import sdd.core.config.AtlassianConfig;
 import sdd.core.config.AtlassianSite;
+import sdd.core.config.AtlassianProxy;
+import sdd.core.config.AtlassianTls;
 import sdd.core.config.BitbucketSite;
 import sdd.core.config.ConfigException;
+import sdd.core.diagnostics.DiagnosticWriter;
 import sdd.core.http.HttpClients;
 import sdd.core.http.RestClient;
 
+import java.net.URI;
 import java.net.http.HttpClient;
+import java.nio.file.Path;
 
 /**
  * Builds a {@link BitbucketClient} from {@code atlassian.bitbucket}, or throws — the
@@ -40,6 +45,15 @@ final class BitbucketClients {
      *  {@link BitbucketDecisions}), so throwing here (rather than returning an {@code Optional}) is
      *  fine: it is never allowed to propagate past that catch. */
     static BitbucketClient rest(AtlassianConfig atlassian) {
+        return rest(atlassian, null);
+    }
+
+    /** Same as {@link #rest(AtlassianConfig)}, plus an optional {@link DiagnosticWriter} (nullable)
+     *  every request the returned client makes reports to — Task 8, threaded from {@code
+     *  RunContext#diagnostics()} by both real call sites. A separate overload, not a nullable
+     *  parameter added to the existing one, so {@code BitbucketReviewTest}/{@code
+     *  InteractiveReviewBitbucketTest} keep compiling unchanged. */
+    static BitbucketClient rest(AtlassianConfig atlassian, DiagnosticWriter diagnostics) {
         BitbucketSite bitbucket = requireBitbucket(atlassian);
         AtlassianSite site = bitbucket.site();
         if (site.tokenError() != null) {
@@ -47,7 +61,7 @@ final class BitbucketClients {
         }
         HttpClient httpClient = HttpClients.build(atlassian.tls(), atlassian.proxy());
         RestClient restClient = new RestClient("Bitbucket", site.baseUrl(), site.token(), site.tokenVar(),
-                site.timeout(), httpClient);
+                site.timeout(), httpClient, diagnostics);
         return new BitbucketClient(restClient, bitbucket.project());
     }
 
@@ -56,5 +70,42 @@ final class BitbucketClients {
             throw new ConfigException("atlassian.pull_requests is true but no atlassian.bitbucket is configured");
         }
         return atlassian.bitbucket();
+    }
+
+    /**
+     * {@link RemoteGit#push}, plus B3's "Git push outcomes" diagnostic (remote host, ref, whether
+     * force-with-lease held, the JGit failure message on failure) — shared by {@link
+     * BitbucketReview} and {@link BitbucketDecisions} so the one logging shape covers both push
+     * sites. Rethrows exactly what {@link RemoteGit#push} threw, unchanged, so the existing
+     * best-effort catch at each call site behaves identically to before Task 8 — this method only
+     * OBSERVES the outcome, it never changes it.
+     */
+    static void push(DiagnosticWriter diagnostics, Path repo, String branch, String cloneUrl, String username,
+            String pat, AtlassianTls tls, AtlassianProxy proxy) {
+        String host = hostOf(cloneUrl);
+        String ref = "refs/heads/" + branch;
+        try {
+            RemoteGit.push(repo, branch, cloneUrl, username, pat, tls, proxy);
+            if (diagnostics != null) {
+                diagnostics.gitPush(host, ref, true, null);
+            }
+        } catch (RuntimeException e) {
+            if (diagnostics != null) {
+                // Unknown, not false: a rejected push can fail before the lease is even evaluated
+                // (auth, network) as easily as because the lease itself did not hold — see
+                // DiagnosticWriter#gitPush's javadoc.
+                diagnostics.gitPush(host, ref, null, e.getMessage());
+            }
+            throw e;
+        }
+    }
+
+    private static String hostOf(String url) {
+        try {
+            String host = URI.create(url).getHost();
+            return host != null ? host : url;
+        } catch (IllegalArgumentException e) {
+            return url;
+        }
     }
 }

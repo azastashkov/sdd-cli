@@ -3,6 +3,7 @@ package sdd.core.http;
 import com.fasterxml.jackson.databind.JsonNode;
 import sdd.core.config.AtlassianSite;
 import sdd.core.config.ConfigException;
+import sdd.core.diagnostics.DiagnosticWriter;
 
 import javax.net.ssl.SSLException;
 import java.net.URI;
@@ -46,7 +47,17 @@ public final class AtlassianProbe {
      */
     public static ProbeResult probe(String siteName, AtlassianSite site, String path, HttpClient client,
             Path truststore, String... labelFields) {
-        return run(siteName, site, client, truststore, rc -> firstText(rc.get(path), labelFields));
+        return probe(siteName, site, path, client, truststore, null, labelFields);
+    }
+
+    /** Same as {@link #probe(String, AtlassianSite, String, HttpClient, Path, String...)}, plus an
+     *  optional {@link DiagnosticWriter} (nullable) so {@code sdd doctor}'s probe requests land in
+     *  the same diagnostic file as everything else the invocation touches — Task 8. A separate
+     *  overload, not a nullable parameter added to the existing one, so every pre-Task-8 call site
+     *  keeps compiling unchanged. */
+    public static ProbeResult probe(String siteName, AtlassianSite site, String path, HttpClient client,
+            Path truststore, DiagnosticWriter diagnostics, String... labelFields) {
+        return run(siteName, site, client, truststore, diagnostics, rc -> firstText(rc.get(path), labelFields));
     }
 
     /**
@@ -59,12 +70,21 @@ public final class AtlassianProbe {
      */
     public static ProbeResult probeHeaderLabel(String siteName, AtlassianSite site, String path, HttpClient client,
             Path truststore, String headerName) {
-        return run(siteName, site, client, truststore,
+        return probeHeaderLabel(siteName, site, path, client, truststore, null, headerName);
+    }
+
+    /** Same as {@link #probeHeaderLabel(String, AtlassianSite, String, HttpClient, Path, String)},
+     *  plus an optional {@link DiagnosticWriter} — see {@link #probe(String, AtlassianSite, String,
+     *  HttpClient, Path, DiagnosticWriter, String...)}'s javadoc for why this is a separate
+     *  overload. */
+    public static ProbeResult probeHeaderLabel(String siteName, AtlassianSite site, String path, HttpClient client,
+            Path truststore, DiagnosticWriter diagnostics, String headerName) {
+        return run(siteName, site, client, truststore, diagnostics,
                 rc -> rc.getWithHeaders(path).headers().firstValue(headerName).orElse("?"));
     }
 
     private static ProbeResult run(String siteName, AtlassianSite site, HttpClient client, Path truststore,
-            Function<RestClient, String> label) {
+            DiagnosticWriter diagnostics, Function<RestClient, String> label) {
         try {
             // Deferred from ConfigLoader: an unset token ${VAR} does not fail config loading (a
             // read-only command may never touch this site), so it is raised here instead — the
@@ -74,7 +94,7 @@ public final class AtlassianProbe {
                 throw new ConfigException(site.tokenError());
             }
             RestClient rc = new RestClient(siteName, site.baseUrl(), site.token(), site.tokenVar(),
-                    site.timeout(), 1, client, Thread::sleep);
+                    site.timeout(), 1, client, Thread::sleep, diagnostics);
             return new ProbeResult(true, "HTTP 200 as " + label.apply(rc));
         } catch (AtlassianException e) {
             if (e.getCause() instanceof SSLException ssl) {

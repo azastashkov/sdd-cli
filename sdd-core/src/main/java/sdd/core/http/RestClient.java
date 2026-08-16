@@ -3,6 +3,7 @@ package sdd.core.http;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.MissingNode;
+import sdd.core.diagnostics.DiagnosticWriter;
 
 import java.io.IOException;
 import java.net.URI;
@@ -49,14 +50,39 @@ public final class RestClient {
     private final int maxAttempts;
     private final HttpClient client;
     private final Sleeper sleeper;
+    private final DiagnosticWriter diagnostics;
 
     public RestClient(String siteName, String baseUrl, String token, String tokenVar, Duration timeout,
             HttpClient client) {
-        this(siteName, baseUrl, token, tokenVar, timeout, Backoff.DEFAULT_MAX_ATTEMPTS, client, Thread::sleep);
+        this(siteName, baseUrl, token, tokenVar, timeout, Backoff.DEFAULT_MAX_ATTEMPTS, client, Thread::sleep, null);
+    }
+
+    /**
+     * Task 8: same as the six-argument constructor, plus an optional {@link DiagnosticWriter}
+     * (nullable — see this field's javadoc below) that every call this instance makes reports to.
+     * A separate overload rather than a nullable-by-default parameter added to the existing one,
+     * so every pre-Task-8 call site keeps compiling unchanged.
+     */
+    public RestClient(String siteName, String baseUrl, String token, String tokenVar, Duration timeout,
+            HttpClient client, DiagnosticWriter diagnostics) {
+        this(siteName, baseUrl, token, tokenVar, timeout, Backoff.DEFAULT_MAX_ATTEMPTS, client, Thread::sleep,
+                diagnostics);
     }
 
     public RestClient(String siteName, String baseUrl, String token, String tokenVar, Duration timeout,
             int maxAttempts, HttpClient client, Sleeper sleeper) {
+        this(siteName, baseUrl, token, tokenVar, timeout, maxAttempts, client, sleeper, null);
+    }
+
+    /**
+     * Task 8's diagnostics-aware canonical constructor. {@code diagnostics} is nullable and,
+     * when null, every diagnostics call below is skipped — {@code RestClient} stays exactly as
+     * testable and dependency-free as before Task 8 for any caller that has no writer to give it
+     * (every {@link RestClientTest} case, and every real call site until Task 8's callers are
+     * wired up one command at a time).
+     */
+    public RestClient(String siteName, String baseUrl, String token, String tokenVar, Duration timeout,
+            int maxAttempts, HttpClient client, Sleeper sleeper, DiagnosticWriter diagnostics) {
         if (maxAttempts < 1) {
             throw new IllegalArgumentException("maxAttempts must be >= 1");
         }
@@ -68,6 +94,7 @@ public final class RestClient {
         this.maxAttempts = maxAttempts;
         this.client = client;
         this.sleeper = sleeper;
+        this.diagnostics = diagnostics;
     }
 
     public JsonNode get(String path) {
@@ -98,14 +125,16 @@ public final class RestClient {
     private HttpResponse<String> send(String method, String path, JsonNode body) {
         AtlassianException last = null;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            long start = System.nanoTime();
             try {
                 HttpResponse<String> resp = execute(method, path, body);
                 int status = resp.statusCode();
+                logRequest(method, path, status, durationMs(start), attempt, resp);
                 if (status >= 200 && status < 300) {
                     return resp;
                 }
                 if (status == 401 || status == 403) {
-                    throw new AtlassianException(rejectedTokenMessage(status));
+                    throw logFailure(method, path, new AtlassianException(rejectedTokenMessage(status)));
                 }
                 if (status == 429) {
                     last = new AtlassianException(siteOrGeneric() + " HTTP 429: " + resp.body());
@@ -117,17 +146,51 @@ public final class RestClient {
                     backoff(attempt, null);
                     continue;
                 }
-                throw new AtlassianException(siteOrGeneric() + " HTTP " + status + ": " + resp.body());
+                throw logFailure(method, path, new AtlassianException(siteOrGeneric() + " HTTP " + status
+                        + ": " + resp.body()));
             } catch (IOException e) {
                 String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
                 last = new AtlassianException("transport error talking to " + siteOrGeneric() + ": " + detail, e);
                 backoff(attempt, null);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new AtlassianException("interrupted", e);
+                throw logFailure(method, path, new AtlassianException("interrupted", e));
             }
         }
-        throw last;
+        throw logFailure(method, path, last);
+    }
+
+    private static long durationMs(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000;
+    }
+
+    /** Task 8 B3's "per Atlassian HTTP request" line — a no-op when this instance has no
+     *  {@link DiagnosticWriter} (every call site that predates Task 8, and every {@link
+     *  RestClientTest} case). {@code errorBodySnippet} is only populated on a non-2xx: Atlassian
+     *  error bodies "carry the actual reason and are the single most useful thing here" (brief). */
+    private void logRequest(String method, String path, int status, long durationMs, int attempt,
+            HttpResponse<String> resp) {
+        if (diagnostics == null) {
+            return;
+        }
+        String contentType = resp.headers().firstValue("Content-Type").orElse(null);
+        String errorBody = (status < 200 || status >= 300) ? resp.body() : null;
+        diagnostics.httpRequest(siteOrGeneric(), method, path, status, durationMs, attempt, attempt > 1,
+                contentType, errorBody);
+    }
+
+    /** Logs {@code ex}'s full cause chain via {@link DiagnosticWriter#failure} and returns it
+     *  unchanged, so every throw site can wrap itself as {@code throw logFailure(...)} without a
+     *  separate statement — keeping the existing control flow (and every message this class's
+     *  tests already pin) untouched. A no-op when there is no writer, or when {@code ex} is null
+     *  (the {@code last == null} case is unreachable in practice — {@code maxAttempts >= 1} means
+     *  at least one iteration always runs — but this keeps the helper total rather than assuming
+     *  that invariant here too). */
+    private <T extends Throwable> T logFailure(String method, String path, T ex) {
+        if (diagnostics != null && ex != null) {
+            diagnostics.failure(siteOrGeneric() + " " + method + " " + path, ex);
+        }
+        return ex;
     }
 
     private String siteOrGeneric() {
