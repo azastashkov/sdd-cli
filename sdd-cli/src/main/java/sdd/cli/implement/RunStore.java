@@ -116,12 +116,18 @@ public class RunStore {
                 // for that, which isNull() alone would NOT catch (isNull() is false for a merely
                 // absent field) — same absent-key-tolerant idiom as pausedReason below.
                 com.fasterxml.jackson.databind.JsonNode failureCode = node.path("failure_code");
+                // Task 5: a pre-existing state.json has neither key at all — same absent-key-
+                // tolerant idiom as failureCode above.
+                com.fasterxml.jackson.databind.JsonNode prId = node.path("pr_id");
+                com.fasterxml.jackson.databind.JsonNode prUrl = node.path("pr_url");
                 repos.add(new RepoRun(node.path("repo").asText(),
                         RepoState.valueOf(node.path("state").asText()),
                         node.path("branch").isNull() ? null : node.path("branch").asText(),
                         node.path("checkpointSha").isNull() ? null : node.path("checkpointSha").asText(),
                         node.path("detail").asText(""),
-                        failureCode.isMissingNode() || failureCode.isNull() ? null : failureCode.asText()));
+                        failureCode.isMissingNode() || failureCode.isNull() ? null : failureCode.asText(),
+                        prId.isMissingNode() || prId.isNull() ? null : prId.asInt(),
+                        prUrl.isMissingNode() || prUrl.isNull() ? null : prUrl.asText()));
             }
             com.fasterxml.jackson.databind.JsonNode paused = root.path("pausedReason");
             return new RunState(root.path("runId").asText(), repos,

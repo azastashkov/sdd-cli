@@ -1,7 +1,9 @@
 package sdd.plan.source;
 
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -86,5 +88,36 @@ public final class SourceBullet {
             }
         }
         return List.copyOf(keys);
+    }
+
+    /**
+     * Task 5's parser half of this class: the URL of each root {@code jira} bullet's issue, keyed
+     * by issue key, in first-appearance order — what {@code sdd review}'s pull-request description
+     * links back to. A second, independent walk of {@code sources()} rather than folding the URL
+     * into {@link #jiraIssueKeys}'s return shape: every existing caller of that method wants only
+     * the keys (a Jira comment poster has no use for a URL), and changing its return type to carry
+     * one would touch Task 4's call sites for a value only Task 5 needs.
+     *
+     * <p>{@code split(" ", 5)} — one more field than {@link #jiraIssueKeys}'s {@code split(" ", 3)}
+     * needs, since a root bullet is {@code "jira <KEY> updated <ISO-8601 UTC> <url>"}: five
+     * space-separated fields, the url being the fifth and last. Splitting on the FULL grammar
+     * (rather than finding the last space) trusts {@link #render}'s own format exactly, the same
+     * "one place" discipline this whole class exists for.
+     */
+    public static Map<String, String> jiraIssueUrls(List<String> sources) {
+        Map<String, String> urls = new LinkedHashMap<>();
+        for (String line : sources) {
+            if (line != null && line.startsWith("jira ")) {
+                String[] parts = line.split(" ", 5);
+                if (parts.length >= 5 && !parts[1].isBlank()) {
+                    urls.putIfAbsent(parts[1], parts[4]);
+                }
+            }
+        }
+        // Collections.unmodifiableMap, not Map.copyOf: Map.copyOf's iteration order is explicitly
+        // unspecified, which would silently break this method's own "first-appearance order"
+        // guarantee — the same reason jiraIssueKeys above returns List.copyOf of a LinkedHashSet
+        // rather than any order-erasing collector.
+        return java.util.Collections.unmodifiableMap(urls);
     }
 }

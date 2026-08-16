@@ -118,6 +118,11 @@ public final class InteractiveReview {
                         decisions = applied.decisions();
                         record(out, run, repo, applied.before(), decisions, applied.outcome());
                         anyDecision = true;
+                        // Task 5: same decline DecisionCommand.Reject.followUp triggers for a
+                        // scripted "sdd review reject" — reject never refuses (Decisions.reject
+                        // always applies), so there is no refusal branch to gate this on the way
+                        // approve's squash has one.
+                        BitbucketDecisions.afterReject(run, repo, out, err);
                         continue walk;
                     }
                     case "d" -> {

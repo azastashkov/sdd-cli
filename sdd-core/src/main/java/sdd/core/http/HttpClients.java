@@ -5,6 +5,7 @@ import sdd.core.config.AtlassianTls;
 import sdd.core.config.ConfigException;
 
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 import java.io.IOException;
 import java.io.InputStream;
@@ -67,6 +68,25 @@ public final class HttpClients {
      * trust anchors are in play.
      */
     private static SSLContext sslContext(AtlassianTls tls) {
+        try {
+            SSLContext ctx = SSLContext.getInstance("TLS");
+            ctx.init(null, trustManagers(tls), null);
+            return ctx;
+        } catch (GeneralSecurityException e) {
+            throw new ConfigException("cannot initialize TLS context: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Loads {@code tls.truststore()}'s trust anchors alone, without wrapping them in an
+     * {@link SSLContext} — the one extra thing a plain {@link #build} caller never needs but
+     * {@code sdd.cli.review.RemoteGit} does: JGit's {@code HttpConnectionFactory} configures a
+     * connection via raw {@link TrustManager}s ({@code JDKHttpConnection.configure}), not an
+     * {@code SSLContext}. Extracted out of {@link #sslContext} so the corporate truststore file is
+     * read and parsed in exactly one place — Task 5's brief is explicit that the CA must be
+     * "configured once, not twice" between the REST client and JGit's push transport.
+     */
+    public static TrustManager[] trustManagers(AtlassianTls tls) {
         // Deferred from ConfigLoader: an unset truststore_password ${VAR} does not fail config
         // loading (sdd index/status/clean never open an Atlassian connection), so it is raised
         // here instead — the earliest point something is actually about to open the truststore —
@@ -84,9 +104,7 @@ public final class HttpClients {
             keyStore.load(in, password);
             TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
             tmf.init(keyStore);
-            SSLContext ctx = SSLContext.getInstance("TLS");
-            ctx.init(null, tmf.getTrustManagers(), null);
-            return ctx;
+            return tmf.getTrustManagers();
         } catch (IOException | GeneralSecurityException e) {
             throw new ConfigException("cannot load atlassian.tls.truststore " + path + ": " + e.getMessage(), e);
         }

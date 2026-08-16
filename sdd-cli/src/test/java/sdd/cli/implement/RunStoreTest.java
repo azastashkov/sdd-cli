@@ -152,6 +152,64 @@ class RunStoreTest {
     }
 
     @Test
+    void readStateRoundTripsAPullRequestIdAndUrl() {
+        // Task 5: sdd review records the Bitbucket PR it opened so the decision commands find it
+        // without re-querying.
+        Path runDir = store.create(ws, "R", "{}");
+        RunState state = new RunState("R", List.of("lib"));
+        state.set("lib", RepoState.SUCCEEDED, "sdd/R/lib", "abc123", "ok", null, 17,
+                "https://bitbucket.corp.local/projects/P/repos/lib/pull-requests/17");
+        store.writeState(runDir, state);
+
+        RunState read = store.readState(runDir);
+
+        RepoRun lib = read.repos().get(0);
+        assertThat(lib.prId()).isEqualTo(17);
+        assertThat(lib.prUrl()).isEqualTo("https://bitbucket.corp.local/projects/P/repos/lib/pull-requests/17");
+    }
+
+    @Test
+    void readStateToleratesAPreExistingStateJsonWithNoPrFields() throws Exception {
+        Path runDir = store.create(ws, "R", "{}");
+        Files.writeString(runDir.resolve("state.json"), """
+                {
+                  "runId" : "R",
+                  "pausedReason" : null,
+                  "tokensSpent" : 0,
+                  "repos" : [ {
+                    "repo" : "lib",
+                    "state" : "SUCCEEDED",
+                    "branch" : "sdd/R/lib",
+                    "checkpointSha" : "abc1234",
+                    "detail" : "done"
+                  } ]
+                }
+                """);
+
+        RunState read = store.readState(runDir);
+
+        RepoRun lib = read.repos().get(0);
+        assertThat(lib.prId()).isNull();
+        assertThat(lib.prUrl()).isNull();
+    }
+
+    @Test
+    void setWithoutPrArgumentsPreservesAPreviouslyRecordedPullRequest() {
+        // A repo's PR (opened by sdd review) must survive unrelated state.json rewrites — an
+        // Orchestrator retry, a redo, approve's own checkpoint write-back — none of which know
+        // anything about Bitbucket and all of which call the plain 5/6-arg overloads.
+        RunState state = new RunState("R", List.of("lib"));
+        state.set("lib", RepoState.SUCCEEDED, "sdd/R/lib", "abc123", "ok", null, 17, "https://pr/17");
+
+        state.set("lib", RepoState.SUCCEEDED, "sdd/R/lib", "def456", "squashed");
+
+        RepoRun lib = state.repos().get(0);
+        assertThat(lib.checkpointSha()).isEqualTo("def456");
+        assertThat(lib.prId()).isEqualTo(17);
+        assertThat(lib.prUrl()).isEqualTo("https://pr/17");
+    }
+
+    @Test
     void appendRunEventWritesARunScopedLine() throws Exception {
         RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
         Path runDir = store.create(ws, "S-v1", "{}", "");

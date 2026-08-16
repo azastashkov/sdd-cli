@@ -8,6 +8,7 @@ import picocli.CommandLine.Parameters;
 import picocli.CommandLine.Spec;
 import sdd.cli.implement.RepoState;
 import sdd.cli.implement.Scheduler;
+import sdd.cli.review.BitbucketReview;
 import sdd.cli.review.ContractRecheck;
 import sdd.cli.review.DecisionCommand;
 import sdd.cli.review.DecisionRecord;
@@ -15,6 +16,7 @@ import sdd.cli.review.EstateRebuild;
 import sdd.cli.review.InteractiveReview;
 import sdd.cli.review.RebuildPass;
 import sdd.cli.review.RebuildScope;
+import sdd.cli.review.ReportInputs;
 import sdd.cli.review.ReviewReport;
 import sdd.cli.review.RunContext;
 import sdd.cli.review.SkippedGates;
@@ -152,8 +154,12 @@ public final class ReviewCommand implements Callable<Integer> {
             }
 
             RebuildScope scope = noRebuild ? RebuildScope.skipped() : RebuildScope.estate();
-            out.println("review written: " + run.writeReport(diffs, rebuilds, notLocallyVerified,
-                    stagingFailures, restoreFailures, contracts, scope));
+            // Built once and reused for report.md AND (Task 5) the Bitbucket pull-request
+            // description, via ReviewReport.renderRepo — so the two artifacts can never disagree
+            // about what a repo's run produced.
+            ReportInputs reportInputs = run.reportInputs(diffs, rebuilds, notLocallyVerified,
+                    stagingFailures, restoreFailures, contracts, scope);
+            out.println("review written: " + run.writeReport(reportInputs));
             // Task 4 (Gate 2 write-back): strictly AFTER report.md is durably written above, and
             // via JiraWriteBack — which never throws — so a Jira outage can never turn this
             // review into a failed one. Only the base `sdd review` write, not every re-render a
@@ -161,6 +167,10 @@ public final class ReviewCommand implements Callable<Integer> {
             // re-run writeReport so the artifact reflects the run as it stands) — the brief names
             // exactly two call sites, and repeating this per decision was not one of them.
             commentOnJiraSources(run, out, err);
+            // Task 5: same "strictly after report.md" rule, same best-effort discipline (never
+            // throws, never changes the exit code below), same "only the base sdd review write"
+            // restriction — see BitbucketReview's own javadoc.
+            BitbucketReview.run(run, reportInputs, out, err);
 
             int interactiveExit = 0;
             if (interactive) {

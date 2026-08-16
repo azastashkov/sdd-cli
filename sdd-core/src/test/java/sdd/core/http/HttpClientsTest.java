@@ -88,6 +88,24 @@ class HttpClientsTest {
     }
 
     @Test
+    void trustManagersLoadsTheSameTruststoreBuildUsesForTheHttpClient() throws Exception {
+        // Task 5's RemoteGit needs the raw TrustManagers (JGit configures a connection with them
+        // directly, not an SSLContext) — this asserts the extraction out of sslContext still loads
+        // successfully and returns at least one trust manager, the same truststore build() uses.
+        Path jks = emptyKeystore("corp-ca.jks", "JKS");
+        var managers = HttpClients.trustManagers(new AtlassianTls(jks, "changeit", null));
+        assertThat(managers).isNotEmpty();
+    }
+
+    @Test
+    void trustManagersMissingTruststorePathIsAnErrorNeverAQuietFallback() {
+        Path missing = dir.resolve("does-not-exist.jks");
+        assertThatThrownBy(() -> HttpClients.trustManagers(new AtlassianTls(missing, "changeit", null)))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining(missing.toString());
+    }
+
+    @Test
     void proxySelectorReturnsTheProxyByDefault() {
         AtlassianProxy proxy = new AtlassianProxy("proxy.corp.local", 8080, List.of("corp.local"));
         ProxySelector selector = HttpClients.proxySelector(proxy);

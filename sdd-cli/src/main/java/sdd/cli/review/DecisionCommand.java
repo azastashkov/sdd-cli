@@ -254,6 +254,11 @@ public abstract class DecisionCommand implements Callable<Integer> {
             // no net change since <base>"), and SquashApprove already knows which one fired —
             // so print its message rather than flattening both into one re-derived line.
             out.println(result.message());
+            // Task 5: the squash was APPLIED (just a no-op), so this repo is genuinely approved —
+            // reachable here, unlike the refusal branch above. See BitbucketDecisions' javadoc for
+            // why this ordering (only after SquashApprove.approve granted the decision) is the
+            // single most important property this task adds.
+            BitbucketDecisions.afterApprove(run, repo, root, out, err);
             return afterRestore(result, 0, err);
         }
         // Load-bearing, not bookkeeping: Resume.prepare fails any SUCCEEDED repo whose branch
@@ -267,6 +272,9 @@ public abstract class DecisionCommand implements Callable<Integer> {
         // squash only moved the branch ref); SquashApprove made the identical call moments ago.
         out.println("squashed " + RunGit.commitsBetween(root, baseSha, repoRun.checkpointSha())
                 + " commits into " + Shas.shortSha(result.sha()));
+        // Task 5: strictly AFTER the state.json write-back above, never before — see
+        // BitbucketDecisions' class javadoc for why the ordering is load-bearing, not incidental.
+        BitbucketDecisions.afterApprove(run, repo, root, out, err);
         return afterRestore(result, 0, err);
     }
 
@@ -302,6 +310,15 @@ public abstract class DecisionCommand implements Callable<Integer> {
         @Override
         protected Decisions.Outcome decide(Decisions decisions, RunContext run) {
             return decisions.reject(repo, run.plan(), reason);
+        }
+
+        @Override
+        protected Followup followUp(RunContext run, PrintWriter out, PrintWriter err) {
+            // Reached only once decide() above has already applied and persisted REJECTED (see
+            // DecisionCommand#call) — no ordering hazard here the way approve's squash-then-merge
+            // has: declining has no local git side effect to get out of order with.
+            BitbucketDecisions.afterReject(run, repo, out, err);
+            return Followup.none();
         }
     }
 

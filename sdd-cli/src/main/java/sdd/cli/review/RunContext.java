@@ -121,13 +121,35 @@ public record RunContext(String runId, Path runDir, RunStore store, PlanModel pl
                             List<String> notLocallyVerified, List<String> stagingFailures,
                             List<String> restoreFailures, List<ContractRecheck.Finding> contracts,
                             RebuildScope rebuild) {
-        Map<String, DecisionRecord> decisions = store.readDecisions(runDir);
-        String runbook = ReleaseRunbook.render(plan, state);
-        String report = ReviewReport.render(new ReportInputs(runId, plan, state, diffs.stats(),
-                rebuilds, notLocallyVerified, stagingFailures, restoreFailures, diffs.failures(),
-                contracts, skippedGates(), decisions, checkpoints(decisions), runbook, rebuild));
+        return writeReport(reportInputs(diffs, rebuilds, notLocallyVerified, stagingFailures,
+                restoreFailures, contracts, rebuild));
+    }
+
+    /** Like {@link #writeReport(Diffs, Map, List, List, List, List, RebuildScope)}, but for a
+     *  caller that already built the {@link ReportInputs} via {@link #reportInputs} and needs to
+     *  reuse the SAME object for something else — Task 5's Bitbucket pull-request description, via
+     *  {@link ReviewReport#renderRepo}, which must render off the identical inputs {@code report.md}
+     *  used or the two artifacts could disagree about what a repo's run produced. */
+    public Path writeReport(ReportInputs in) {
+        String report = ReviewReport.render(in);
         store.writeReview(runDir, "report.md", report);
         return store.reviewDir(runDir).resolve("report.md");
+    }
+
+    /** Builds the {@link ReportInputs} {@link #writeReport} renders — split out so a caller (Task
+     *  5's Bitbucket integration) can build it once, hand it to {@link #writeReport(ReportInputs)}
+     *  to produce {@code report.md}, and reuse the exact same object for the pull-request
+     *  description afterward, rather than each independently re-deriving decisions/runbook/
+     *  checkpoints and risking the two drifting apart. */
+    public ReportInputs reportInputs(Diffs diffs, Map<String, EstateRebuild.Result> rebuilds,
+                                     List<String> notLocallyVerified, List<String> stagingFailures,
+                                     List<String> restoreFailures, List<ContractRecheck.Finding> contracts,
+                                     RebuildScope rebuild) {
+        Map<String, DecisionRecord> decisions = store.readDecisions(runDir);
+        String runbook = ReleaseRunbook.render(plan, state);
+        return new ReportInputs(runId, plan, state, diffs.stats(), rebuilds, notLocallyVerified,
+                stagingFailures, restoreFailures, diffs.failures(), contracts, skippedGates(),
+                decisions, checkpoints(decisions), runbook, rebuild);
     }
 
     /** Declared compatibility guarantees whose gate reached no verdict. Read here rather than

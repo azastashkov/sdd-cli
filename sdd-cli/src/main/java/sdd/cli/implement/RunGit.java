@@ -8,6 +8,7 @@ import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 
@@ -20,6 +21,14 @@ import java.util.List;
  * The orchestrator's write-capable git facade (design: orchestrator owns git via JGit —
  * branch/checkout/add/commit/reset-to-recorded-SHA only, never push/remote). LiveGit reads;
  * this writes.
+ *
+ * <p><b>Still push-free (design amendment 2026-08-16).</b> Task 5 gives Gate 2 a Bitbucket pull
+ * request, which needs a push — that push verb lives on {@code sdd.cli.review.RemoteGit}, reachable
+ * only from Gate-2 code paths, NOT here. This class deliberately gains no push method: the point of
+ * the original invariant was never "no class in this codebase may push", it was "the agent loop
+ * (`sdd implement`) cannot reach the network" — and that property only holds while the orchestrator's
+ * OWN git facade, the one the agent's tool-call surface routes every git operation through, stays
+ * push-free. See the design doc's dated amendment for the full rationale.
  */
 public final class RunGit {
     private static final PersonIdent IDENT = new PersonIdent("sdd", "sdd@local");
@@ -224,6 +233,27 @@ public final class RunGit {
      *  regardless of force, so a caller must check the repo out onto something else first whenever
      *  {@link #currentBranch} equals {@code branch} (the common case — Orchestrator never restores a
      *  repo's original branch after {@code sdd implement}). */
+    /** Whether {@code ancestorSha} is an ancestor of (or equal to) {@code descendantSha} — Task 5's
+     *  base-ancestry check: a plan's {@code base_sha} that is NOT an ancestor of the Bitbucket
+     *  default branch's head means the pull request {@code sdd review} is about to open would show
+     *  unrelated commits, which the caller must warn about rather than open silently. A pure read,
+     *  so it lives here alongside the other read helpers ({@link #branchHead}, {@link #diff}) rather
+     *  than on {@code RemoteGit} — that class exists to isolate the ONE write verb (push) the design
+     *  amendment above is about, not every git operation Task 5 happens to need. */
+    public static boolean isAncestor(Path repo, String ancestorSha, String descendantSha) {
+        try (Git git = Git.open(repo.toFile())) {
+            Repository repository = git.getRepository();
+            try (RevWalk walk = new RevWalk(repository)) {
+                RevCommit ancestor = walk.parseCommit(repository.resolve(ancestorSha));
+                RevCommit descendant = walk.parseCommit(repository.resolve(descendantSha));
+                return walk.isMergedInto(ancestor, descendant);
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("cannot check ancestry of " + ancestorSha + " and "
+                    + descendantSha + " in " + repo + ": " + e.getMessage(), e);
+        }
+    }
+
     public static void deleteBranch(Path repo, String branch) {
         try (Git git = Git.open(repo.toFile())) {
             git.branchDelete().setBranchNames(branch).setForce(true).call();
