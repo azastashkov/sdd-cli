@@ -73,8 +73,12 @@ class ContractActualizerTsIT {
     }
 
     private String actualize(String kind) throws Exception {
+        return actualize(kind, List.of());
+    }
+
+    private String actualize(String kind, List<String> declared) throws Exception {
         PlanModel.PlanContract contract = new PlanModel.PlanContract(
-                "c1", kind, "web-sdk", List.of("mfe-a"), "b", null, List.of());
+                "c1", kind, "web-sdk", List.of("mfe-a"), "b", null, declared);
         Map<String, String> bodies = ContractActualizer.actualize(repo, List.of(contract));
         return bodies.getOrDefault("c1", "");
     }
@@ -104,6 +108,48 @@ class ContractActualizerTsIT {
                         "@azastashkov/web-sdk#Tick.price: number",
                         "@azastashkov/web-sdk#Tick.symbol: string",
                         "@azastashkov/web-sdk#login(LoginRequest): Promise<Session>")))
+                .missingFrom(body)).isEmpty();
+    }
+
+    @Test
+    void aDeclaredTsApiContractActualizesOnlyTheExportsItDeclares() throws Exception {
+        writeWebSdk();
+
+        String body = actualize("ts-api", List.of("@azastashkov/web-sdk#Tick.price: number"));
+
+        // Same rule java-api has had since 5C-1: a declared block is the strongest selector there
+        // is, and there is no whole-surface fallback beside it.
+        assertThat(body).contains("@azastashkov/web-sdk\n");
+        assertThat(body).contains("  Tick.price: number\n");
+        assertThat(body).doesNotContain("Session");          // a real export of the same package
+        assertThat(body).doesNotContain("LoginRequest");
+        assertThat(body).doesNotContain("@azastashkov/web-sdk/contract");   // nothing declared there
+    }
+
+    @Test
+    void aDeclarationOnALargePackageIsNotLostToTheTruncationCap() throws Exception {
+        // Reproduces trading-web-sdk at Gate 2: ~53kB of declaration surface against MAX_BODY=4000,
+        // so the declared members sat past the cut and the contract could only ever report
+        // NOT_COMPARABLE — a conformance axis that cannot reach a verdict on a real package.
+        StringBuilder src = new StringBuilder("export interface Wanted { field: string; }\n");
+        for (int i = 0; i < 400; i++) {
+            src.append("export interface Filler").append(i).append(" { a: string; b: number; }\n");
+        }
+        write("package.json", """
+                {"name":"@acme/big","exports":{".":{"types":"./dist/index.d.ts"}}}
+                """);
+        write("tsconfig.json", """
+                {"compilerOptions":{"outDir":"dist","rootDir":"src","declaration":true}}
+                """);
+        write("src/index.ts", src.toString());
+
+        // The surface really is over the cap, so this test would pass vacuously without the guard.
+        assertThat(actualize("ts-api")).contains(ContractActualizer.TRUNCATION_MARKER);
+
+        String body = actualize("ts-api", List.of("@acme/big#Wanted.field: string"));
+
+        assertThat(body).doesNotContain(ContractActualizer.TRUNCATION_MARKER);
+        assertThat(DeclaredContract.parse("ts-api", "@acme/big#Wanted.field: string")
                 .missingFrom(body)).isEmpty();
     }
 

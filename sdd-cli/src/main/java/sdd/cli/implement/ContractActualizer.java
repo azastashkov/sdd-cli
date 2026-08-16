@@ -92,7 +92,7 @@ public final class ContractActualizer {
                 case ContractKinds.JAVA_API -> javaApi(sessions, contract.body(), contract.declared());
                 case ContractKinds.REST -> rest(repoRoot, sessions);
                 case ContractKinds.KAFKA -> kafka(repoRoot, sessions);
-                case ContractKinds.TS_API -> tsApi(ts);
+                case ContractKinds.TS_API -> tsApi(ts, contract.declared());
                 case ContractKinds.REST_CLIENT -> restClient(ts);
                 case ContractKinds.STREAM_DESCRIPTOR -> streamDescriptor(sessions, ts);
                 default -> "";
@@ -312,7 +312,13 @@ public final class ContractActualizer {
      * deliberately does not do; guessing {@code any} here would let a contract "match" a type
      * nothing ever read.
      */
-    private static String tsApi(TsSessions ts) {
+    /**
+     * @param declared the contract's declared block, used as a selector exactly as
+     *                 {@link #javaApi} uses its own — see {@link #declaredTsExports} for why this
+     *                 is not optional on a real package.
+     */
+    private static String tsApi(TsSessions ts, List<String> declared) {
+        Set<String> declaredExports = declaredTsExports(declared);
         StringBuilder body = new StringBuilder();
         for (TsPackage pkg : ts.packages) {
             JsonNode packageNode = pkg.surfaceNode();
@@ -328,6 +334,9 @@ public final class ContractActualizer {
                 if (!type.isApi()) {
                     continue;   // not exported: not a surface anyone can declare a contract about
                 }
+                if (!declaredExports.isEmpty() && !declaredExports.contains(type.fqcn())) {
+                    continue;   // selected out; the group is never created, so no bare header
+                }
                 int dot = type.fqcn().lastIndexOf('.');
                 bySpecifier.computeIfAbsent(type.fqcn().substring(0, dot), k -> new ArrayList<>())
                         .add(type);
@@ -340,6 +349,45 @@ public final class ContractActualizer {
             });
         }
         return body.toString();
+    }
+
+    /**
+     * The exports a ts-api declaration names, as {@code <specifier>.<Export>} — the shape
+     * {@code TypeInfo.fqcn()} already uses, so selection is string equality.
+     *
+     * <p>Empty means "select everything", preserving the behaviour of every plan that declares
+     * nothing. Where java-api can key on the part before the {@code #} because that IS the type,
+     * ts-api cannot: there the prefix is the module specifier, so keying on it would re-select the
+     * whole package. The export name is the first segment after the {@code #}, ending at the member
+     * dot, the parameter list, or the type colon — whichever comes first.
+     *
+     * <p>Why this matters more here than on java-api: a Java contract's declared types are a handful
+     * of classes out of a module, while a TypeScript package's surface is EVERY export of every
+     * entry point in one body. On the real trading-web-sdk that is ~53kB against
+     * {@link #MAX_BODY}'s 4000, so without this selector the declared members sat past the cut and
+     * the contract could only ever report NOT_COMPARABLE — a conformance axis unable to reach a
+     * verdict on the very packages it was added for.
+     */
+    private static Set<String> declaredTsExports(List<String> declared) {
+        Set<String> exports = new LinkedHashSet<>();
+        for (String member : DeclaredContract.parse(ContractKinds.TS_API,
+                String.join("\n", declared)).members()) {
+            int hash = member.indexOf('#');
+            if (hash < 0) {
+                continue;
+            }
+            String rest = member.substring(hash + 1);
+            int end = rest.length();
+            for (int i = 0; i < rest.length(); i++) {
+                char c = rest.charAt(i);
+                if (c == '.' || c == '(' || c == ':') {
+                    end = i;
+                    break;
+                }
+            }
+            exports.add(member.substring(0, hash) + "." + rest.substring(0, end));
+        }
+        return exports;
     }
 
     /** The synthetic member name the sidecar gives a const's or a non-object alias's written type —

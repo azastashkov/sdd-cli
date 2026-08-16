@@ -397,6 +397,21 @@ names the typo, rather than at Gate 2 as a wholly missing surface. A repo whose
 `build_system` is still NULL blocks nothing: a plan must not be refused because
 the knowledge base predates a migration.
 
+**A ts-api declaration selects what is actualized, and on a real package it has to.**
+`java-api` has treated its declared block as a selector since 5C-1, but `ts-api`
+shipped without one and emitted every export of every entry point in a single
+body. A Java contract names a handful of classes out of a module; a TypeScript
+package's whole surface is one body, and on the real `trading-web-sdk` that is
+~53kB against `ContractActualizer.MAX_BODY`'s 4000 — so the declared members sat
+past the cut and every `ts-api` contract could only report `NOT_COMPARABLE`. The
+axis could not reach a verdict on the packages it was added for. Selection is by
+`<specifier>.<Export>` rather than by the part before the `#`, because there that
+prefix is the module specifier and keying on it would re-select the whole
+package. Granularity is the export, matching `java-api`'s whole-type selection:
+the reader gets the declared export's full shape, and containment only requires
+the declared members to be present. Truncation is now proportional to what a plan
+declares instead of to how large the provider happens to be.
+
 **`type-compatible` is an assignability probe, not a diff.** A textual diff of
 two `.d.ts` files flags legal widening — an added optional member, a widened
 parameter — as breaking, and compat drift FAILS the repo, so a false positive
