@@ -236,21 +236,33 @@ public final class PlanCommand implements Callable<Integer> {
             docs.addAll(fetched.docs());
             notes.addAll(fetched.notes());
         }
+        // Two separate anchors, not one: a CONFLUENCE_EXPORT ref is a real filesystem path (its
+        // "<ref>.spec.md" sibling-file naming is the pre-existing behaviour, unchanged below), but
+        // a CONFLUENCE_PAGE ref is a URL — treating a URL as a filesystem path would try to create
+        // a "https:/host/..." directory tree. A page-ref-only run (no Jira, no export ref, no
+        // --text) instead derives its id/filename from the fetched page's own id, workspace-
+        // relative, the same shape the Jira case already uses (Fix 1, Task 3 review: this path
+        // previously had no anchor at all and crashed on texts.get(0) with an empty --text list).
+        String exportAnchorRef = null;
+        String exportAnchorId = null;
+        String pageAnchorId = null;
         for (String ref : confluencePageRefs) {
             String pageId = confluenceClient.resolvePageId(ref);
             if (pageId == null) {
                 throw new IllegalArgumentException("cannot resolve Confluence URL: " + ref);
             }
-            docs.add(confluenceClient.fetchPage(pageId));
+            SourceDoc doc = confluenceClient.fetchPage(pageId);
+            docs.add(doc);
+            if (pageAnchorId == null) {
+                pageAnchorId = doc.id();
+            }
         }
-        String anchorRef = null;
-        String anchorId = null;
         for (String ref : exportRefs) {
             SourceDoc doc = ConfluenceExportSource.loadDoc(ref);
             docs.add(doc);
-            if (anchorRef == null) {
-                anchorRef = ref;
-                anchorId = doc.id();
+            if (exportAnchorRef == null) {
+                exportAnchorRef = ref;
+                exportAnchorId = doc.id();
             }
         }
         for (int i = 0; i < texts.size(); i++) {
@@ -260,13 +272,16 @@ public final class PlanCommand implements Callable<Integer> {
 
         // The spec's id/filename derive from the Jira key when one is present (Section 5: "keep
         // it stable, since plan.json and the run directory are named from it") — ahead of any
-        // Confluence-export anchor or --text slug, since a Jira ref is the primary requirement
-        // record whenever one is in the mix.
+        // Confluence-export anchor, Confluence-page anchor, or --text slug, since a Jira ref is
+        // the primary requirement record whenever one is in the mix.
         String fallbackId = !jiraKeys.isEmpty() ? jiraKeys.get(0)
-                : anchorId != null ? anchorId : "spec-" + slugify(texts.get(0));
+                : exportAnchorId != null ? exportAnchorId
+                : pageAnchorId != null ? pageAnchorId
+                : "spec-" + slugify(texts.get(0));
         Path target = out != null ? out
                 : !jiraKeys.isEmpty() ? workspace.resolve(jiraKeys.get(0) + ".spec.md")
-                : anchorRef != null ? Path.of(anchorRef + ".spec.md")
+                : exportAnchorRef != null ? Path.of(exportAnchorRef + ".spec.md")
+                : pageAnchorId != null ? workspace.resolve(pageAnchorId + ".spec.md")
                 : workspace.resolve(slugify(texts.get(0)) + ".spec.md");
 
         NormalizedSpec normalized = jiraSpecSource.assemble(docs, notes, fallbackId);

@@ -612,6 +612,44 @@ class PlanCommandTest {
     }
 
     @Test
+    void confluencePageOnlyRefEndToEndWritesAWorkspaceRelativeGateFile() throws Exception {
+        // Task 3 review Fix 1: a Confluence-only ref (no Jira ref, no export ref, no --text) had
+        // no anchor to derive its output filename/id from and crashed on texts.get(0) against an
+        // empty list. This is the missing success test for that path.
+        wm.stubFor(get(urlEqualTo("/rest/api/content/65601?expand=body.storage,version,space"))
+                .willReturn(okJson("""
+                        {"id": "65601", "type": "page", "title": "Order API spec",
+                         "space": {"key": "ENG"}, "version": {"number": 3},
+                         "body": {"storage": {"value": "<p>Pagination uses opaque cursors.</p>",
+                                               "representation": "storage"}}}
+                        """)));
+        Files.writeString(ws.resolve("sdd.yml"), yaml() + """
+                atlassian:
+                  confluence:
+                    base_url: %s
+                    token: sk-confluence
+                """.formatted(wm.baseUrl()));
+        PlanCommand cmd = new PlanCommand();
+        cmd.plannerForTest = new ScriptedChatModel(List.of(new ChatResponse(
+                ChatMessage.assistant("""
+                        {"title": "Order API spec", "owner": "", "status": "", "goal": "G.",
+                         "background": "", "requirements": ["r"], "acceptance": ["a"], "constraints": [],
+                         "touchpoints": [], "out_of_scope": [], "open_questions": [], "unmapped": []}"""),
+                "stop", new Usage(10, 10))));
+
+        Run run = plan(cmd, "--workspace", ws.toString(),
+                wm.baseUrl() + "/pages/viewpage.action?pageId=65601");
+
+        Path written = ws.resolve("65601.spec.md");
+        assertThat(run.exitCode()).isZero();
+        assertThat(run.out()).contains("normalized spec written: " + written);
+        String content = Files.readString(written);
+        // A bare numeric id like "65601" is quoted by SpecRenderer (it would otherwise round-trip
+        // through YAML as an integer, not a string) — see SpecRenderer.bareSafe.
+        assertThat(content).contains("id: '65601'");
+    }
+
+    @Test
     void jiraBrowseUrlRefWithNoAtlassianConfigFails() throws Exception {
         Files.writeString(ws.resolve("sdd.yml"), yaml());
 
