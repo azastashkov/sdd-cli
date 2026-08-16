@@ -160,7 +160,7 @@ public final class RebuildPass {
             // branch — the only point at which contract extraction reads the trees the run
             // actually produced, instead of whatever branch the human happened to be standing on.
             if (recheckContracts) {
-                contracts.addAll(ContractRecheck.check(plan, state, paths, store, runDir));
+                contracts.addAll(ContractRecheck.check(plan, state, paths, store, runDir, config.nodeHome()));
             }
         } finally {
             // One failed restore must not strand the remaining repos on checkpoint branches.

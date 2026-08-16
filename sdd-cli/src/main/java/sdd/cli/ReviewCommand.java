@@ -128,7 +128,7 @@ public final class ReviewCommand implements Callable<Integer> {
                 stagingFailures = List.of();
                 restoreFailures = List.of();
                 contracts = ContractRecheck.check(run.plan(), run.state(), run.paths(),
-                        run.store(), run.runDir());
+                        run.store(), run.runDir(), run.config().nodeHome());
             } else {
                 RebuildPass.Outcome outcome = RebuildPass.run(Scheduler.sequence(run.plan().order()),
                         run.plan(), run.state(), run.paths(), run.config(), run.runDir(), run.store(),

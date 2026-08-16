@@ -121,7 +121,10 @@ public final class TsExtraction {
         return "OK";
     }
 
-    private static List<SpringModel.ClientInfo> clientsOf(JsonNode response) {
+    /** Public so {@code ContractActualizer} reads a sidecar response the same way the indexer
+     *  does: one parser, so a contract can never disagree with the knowledge base about what a
+     *  call site is. */
+    public static List<SpringModel.ClientInfo> clientsOf(JsonNode response) {
         List<SpringModel.ClientInfo> clients = new ArrayList<>();
         for (JsonNode site : response.path("sites")) {
             String path = text(site, "pathValue");

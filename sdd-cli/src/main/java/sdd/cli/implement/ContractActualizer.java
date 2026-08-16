@@ -1,5 +1,6 @@
 package sdd.cli.implement;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import sdd.core.contract.ContractKinds;
 import sdd.core.contract.DeclaredContract;
 import sdd.index.source.ApiSurfaceExtractor;
@@ -10,6 +11,12 @@ import sdd.index.spring.KafkaExtractor;
 import sdd.index.spring.RestEndpointExtractor;
 import sdd.index.spring.SpringConfigPersistence;
 import sdd.index.spring.SpringModel;
+import sdd.index.npm.PackageJson;
+import sdd.index.ts.PackageEntries;
+import sdd.index.ts.TsApiSurface;
+import sdd.index.ts.TsExtraction;
+import sdd.index.ts.TsSourceFiles;
+import sdd.core.ts.TsSidecar;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -54,6 +62,16 @@ public final class ContractActualizer {
     }
 
     public static Map<String, String> actualize(Path repoRoot, List<PlanModel.PlanContract> provided) {
+        return actualize(repoRoot, provided, null);
+    }
+
+    /**
+     * @param nodeHome the configured node installation, or null to take node from PATH. Only the
+     *                 TypeScript kinds use it, and the sidecar is started only when one is asked
+     *                 for — a Java-only plan never pays for node being absent.
+     */
+    public static Map<String, String> actualize(Path repoRoot, List<PlanModel.PlanContract> provided,
+                                                Path nodeHome) {
         if (provided.isEmpty()) {
             return Map.of();
         }
@@ -66,12 +84,15 @@ public final class ContractActualizer {
                 // an unparseable module degrades that module's surface, never the whole actualization
             }
         }
+        TsSessions ts = new TsSessions(repoRoot, nodeHome, provided);
         Map<String, String> result = new LinkedHashMap<>();
         for (PlanModel.PlanContract contract : provided) {
             String body = switch (contract.kind()) {
-                case "java-api" -> javaApi(sessions, contract.body(), contract.declared());
-                case "rest" -> rest(repoRoot, sessions);
-                case "kafka" -> kafka(repoRoot, sessions);
+                case ContractKinds.JAVA_API -> javaApi(sessions, contract.body(), contract.declared());
+                case ContractKinds.REST -> rest(repoRoot, sessions);
+                case ContractKinds.KAFKA -> kafka(repoRoot, sessions);
+                case ContractKinds.TS_API -> tsApi(ts);
+                case ContractKinds.REST_CLIENT -> restClient(ts);
                 default -> "";
             };
             if (!body.isBlank()) {
@@ -171,6 +192,248 @@ public final class ContractActualizer {
             });
         }
         return body.toString();
+    }
+
+    // -- TypeScript ----------------------------------------------------------------------------
+
+    /**
+     * The sidecar's reading of every npm package in the repo, computed once and only when a
+     * TypeScript kind is actually asked for.
+     *
+     * <p>Held as one object because both TS kinds want the same expensive thing — one node
+     * invocation per package — and a provider commonly declares both a {@code ts-api} and a
+     * {@code rest-client} contract in the same plan.
+     */
+    private static final class TsSessions {
+        private final List<TsPackage> packages = new ArrayList<>();
+
+        TsSessions(Path repoRoot, Path nodeHome, List<PlanModel.PlanContract> provided) {
+            boolean wanted = provided.stream().anyMatch(c ->
+                    ContractKinds.TS_API.equals(c.kind()) || ContractKinds.REST_CLIENT.equals(c.kind()));
+            if (!wanted) {
+                return;
+            }
+            List<Path> roots = tsModuleRoots(repoRoot);
+            if (roots.isEmpty()) {
+                return;
+            }
+            Optional<TsSidecar> sidecar = TsSidecar.create(nodeHome);
+            if (sidecar.isEmpty()) {
+                // Node absent: every TS body comes back empty, which ContractRecheck already reports
+                // as NOT_EXTRACTABLE. That is the honest outcome — an empty body must never be read
+                // as an empty surface, and this is the one place that distinction is preserved.
+                return;
+            }
+            // Canonical, because the sidecar relativizes each file against this path and the file
+            // list is canonical. On macOS a temp dir arrives as /var/... while the files resolve
+            // under /private/var/..., and every recorded site comes out as a ../../.. climb out of
+            // the repo — a path no reader can open and no two machines agree on.
+            Path canonicalRoot = repoRoot;
+            try {
+                canonicalRoot = repoRoot.toRealPath();
+            } catch (java.io.IOException e) {
+                canonicalRoot = repoRoot.toAbsolutePath().normalize();
+            }
+            for (Path packageDir : roots) {
+                String name;
+                try {
+                    name = PackageJson.read(packageDir.resolve("package.json")).name();
+                } catch (java.io.IOException | RuntimeException e) {
+                    continue;   // an unreadable manifest degrades that package, never the repo
+                }
+                if (name == null) {
+                    continue;   // a nameless package.json is a workspaces shell, not a surface
+                }
+                List<Path> files = TsSourceFiles.discover(packageDir, roots);
+                if (files.isEmpty()) {
+                    continue;
+                }
+                packages.add(new TsPackage(name, packageDir, files, canonicalRoot, sidecar.get()));
+            }
+        }
+    }
+
+    /** One npm package, with its sidecar responses fetched lazily so a rest-client contract never
+     *  pays for the API-surface pass and vice versa. */
+    private static final class TsPackage {
+        private final String name;
+        private final Path packageDir;
+        private final List<Path> files;
+        private final Path repoRoot;
+        private final TsSidecar sidecar;
+        private TsSidecar.Result callSites;
+        private TsSidecar.Result surface;
+        private PackageEntries.Result entries;
+
+        TsPackage(String name, Path packageDir, List<Path> files, Path repoRoot, TsSidecar sidecar) {
+            this.name = name;
+            this.packageDir = packageDir;
+            this.files = files;
+            this.repoRoot = repoRoot;
+            this.sidecar = sidecar;
+        }
+
+        TsSidecar.Result callSites() {
+            if (callSites == null) {
+                callSites = sidecar.httpCallSites(repoRoot, files);
+            }
+            return callSites;
+        }
+
+        JsonNode surfaceNode() {
+            if (surface == null) {
+                entries = PackageEntries.of(packageDir, name);
+                Map<String, Path> entryMap = new LinkedHashMap<>();
+                entries.entries().forEach(e -> entryMap.put(e.specifier(), e.sourceFile()));
+                surface = sidecar.apiSurface(repoRoot, name, files, entryMap);
+            }
+            return surface.ok() ? surface.json().path("packages").path(0) : null;
+        }
+    }
+
+    /**
+     * The published surface, as {@code <specifier>} headers over indented
+     * {@code <Export>[.<member>]: <type>} lines — the same two-level shape {@code java-api} uses,
+     * so {@code DeclaredContract} canonicalizes both with one rule.
+     *
+     * <p>A member with no written type annotation is marked {@link #UNRESOLVED_MARKER} rather than
+     * given an inferred one. Inference needs the checker with lib files loaded, which the sidecar
+     * deliberately does not do; guessing {@code any} here would let a contract "match" a type
+     * nothing ever read.
+     */
+    private static String tsApi(TsSessions ts) {
+        StringBuilder body = new StringBuilder();
+        for (TsPackage pkg : ts.packages) {
+            JsonNode packageNode = pkg.surfaceNode();
+            if (packageNode == null) {
+                continue;
+            }
+            // Reuse the indexer's naming exactly: a contract that named an export differently from
+            // the way the knowledge base records it would be checkable but unsearchable.
+            List<SourceModel.TypeInfo> types = TsApiSurface.typesOf(packageNode, pkg.name,
+                    false, false);
+            Map<String, List<SourceModel.TypeInfo>> bySpecifier = new LinkedHashMap<>();
+            for (SourceModel.TypeInfo type : types) {
+                if (!type.isApi()) {
+                    continue;   // not exported: not a surface anyone can declare a contract about
+                }
+                int dot = type.fqcn().lastIndexOf('.');
+                bySpecifier.computeIfAbsent(type.fqcn().substring(0, dot), k -> new ArrayList<>())
+                        .add(type);
+            }
+            bySpecifier.forEach((specifier, exports) -> {
+                body.append(specifier).append('\n');
+                for (SourceModel.TypeInfo export : exports) {
+                    appendExport(body, export);
+                }
+            });
+        }
+        return body.toString();
+    }
+
+    /** The synthetic member name the sidecar gives a const's or a non-object alias's written type —
+     *  the whole export IS that type, so it supersedes the kind line rather than adding to it. */
+    private static final String TS_VALUE_MEMBER = "<value>";
+
+    private static void appendExport(StringBuilder body, SourceModel.TypeInfo export) {
+        String name = export.fqcn().substring(export.fqcn().lastIndexOf('.') + 1);
+        boolean valueTyped = export.members().stream()
+                .anyMatch(m -> TS_VALUE_MEMBER.equals(m.name()));
+        if (!valueTyped) {
+            body.append("  ").append(name).append(": ").append(tsKind(export.kind())).append('\n');
+        }
+        for (SourceModel.MemberInfo member : export.members()) {
+            String left;
+            if (TS_VALUE_MEMBER.equals(member.name()) || member.name().equals(name)) {
+                // A function's single member, or a const's written type: the export and the member
+                // are the same thing, so prefixing would read as `login.login(...)`.
+                left = name + member.signature().substring(member.name().length());
+            } else {
+                left = name + "." + member.signature();
+            }
+            body.append("  ").append(left).append(": ");
+            if (member.returnType() == null) {
+                body.append('?').append(UNRESOLVED_MARKER);
+            } else {
+                body.append(member.returnType());
+            }
+            body.append('\n');
+        }
+    }
+
+    /** How a human writes the kind in TypeScript, so a declaration reads like the source it is
+     *  about. {@code TYPE_ALIAS} is the one that is not simply lowercased — the keyword is
+     *  {@code type}. */
+    private static String tsKind(String kind) {
+        return "TYPE_ALIAS".equals(kind) ? "type" : kind.toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /**
+     * Outbound HTTP call sites, in the same {@code <VERB> <path> -> <site>} shape {@code rest} uses.
+     *
+     * <p>A site whose path could not be resolved writes {@code ?} — not a legal path, so it can
+     * never be mistaken for one — and carries {@link #UNRESOLVED_MARKER} so a reviewer sees at Gate
+     * 2 that something was unreadable right beside whatever was reported missing.
+     */
+    private static String restClient(TsSessions ts) {
+        StringBuilder body = new StringBuilder();
+        for (TsPackage pkg : ts.packages) {
+            TsSidecar.Result result = pkg.callSites();
+            if (!result.ok()) {
+                continue;
+            }
+            for (SpringModel.ClientInfo client : TsExtraction.clientsOf(result.json())) {
+                boolean resolved = client.uriTemplate() != null;
+                body.append(client.httpMethod()).append(' ')
+                        .append(resolved ? client.uriTemplate() : "?")
+                        .append(" -> ").append(site(client));
+                if (!resolved) {
+                    body.append(UNRESOLVED_MARKER);
+                }
+                body.append('\n');
+            }
+        }
+        return body.toString();
+    }
+
+    /**
+     * {@code src/blotter.ts#BlotterModule.post} for a call inside a class, {@code src/index.ts#load}
+     * for a bare function — the container already carries the {@code #} when there is one, so the
+     * separator follows from whether a container exists rather than being repeated.
+     */
+    private static String site(SpringModel.ClientInfo client) {
+        String container = client.classFqcn();
+        if (container == null || container.isBlank()) {
+            return client.methodOrSite();
+        }
+        if (client.methodOrSite() == null || client.methodOrSite().isBlank()) {
+            return container;
+        }
+        return container + (container.indexOf('#') >= 0 ? "." : "#") + client.methodOrSite();
+    }
+
+    /** Every directory holding a {@code package.json}, which is what makes a directory an npm
+     *  package. Same depth cap and same skip list as the Java module walk. */
+    private static List<Path> tsModuleRoots(Path repoRoot) {
+        List<Path> roots = new ArrayList<>();
+        collectTsRoots(repoRoot, 0, roots);
+        return roots.stream().sorted().toList();
+    }
+
+    private static void collectTsRoots(Path dir, int depth, List<Path> roots) {
+        if (Files.isRegularFile(dir.resolve("package.json"))) {
+            roots.add(dir);
+        }
+        if (depth >= MAX_MODULE_DEPTH) {
+            return;
+        }
+        try (var children = Files.list(dir)) {
+            children.filter(Files::isDirectory)
+                    .filter(child -> !SKIP_DIRS.contains(child.getFileName().toString()))
+                    .forEach(child -> collectTsRoots(child, depth + 1, roots));
+        } catch (java.io.IOException e) {
+            // unreadable directory: fall through with whatever was found so far
+        }
     }
 
     // Mirrors FileTools.SKIP_DIRS: never descend into vendored deps or tool/VCS output looking for

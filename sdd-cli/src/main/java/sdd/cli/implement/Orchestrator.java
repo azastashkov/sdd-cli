@@ -305,7 +305,7 @@ public final class Orchestrator {
                 return true;
             }
             List<PlanModel.PlanContract> provided = providedContracts(plan, repo);
-            Map<String, String> actualized = ContractActualizer.actualize(step.repoRoot(), provided);
+            Map<String, String> actualized = ContractActualizer.actualize(step.repoRoot(), provided, nodeHome);
             for (PlanModel.PlanContract contract : provided) {
                 String body = actualized.get(contract.id());
                 if (body == null) {

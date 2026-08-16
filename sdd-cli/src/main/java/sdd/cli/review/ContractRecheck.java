@@ -78,6 +78,13 @@ public final class ContractRecheck {
 
     public static List<Finding> check(PlanModel plan, RunState state, Map<String, Path> repoPaths,
                                       RunStore store, Path runDir) {
+        return check(plan, state, repoPaths, store, runDir, null);
+    }
+
+    /** @param nodeHome the configured node installation, or null to take node from PATH — only the
+     *                  TypeScript kinds use it. */
+    public static List<Finding> check(PlanModel plan, RunState state, Map<String, Path> repoPaths,
+                                      RunStore store, Path runDir, Path nodeHome) {
         // Group by provider first so a provider with N contracts gets ONE actualize() call
         // (one tree walk/parse) instead of N — actualize() already loops the provided list.
         Map<String, List<PlanModel.PlanContract>> byProvider = new LinkedHashMap<>();
@@ -90,7 +97,7 @@ public final class ContractRecheck {
         Map<String, Map<String, String>> freshByProvider = new LinkedHashMap<>();
         Map<String, String> extractedFromByProvider = new LinkedHashMap<>();
         byProvider.forEach((provider, contracts) -> {
-            freshByProvider.put(provider, ContractActualizer.actualize(repoPaths.get(provider), contracts));
+            freshByProvider.put(provider, ContractActualizer.actualize(repoPaths.get(provider), contracts, nodeHome));
             extractedFromByProvider.put(provider, currentPosition(repoPaths.get(provider)));
         });
 
@@ -254,8 +261,31 @@ public final class ContractRecheck {
         return switch (kind) {
             case ContractKinds.REST -> unresolvedActual.stream().anyMatch(u -> restSamePathAnyVerb(missingMember, u));
             case ContractKinds.KAFKA -> unresolvedActual.stream().anyMatch(u -> kafkaExplains(missingMember, u));
+            case ContractKinds.TS_API -> unresolvedActual.stream().anyMatch(u -> tsApiSameMember(missingMember, u));
+            // rest-client's unresolved shape is the mirror of rest's: the VERB is read straight off
+            // the call and the PATH is what could not be resolved. So the only thing an unresolved
+            // entry shares with a missing member is the verb — the coarse half — and excusing on it
+            // would let one dynamic POST excuse the disappearance of every declared POST in the
+            // repo. Dynamic paths are common in TypeScript, which makes that far likelier here than
+            // on the Java side, so it is left unexcused deliberately: the unresolved sites are
+            // printed in the actualized body next to the missing list, where a human can weigh them.
             default -> false; // java-api: no unresolved shape exists
         };
+    }
+
+    /** Same module AND same member, differing only in the type — the partition rule this kind
+     *  specifies. Sharing the module alone excuses nothing, exactly as sharing rest's verb or
+     *  kafka's role does not: one member with no written annotation would otherwise excuse the
+     *  removal of every other export in the same package. */
+    private static boolean tsApiSameMember(String missingMember, String unresolvedEntry) {
+        return tsApiKey(unresolvedEntry).equals(tsApiKey(missingMember));
+    }
+
+    /** Everything before the type — {@code @acme/web-sdk#Tick.price}. The type is what an
+     *  unresolved entry could not read, so it is exactly what the comparison must ignore. */
+    private static String tsApiKey(String member) {
+        int colon = member.lastIndexOf(':');
+        return colon < 0 ? member : member.substring(0, colon);
     }
 
     private static boolean restSamePathAnyVerb(String missingMember, String unresolvedEntry) {

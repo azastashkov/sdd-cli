@@ -789,7 +789,7 @@ function docOf(node, source) {
     const text = source.getFullText().slice(ranges[i].pos, ranges[i].end);
     if (!text.startsWith('/**')) continue;
     const body = text.replace(/^\/\*\*/, '').replace(/\*\/$/, '')
-      .split('\n').map((line) => line.replace(/^\s*\*ted?/, '').replace(/^\s*\*/, '').trim())
+      .split('\n').map((line) => line.replace(/^\s*\*/, '').trim())
       .join(' ')
       // Inline tags FIRST. A block-tag strip run before this one eats `{@link Foo}` as though it
       // were an @-tag, truncating the sentence mid-word — "Login/session state over {".
