@@ -161,4 +161,77 @@ class RestMatcherTest {
                     .containsEntry("confidence", "HIGH").containsEntry("matched_by", "MANUAL");
         });
     }
+
+    // --- exact-path tier ------------------------------------------------------------------------
+
+    @Test
+    void aSpecificPathIsNotAmbiguousAgainstAWildcardItMerelyOverlaps() {
+        // The estate's own case: trading-web-sdk calls GET /api/candles/{}/symbols, and
+        // trading-candles serves both that and GET /api/candles/{}/{}. templatesMatch treats {}
+        // as a wildcard on BOTH sides, so the specific call matched the generic endpoint too and
+        // landed LOW/AMBIGUOUS against an endpoint it plainly is not.
+        long call = client(ordersModule, "TS_HTTP_WRAPPER", "GET", "/api/candles/{}/symbols",
+                null, "/api/candles/{securityType}/symbols");
+        long exact = endpoint(inventoryModule, "GET", "/api/candles/{}/symbols");
+        endpoint(inventoryModule, "GET", "/api/candles/{}/{}");
+
+        RestMatcher.Report report = RestMatcher.match(db.jdbi(), List.of());
+
+        assertThat(report.low()).isZero();
+        assertThat(edges()).singleElement().satisfies(e -> assertThat(e)
+                .containsEntry("client_id", (int) call)
+                .containsEntry("endpoint_id", (int) exact)
+                // MEDIUM, not HIGH: narrowing says WHICH endpoint, not that this client
+                // necessarily reaches this service.
+                .containsEntry("confidence", "MEDIUM")
+                .containsEntry("matched_by", "EXACT_PATH"));
+    }
+
+    @Test
+    void aGenuinelyTemplatedCallStillMatchesLoosely() {
+        // Only a narrowing: when nothing matches exactly, the original set comes back untouched
+        // and behaviour is what it was before the tier existed.
+        long call = client(ordersModule, "RESTTEMPLATE", "GET", "/stock/{}", null, "/stock/{id}");
+        long ep = endpoint(inventoryModule, "GET", "/stock/{sku}".replace("{sku}", "{}"));
+
+        RestMatcher.match(db.jdbi(), List.of());
+
+        assertThat(edges()).singleElement().satisfies(e -> assertThat(e)
+                .containsEntry("client_id", (int) call).containsEntry("endpoint_id", (int) ep)
+                .containsEntry("matched_by", "UNIQUE_PATH"));
+    }
+
+    @Test
+    void twoServicesServingTheIdenticalPathAreStillAmbiguous() {
+        // Exactness narrows; it does not decide. Two repos serving the same literal path is a
+        // real ambiguity and must stay one.
+        client(ordersModule, "RESTTEMPLATE", "GET", "/health", null, "/health");
+        endpoint(billingModule, "GET", "/health");
+        endpoint(inventoryModule, "GET", "/health");
+
+        RestMatcher.Report report = RestMatcher.match(db.jdbi(), List.of());
+
+        assertThat(report.low()).isEqualTo(2);
+        assertThat(edges()).allSatisfy(e -> assertThat(e).containsEntry("matched_by", "AMBIGUOUS"));
+    }
+
+    @Test
+    void aManualEdgeCanNowNameTheExactEndpointItMeant() {
+        long call = client(ordersModule, "TS_HTTP_WRAPPER", "GET", "/api/candles/{}/{}",
+                null, "/api/candles/${type}/${symbol}");
+        endpoint(inventoryModule, "GET", "/api/candles/{}/symbols");
+        long generic = endpoint(inventoryModule, "GET", "/api/candles/{}/{}");
+
+        RestMatcher.Report report = RestMatcher.match(db.jdbi(),
+                List.of(new ManualEdge("svc-orders", "GET", "/api/candles/{}/{}", "inventory")));
+
+        // Before the tier the manual edge's own filter used templatesMatch too, so naming this
+        // path selected BOTH endpoints — the ambiguity it was written to resolve. A human's
+        // explicit correction has to be able to land on one row.
+        assertThat(report.manual()).isEqualTo(1);
+        assertThat(edges()).singleElement().satisfies(e -> assertThat(e)
+                .containsEntry("client_id", (int) call)
+                .containsEntry("endpoint_id", (int) generic)
+                .containsEntry("confidence", "HIGH").containsEntry("matched_by", "MANUAL"));
+    }
 }

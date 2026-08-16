@@ -406,10 +406,32 @@ narrowing `(id: string | number)` to `(id: string)` reads as compatible. It is
 the one mode that cannot run `noLib` — without `lib.es5`, `Promise` and `Date`
 are unknown and every member compares as broken.
 
-**Deliberately still open.** `RestMatcher` has no exact-path tier, so a call to
-`/api/candles/{}/symbols` matches `/api/candles/{}/{}` as well and lands
-LOW/AMBIGUOUS — and `manual_edges` cannot correct it, because its endpoint
-filter uses the same `templatesMatch`. A skipped compat gate is still invisible
-in the review report: a repo that declared `binary-compatible` or
-`type-compatible` and had its gate skipped still exits 0. Both change existing
-Gradle behaviour, so both are sequenced after everything else and revert alone.
+**A specific path is no longer ambiguous against a wildcard it merely overlaps.**
+`templatesMatch` treats `{}` as a wildcard on BOTH sides, so a call to
+`/api/candles/{}/symbols` matched `/api/candles/{}/{}` as well and landed
+LOW/AMBIGUOUS against an endpoint it plainly is not — and `manual_edges` could
+not correct it, because its own endpoint filter used the same `templatesMatch`
+and so selected both endpoints too. `RestMatcher` now narrows a fuzzy candidate
+set to exact template matches when any exist, exactly as
+`KbEntities.resolveEndpoint` already did after the same symptom. Confidence
+stays MEDIUM: narrowing says WHICH endpoint, not that the client reaches that
+service. Purely a narrowing — when nothing matches exactly the original set is
+returned untouched, so a genuinely templated client is unaffected. On the real
+estate this turned four LOW/AMBIGUOUS edges into the two correct MEDIUM ones,
+and every call site in the estate now resolves to exactly one endpoint.
+
+**A compatibility gate that did not run now fails the review.** A repo that
+DECLARED `binary-compatible` or `type-compatible` and whose gate never reached a
+verdict was indistinguishable from one that passed: SUCCEEDED, unmentioned in
+the report, exit 0. The outcome is recorded structurally per repo rather than
+scraped back out of the prose agent events, and `sdd review` exits 2 with a
+`## Compatibility gates that did not run` section. Deliberately narrow: a gate
+that BROKE already failed the repo, a repo that never succeeded is not listed,
+and a plan declaring no guarantee stays silent — a review that warns about every
+run teaches a reader to skip the warning. Writing the record exposed a second
+instance of the same bug, that `compatDrift` returned the same empty report
+whether the jars matched or every pair had been skipped; zero comparisons is now
+SKIPPED, not PASSED.
+
+Both of the above change existing Gradle behaviour, which is why they were
+sequenced after everything else and revert alone.
