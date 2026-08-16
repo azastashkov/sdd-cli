@@ -74,7 +74,15 @@ public final class LinkHarvester {
         List<SourceDoc> pages = new ArrayList<>();
         List<String> notes = new ArrayList<>();
         Set<String> processedUrls = new HashSet<>();
-        Set<String> visitedPageIds = new LinkedHashSet<>();
+        // Task 3 review Fix 4: this set records a page id only once it has ACTUALLY been fetched —
+        // never on a mere resolve. Marking it "visited" before the cap/fetch outcome was known
+        // meant a page rejected for the page cap (or a fetch failure) got the cap-check's `pages`
+        // count bypassed on any later alias URL resolving to the same id: that alias hit the
+        // "cycle, nothing left out" branch and was silently dropped with no note — even though the
+        // page was never fetched at all. Checking `fetchedPageIds.contains` (not `.add`) up front,
+        // and adding only after a successful fetch, means a later alias to a capped or
+        // failed-to-fetch page independently earns its own note.
+        Set<String> fetchedPageIds = new LinkedHashSet<>();
         Deque<Candidate> queue = new ArrayDeque<>(seeds);
 
         while (!queue.isEmpty()) {
@@ -103,7 +111,7 @@ public final class LinkHarvester {
                 notes.add("unresolvable: " + candidate.url());
                 continue;
             }
-            if (!visitedPageIds.add(pageId)) {
+            if (fetchedPageIds.contains(pageId)) {
                 continue;   // cycle / alias: already fetched via a different URL, nothing left out
             }
             if (pages.size() >= maxPages) {
@@ -117,6 +125,7 @@ public final class LinkHarvester {
                 notes.add("fetch failed: " + candidate.url() + " (" + e.getMessage() + ")");
                 continue;
             }
+            fetchedPageIds.add(pageId);
             pages.add(page);
             for (String nested : urlsIn(page.text())) {
                 queue.add(new Candidate(nested, candidate.depth() + 1));
@@ -128,9 +137,14 @@ public final class LinkHarvester {
     /** Bare {@code http(s)://} mentions in plain text. This is intentionally text-based, not
      *  HTML-aware: {@code ConfluenceExtract} (upstream of every document this class ever sees)
      *  keeps an {@code <a>} element's visible text but drops its {@code href}, so a named link
-     *  never survives into extracted text — only a URL pasted as its own visible text does. See
-     *  the Task 3 report for why that is expected to matter less in practice than it sounds
-     *  (Jira remote links are the primary channel on Data Center; see this class's own javadoc). */
+     *  never survives into extracted text this method scans — only a URL pasted as its own
+     *  visible text does. A named link's {@code href} is instead recovered upstream, from the raw
+     *  HTML, by {@code JiraClient.hrefsIn} (Task 3 review Fix 2), and arrives here bundled into
+     *  {@link #harvest}'s {@code remoteLinkUrls} parameter alongside actual Jira remote links —
+     *  this class does not need to know the two apart, since both are depth-1 candidates either
+     *  way. This method also re-scans a FETCHED Confluence page's own extracted text for depth-2
+     *  candidates, where the same href-loss applies but there is no equivalent second pass (a
+     *  Confluence page's storage-format links are not harvested by this Task). */
     static List<String> urlsIn(String text) {
         List<String> urls = new ArrayList<>();
         Matcher m = URL.matcher(text);

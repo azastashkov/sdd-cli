@@ -205,6 +205,32 @@ class LinkHarvesterTest {
     }
 
     @Test
+    void twoDifferentAliasesOfAnOverCapPageEachEarnTheirOwnNoteRatherThanOneSilentlyVanishing() {
+        // Task 3 review Fix 4: marking a page id "visited" before the cap check meant a second,
+        // different URL resolving to the same over-cap page id took the "cycle, nothing left out"
+        // branch and produced no note at all — even though that page was never fetched either
+        // time. Both aliases must independently earn "over the page cap".
+        FakeConfluencePages fake = new FakeConfluencePages()
+                .map("https://confluence.corp.local/pages/viewpage.action?pageId=1", "1")
+                .map("https://confluence.corp.local/x/AbCd", "1");
+        // no .serve("1") at all — if either alias were ever actually fetched, fetchCalls would
+        // record it; maxPages=0 means neither should be.
+        LinkHarvester harvester = new LinkHarvester(fake, "confluence.corp.local", 1, 0);
+        SourceDoc issue = new SourceDoc(SourceDoc.Kind.JIRA_ISSUE, "PROJ-1", null, null, null,
+                "https://confluence.corp.local/pages/viewpage.action?pageId=1 and also "
+                        + "https://confluence.corp.local/x/AbCd which resolves to the same page.", List.of());
+
+        LinkHarvester.Result result = harvester.harvest(List.of(issue), List.of());
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(fake.fetchCalls).isEmpty();
+        assertThat(result.notes()).hasSize(2)
+                .allSatisfy(note -> assertThat(note).contains("over the page cap"));
+        assertThat(result.notes().get(0)).contains("pageId=1");
+        assertThat(result.notes().get(1)).contains("/x/AbCd");
+    }
+
+    @Test
     void confluencePagesAreReturnedInFetchOrder() {
         FakeConfluencePages fake = new FakeConfluencePages()
                 .map("https://confluence.corp.local/pages/viewpage.action?pageId=2", "2")
