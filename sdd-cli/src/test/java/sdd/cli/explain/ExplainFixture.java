@@ -139,6 +139,14 @@ public final class ExplainFixture {
                             + "FROM repo WHERE name = :repo")
                     .bind("repo", repo).execute();
         }
+        // An exported symbol under the specifier a consumer imports, and web-app importing it.
+        // api_usage.target_fqcn is joined by plain string equality, so the TypeScript pair meets
+        // exactly the way a Java one does — which is what makes EntityKind.SYMBOL answerable with
+        // no TypeScript-aware query anywhere.
+        h.execute("INSERT INTO java_type(module_id, fqcn, kind, language, is_api) "
+                + "VALUES (7,'@acme/web-sdk.Tick','INTERFACE','TYPESCRIPT',1)");
+        h.execute("INSERT INTO api_usage(from_module_id, target_fqcn, target_module_id, ref_kind) "
+                + "VALUES (8,'@acme/web-sdk.Tick',7,'IMPORT')");
         FtsSymbolWriter.insert(h, 7, "OrdersModule", "src/orders.ts#OrdersModule", "");
     }
 }

@@ -49,7 +49,7 @@ public final class QuestionInterpreter {
             things it refers to. Return exactly ONE JSON object, no markdown fences:
             {"intent": "describe"|"consumers"|"dependency_path"|"impact"|"search",
              "restatement": string,
-             "entities": [{"kind": "repo"|"endpoint"|"topic"|"class"|"artifact",
+             "entities": [{"kind": "repo"|"endpoint"|"topic"|"class"|"symbol"|"artifact",
                             "value": string, "role": "subject"|"object"}],
              "search_terms": [string, ...]}
             Rules:
@@ -326,7 +326,11 @@ public final class QuestionInterpreter {
             case "endpoint" -> EntityKind.ENDPOINT;
             case "topic" -> EntityKind.TOPIC;
             case "class" -> EntityKind.CLASS;
+            case "symbol" -> EntityKind.SYMBOL;
             case "artifact" -> EntityKind.ARTIFACT;
+            // Silent by design elsewhere, but the caller turns null into a visible note. A kind
+            // added to EntityKind and forgotten here would drop every reference to it without
+            // saying so — this switch is on a STRING, so the compiler cannot catch the omission.
             default -> null;
         };
     }

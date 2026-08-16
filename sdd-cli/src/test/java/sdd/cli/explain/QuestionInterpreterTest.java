@@ -545,4 +545,34 @@ class QuestionInterpreterTest {
                 .contains(sdd.core.kb.KbEntities.missReason(EntityKind.CLASS)));
         assertThat(r.intent()).isEqualTo(Intent.SEARCH);
     }
+
+    @Test
+    void everyEntityKindTheInterpreterCanEmitIsMappedToItsEnum() {
+        // kindOf switches on a STRING, so a kind added to EntityKind and forgotten there compiles
+        // fine and silently drops every reference to it. This walks the enum instead of a list, so
+        // the next kind added cannot pass without being mapped.
+        db.jdbi().useHandle(ExplainFixture::seedNpm);
+        java.util.List<String> unmapped = new java.util.ArrayList<>();
+        for (EntityKind kind : EntityKind.values()) {
+            String word = kind.label();
+            RetrievalRequest r = interpret("q", """
+                    {"intent":"describe","entities":[{"kind":"%s","value":"x","role":"subject"}],
+                     "search_terms":[],"restatement":"r"}""".formatted(word), "stop");
+            if (r.notes().stream().anyMatch(n -> n.contains("unknown kind '" + word + "'"))) {
+                unmapped.add(word);
+            }
+        }
+        assertThat(unmapped).isEmpty();
+    }
+
+    @Test
+    void aKindTheInterpreterDoesNotKnowIsNotedRatherThanDroppedSilently() {
+        RetrievalRequest r = interpret("q", """
+                {"intent":"describe","entities":[{"kind":"module","value":"x","role":"subject"}],
+                 "search_terms":[],"restatement":"r"}""", "stop");
+
+        assertThat(r.entities()).isEmpty();
+        assertThat(r.notes()).anySatisfy(note ->
+                assertThat(note).contains("unknown kind 'module'"));
+    }
 }

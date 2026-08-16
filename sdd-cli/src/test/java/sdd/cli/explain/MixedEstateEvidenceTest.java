@@ -130,4 +130,26 @@ class MixedEstateEvidenceTest {
                         .contains("1 rest_client row(s) with no resolvable path")
                         .contains("web-app"));
     }
+
+    @Test
+    void aTypeScriptExportIsAskedAboutByTheSpecifierAConsumerImports() {
+        Evidence evidence = collect(new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.SYMBOL, "@acme/web-sdk.Tick", false)),
+                List.of(), "who uses Tick", List.of(), false));
+
+        assertThat(allTexts(evidence))
+                .anyMatch(t -> t.contains("web-app uses @acme/web-sdk.Tick"));
+    }
+
+    @Test
+    void aBareTypeNameNeverCrossesFromOneLanguageToTheOther() {
+        // CLASS resolves a dotless name by suffix, which is a JAVA package convention. If the two
+        // shared a kind, the bare name would resolve in both languages inside one citation — the
+        // one place a reader has no way to notice the conflation.
+        Evidence evidence = collect(new RetrievalRequest(Intent.CONSUMERS,
+                List.of(new EntityRef(EntityKind.CLASS, "Tick", false)),
+                List.of(), "who uses Tick", List.of(), false));
+
+        assertThat(allTexts(evidence)).noneMatch(t -> t.contains("@acme/web-sdk.Tick"));
+    }
 }

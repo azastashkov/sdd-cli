@@ -36,7 +36,11 @@ final class ConsumerFacts {
         return switch (resolution.kind()) {
             case REPO -> repoConsumers(jdbi, resolution.value());
             case ENDPOINT -> endpointConsumers(jdbi, resolution);
-            case CLASS -> classConsumers(jdbi, resolution);
+            // One query for both: api_usage.target_fqcn holds whatever name the provider records
+            // its surface under, and a TypeScript import is resolved into it by the same string
+            // equality a Java reference is. Only the label a reader sees differs.
+            case CLASS -> symbolConsumers(jdbi, resolution, "class");
+            case SYMBOL -> symbolConsumers(jdbi, resolution, "symbol");
             case TOPIC -> topicRoles(jdbi, resolution.value());
             case ARTIFACT -> artifactConsumers(jdbi, resolution.value());
         };
@@ -198,7 +202,7 @@ final class ConsumerFacts {
 
     // --- class: api_usage WHERE target_fqcn, grouped by consumer with ref_kind ----------------
 
-    private static List<Section> classConsumers(Jdbi jdbi, Resolution resolution) {
+    private static List<Section> symbolConsumers(Jdbi jdbi, Resolution resolution, String label) {
         TreeSet<String> fqcns = new TreeSet<>();
         for (EntityMatch match : resolution.matches()) {
             fqcns.add(match.detail());
@@ -217,7 +221,7 @@ final class ConsumerFacts {
                             + Attributes.parenthetical(row.get("ref_kind"))))
                     .toList());
         }
-        return List.of(Section.capped("Consumers of class: " + resolution.value(), "api_usage",
+        return List.of(Section.capped("Consumers of " + label + ": " + resolution.value(), "api_usage",
                 facts, Section.MEMBER_LIMIT));
     }
 
