@@ -1,0 +1,25 @@
+{
+  "id": "10002",
+  "key": "PROJ-200",
+  "fields": {
+    "summary": "Pagination cursor design",
+    "status": {"name": "Open"},
+    "updated": "2026-08-15T14:30:00.000+0000",
+    "subtasks": [],
+    "issuelinks": [],
+    "comment": {
+      "comments": [
+        {"id": "10010", "updated": "2026-08-15T15:00:00.000+0000"}
+      ]
+    }
+  },
+  "renderedFields": {
+    "description": "<p>No inline links here, just plain prose about cursors.</p>",
+    "comment": {
+      "comments": [
+        {"id": "10010", "updated": "2026-08-15T15:00:00.000+0000",
+         "body": "<p>See the linked design doc for the wire format.</p>"}
+      ]
+    }
+  }
+}

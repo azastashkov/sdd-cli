@@ -1,0 +1,34 @@
+{
+  "id": "10003",
+  "key": "PROJ-1",
+  "fields": {
+    "summary": "Order API v2",
+    "status": {"name": "In Progress"},
+    "updated": "2026-08-16T09:12:00.000+0000",
+    "subtasks": [
+      {"id": "10004", "key": "PROJ-2", "fields": {"summary": "Implement pagination"}}
+    ],
+    "issuelinks": [
+      {
+        "id": "20001",
+        "type": {"id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+        "outwardIssue": {"id": "10005", "key": "PROJ-3", "fields": {"summary": "Rate limiting"}}
+      },
+      {
+        "id": "20002",
+        "type": {"id": "10001", "name": "Dependency", "inward": "is depended on by", "outward": "depends on"},
+        "outwardIssue": {"id": "10006", "key": "PROJ-4", "fields": {"summary": "Auth token refresh"}}
+      },
+      {
+        "id": "20003",
+        "type": {"id": "10002", "name": "Relates", "inward": "relates to", "outward": "relates to"},
+        "outwardIssue": {"id": "10007", "key": "PROJ-5", "fields": {"summary": "Unrelated cleanup"}}
+      }
+    ],
+    "comment": {"comments": []}
+  },
+  "renderedFields": {
+    "description": "<p>Top-level epic for order API v2.</p>",
+    "comment": {"comments": []}
+  }
+}
