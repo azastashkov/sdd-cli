@@ -288,6 +288,10 @@ public final class Orchestrator {
         String attemptTag = usedTier > 0
                 ? "attempt " + (usedTier + 1) + " (" + ladder.get(usedTier).modelName() + ") " : "";
         if (outcome.result() == StepResult.SUCCESS) {
+            // Before the checkpoint, so a pin the agent moved never reaches the commit a human
+            // reviews or the release runbook publishes from.
+            reassertBumps(repo, step, events);
+            store.writeAgentEvents(runDir, repo, events);
             String sha = RunGit.commitAll(step.repoRoot(), "sdd: " + runId + " " + repo);
             RepoPropagation prop = propagation.getOrDefault(repo, RepoPropagation.none());
             if (prop.publish() != null) {
@@ -530,15 +534,26 @@ public final class Orchestrator {
 
     private void applyBumps(String repo, RepoStep step, List<String> events) {
         for (RepoPropagation.BumpEdit bump : propagation.getOrDefault(repo, RepoPropagation.none()).bumps()) {
-            List<java.nio.file.Path> edited = VersionBump.apply(step.repoRoot(), bump.group(),
-                    bump.name(), bump.oldVersion(), bump.newVersion());
-            String coordinate = bump.group() + ":" + bump.name();
-            if (edited.isEmpty()) {
-                events.add("bump: no declaration of " + coordinate + ":" + bump.oldVersion()
-                        + " found — left unedited");
-            } else {
-                events.add("bump: " + coordinate + " " + bump.oldVersion() + " -> " + bump.newVersion()
-                        + " in " + edited.size() + " file(s)");
+            events.addAll(BumpEdits.apply(step.repoRoot(), bump));
+        }
+    }
+
+    /**
+     * Re-asserts the planned pins over whatever the agent left behind, before the checkpoint commit.
+     *
+     * <p>Which version a consumer declares is the plan's answer, not the agent's: it is computed
+     * from the provider's version_action and is what the release runbook will publish. An agent
+     * told to "update the dependency" has no way to know that number and will guess — observed
+     * live guessing {@code ^0.4.0} against a planned {@code 0.3.0} — so the guess is overwritten
+     * rather than trusted. A bump the agent left alone re-applies to a no-op, so the common case
+     * costs nothing and records nothing.
+     */
+    private void reassertBumps(String repo, RepoStep step, List<String> events) {
+        for (RepoPropagation.BumpEdit bump : propagation.getOrDefault(repo, RepoPropagation.none()).bumps()) {
+            for (String event : BumpEdits.apply(step.repoRoot(), bump)) {
+                if (event.contains(" -> ")) {
+                    events.add("bump reasserted after the agent — " + event);
+                }
             }
         }
     }

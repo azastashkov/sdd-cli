@@ -3,6 +3,7 @@ package sdd.cli.implement;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import sdd.agent.loop.AgentBudget;
 import sdd.agent.run.RepoStep;
 import sdd.agent.run.RepoStepRunner;
 import sdd.agent.run.RunnerSettings;
@@ -50,6 +51,28 @@ class OrchestratorTest {
 
     private static RepoStep step(String repo, Path root) {
         return new RepoStep(repo, root, "edit A", List.of(), List.of("A.java"), List.of(), List.of(), List.of());
+    }
+
+    /** An npm repo declaring one dependency and NO scripts, so nothing is verified and no npm
+     *  subprocess is needed to exercise the bump. */
+    private FixtureRepo npmRepo(String name, String dependency) throws Exception {
+        return FixtureRepo.in(ws, name)
+                .file("package.json", "{\n  \"name\": \"" + name + "\",\n  \"dependencies\": {\n    "
+                        + dependency + "\n  }\n}\n")
+                .commit("base");
+    }
+
+    private static RepoStep npmStep(String repo, Path root) {
+        return new RepoStep(repo, root, "edit package.json", List.of(), List.of("package.json"),
+                List.of(), List.of(), List.of());
+    }
+
+    private Orchestrator npmOrchestrator(ChatModel model, Map<String, RepoPropagation> propagation) {
+        return new Orchestrator(new RepoStepRunner(db.jdbi()),
+                List.of(new Orchestrator.ModelTier(model, "qwen")),
+                repo -> RunnerSettings.npm(null, List.of(), null, AgentBudget.defaults()),
+                new RunStore(InstantSource.fixed(Instant.EPOCH)), 30_000_000L, propagation,
+                new MavenLocalPublisher(), new JarBuilder());
     }
 
     private static PlanModel plan(String libBase, String svcBase) {
@@ -246,6 +269,52 @@ class OrchestratorTest {
         assertThat(Files.readString(lib.path().resolve("build.gradle")))
                 .contains("com.acme:core:1.1.0");
         assertThat(RunGit.isClean(lib.path())).isTrue();   // the bump edit rode the checkpoint commit
+    }
+
+    @Test
+    void anNpmConsumersPinIsMovedToThePlannedVersion() throws Exception {
+        // VersionBump only ever walks Gradle build files, so before the dispatch existed this
+        // coordinate matched nothing and the pin stayed at ^0.2.1 — which does NOT admit 0.3.0.
+        FixtureRepo consumer = npmRepo("consumer", "\"@acme/web-sdk\": \"^0.2.1\"");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("consumer", npmStep("consumer", consumer.path()));
+        Map<String, RepoPropagation> propagation = Map.of("consumer", new RepoPropagation(
+                List.of(new RepoPropagation.BumpEdit("npm", "@acme/web-sdk", "^0.2.1", "0.3.0")), null));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"ok\"}")));
+
+        Orchestrator.RunResult result = npmOrchestrator(model, propagation)
+                .run(runDir, planFor("consumer", consumer.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(0);
+        assertThat(Files.readString(consumer.path().resolve("package.json"))).contains("\"^0.3.0\"");
+        assertThat(RunGit.isClean(consumer.path())).isTrue();   // rode the checkpoint commit
+    }
+
+    @Test
+    void anAgentsGuessedVersionDoesNotSurviveThePlannedBump() throws Exception {
+        // Observed live: told to "update the dependency to the newly released minor version", the
+        // agent invented ^0.4.0 — a version the plan never produces, leaving the consumer pinned to
+        // something nothing publishes. The planned version is the orchestrator's to decide.
+        // The agent's search string also proves ordering: ^0.3.0 is only there if the bump ran first.
+        FixtureRepo consumer = npmRepo("consumer", "\"@acme/web-sdk\": \"^0.2.1\"");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("consumer", npmStep("consumer", consumer.path()));
+        Map<String, RepoPropagation> propagation = Map.of("consumer", new RepoPropagation(
+                List.of(new RepoPropagation.BumpEdit("npm", "@acme/web-sdk", "^0.2.1", "0.3.0")), null));
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "apply_edit",
+                        "{\"path\":\"package.json\",\"search\":\"^0.3.0\",\"replace\":\"^0.4.0\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"bumped it myself\"}")));
+
+        Orchestrator.RunResult result = npmOrchestrator(model, propagation)
+                .run(runDir, planFor("consumer", consumer.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(0);
+        assertThat(Files.readString(consumer.path().resolve("package.json")))
+                .contains("\"^0.3.0\"")
+                .doesNotContain("0.4.0");
+        assertThat(RunGit.isClean(consumer.path())).isTrue();
     }
 
     @Test
