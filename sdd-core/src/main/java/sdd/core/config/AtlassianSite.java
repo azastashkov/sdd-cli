@@ -17,7 +17,7 @@ import java.time.Duration;
  * config loading itself, so an unset {@code ${VAR}} must not block a read-only command that never
  * touches Jira/Confluence/Bitbucket at all. {@code tokenVar} is the extra piece {@code ModelEndpoint}
  * does not need: PATs expire, so the 401 raised at point of use has to name the environment
- * variable to reissue (e.g. {@code $JIRA_PAT}), not just say "unauthorized". It is the env-var name
+ * variable to reissue (e.g. {@code $JIRA_API_KEY}), not just say "unauthorized". It is the env-var name
  * parsed out of a whole-value {@code ${VAR}} reference, and null when the token was a literal —
  * in which case the point-of-use message omits the variable name it does not have.
  */

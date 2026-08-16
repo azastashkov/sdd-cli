@@ -24,7 +24,7 @@
 #
 # Prerequisites:
 #   - The rig is up, all three setup wizards are done, and scripts/atlassian-dc/issue-tokens.sh
-#     has minted JIRA_PAT / CONFLUENCE_PAT / BITBUCKET_PAT into the environment.
+#     has minted JIRA_API_KEY / CONFLUENCE_API_KEY / BITBUCKET_API_KEY into the environment.
 #   - scripts/bitbucket-dc/mirror.sh has already mirrored the estate — this script's Bitbucket
 #     fixture dump reads an already-mirrored repo (--repo, default order-service) rather than
 #     creating one itself.
@@ -61,7 +61,7 @@ Options:
                              what mirror.sh used.
   --help                    Show this help and exit.
 
-Requires JIRA_PAT, CONFLUENCE_PAT, BITBUCKET_PAT in the environment (see issue-tokens.sh).
+Requires JIRA_API_KEY, CONFLUENCE_API_KEY, BITBUCKET_API_KEY in the environment (see issue-tokens.sh).
 Never pass a token on the command line.
 
 Environment overrides:
@@ -100,9 +100,9 @@ require_cmd() {
 require_cmd curl
 require_cmd python3
 
-: "${JIRA_PAT:?JIRA_PAT must be set — see scripts/atlassian-dc/issue-tokens.sh}"
-: "${CONFLUENCE_PAT:?CONFLUENCE_PAT must be set — see scripts/atlassian-dc/issue-tokens.sh}"
-: "${BITBUCKET_PAT:?BITBUCKET_PAT must be set — see scripts/atlassian-dc/issue-tokens.sh}"
+: "${JIRA_API_KEY:?JIRA_API_KEY must be set — see scripts/atlassian-dc/issue-tokens.sh}"
+: "${CONFLUENCE_API_KEY:?CONFLUENCE_API_KEY must be set — see scripts/atlassian-dc/issue-tokens.sh}"
+: "${BITBUCKET_API_KEY:?BITBUCKET_API_KEY must be set — see scripts/atlassian-dc/issue-tokens.sh}"
 
 JIRA_BASE_URL="${JIRA_BASE_URL:-http://localhost:8080}"
 CONFLUENCE_BASE_URL="${CONFLUENCE_BASE_URL:-http://localhost:8090}"
@@ -138,11 +138,11 @@ new_tmp() {
 # Each site's Authorization header goes in its own curl config file (-K), never on curl's own
 # command line — keeps every PAT out of this process's argv (visible to `ps`, even briefly).
 new_tmp JIRA_CONFIG
-echo "header = \"Authorization: Bearer ${JIRA_PAT}\"" > "${JIRA_CONFIG}"
+echo "header = \"Authorization: Bearer ${JIRA_API_KEY}\"" > "${JIRA_CONFIG}"
 new_tmp CONFLUENCE_CONFIG
-echo "header = \"Authorization: Bearer ${CONFLUENCE_PAT}\"" > "${CONFLUENCE_CONFIG}"
+echo "header = \"Authorization: Bearer ${CONFLUENCE_API_KEY}\"" > "${CONFLUENCE_CONFIG}"
 new_tmp BITBUCKET_CONFIG
-echo "header = \"Authorization: Bearer ${BITBUCKET_PAT}\"" > "${BITBUCKET_CONFIG}"
+echo "header = \"Authorization: Bearer ${BITBUCKET_API_KEY}\"" > "${BITBUCKET_CONFIG}"
 
 jira_curl() { curl -sS -K "${JIRA_CONFIG}" "$@"; }
 confluence_curl() { curl -sS -K "${CONFLUENCE_CONFIG}" "$@"; }

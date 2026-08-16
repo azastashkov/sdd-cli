@@ -24,7 +24,7 @@
 # Usage:
 #   ./mirror.sh <workspace-dir> [--yes] [--project KEY] [--bitbucket-base-url URL] [--help]
 #
-# Requires BITBUCKET_PAT in the environment (see issue-tokens.sh) — an access token with
+# Requires BITBUCKET_API_KEY in the environment (see issue-tokens.sh) — an access token with
 # PROJECT_ADMIN/REPO_ADMIN permission on the target project, or enough to create one.
 set -euo pipefail
 
@@ -45,7 +45,7 @@ Options:
   --bitbucket-base-url URL Bitbucket base URL (default: http://localhost:7990).
   --help                   Show this help and exit.
 
-Requires BITBUCKET_PAT in the environment. Never pass a token on the command line.
+Requires BITBUCKET_API_KEY in the environment. Never pass a token on the command line.
 
 Re-runnable: an existing Bitbucket project or repo is reused, not recreated; a checkout
 already re-pointed at Bitbucket is detected (via its 'github' remote) and only re-mirrored,
@@ -91,7 +91,7 @@ require_cmd python3
 
 [[ -n "${WORKSPACE}" ]] || { usage >&2; die "workspace directory argument is required"; }
 [[ -d "${WORKSPACE}" ]] || die "workspace directory does not exist: ${WORKSPACE}"
-: "${BITBUCKET_PAT:?BITBUCKET_PAT must be set — see scripts/atlassian-dc/issue-tokens.sh}"
+: "${BITBUCKET_API_KEY:?BITBUCKET_API_KEY must be set — see scripts/atlassian-dc/issue-tokens.sh}"
 
 BITBUCKET_BASE_URL="${BITBUCKET_BASE_URL%/}"
 
@@ -129,7 +129,7 @@ TMP_DIRS+=("${MIRROR_ROOT}")
 # curl's Authorization header via a config file (-K), not "-H ... $TOKEN" on curl's own command
 # line — keeps the PAT out of this process's argv (visible to `ps`, even briefly).
 new_tmp BEARER_CONFIG
-echo "header = \"Authorization: Bearer ${BITBUCKET_PAT}\"" > "${BEARER_CONFIG}"
+echo "header = \"Authorization: Bearer ${BITBUCKET_API_KEY}\"" > "${BEARER_CONFIG}"
 
 bb_curl() {
     curl -sS -K "${BEARER_CONFIG}" "$@"
@@ -143,12 +143,12 @@ cat > "${ASKPASS}" <<'ASKPASS_EOF'
 #!/usr/bin/env bash
 case "$1" in
     Username*) printf '%s' "x-token-auth" ;;
-    Password*) printf '%s' "${BITBUCKET_PAT}" ;;
+    Password*) printf '%s' "${BITBUCKET_API_KEY}" ;;
 esac
 ASKPASS_EOF
 
 git_authenticated() {
-    GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 BITBUCKET_PAT="${BITBUCKET_PAT}" git "$@"
+    GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 BITBUCKET_API_KEY="${BITBUCKET_API_KEY}" git "$@"
 }
 
 # --- Bitbucket slug/URL conventions, mirroring RemoteGit.java exactly ------------------------

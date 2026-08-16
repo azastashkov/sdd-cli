@@ -278,7 +278,7 @@ public final class RestClient {
         return siteName != null ? siteName : "the server";
     }
 
-    /** "Jira rejected the token in $JIRA_PAT (HTTP 401) — reissue it" — PATs expire, so the
+    /** "Jira rejected the token in $JIRA_API_KEY (HTTP 401) — reissue it" — PATs expire, so the
      *  message has to say which environment variable to reissue, not just "unauthorized". Falls
      *  back to "the configured token" when the token was a literal rather than a {@code ${VAR}}
      *  reference, since there is then no variable name to give. */

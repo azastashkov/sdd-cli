@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # issue-tokens.sh — mint Jira/Confluence/Bitbucket Personal Access Tokens for the local
-# Atlassian Data Center rig, and wire them into ~/.zshrc as the JIRA_PAT / CONFLUENCE_PAT /
-# BITBUCKET_PAT env vars sdd.yml's atlassian: block (and sdd doctor) expect.
+# Atlassian Data Center rig, and wire them into ~/.zshrc as the JIRA_API_KEY / CONFLUENCE_API_KEY /
+# BITBUCKET_API_KEY env vars sdd.yml's atlassian: block (and sdd doctor) expect.
 #
 # Prerequisites (human steps this script does NOT do — see README.md):
 #   - docker compose (in this directory) is up.
@@ -38,7 +38,7 @@ Usage: ${SCRIPT_NAME} [--help]
 
 Mints a Jira PAT, a Confluence PAT, and a Bitbucket access token against the local Atlassian
 Data Center rig (see docker-compose.yml in this directory), and appends them to ~/.zshrc as
-JIRA_PAT / CONFLUENCE_PAT / BITBUCKET_PAT inside a clearly delimited, idempotent block.
+JIRA_API_KEY / CONFLUENCE_API_KEY / BITBUCKET_API_KEY inside a clearly delimited, idempotent block.
 
 Prerequisites:
   - The three containers are up and each has been through its one-time browser setup wizard
@@ -267,9 +267,9 @@ awk -v begin="${BEGIN_MARK}" -v end="${END_MARK}" '
 new_tmp NEW_BLOCK
 {
     echo "${BEGIN_MARK}"
-    echo "export JIRA_PAT=${JIRA_TOKEN}"
-    echo "export CONFLUENCE_PAT=${CONFLUENCE_TOKEN}"
-    echo "export BITBUCKET_PAT=${BITBUCKET_TOKEN}"
+    echo "export JIRA_API_KEY=${JIRA_TOKEN}"
+    echo "export CONFLUENCE_API_KEY=${CONFLUENCE_TOKEN}"
+    echo "export BITBUCKET_API_KEY=${BITBUCKET_TOKEN}"
     if ! grep -q '^[^#]*DEEPSEEK_API_KEY=' "${STRIPPED}"; then
         echo "# export DEEPSEEK_API_KEY=sk-REPLACE_ME"
     fi
@@ -284,9 +284,9 @@ cat "${STRIPPED}" "${NEW_BLOCK}" > "${ZSHRC}"
 echo
 echo "Appended to ${ZSHRC}:"
 echo "${BEGIN_MARK}"
-echo "export JIRA_PAT=$(mask "${JIRA_TOKEN}")"
-echo "export CONFLUENCE_PAT=$(mask "${CONFLUENCE_TOKEN}")"
-echo "export BITBUCKET_PAT=$(mask "${BITBUCKET_TOKEN}")"
+echo "export JIRA_API_KEY=$(mask "${JIRA_TOKEN}")"
+echo "export CONFLUENCE_API_KEY=$(mask "${CONFLUENCE_TOKEN}")"
+echo "export BITBUCKET_API_KEY=$(mask "${BITBUCKET_TOKEN}")"
 tail -n +5 "${NEW_BLOCK}"
 echo
 echo "Run 'source ~/.zshrc' (or open a new shell) before 'sdd doctor' will see these tokens."

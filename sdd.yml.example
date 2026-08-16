@@ -115,14 +115,14 @@ excludes: []              # workspace directories to skip
 #   # (PATs expire) in the error.
 #   jira:
 #     base_url: https://jira.corp.local
-#     token: ${JIRA_PAT}
+#     token: ${JIRA_API_KEY}
 #     timeout_seconds: 30       # default when omitted
 #   confluence:
 #     base_url: https://confluence.corp.local
-#     token: ${CONFLUENCE_PAT}
+#     token: ${CONFLUENCE_API_KEY}
 #   bitbucket:
 #     base_url: https://bitbucket.corp.local
-#     token: ${BITBUCKET_PAT}
+#     token: ${BITBUCKET_API_KEY}
 #     project: TRADING           # the Bitbucket project key repos live under
 #     default_reviewers: [alice, bob]
 #
