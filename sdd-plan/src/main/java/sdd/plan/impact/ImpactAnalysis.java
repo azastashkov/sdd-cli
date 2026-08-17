@@ -25,6 +25,19 @@ public final class ImpactAnalysis {
 
     public static ImpactResult analyze(Jdbi jdbi, Retriever retriever, NormalizedSpec spec,
                                        ChatModel planner, String modelName, int maxTokens) {
+        return analyze(jdbi, retriever, spec, planner, modelName, maxTokens, List.of());
+    }
+
+    /**
+     * @param changes a {@code --since} change set, or empty. Each repo with changed indexed types
+     *     contributes a SEED (not a candidate): a repo whose tracked files changed is a fact, and
+     *     candidates are for guesses. Its changed types join the anchor set, which is what lets the
+     *     annotation ask "does this consumer use the thing that changed" and what promotes those
+     *     types past the drafter's evidence budget.
+     */
+    public static ImpactResult analyze(Jdbi jdbi, Retriever retriever, NormalizedSpec spec,
+                                       ChatModel planner, String modelName, int maxTokens,
+                                       List<ChangeSet.RepoChange> changes) {
         SeedFinder.SeedScan scan = SeedFinder.find(jdbi, retriever, spec);
         ModelSeeder.SeedingOutcome seeding = ModelSeeder.seed(jdbi, spec, scan.seeds(),
                 scan.candidates(), planner, modelName, maxTokens);
@@ -35,6 +48,18 @@ public final class ImpactAnalysis {
             candidateByRepo.putIfAbsent(candidate.repo(), candidate);
         }
         List<Seed> seeds = new ArrayList<>(scan.seeds());
+        Set<String> anchorTypes = new LinkedHashSet<>(scan.anchorTypes());
+        for (ChangeSet.RepoChange change : changes) {
+            if (change.mapped().isEmpty()) {
+                continue;
+            }
+            change.mapped().forEach(f -> anchorTypes.add(f.fqcn()));
+            List<String> names = change.mapped().stream()
+                    .map(f -> f.fqcn().substring(f.fqcn().lastIndexOf('.') + 1)).sorted().toList();
+            seeds.add(new Seed(change.repo(), "git", "changed since " + change.fromSha() + ": "
+                    + change.files().size() + " files, " + change.mapped().size() + " types ("
+                    + String.join(", ", names) + ")"));
+        }
         Set<String> seedKeys = new LinkedHashSet<>();
         for (Seed seed : seeds) {
             seedKeys.add(seed.repo() + "|" + seed.source() + "|" + seed.detail());
@@ -53,6 +78,11 @@ public final class ImpactAnalysis {
         Set<String> touchpointRepos = new LinkedHashSet<>();
         for (Seed seed : scan.seeds()) {
             touchpointRepos.add(seed.repo());
+        }
+        for (ChangeSet.RepoChange change : changes) {
+            if (!change.mapped().isEmpty()) {
+                touchpointRepos.add(change.repo());
+            }
         }
         Set<String> candidateRepos = new LinkedHashSet<>();
         for (Seed candidate : scan.candidates()) {
@@ -115,7 +145,7 @@ public final class ImpactAnalysis {
                 affected.add(new AffectedRepo(root, "seed", "SEED",
                         coversByRepo.getOrDefault(root, List.of()), reasons));
             }
-            expansion = Closure.expand(jdbi, roots, scan.anchorTypes());
+            expansion = Closure.expand(jdbi, roots, anchorTypes);
             affected.addAll(expansion.added());
         }
         warnings.addAll(expansion.warnings());
@@ -145,7 +175,7 @@ public final class ImpactAnalysis {
         }
 
         return new ImpactResult(seeds, affected, excluded, expansion.cycles(),
-                discrepancies, problems, warnings);
+                discrepancies, problems, warnings, anchorTypes);
     }
 
     private static void addSeed(List<Seed> seeds, Set<String> seedKeys, Seed seed) {

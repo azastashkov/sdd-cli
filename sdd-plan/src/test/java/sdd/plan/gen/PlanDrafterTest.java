@@ -344,6 +344,33 @@ class PlanDrafterTest {
     }
 
     @Test
+    void anAnchoredTypeIsPromotedPastTheBudgetEvenThoughTheSpecNeverNamesIt() {
+        // The whole unified diagnosis: the facts are already in the KB, they rank past the budget,
+        // and the only thing that promoted them was the spec naming them — which fails exactly when
+        // the developer does not yet know what to name. An anchor is a source of names that does
+        // not require the human to already have the answer.
+        db.jdbi().useHandle(h -> {
+            for (int i = 0; i < 80; i++) {
+                h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path) VALUES "
+                        + "(1,'com.acme.aaa" + String.format("%03d", i) + ".Filler','CLASS',0,'src/F"
+                        + i + ".java')");
+            }
+            // Sorts last, far beyond TYPE_BUDGET, and the spec says nothing about it.
+            h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path) "
+                    + "VALUES (1,'com.acme.zzz.BuriedImplementor','CLASS',0,'src/Buried.java')");
+        });
+        ImpactResult anchored = new ImpactResult(List.of(), impact().affected(), List.of(),
+                List.of(), List.of(), List.of(), List.of(),
+                java.util.Set.of("com.acme.zzz.BuriedImplementor"));
+
+        String withoutAnchor = PlanDrafter.composeInput(db.jdbi(), spec(), impact(), order(), "");
+        String withAnchor = PlanDrafter.composeInput(db.jdbi(), spec(), anchored, order(), "");
+
+        assertThat(withoutAnchor).doesNotContain("BuriedImplementor");
+        assertThat(withAnchor).contains("BuriedImplementor");
+    }
+
+    @Test
     void priorQaSectionIsAppendedWhenPresent() {
         ScriptedChatModel planner = new ScriptedChatModel(List.of(response(
                 "{\"summary\": \"S.\", \"questions\": [], \"contracts\": [], \"repo_steps\": []}", "stop")));

@@ -350,7 +350,16 @@ public final class PlanDrafter {
             input.append('\n');
         }
         input.append("\n# Knowledge-base evidence\n");
-        Set<String> specTerms = salientTerms(spec);
+        // The spec's vocabulary PLUS the simple names of whatever the analysis anchored on.
+        // That second half is the point: ranking previously promoted only rows the spec named, so a
+        // type the developer had not yet identified — the implementor of a changed interface, a
+        // type touched by a --since commit — ranked past the budget and was never shown, which is
+        // precisely the case where the plan most needed it. An anchor supplies the name without
+        // requiring the human to already know the answer.
+        Set<String> specTerms = new HashSet<>(salientTerms(spec));
+        for (String fqcn : result.anchorTypes()) {
+            specTerms.add(lower(fqcn.substring(fqcn.lastIndexOf('.') + 1)));
+        }
         for (AffectedRepo repo : result.affected()) {
             // The repo's own impact reasons carry the touchpoints and hits that put it in the plan,
             // so they rank its evidence alongside the spec's own vocabulary.

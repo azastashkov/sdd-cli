@@ -1,4 +1,4 @@
-package sdd.plan.gen;
+package sdd.plan.impact;
 
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.diff.DiffEntry;
@@ -18,37 +18,41 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Prototype of the change-set fact source, built to be MEASURED, not shipped.
+ * A git revision range, read as impact-analysis seeds: the developer's own first move — "what
+ * changed in this repo?" — made available to the planner.
  *
- * <p>It answers the one question the diagnosis left open: given a git revision range, can the
- * changed-file set be mapped onto {@code java_type.file_path} mechanically enough to seed impact
- * analysis? Everything here is deliberately kept out of production until that measurement says the
- * feature earns its place.
+ * <p>Measured before it was built. A spec that names a commit sha in prose produced zero seeds and
+ * a blocking "no seeds" question, while this mapping reproduced the change's ground truth exactly:
+ * 3 of 3 changed main-source files onto the right types, with the 4 test files reported as
+ * unmapped rather than silently dropped.
  *
- * <p>Nothing is persisted. A commit table would need a second freshness contract on top of
- * {@code head_commit||':'||dirty_hash}, and a rebase would leave dangling rows that nothing detects
- * — a wrong fact rather than an unread one.
+ * <p><b>Nothing is persisted, deliberately.</b> A commit table would need a second freshness
+ * contract on top of {@code head_commit||':'||dirty_hash}, which says only whether HEAD is indexed
+ * and nothing about whether stored history is complete for an arbitrary range. Worse, a rebase or
+ * force-push would leave dangling rows that nothing in the indexer detects — a KB that answers with
+ * a WRONG fact rather than merely an unread one. Git answers this in milliseconds; the reproducible
+ * artifact is the resolved sha recorded in the seed's provenance, not a cached diff.
  */
-final class ChangeSetProbe {
+public final class ChangeSet {
 
     /** One changed path, and the type it maps to ({@code null} when it maps to none). */
-    record ChangedFile(String path, String changeKind, String fqcn, boolean isApi) {}
+    public record ChangedFile(String path, String changeKind, String fqcn, boolean isApi) {}
 
-    record RepoChange(String repo, String range, String fromSha, String toSha,
+    public record RepoChange(String repo, String range, String fromSha, String toSha,
                       List<ChangedFile> files, String resolution) {
 
-        List<ChangedFile> mapped() { return files.stream().filter(f -> f.fqcn() != null).toList(); }
+        public List<ChangedFile> mapped() { return files.stream().filter(f -> f.fqcn() != null).toList(); }
 
-        List<ChangedFile> unmapped() { return files.stream().filter(f -> f.fqcn() == null).toList(); }
+        public List<ChangedFile> unmapped() { return files.stream().filter(f -> f.fqcn() == null).toList(); }
     }
 
-    private ChangeSetProbe() {
+    private ChangeSet() {
     }
 
     /**
      * @param ranges repo name -> either {@code "<a>..<b>"} or a bare ref meaning {@code "<ref>..HEAD"}
      */
-    static List<RepoChange> compute(Jdbi jdbi, Map<String, String> ranges) {
+    public static List<RepoChange> compute(Jdbi jdbi, Map<String, String> ranges) {
         List<RepoChange> out = new ArrayList<>();
         ranges.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(e -> {
             String repo = e.getKey();
@@ -111,7 +115,7 @@ final class ChangeSetProbe {
     }
 
     /** Renders what these changes would contribute as impact seeds. */
-    static String seedLines(List<RepoChange> changes) {
+    public static String seedLines(List<RepoChange> changes) {
         StringBuilder sb = new StringBuilder();
         for (RepoChange c : changes) {
             if (!"RESOLVED".equals(c.resolution())) {
