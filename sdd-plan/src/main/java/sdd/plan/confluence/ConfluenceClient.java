@@ -46,6 +46,18 @@ public final class ConfluenceClient implements ConfluencePages {
      *  before it is ever sent — see those methods' javadoc. Derived from {@code baseUrl} rather
      *  than accepted as a separate constructor parameter: the two can never disagree this way. */
     private final String confluenceHost;
+    /** Gate re-review Fix 1: {@code hostMatches} originally compared HOST only. {@code
+     *  LinkHarvester}'s URL regex is {@code https?://\S+}, so any Jira commenter could plant a
+     *  plain {@code http://} link to the configured host in an issue or comment — same host,
+     *  matches every existing check, but downgrades the bearer token to cleartext (and, with
+     *  {@code atlassian.proxy} configured, straight through that proxy's access logs). Checked
+     *  alongside {@link #confluenceHost} in {@link #hostMatches} so a scheme downgrade fails
+     *  closed exactly like a host mismatch does. */
+    private final String confluenceScheme;
+    /** Gate re-review Fix 1's other half: an explicit or scheme-default port mismatch (e.g. a
+     *  candidate URL naming a non-standard port on the right host and scheme) is rejected the same
+     *  way — see {@link #effectivePort}. */
+    private final int confluencePort;
     private final DiagnosticWriter diagnostics;
 
     /**
@@ -95,7 +107,12 @@ public final class ConfluenceClient implements ConfluencePages {
         this.token = token;
         this.baseUrl = baseUrl;
         this.timeout = timeout;
-        this.confluenceHost = hostOf(baseUrl);
+        URI baseUri = safeUri(baseUrl);
+        this.confluenceHost = baseUri == null || baseUri.getHost() == null
+                ? null : baseUri.getHost().toLowerCase(Locale.ROOT);
+        this.confluenceScheme = baseUri == null || baseUri.getScheme() == null
+                ? null : baseUri.getScheme().toLowerCase(Locale.ROOT);
+        this.confluencePort = effectivePort(baseUri);
         this.diagnostics = diagnostics;
     }
 
@@ -242,25 +259,54 @@ public final class ConfluenceClient implements ConfluencePages {
         return ex;
     }
 
-    /** Gate review C1: {@code true} only when {@code uri}'s host is exactly the configured
-     *  Confluence host — the one check every request this class sends directly over {@code
-     *  httpClient} (as opposed to through {@code restClient}, which is base-URL-pinned and cannot
-     *  be redirected off it) must pass before the bearer token is attached. A {@code null} host on
-     *  either side never matches (case-insensitively comparing against a {@code null confluenceHost}
-     *  is the "base URL had no host" case, which cannot legitimately occur but must fail closed, not
-     *  open, if it somehow did). */
+    /** Gate review C1 / Gate re-review Fix 1: {@code true} only when {@code uri}'s host, scheme,
+     *  AND (explicit-or-scheme-default) port all match the configured Confluence site — the one
+     *  check every request this class sends directly over {@code httpClient} (as opposed to
+     *  through {@code restClient}, which is base-URL-pinned and cannot be redirected off it) must
+     *  pass before the bearer token is attached. Host-only used to be enough to pass this check
+     *  while still downgrading the token to a plaintext {@code http://} request to the SAME host —
+     *  not a pin bypass (the token never reached another host), but squarely the kind of leak C1
+     *  was about. A {@code null}/unparseable field on either side never matches (fails closed, not
+     *  open, in the "base URL had no host/scheme" case, which cannot legitimately occur). */
     private boolean hostMatches(URI uri) {
         String host = uri.getHost();
-        return host != null && host.equalsIgnoreCase(confluenceHost);
+        String scheme = uri.getScheme();
+        return host != null && host.equalsIgnoreCase(confluenceHost)
+                && scheme != null && scheme.equalsIgnoreCase(confluenceScheme)
+                && effectivePort(uri) == confluencePort;
     }
 
-    private static String hostOf(String url) {
+    private static URI safeUri(String url) {
         try {
-            String host = URI.create(url).getHost();
-            return host == null ? null : host.toLowerCase(Locale.ROOT);
+            return URI.create(url);
         } catch (RuntimeException e) {
             return null;
         }
+    }
+
+    /** {@code uri}'s explicit port, or the scheme's well-known default (443 for https, 80 for
+     *  http) when none was written — so {@code https://host/x} and {@code https://host:443/x} are
+     *  correctly treated as the same port, and a bare {@code http://host/x} (implicit port 80)
+     *  still fails {@link #hostMatches} against an {@code https} (implicit port 443) configured
+     *  site. {@code -1} (never a real port) for a null URI or an unrecognised scheme, so a
+     *  malformed/unparseable base URL fails closed rather than accidentally matching another
+     *  malformed candidate. */
+    private static int effectivePort(URI uri) {
+        if (uri == null) {
+            return -1;
+        }
+        int port = uri.getPort();
+        if (port != -1) {
+            return port;
+        }
+        String scheme = uri.getScheme();
+        if ("https".equalsIgnoreCase(scheme)) {
+            return 443;
+        }
+        if ("http".equalsIgnoreCase(scheme)) {
+            return 80;
+        }
+        return -1;
     }
 
     private String resolveByTitleSearch(String spaceKey, String title) {

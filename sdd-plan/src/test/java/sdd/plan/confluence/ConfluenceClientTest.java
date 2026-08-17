@@ -185,6 +185,39 @@ class ConfluenceClientTest {
         wm.verify(1, getRequestedFor(urlEqualTo("/x/AbCd")));
     }
 
+    @Test
+    void aCleartextHttpLinkToTheSameHostAsAnHttpsConfiguredSiteIsRejectedBeforeAnyRequest() {
+        // Gate re-review Fix 1: hostMatches used to compare HOST only. LinkHarvester's URL regex
+        // is https?://\S+, so any Jira commenter could plant a plain http:// link to the
+        // configured host in an issue/comment — same host, so it used to pass every check — and
+        // downgrade the bearer token to cleartext (and, with atlassian.proxy configured, straight
+        // through that proxy's access logs). This client is configured against an https site;
+        // resolving a same-host http:// candidate must fail closed with zero requests, not
+        // "successfully" reach a real host (confluence.corp.local does not resolve here — a real
+        // attempt would fail this test with a connection/DNS error, not a wrong assertion).
+        RestClient rc = new RestClient("Confluence", "https://confluence.corp.local", "sk-token",
+                "CONFLUENCE_PAT", Duration.ofSeconds(5), HttpClient.newHttpClient());
+        ConfluenceClient httpsClient = new ConfluenceClient(rc, HttpClient.newHttpClient(), "sk-token",
+                "https://confluence.corp.local", Duration.ofSeconds(5));
+
+        String id = httpsClient.resolvePageId("http://confluence.corp.local/x/AbCd");
+
+        assertThat(id).isNull();
+    }
+
+    @Test
+    void aLinkToTheConfiguredHostOnADifferentPortIsRejectedBeforeAnyRequest() {
+        // Gate re-review Fix 1's other half: same host, same scheme, wrong port — must also fail
+        // closed with no request sent.
+        int wrongPort = wm.getPort() + 1;
+        String wrongPortUrl = "http://127.0.0.1:" + wrongPort + "/x/AbCd";
+
+        String id = client().resolvePageId(wrongPortUrl);
+
+        assertThat(id).isNull();
+        wm.verify(0, getRequestedFor(urlEqualTo("/x/AbCd")));
+    }
+
     // --- Gate review I7: the tiny-link request bypasses RestClient, so it must log itself --------
 
     @Test
