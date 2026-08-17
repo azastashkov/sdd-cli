@@ -692,6 +692,111 @@ class RebuildPassTest {
         assertThat(RunGit.currentBranch(lib.path())).isEqualTo(libOriginalBranch);
         assertThat(RunGit.currentBranch(other.path())).isEqualTo(otherOriginalBranch);
     }
+    /**
+     * The one test this task's brief calls out by name: a multi-repo pass where one repo fails to
+     * check out and another's verify call throws must still emit a structurally-complete
+     * start/finish bracket for every repo, plus the phase/detail events a live renderer needs to
+     * show a per-repo line. "verify threw" is forced via a corrupted {@code
+     * gradle-wrapper.properties} distribution version so large that {@code Integer.parseInt} inside
+     * {@code GradleExtractor.jdkMajorFor} throws {@link NumberFormatException} while {@code
+     * javaHomeFor} is evaluated as an argument to {@code rebuild.verify(...)} — inside RebuildPass's
+     * own try, ahead of the actual subprocess call, so this pins the exact catch clause at issue
+     * without needing a real Gradle failure to reach it.
+     */
+    @Test
+    void multiRepoRebuildEmitsAFullStartFinishBracketEvenForFailingRepos() throws Exception {
+        FixtureRepo unstaged = FixtureRepo.in(ws, "unstaged");
+        unstaged.commit("base");
+        String unstagedBase = unstaged.headSha();
+
+        FixtureRepo checkoutFails = FixtureRepo.in(ws, "checkoutFails");
+        gradlewStub(checkoutFails);
+        checkoutFails.commit("base");
+        String checkoutFailsBase = checkoutFails.headSha();
+
+        FixtureRepo verifyThrows = FixtureRepo.in(ws, "verifyThrows");
+        gradlewStub(verifyThrows);
+        // Overwrite with a distribution version so large Integer.parseInt overflows inside
+        // GradleExtractor.jdkMajorFor -> versionAtLeast, forcing javaHomeFor to throw.
+        Files.writeString(verifyThrows.path().resolve("gradle/wrapper/gradle-wrapper.properties"),
+                "distributionUrl=https\\://services.gradle.org/distributions/"
+                        + "gradle-99999999999999999999-bin.zip\n");
+        verifyThrows.commit("base");
+        String verifyThrowsBase = verifyThrows.headSha();
+        String verifyThrowsOriginalBranch = RunGit.currentBranch(verifyThrows.path());
+        String verifyThrowsRunBranch = "sdd/SPEC-9-v1/verifyThrows";
+        RunGit.startBranch(verifyThrows.path(), verifyThrowsRunBranch, verifyThrowsBase);
+        verifyThrows.file("A.java", "class A {}\n").commit("checkpoint");
+        String verifyThrowsCheckpoint = verifyThrows.headSha();
+        RunGit.checkout(verifyThrows.path(), verifyThrowsOriginalBranch);
+
+        writeSddYml(ws);
+        SddConfig config = ConfigLoader.load(ws);
+
+        PlanModel plan = new PlanModel("SPEC-9", 1, "", "",
+                List.of(new PlanModel.PlanRepo("unstaged", "seed", "SEED", "minor", unstagedBase),
+                        new PlanModel.PlanRepo("checkoutFails", "seed", "SEED", "minor", checkoutFailsBase),
+                        new PlanModel.PlanRepo("verifyThrows", "seed", "SEED", "minor", verifyThrowsBase)),
+                List.of(List.of("unstaged"), List.of("checkoutFails"), List.of("verifyThrows")),
+                List.of(), List.of(), List.of());
+
+        RunState state = new RunState("SPEC-9-v1", List.of(
+                // Not SUCCEEDED -> the unstageable() branch, never reaches a checkout at all.
+                new RepoRun("unstaged", RepoState.FAILED, null, null, "boom", null),
+                // SUCCEEDED with a branch that was never created -> RunGit.checkout throws.
+                new RepoRun("checkoutFails", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/never-created",
+                        "deadbeef", "ok", null),
+                new RepoRun("verifyThrows", RepoState.SUCCEEDED, verifyThrowsRunBranch,
+                        verifyThrowsCheckpoint, "ok", null)),
+                null, 0L);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
+        Map<String, Path> paths = Map.of("unstaged", unstaged.path(), "checkoutFails", checkoutFails.path(),
+                "verifyThrows", verifyThrows.path());
+        StringWriter errOut = new StringWriter();
+        RecordingProgress progress = new RecordingProgress();
+
+        RebuildPass.Outcome outcome = RebuildPass.run(
+                Set.of("unstaged", "checkoutFails", "verifyThrows"), plan, state, paths, config,
+                runDir, store, false, new PrintWriter(errOut), progress);
+
+        // All three verdicts are failures, for the three different reasons under test.
+        assertThat(outcome.stagingFailures()).hasSize(2);   // unstaged + checkoutFails
+        assertThat(outcome.rebuilds().get("checkoutFails").ok()).isFalse();
+        assertThat(outcome.rebuilds().get("verifyThrows").ok()).isFalse();
+        assertThat(outcome.rebuilds().get("verifyThrows").log()).startsWith("verification threw: ");
+
+        List<String> events = progress.events();
+        // The phase bracketing the whole per-repo loop is sized to every repo in scope, not just
+        // the ones that end up rebuilt.
+        assertThat(events).contains("phase:rebuild:3");
+        // Every repo gets a start/finish pair, in the SAME relative order the loop visits them,
+        // regardless of which exit path it took out of the per-repo try.
+        assertThat(events).containsSubsequence("start:unstaged", "finish:unstaged",
+                "start:checkoutFails", "finish:checkoutFails",
+                "start:verifyThrows", "finish:verifyThrows");
+        // The repo that reached a real checkout attempt got a "checkout" detail before it failed.
+        assertThat(events).containsSubsequence("start:checkoutFails", "detail:checkout",
+                "finish:checkoutFails");
+        // The repo whose verify() blew up still got its "verify" detail first.
+        assertThat(events).containsSubsequence("start:verifyThrows", "detail:checkout",
+                "detail:verify", "finish:verifyThrows");
+        // The unstageable repo never reached a checkout at all -> no "checkout" detail between its
+        // own start/finish.
+        int unstagedStart = events.indexOf("start:unstaged");
+        int unstagedFinish = events.indexOf("finish:unstaged");
+        assertThat(events.subList(unstagedStart, unstagedFinish + 1)).doesNotContain("detail:checkout");
+        // Every mid-pass warn: still routes through suspend, unconditionally, alongside the new
+        // events — this task must not have disturbed that.
+        assertThat(events).contains("suspend");
+        assertThat(errOut.toString()).contains("warn: could not stage unstaged")
+                .contains("warn: could not stage checkoutFails");
+        // Restore is estate-wide, reported once after the loop (and after "contracts" would have
+        // been, had recheckContracts been true here).
+        assertThat(events).contains("phase:restore:0");
+    }
+
     @Test
     void gateTwoResolvesTheSameVerificationTasksAsImplement() throws Exception {
         // The invariant that was actually broken. RebuildPass carried its own copy of the

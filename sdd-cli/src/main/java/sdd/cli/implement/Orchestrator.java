@@ -792,7 +792,7 @@ public final class Orchestrator {
         };
     }
 
-    /** Never a {@code <repo>: } prefix (standing constraint — {@code RebuildPass.java:100-101}
+    /** Never a {@code <repo>: } prefix (standing constraint — {@code RebuildPass.java:113-114}
      *  documents why that exact shape is load-bearing elsewhere, and this seam obeys the same rule
      *  even though nothing here parses it): leads with "paused:" instead. */
     private static String pauseNote(String repo, String detail) {

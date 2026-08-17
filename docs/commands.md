@@ -405,7 +405,7 @@ something this renderer deliberately does not carry), and the only line it
 ever prints is one `println` per finished item, `"<item>  done"`
 (`PlainProgress.java:32-56`). **Never a `<repo>: ` prefix** — that exact
 shape is load-bearing for `ReviewReport`/`InteractiveReview.replaceForRepos`
-to parse (`RebuildPass.java:100-101`) — a mid-pass `note`/`suspend` message is
+to parse (`RebuildPass.java:113-114`) — a mid-pass `note`/`suspend` message is
 passed straight through unchanged instead.
 
 **Live (TTY):** a single self-updating line — `\r` + space-padding +
@@ -422,7 +422,7 @@ wants (`LiveProgress.java:295-332`) — three shapes share the same model:
 
 | Shape | Example | When |
 |---|---|---|
-| Sequential | `4/11  order-service  gradle extract  0:42` | exactly one item in flight (`index`'s per-repo loop) |
+| Sequential | `4/11  order-service  gradle extract  0:42` | exactly one item in flight (`index`'s per-repo loop, `review`'s rebuild pass) |
 | Parallel | `3/11 done  running: order-service 4:12, billing 1:07 (+1)  12:45` | more than one item in flight (`implement`'s scheduler) |
 | Idle | `impact analysis  0:15` | a `phase()` with no `start`/`finish` calls at all (`plan`) |
 
@@ -431,10 +431,9 @@ oldest-first — insertion order in a `LinkedHashMap` already is start order,
 so nothing has to re-sort per tick and the two shown names cannot flicker
 between adjacent repos (`LiveProgress.java:74-77, 313-332`). A phase with no
 items in flight and no phase name at all (nothing has called `phase()`
-yet, or `review`'s rebuild pass below, which never does) renders an empty
-string, and `paintLocked` short-circuits on it — a renderer nobody has
-emitted an event to writes nothing at all, not even a bare `\r` and 80
-spaces (`LiveProgress.java:261-271, 334-339`).
+yet) renders an empty string, and `paintLocked` short-circuits on it — a
+renderer nobody has emitted an event to writes nothing at all, not even a
+bare `\r` and 80 spaces (`LiveProgress.java:261-271, 334-339`).
 
 **What each wired command reports:**
 
@@ -457,11 +456,26 @@ spaces (`LiveProgress.java:261-271, 334-339`).
   a pause belongs to the one repo that hit it, not to the whole run, and
   sibling repos already in flight in the same parallel layer keep running
   after it (`Orchestrator.java:132, 778-785`).
-- **`review`** — narrower than the other three by design: `RebuildPass.run`
-  never calls `phase`/`start`/`finish`/`detail` at all, so a live terminal
-  shows no advancing per-repo line while the rebuild runs (and, since an
-  event-less `LiveProgress` now renders nothing at all, no stray `\r` +
-  80-space frame either). What `Progress` actually does here is keep a
+- **`review`** — one estate-wide `"rebuild"` phase sized to every repo
+  `Scheduler.sequence` visits (not just the ones actually rebuilt — a
+  provider staged only as an upstream tree, or a repo that never reached
+  `SUCCEEDED`, still gets a `start`/`finish` pair), with `start`/`finish`
+  bracketing the WHOLE per-repo body in one `try`/`finally` — the same
+  structural fix `IndexService`'s per-repo loop uses — so `finish` fires
+  whichever of the loop's several exits a repo took: an unstageable
+  repo, a failed checkout, a repo outside the rebuild subset, one with no
+  locally-runnable verification, or `verify` itself throwing
+  (`RebuildPass.java:96-206`). Within a repo's bracket, `detail` marks the
+  sub-steps actually worth sitting through: the checkpoint checkout, npm
+  provider overlay staging (only for an `NPM_OVERLAY` consumer), and
+  `verify` — the true long pole, since `EstateRebuild.verify` shells out to
+  gradle/npm per task with a 15-minute-per-task timeout
+  (`RebuildPass.java:134, 177, 188`). After the loop, re-checking actualized
+  contracts against fresh extraction is its own `"contracts"` phase (it runs
+  once over the whole staged estate, not per repo), and restoring every
+  checked-out repo to its original branch/commit in the outer `finally` is a
+  `"restore"` phase for the same reason (`RebuildPass.java:213, 219`). What
+  `Progress` ALSO still does here, unchanged by any of the above: keep a
   mid-pass finding from colliding with a live frame — every `` warn: `` line
   this pass can print (a failed checkout, a repo with no checkpoint to stage
   at all, a failed restore back to the original branch) is routed through
@@ -469,7 +483,7 @@ spaces (`LiveProgress.java:261-271, 334-339`).
   unconditionally (even under `Progress.noOp()`, since these are review
   findings, not progress chrome), and repaints — and guarantees the line is
   erased, via `stop()`, before `report.md`'s own first line prints
-  (`RebuildPass.java:73-74, 139-141, 200-201, 216-217`; `ReviewCommand.java:110,
+  (`RebuildPass.java:73-74, 153-155, 231-232, 247-248`; `ReviewCommand.java:110,
   180, 191`).
 - **`plan`** — named phases around `PlanCommand.validate`'s four expensive
   calls: `"impact analysis"`, then `"execution order"`, `"open questions"`
@@ -757,7 +771,7 @@ since the crashed run is exactly the one a human needs to see.
 
 **Known scope limitation, carried from earlier phases:** the rebuild pass
 covers only repos in state `SUCCEEDED`, not "every affected repo"
-(`RebuildPass.java:102-106`) — a repo that never ran, or that `FAILED`, is not
+(`RebuildPass.java:115-119`) — a repo that never ran, or that `FAILED`, is not
 rebuilt.
 
 A repo that DECLARED `compat: binary-compatible` or `compat: type-compatible` and

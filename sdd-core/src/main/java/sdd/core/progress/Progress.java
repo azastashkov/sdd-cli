@@ -56,7 +56,7 @@ public interface Progress {
      *  on its own line rather than being overwritten by the next frame — e.g. an orchestrator-level
      *  pause note. Every implementation passes the text through unchanged: never a {@code <repo>: }
      *  prefix, which {@code ReviewReport}/{@code InteractiveReview.replaceForRepos} parse ({@code
-     *  RebuildPass.java:100-101}) — that formatting is the caller's job, not this seam's. Unlike
+     *  RebuildPass.java:113-114}) — that formatting is the caller's job, not this seam's. Unlike
      *  {@link #suspend}, a {@link #noOp()}/stopped renderer may legitimately drop this text
      *  entirely: it is progress-adjacent commentary, not data the caller has anywhere else to put. */
     void note(String text);

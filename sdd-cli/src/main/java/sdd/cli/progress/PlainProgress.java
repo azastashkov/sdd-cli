@@ -13,7 +13,7 @@ import java.io.PrintWriter;
  * {@code println}, append-only. {@link #note} is passed straight through unchanged, so {@code
  * RebuildPass}'s {@code warn:} lines read identically whether progress reporting is on or off.
  *
- * <p>Never uses a {@code <repo>: } prefix ({@code RebuildPass.java:100-101}: that exact shape is
+ * <p>Never uses a {@code <repo>: } prefix ({@code RebuildPass.java:113-114}: that exact shape is
  * load-bearing for {@code ReviewReport}/{@code InteractiveReview.replaceForRepos} to parse) — the
  * finished-item line is {@code "<item>  done"} (two spaces, no colon), and {@link #note} never
  * adds a prefix of its own at all.
