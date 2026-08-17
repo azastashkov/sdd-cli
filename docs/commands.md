@@ -57,9 +57,9 @@ answer instead of a reassuring one.
 
 ### 1. Verified by test
 
-The Jira/Confluence/Bitbucket integration is exercised by 1,572 tests
-(`sdd-core` 324, `sdd-cli` 667, `sdd-index` 242, `sdd-plan` 219, `sdd-agent`
-120 — `./gradlew build`, current tree) against WireMock stand-ins for all
+The Jira/Confluence/Bitbucket integration is exercised by 1,591 tests
+(`sdd-core` 331, `sdd-cli` 671, `sdd-index` 242, `sdd-plan` 227, `sdd-agent`
+120 — `./gradlew clean build`, current tree) against WireMock stand-ins for all
 three products and real local bare git repositories for the push/clone path.
 **Say plainly what this proves and does not prove:** it proves `sdd`'s own
 code does what its authors think it does WHEN the server responds exactly
