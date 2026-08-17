@@ -92,10 +92,17 @@ public final class JiraWriteBack {
             config = ConfigLoader.load(workspace);
             atlassian = config.atlassian();
         } catch (RuntimeException e) {
-            // No atlassian: is known yet at this point — there is no secret set to build a
-            // diagnostics writer's Redactor from, so (unlike the setup failure below) this one
-            // genuinely has no file to be written into. I4's fix (ConfigLoader no longer echoes
-            // the raw YAML node into its error messages) is what keeps this message itself safe.
+            // Gate re-review Fix 3: the ORIGINAL comment here claimed "this one genuinely has no
+            // file to be written into" — true for Gate 1 (ApproveCommand always passes null, see
+            // the 6-arg overload above) but FALSE for Gate 2: ReviewCommand passes run.diagnostics(),
+            // an ALREADY-OPEN writer, before this method ever runs — see RunContext.load. So a
+            // config re-read failure during `sdd review` used to leave that open file with no
+            // record of why. Logged against the caller-supplied `diagnostics` parameter directly
+            // (not `effectiveDiagnostics`, which does not exist yet at this point) — a no-op when
+            // it is null, exactly Gate 1's case.
+            if (diagnostics != null) {
+                diagnostics.failure("jira write-back config", e);
+            }
             err.println("  warn: jira comment failed: " + Failures.message(e));
             return;
         }
@@ -105,6 +112,11 @@ public final class JiraWriteBack {
             return;
         }
         boolean ownsDiagnostics = diagnostics == null;
+        // Safe to call OUTSIDE a try/catch of its own only because Diagnostics.open wraps its
+        // entire body and is documented to never throw (falls back to DiagnosticWriter.noOp() on
+        // any internal failure) — this method's own "never throws" promise (see class javadoc)
+        // depends on that. If Diagnostics.open is ever narrowed to let an exception escape, this
+        // call becomes the first place that promise silently breaks.
         DiagnosticWriter effectiveDiagnostics = ownsDiagnostics
                 ? Diagnostics.open(workspace, "jira-write-back", List.of("jira-write-back"), atlassian,
                         InstantSource.system(), err)
