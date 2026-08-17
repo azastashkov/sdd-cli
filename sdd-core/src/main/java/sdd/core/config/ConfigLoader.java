@@ -209,7 +209,12 @@ public final class ConfigLoader {
 
     private static AtlassianConfig parseAtlassian(Object node, Function<String, String> env) {
         if (!(node instanceof Map<?, ?> m)) {
-            throw new ConfigException("atlassian must be a mapping, got: " + node);
+            // Gate review I4: unlike every other "must be a mapping" message in this file, the
+            // atlassian.* messages used to echo the raw node — and sdd.yml permits a LITERAL token
+            // (AtlassianSite.tokenVar() is then null), so a malformed block echoed the secret
+            // straight to stdout. Matches the pre-existing models."X" must be a mapping" convention
+            // (no node echoed) across every atlassian.* message below.
+            throw new ConfigException("atlassian must be a mapping");
         }
         AtlassianTls tls = m.get("tls") == null ? null : parseAtlassianTls(m.get("tls"), env);
         AtlassianProxy proxy = m.get("proxy") == null ? null : parseAtlassianProxy(m.get("proxy"), env);
@@ -235,7 +240,7 @@ public final class ConfigLoader {
 
     private static AtlassianTls parseAtlassianTls(Object node, Function<String, String> env) {
         if (!(node instanceof Map<?, ?> m)) {
-            throw new ConfigException("atlassian.tls must be a mapping, got: " + node);
+            throw new ConfigException("atlassian.tls must be a mapping");
         }
         String truststore = requiredAt(m, "truststore", "atlassian.tls", env);
         Object rawPassword = m.get("truststore_password");
@@ -257,7 +262,7 @@ public final class ConfigLoader {
 
     private static AtlassianProxy parseAtlassianProxy(Object node, Function<String, String> env) {
         if (!(node instanceof Map<?, ?> m)) {
-            throw new ConfigException("atlassian.proxy must be a mapping, got: " + node);
+            throw new ConfigException("atlassian.proxy must be a mapping");
         }
         String host = requiredAt(m, "host", "atlassian.proxy", env);
         Object rawPort = m.get("port");
@@ -274,7 +279,9 @@ public final class ConfigLoader {
     // this site is reported at.
     private static AtlassianSite parseAtlassianSite(String path, Object node, Function<String, String> env) {
         if (!(node instanceof Map<?, ?> m)) {
-            throw new ConfigException(path + " must be a mapping, got: " + node);
+            // Gate review I4: this is the one path a LITERAL token can reach (a human pasting a raw
+            // PAT instead of a mapping) — echoing `node` here is precisely the secret-leak case.
+            throw new ConfigException(path + " must be a mapping");
         }
         String baseUrl = requiredAt(m, "base_url", path, env);
         Object rawToken = m.get("token");
@@ -304,7 +311,7 @@ public final class ConfigLoader {
 
     private static BitbucketSite parseBitbucketSite(Object node, Function<String, String> env) {
         if (!(node instanceof Map<?, ?> m)) {
-            throw new ConfigException("atlassian.bitbucket must be a mapping, got: " + node);
+            throw new ConfigException("atlassian.bitbucket must be a mapping");
         }
         AtlassianSite site = parseAtlassianSite("atlassian.bitbucket", node, env);
         String project = requiredAt(m, "project", "atlassian.bitbucket", env);

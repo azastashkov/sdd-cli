@@ -813,6 +813,19 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void aMalformedAtlassianJiraBlockContainingALiteralTokenDoesNotEchoItInTheErrorMessage() throws Exception {
+        // Gate review I4: sdd.yml permits a LITERAL token (AtlassianSite.tokenVar() is then null),
+        // so "atlassian.jira must be a mapping, got: <node>" printed that literal token straight to
+        // stdout the moment a human pasted a raw PAT where a mapping belonged. The message must
+        // name the problem without ever echoing the offending value.
+        assertThatThrownBy(() -> ConfigLoader.load(
+                write(MINIMAL + "atlassian:\n  jira: super-secret-jira-pat-xyz\n"), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.jira")
+                .hasMessageNotContaining("super-secret-jira-pat-xyz");
+    }
+
+    @Test
     void nonMappingBitbucketFails() throws Exception {
         assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + "atlassian:\n  bitbucket: oops\n"), ATLASSIAN_ENV))
                 .isInstanceOf(ConfigException.class)
