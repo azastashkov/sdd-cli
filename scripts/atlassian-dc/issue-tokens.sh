@@ -182,12 +182,18 @@ print(json.dumps({"name": name, "expirationDuration": days}))
         "${base_url}/rest/pat/latest/tokens") \
         || die "${label}: PAT creation request failed against ${base_url} — is it up and past the setup wizard?"
 
+    # Gate review I5: curl -f already guarantees a 2xx here, so the response body IS a successful
+    # PAT-creation response containing a LIVE token — printing it in full (as an earlier version
+    # did) leaked exactly the secret this whole script exists to mint safely, on the precise
+    # field-name uncertainty this repo's own README documents as unverified. Report the response's
+    # KEYS only: enough to diagnose a wrong field name without ever printing a value.
     token=$(printf '%s' "${response}" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
 tok = data.get("rawToken")
 if not tok:
-    sys.exit("no rawToken in response: " + json.dumps(data))
+    keys = sorted(data.keys()) if isinstance(data, dict) else []
+    sys.exit("no rawToken in response — response keys: " + ", ".join(keys))
 print(tok)
 ') || die "${label}: could not parse rawToken from response"
 
@@ -216,12 +222,14 @@ print(json.dumps({"name": name, "permissions": ["PROJECT_ADMIN", "REPO_ADMIN"], 
         "${base_url}/rest/access-tokens/1.0/users/${ADMIN_USER}") \
         || die "bitbucket: PAT creation request failed against ${base_url} — is it up and past the setup wizard?"
 
+    # Gate review I5: same as issue_pat above — never print the response body, only its keys.
     token=$(printf '%s' "${response}" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
 tok = data.get("token")
 if not tok:
-    sys.exit("no token in response: " + json.dumps(data))
+    keys = sorted(data.keys()) if isinstance(data, dict) else []
+    sys.exit("no token in response — response keys: " + ", ".join(keys))
 print(tok)
 ') || die "bitbucket: could not parse token from response"
 
@@ -280,6 +288,10 @@ new_tmp NEW_BLOCK
 } > "${NEW_BLOCK}"
 
 cat "${STRIPPED}" "${NEW_BLOCK}" > "${ZSHRC}"
+# Gate review I5: this file now carries three raw PATs in plain text. The write above creates it
+# (or rewrites it) under the ambient umask — 0644 is common — which leaves it group/world
+# readable on a shared machine. Lock it down explicitly rather than trusting the umask.
+chmod 600 "${ZSHRC}"
 
 echo
 echo "Appended to ${ZSHRC}:"

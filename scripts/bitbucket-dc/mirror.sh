@@ -303,7 +303,13 @@ mirror_repo() {
 repoint_origin() {
     local dir="$1" github_url="$2" target_url="$3"
     if ! git -C "${dir}" remote get-url github >/dev/null 2>&1; then
-        git -C "${dir}" remote add github "${github_url}"
+        # Gate review minor: github_url can carry embedded credentials (see redact_url's own
+        # comment above — a corporate url.<credentialed>.insteadOf rewrite rule, observed in
+        # exactly this shape while testing this script). mirror_repo's clone above already used
+        # the real, unredacted URL — that git operation is over by the time this runs — but THIS
+        # add writes the URL durably into a real checkout's .git/config, so it is redacted first,
+        # the same way this script already redacts every URL it PRINTS.
+        git -C "${dir}" remote add github "$(redact_url "${github_url}")"
     fi
     if git -C "${dir}" remote get-url origin >/dev/null 2>&1; then
         git -C "${dir}" remote set-url origin "${target_url}"
