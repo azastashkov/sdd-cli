@@ -119,6 +119,71 @@ in the evidence and to omit rather than guess.
 
 ---
 
+## Case 3 — the change-set half: `--since` is justified, and the mapping is exact
+
+Ground truth is a real commit: `8e54df6` in trading-platform-libs, *"live re-tier via
+unsub-then-resub + tier.update consumer"* — the commit that introduced `TierUpdateListener` and the
+`pricing.tier.updates.received` counter. 7 files changed, 3 of them main source.
+
+**The gating risk is clear.** `java_type.file_path` is repo-root-relative and forward-slashed, and
+**0** rows estate-wide contain `../`, `/private/var`, or an absolute path. It joins directly with
+JGit `DiffEntry` paths, so the change-set mapping needs no normalization on this estate.
+
+**Today, case 3a blocks.** The spec names the commit sha in prose; the pipeline cannot use it:
+
+```
+seeds:      []
+blocking:   ["no seeds: add touchpoints to the spec or check the knowledge base"]
+candidates: [trading-core(fts: R1 hit: GenericKey),
+             trading-platform-libs(fts: R1 hit: FeedStatusPublisher),
+             trading-ops(fts: R2 hit: build), …]
+```
+
+Prose seeding is noise again — `hit: build` from "must continue to build", `hit: GenericKey`.
+
+**The prototype reproduces ground truth exactly** (`ChangeSetProbe`, JGit tree-to-tree over
+`8e54df6^..8e54df6`, mapped onto `java_type.file_path`):
+
+| changed path | mapped |
+|---|---|
+| `…/PricingCoreAutoConfiguration.java` (M) | `com.trading.pricing.core.PricingCoreAutoConfiguration` `[api]` |
+| `…/SubscriptionReconciler.java` (M) | `com.trading.pricing.core.SubscriptionReconciler` `[api]` |
+| `…/TierUpdateListener.java` (A) | `com.trading.pricing.core.TierUpdateListener` `[api]` |
+| 4 × `src/test/…` | *(no indexed type)* — reported, not silently dropped |
+
+3/3 main files map to exactly one type each; `Closure.expand` from that single git seed reaches the
+same five dependents the declared run reaches. **Prediction P1 is met on both arms — build it.**
+
+**And it beats anchoring on completeness.** Case 3b (the same spec plus
+`class: TierUpdateListener` / `class: SubscriptionReconciler`) plans cleanly — but writing those
+touchpoints *is* the git archaeology the developer wanted the tool to do. The change set also names
+`PricingCoreAutoConfiguration`, which a human hand-writing touchpoints would plausibly miss.
+
+**The same truncation mechanism as case 2, confirmed independently.** All three changed types rank
+**56, 59 and 62** in platform-libs against `TYPE_BUDGET = 25`:
+
+| type in prompt | 3a (sha in prose) | 3b (anchored) |
+|---|---|---|
+| `TierUpdateListener` | **0** | 4 |
+| `SubscriptionReconciler` | **0** | 6 |
+| `PricingCoreAutoConfiguration` | 1 *(incidental member line, not a type line)* | 2 |
+
+---
+
+## The unified diagnosis
+
+Cases 2 and 3 fail by one mechanism:
+
+> **Everything the planner needs is already in the KB. It ranks past the evidence budget, and the
+> only thing that promotes it is the spec naming it — which fails exactly when the developer does
+> not yet know what to name.**
+
+That reframes both remaining fact candidates. A subtype table and a `--since` change set are **not
+discovery mechanisms** — they are *sources of names* feeding `PlanDrafter.ranked()`'s `terms` set,
+so the facts already present get promoted past the budget. Which is a far smaller change than a
+fact layer, and it explains why anchoring rescues every case: anchoring is the human supplying the
+names by hand.
+
 ## What this does to the candidate fixes
 
 **Subtype identity table — repositioned, not killed, and now much cheaper.** My prediction said
@@ -145,7 +210,9 @@ were prose noise (`hit: build`). Improving the ranking of a list that changes no
 table's value is specifically: let an author name a metric without first knowing which class emits
 it. Real, and clearly narrower than "the plan can't be made".
 
-**Git change-set seeding — untested so far.** Case 3 is not yet built.
+**Git change-set seeding — BUILT AND JUSTIFIED.** See case 3 above: it blocks today, and the
+prototype maps 3/3 changed main files onto exactly the right types. Its value is as a *source of
+names* for the ranking, not as a discovery mechanism.
 
 ---
 
@@ -180,6 +247,8 @@ documented deterministic-only path.
 
 ## Not yet measured
 
-Case 3 (`--since` / change-set) and case 4 (rebuild-only annotation accuracy) are not built. No
-Layer-2 run against the real CLI yet, so blocking-question *rendering*, `plan.json`'s
-`repo_steps[].files`, and determinism of the hashed artifact are unmeasured.
+Case 4 (rebuild-only annotation accuracy) is not built. No Layer-2 run against the real CLI yet, so
+blocking-question *rendering*, `plan.json`'s `repo_steps[].files`, and determinism of the hashed
+artifact are unmeasured. The change-set prototype is measured only against a single-commit range on
+one repo; multi-commit ranges, renames, and deletions are untested, as is any repo whose modules sit
+outside the repo directory (an included build), where the path join could still break.
