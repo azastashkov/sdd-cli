@@ -18,6 +18,7 @@ import sdd.core.http.HttpClients;
 import sdd.core.http.RestClient;
 import sdd.core.llm.ChatModel;
 import sdd.core.llm.HttpChatModel;
+import sdd.core.progress.Progress;
 import sdd.core.retrieve.FtsRetriever;
 import sdd.plan.confluence.ConfluenceClient;
 import sdd.plan.confluence.ConfluenceExportSource;
@@ -83,40 +84,55 @@ public final class PlanCommand implements Callable<Integer> {
 
     ChatModel plannerForTest;   // test seam — mirrors IndexService's injectable ChatModel
 
+    /** Test seam — mirrors {@code IndexCommand.progressForTest}/{@code ReviewCommand.progressForTest}:
+     *  {@code null} in real use, where {@link #call} falls back to {@link SddCli#resolve}. */
+    Progress progressForTest;
+
     private static final int SEED_MAX_ATTEMPTS = 2;   // assistive calls fail fast — analysis degrades, reruns are cheap
 
     @Override
     public Integer call() {
         PrintWriter outWriter = spec.commandLine().getOut();
         PrintWriter errWriter = spec.commandLine().getErr();
-        if (refs.isEmpty() && texts.isEmpty()) {
-            errWriter.println("error: missing required parameter: <ref>");
-            return 1;
-        }
-        List<SpecRefKind> kinds = refs.stream().map(SpecSources::classify).toList();
-        long markdownRefs = kinds.stream().filter(k -> k == SpecRefKind.MARKDOWN).count();
-        // A canonical spec is already normalized — combining it with any other ref or with
-        // --text (including a second canonical ref) is meaningless, so both shapes reject here.
-        if (markdownRefs > 1 || (markdownRefs == 1 && (refs.size() > 1 || !texts.isEmpty()))) {
-            errWriter.println("error: a canonical spec ref cannot be combined with other sources");
-            return 1;
-        }
-        SddConfig config;
+        // Resolved before anything else, stopped in the finally below on every return path — same
+        // reasoning as IndexCommand/ReviewCommand (design doc, "Arming": "Pair it with try/finally
+        // in the command"). Only the validate() path (a canonical spec ref) ever paints anything;
+        // the normalize()/normalizeWithAtlassian() paths never call a Progress method (see their
+        // javadoc for why), so resolving here regardless just guarantees the live renderer's
+        // ticker thread — if one was armed — is always stopped rather than leaked on those paths.
+        Progress progress = progressForTest != null ? progressForTest : SddCli.resolve(spec);
         try {
-            config = ConfigLoader.load(workspace);
-        } catch (RuntimeException e) {
-            errWriter.println("error: " + e.getMessage());
-            return 1;
-        }
-        boolean hasAtlassianRefs = kinds.stream().anyMatch(k -> k == SpecRefKind.JIRA || k == SpecRefKind.CONFLUENCE_PAGE);
-        try {
-            if (markdownRefs == 1) {
-                return validate(config, refs.get(0), outWriter, errWriter);
+            if (refs.isEmpty() && texts.isEmpty()) {
+                errWriter.println("error: missing required parameter: <ref>");
+                return 1;
             }
-            return hasAtlassianRefs ? normalizeWithAtlassian(config, kinds, outWriter) : normalize(config, outWriter);
-        } catch (RuntimeException e) {
-            errWriter.println("error: " + e.getMessage());
-            return 1;
+            List<SpecRefKind> kinds = refs.stream().map(SpecSources::classify).toList();
+            long markdownRefs = kinds.stream().filter(k -> k == SpecRefKind.MARKDOWN).count();
+            // A canonical spec is already normalized — combining it with any other ref or with
+            // --text (including a second canonical ref) is meaningless, so both shapes reject here.
+            if (markdownRefs > 1 || (markdownRefs == 1 && (refs.size() > 1 || !texts.isEmpty()))) {
+                errWriter.println("error: a canonical spec ref cannot be combined with other sources");
+                return 1;
+            }
+            SddConfig config;
+            try {
+                config = ConfigLoader.load(workspace);
+            } catch (RuntimeException e) {
+                errWriter.println("error: " + e.getMessage());
+                return 1;
+            }
+            boolean hasAtlassianRefs = kinds.stream().anyMatch(k -> k == SpecRefKind.JIRA || k == SpecRefKind.CONFLUENCE_PAGE);
+            try {
+                if (markdownRefs == 1) {
+                    return validate(config, refs.get(0), outWriter, errWriter, progress);
+                }
+                return hasAtlassianRefs ? normalizeWithAtlassian(config, kinds, outWriter) : normalize(config, outWriter);
+            } catch (RuntimeException e) {
+                errWriter.println("error: " + e.getMessage());
+                return 1;
+            }
+        } finally {
+            progress.stop();
         }
     }
 
@@ -366,7 +382,8 @@ public final class PlanCommand implements Callable<Integer> {
         return slug.isBlank() ? "spec" : slug;
     }
 
-    private Integer validate(SddConfig config, String ref, PrintWriter outWriter, PrintWriter errWriter) {
+    private Integer validate(SddConfig config, String ref, PrintWriter outWriter, PrintWriter errWriter,
+            Progress progress) {
         NormalizedSpec parsed = new MarkdownSpecSource().load(ref);
         List<String> problems = SpecValidator.problems(parsed);
         if (!problems.isEmpty()) {
@@ -392,14 +409,31 @@ public final class PlanCommand implements Callable<Integer> {
             }
             ModelEndpoint planner = config.models().get("planner");
             ChatModel model = plannerForTest != null ? plannerForTest : new HttpChatModel(planner, SEED_MAX_ATTEMPTS);
+
+            progress.phase("impact analysis");
             ImpactResult result = ImpactAnalysis.analyze(db.jdbi(), new FtsRetriever(db.jdbi()),
                     parsed, model, planner.model(), planner.maxTokens());
-            printImpact(outWriter, result);
+            // printImpact is a report block, but — unlike IndexCommand/ReviewCommand — it prints
+            // midway through this method, with execution-order/open-questions/drafting still to
+            // come: stop() would END the session, leaving those later phases nothing to paint
+            // into. suspend() is exactly this seam's tool for "a caller prints through its own
+            // writer without a painted frame clobbering it" (Progress.suspend javadoc) — it
+            // erases, runs the print, and repaints, so the live line survives to report the
+            // remaining phases.
+            progress.suspend(() -> printImpact(outWriter, result));
 
+            progress.phase("execution order");
             List<ExecutionOrder.Unit> order = ExecutionOrder.order(db.jdbi(), result);
+            progress.phase("open questions");
             List<Question> questions = OpenQuestions.detect(db.jdbi(), result);
+            progress.phase("draft plan");
             PlanDrafter.Draft draft = PlanDrafter.draft(db.jdbi(), parsed, result, order,
                     model, planner.model(), planner.maxTokens());
+            // Stopped here, not left to call()'s finally: same "erase before the report starts"
+            // reasoning as IndexCommand/ReviewCommand — the "plan written" block below must not
+            // collide with a live, un-erased frame. stop() is idempotent, so call()'s later
+            // stop() in the outer finally is a harmless no-op.
+            progress.stop();
             String planMd = PlanMdRenderer.render(parsed, result, order, questions, draft);
             String base = ref.endsWith(".md") ? ref.substring(0, ref.length() - 3) : ref;
             Path planPath = Path.of(base + ".plan.md");
