@@ -6,9 +6,9 @@ import java.util.Optional;
 /**
  * A Maven-coordinate reference as the KB stores it: {@code artifact.grp} / {@code artifact.name}
  * (and {@code dep_edge.to_grp} / {@code dep_edge.to_name}), written {@code "grp:name"} in
- * free-text and spec-authored values. One definition of what that string means, shared by
- * {@link KbEntities#resolve} for {@link EntityKind#ARTIFACT} and by {@code sdd explain}'s
- * {@code dep_edge} lookup, so the two can never disagree about which values are addressable.
+ * free-text and spec-authored values. One definition of what that string means, used by
+ * {@link KbEntities#resolve} for {@link EntityKind#ARTIFACT} to resolve it against
+ * {@code dep_edge}.
  */
 public record ArtifactRef(String grp, String name) {
     public ArtifactRef {
@@ -48,8 +48,8 @@ public record ArtifactRef(String grp, String name) {
     /**
      * Deliberately narrow: only the scoped form {@code @scope/name}. An unscoped name like
      * {@code react} is indistinguishable from a repo name, a class name or an ordinary English
-     * word, and treating every bare word as an artifact reference would make {@code sdd explain}
-     * resolve entities nobody named. A scoped package's {@code @} and {@code /} make it
+     * word, and treating every bare word as an artifact reference would make entity resolution
+     * match entities nobody named. A scoped package's {@code @} and {@code /} make it
      * unmistakable.
      */
     private static boolean npmPackageName(String value) {

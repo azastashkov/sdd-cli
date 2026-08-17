@@ -98,7 +98,7 @@ public final class ExecutionOrder {
     /**
      * [provider, consumer] constraint edges among the given repos — shared with PlanValidator.
      * {@code ContractEdges.rest}/{@code .kafka} are {@code DISTINCT} over detail columns (verb,
-     * path, confidence, matched_by, topic) that {@code sdd explain} needs, so a repo pair with
+     * path, confidence, matched_by, topic) that {@code Closure.contracts} needs, so a repo pair with
      * several contract details (e.g. two endpoints one repo calls on another) now yields several
      * rows here — deduped below so callers still see at most one edge per provider/consumer pair,
      * as they did when this query projected only the two repo-name columns.

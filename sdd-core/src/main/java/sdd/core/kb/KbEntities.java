@@ -10,9 +10,8 @@ import java.util.Optional;
 import java.util.regex.Pattern;
 
 /**
- * Resolves a free-text or spec-authored value against the knowledge base, one definition shared
- * by sdd plan's touchpoint verification and sdd explain's entity lookup. Moved verbatim from
- * SeedFinder (sdd-plan) so both commands agree on what an entity is — the queries keep their
+ * Resolves a free-text or spec-authored value against the knowledge base, used by sdd plan's
+ * touchpoint verification. Moved verbatim from SeedFinder (sdd-plan) — the queries keep their
  * existing semantics, byte-for-byte, with one exception called out at {@link #resolveArtifact}.
  */
 public final class KbEntities {

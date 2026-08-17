@@ -20,7 +20,7 @@ command defaults `--workspace` to the current directory
 `sdd` does not use one exit-code convention everywhere — the commands split
 into two families:
 
-- **`doctor`, `index`, `plan`, `plan approve`, `plan revise`, `graph`** use a
+- **`doctor`, `index`, `plan`, `plan approve`, `plan revise`** use a
   plain success/failure split: **`0`** on success, **`1`** on an application
   error (bad config, validation problems, an empty knowledge base, an
   unhandled exception). None of these set `exitCodeOnInvalidInput`, so a
@@ -29,7 +29,7 @@ into two families:
   `CommandLine.ExitCode.USAGE` constant. Verified live:
   `sdd plan --help` prints `Unknown option: '--help'` and exits `2`, because
   none of these commands declare `-h`/`--help` themselves — only the top-level
-  `sdd` does (`SddCli.java:8`, `mixinStandardHelpOptions = true`, not
+  `sdd` does (`SddCli.java:14`, `mixinStandardHelpOptions = true`, not
   inherited by subcommands).
 - **`implement`, `review` (and its `approve`/`reject`/`redo` subcommands),
   `clean`, `status`** all declare `exitCodeOnInvalidInput = 4` and use a
@@ -556,178 +556,6 @@ context for the `planner` model. (`ReviseCommand.java:35-111`)
 **Writes:** overwrites `<planPath>` in place (version bumped), via
 `SafeWrite.writeWithBackup` — the previous version is backed up first
 (`ReviseCommand.java:98-101`).
-
-## `sdd graph`
-
-**What it does:** renders the knowledge base's estate dependency graph as
-Mermaid, either to stdout or to a file. (`GraphCommand.java:17-62`)
-
-**Flags**
-
-| Flag | Default | Description | Verified |
-|---|---|---|---|
-| `--workspace <dir>` | `.` | Workspace directory | `GraphCommand.java:19-20` |
-| `--out <path>` | stdout | Write the graph to a file instead of stdout | `GraphCommand.java:22-23` |
-
-**Exit codes**
-
-| Code | Meaning |
-|---|---|
-| `0` | rendered successfully |
-| `1` | knowledge base missing/empty, or an unhandled exception (`GraphCommand.java:32-35, 39-42, 57-60`) |
-
-**Writes:** `--out`'s target file, if given; otherwise nothing (prints to
-stdout).
-
-## `sdd explain <question>`
-
-**What it does:** answers a plain-English question about the estate from
-`.sdd/index.db` in three steps — interpret, deterministic fetch, narrate. A
-`planner` model call (`MODEL_KEY = "planner"`, `ExplainCommand.java:71`) turns
-the question into a validated retrieval request (an intent plus entities,
-each checked against the KB); plain SQL then fetches the matching facts with
-no model involved; a second `planner` call narrates prose over exactly those
-facts. Read-only like `graph`/`plan`'s validate path — it never writes
-anything unless `--out` is given, and the `.sdd/index.db` existence check
-runs before `Database.open` so opening the database is never itself the
-thing that creates a KB this command is about to report as missing.
-(`ExplainCommand.java:36-55, 73-144`)
-
-The string the narrator is shown and the printed `## Evidence` section are
-the same value: `EvidenceRenderer.render(evidence)` is called once to build
-the call-2 user message (`AnswerNarrator.java:56`) and again, unmodified, to
-print the report (`ExplainReport.java:80`) — an answer can only be grounded
-in facts its reader can also see.
-
-**Flags**
-
-| Flag | Default | Description | Verified |
-|---|---|---|---|
-| `--workspace <dir>` | `.` | Workspace directory | `ExplainCommand.java:58-59` |
-| `--out <path>` | stdout | Write the explanation to a file instead of stdout | `ExplainCommand.java:61-62` |
-| `<question>` (positional, arity `0..*`) | — | The question; words are joined with single spaces | `ExplainCommand.java:64-65, 78` |
-
-**Exit codes**
-
-| Code | Meaning |
-|---|---|
-| `0` | an answer was produced and printed — including a thin answer, a "no facts in the knowledge base match this question" report, or an "answer unavailable" report when the model couldn't be reached; `explain` reports, it never judges, so it never returns anything but `0`/`1` |
-| `1` | the question is blank/missing, the knowledge base is missing or has zero repos (`.sdd/index.db` absent, or `SELECT count(*) FROM repo` is `0`), or an unhandled exception (`ExplainCommand.java:78-82, 84-94, 140-143`) |
-
-**Writes:** nothing, unless `--out <path>` is given, in which case the
-rendered report is written there instead of printed
-(`ExplainCommand.java:128-138`).
-
-**The two model calls, and what runs between them:**
-
-- **Call 1 — interpret** (`QuestionInterpreter.interpret`,
-  `ExplainCommand.java:98-101`): the model is shown the question plus the
-  KB's known repo and topic names (`QuestionInterpreter.java:93-97`) and
-  returns one JSON object naming an intent (`describe`, `consumers`,
-  `dependency_path`, `impact`, or `search`) and the entities the question
-  refers to. Every named entity is resolved against the KB and dropped —
-  with a reason appended to the request's `notes()` — if it does not exist
-  (`QuestionInterpreter.java:180-196`); the model is never trusted to have
-  named something real just because it said so. If no model is configured
-  (`sdd.yml` missing, `models.planner` absent, or an `api_key` env var
-  unresolved) or the call itself fails, interpretation falls back to literal
-  whole-word matching of known repo/topic names plus regex-shaped class and
-  endpoint candidates in the question text — never inference from keywords
-  (`QuestionInterpreter.java:359-405`, `ExplainCommand.java:159-171`).
-- **Deterministic fetch, between the two calls**
-  (`EvidenceCollector.collect`, `ExplainCommand.java:103-104`): plain SQL
-  against `.sdd/index.db`, dispatched on the interpreted intent — repo,
-  module, endpoint, Kafka-role and dependency facts for `describe`, a
-  full-text search over `fts_symbol` for `search`, and so on. No model call
-  happens anywhere in this step (`EvidenceCollector.java:26-50`).
-- **Call 2 — narrate** (`AnswerNarrator.narrate`, `ExplainCommand.java:112-113`):
-  the model is shown the rendered evidence string — and only that string —
-  and told to answer from it alone, never naming a repo, topic, endpoint or
-  class absent from it (`AnswerNarrator.java:26-50`). Skipped entirely when
-  the fetch found zero facts: a narrator handed nothing is exactly where
-  invention happens, so there is no call 2 to make in that case
-  (`ExplainCommand.java:108-125`).
-
-**Grounding check, and what it cannot catch:** after a narrated answer,
-`AnswerAudit.check` loads every `repo.name` and `kafka_topic.name` from the
-KB and flags any that appear, whole-word, in the answer but not in the
-evidence it was shown (`AnswerAudit.java:49-58`). **This is a hallucination
-smoke alarm, not a correctness check: it can only ever catch an invented
-name, never an invented relationship.** An answer asserting a false
-dependency between two repos that are both individually, legitimately
-present in the evidence — e.g. "svc-billing calls svc-notify" when the
-evidence never states that edge, but both names appear elsewhere in
-unrelated sections — passes the audit silently, because neither name is
-itself absent from the evidence (`AnswerAudit.java:18-24`). A clean audit is
-not proof the answer is correct.
-
-**Absence is never asserted as fact:** `consumers` and `impact` answers
-always carry a caveat counting unresolved REST clients and dynamically-named
-Kafka topics among the repos in play, because the KB cannot prove a negative
-— an unresolved caller is invisible to these queries, not absent from the
-estate (`AbsenceGuard.java:9-26`; the narrator is told the same rule,
-`AnswerNarrator.java:39-43`).
-
-**Staleness is not checked:** nothing compares `repo.head_commit` to the
-working tree at read time, so an answer can be arbitrarily behind the real
-estate while reading as current. Every answer states
-`Provenance: N repos indexed; indexed <earliest> to <latest>`
-(`KbStatus.provenance`, `EvidenceRenderer.java:166-178`,
-`EvidenceCollector.java:48`); an `impact` answer additionally surfaces
-index-status warnings for degraded/failed/stale repos in its closure, via
-`Closure.expand`'s own status check (`ImpactFacts.java:79-82`,
-`KbStatus.java:19-39`).
-
-**FTS is the only retrieval backend:** `explain` always constructs an
-`FtsRetriever` (`ExplainCommand.java:101`) — no `EmbeddingsRetriever` exists.
-`sdd.yml`'s `retrieval` key accepts only `fts` (the default) or an absent
-key; `ConfigLoader` rejects `retrieval: embeddings` at load time, before it
-could be declared and then silently ignored (`ConfigLoader.java:38,
-rejectUnimplementedRetrieval`). The search section's `[fts_symbol (bm25)]`
-label states what actually answered (`SearchFacts.java:14-20, 71`).
-
-**Javadoc can make a type findable, never a fact:** the indexer stores the
-first sentence of each type's javadoc (whitespace-collapsed, inline tags
-flattened, capped at 400 characters) in `java_type.javadoc` and in
-`fts_symbol`'s `doc` column (`ApiSurfaceExtractor.javadocSummary`,
-`SourcePersistence.insertType`), so a question whose wording only appears in
-prose — "what closes the ordering gap?" — can still find the type that
-answers it. That text is unverified: nothing here checks a doc comment
-against the code it sits above. So it is weighted at the floor, well below
-every identifier column (`bm25(fts_symbol, 10.0, 3.0, 8.0, 2.0, 0.0)`,
-`FtsRetriever.java:82`), it never reaches any other section — `describe`,
-`consumers`, `dependency_path` and `impact` are pure SQL over structural
-tables — and a hit reached *only* through prose is labelled
-`[matched on javadoc]` on its own fact line (`SearchFacts.java:55, 69`).
-
-**If your knowledge base predates javadoc indexing, run `sdd index --force`.**
-The schema upgrade rebuilds the search index but cannot invent javadoc it never
-stored, so a workspace carried up from an older version searches identifiers
-only. A plain `sdd index` will *not* fix it: for a repo that last indexed
-successfully, it skips whenever the git fingerprint is unchanged, and upgrading
-the schema changes no repo's fingerprint, so on a healthy workspace it prints
-`(unchanged, skipped)` and exits 0 having done nothing
-(`IndexService.java:176-183`, `IndexCommand.java:34-39`).
-
-Neither the weighting nor the label is a promise about rank. The weighting is
-per-term: bm25 scores a whole row across term frequency, document frequency
-and field length, so a type whose javadoc matches most of the question does
-rank above one whose name matches a single word of it. And the label reports
-*presence*, not rank — `docOnly` fires only when javadoc was the sole column
-that matched, so a type that javadoc alone lifted to the top still renders
-unlabelled the moment any query word also hits its package fragment. Both are
-measured, not hypothetical: asked where the ordering gap between an admin
-write and the watcher is, `com.trading.admin.GroupDirectory` climbs from rank
-42 to rank 1 entirely on its javadoc and carries no marker at all, because the
-question says "admin" and so does its package
-(`docs/superpowers/plans/2026-08-15-retrieval-corpus.md`, carried item 13).
-So a stale comment *can* reach a reader looking like a code-derived hit. What
-stops it becoming a claim is neither the ranking nor the label but the
-narrator's rule, given beside its `repo_card` one — offer such a hit as a
-candidate whose documentation matches, not as evidence of behaviour
-(`AnswerNarrator.java:46-49`) — and the fact firewall behind it.
-Member-level javadoc is not indexed, and doc-only hits are deliberately not
-marked in `plan.md`'s seed list.
 
 ## `sdd implement <spec>.plan.json`
 

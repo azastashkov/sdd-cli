@@ -22,8 +22,7 @@ package sdd.core.retrieve;
  * moment any query term also reaches a code column — a package fragment in the fqcn is enough.
  * Measured, not hypothetical: a type climbing from rank 42 to rank 1 entirely on its javadoc carried
  * no marker, because the question and its package shared a word (carried item 13 of {@code
- * docs/superpowers/plans/2026-08-15-retrieval-corpus.md}; disclosed to readers in {@code
- * docs/commands.md}'s {@code sdd explain} section). So {@code true} means "prose is why this row is
+ * docs/superpowers/plans/2026-08-15-retrieval-corpus.md}). So {@code true} means "prose is why this row is
  * here"; {@code false} does not mean "prose is not why it ranks here". A second backend implementing
  * this record inherits that boundary and must not quietly widen it — a flag that sometimes meant
  * rank provenance and sometimes presence provenance would be worse than one that never did.

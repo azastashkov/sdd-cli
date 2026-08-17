@@ -20,7 +20,7 @@ import java.util.Set;
  * verified, never trusted; misses become problems. Requirement free text goes through the
  * Retriever and yields CANDIDATES (not seeds): candidates only enter the affected set if the
  * model confirms them or the graph requires them; the rest surface as excluded. Touchpoint
- * resolution itself lives in sdd.core.kb.KbEntities, shared with sdd explain.
+ * resolution itself lives in sdd.core.kb.KbEntities.
  */
 public final class SeedFinder {
     private static final int FTS_LIMIT = 8;

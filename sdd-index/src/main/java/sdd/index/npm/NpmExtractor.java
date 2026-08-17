@@ -133,7 +133,7 @@ public final class NpmExtractor implements BuildExtractor {
      * obvious alternative and is wrong: an unscoped package like {@code react} or {@code shell}
      * would then have an empty group, and {@code ArtifactRef.parse} requires both halves of a
      * {@code "grp:name"} reference to be non-empty — so those packages would become unaddressable
-     * in specs and in {@code sdd explain}. The constant group also makes a rendered reference
+     * in specs. The constant group also makes a rendered reference
      * self-describing: {@code npm:@azastashkov/web-sdk}.
      */
     public static BuildModel.Coordinate coordinateFor(String packageName) {

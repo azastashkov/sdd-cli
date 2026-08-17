@@ -61,14 +61,11 @@ Every other command exists to serve two human checkpoints:
   survives `sdd clean`; nothing is squashed into a mergeable commit before a
   human says so.
 
-`sdd index`, `sdd graph`, `sdd status`, `sdd clean` and `sdd explain` are
-support for those two gates, not gates themselves: `index` builds the
-knowledge base the plan and every review rebuild reads from, `graph`
-visualizes it, `status` is a read-only look at any run's state and
-decisions, `clean` discards the branches for work that was never approved,
-and `explain <question>` answers a plain-English question about the estate
-from that same knowledge base — the one command in this list useful right
-after `sdd index`, before there is a spec or a plan to speak of.
+`sdd index`, `sdd status` and `sdd clean` are support for those two gates,
+not gates themselves: `index` builds the knowledge base the plan and every
+review rebuild reads from, `status` is a read-only look at any run's state
+and decisions, and `clean` discards the branches for work that was never
+approved.
 
 ## Closed-network estates: Jira, Confluence, Bitbucket
 
@@ -194,13 +191,6 @@ reference.
    facts, and writes them to `.sdd/index.db`. Re-run this any time the
    estate's code changes — a repo whose fingerprint is unchanged is skipped
    automatically unless you pass `--force`.
-
-   This is also the point where `sdd explain <question>` first becomes
-   useful — it is the one command in this walkthrough that needs no spec and
-   no plan, only the knowledge base just built. Try `sdd explain "what
-   depends on <some-repo>?"` before writing anything; see
-   [`docs/commands.md`](docs/commands.md) for what it can and cannot tell
-   you.
 
 6. **Write a spec.** `sdd` reads a strict canonical markdown format — YAML
    front matter (`id`, `title`, `owner`, `status`), then `## ` sections in a
