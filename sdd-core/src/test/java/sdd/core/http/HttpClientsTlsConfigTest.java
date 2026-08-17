@@ -328,8 +328,7 @@ class HttpClientsTlsConfigTest {
         SSLHandshakeException cause = new SSLHandshakeException("PKIX path building failed");
 
         String base = HttpClients.tlsFailureMessage("corp-ift.example", truststore, cause);
-        String extended = HttpClients.modelTlsFailureMessage("corp-ift.example",
-                truststore, cause);
+        String extended = HttpClients.modelTlsFailureMessage("corp-ift.example", truststore, cause);
 
         assertThat(extended).startsWith(base);
         assertThat(extended).contains("curl").contains("does not mean the JDK trusts")
