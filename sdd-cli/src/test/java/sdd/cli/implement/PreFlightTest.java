@@ -47,18 +47,20 @@ class PreFlightTest {
     }
 
     @Test
-    void flagsDriftAndMissingWrapper() throws Exception {
-        // A build file but no wrapper: unmistakably a Gradle repo that cannot be built, which is a
-        // different complaint from a directory whose build system cannot be identified at all.
+    void flagsDriftAndAGradleRepoItCannotBuildAtAll() throws Exception {
+        // A build file but no wrapper is unmistakably a Gradle repo — and no longer unbuildable on
+        // its own, since GradleLauncher falls back to a configured Gradle. It is only a problem
+        // when there is no Gradle to fall back to, which an empty gradle_home pins deterministically
+        // whatever the test machine has on its PATH.
         FixtureRepo repo = FixtureRepo.in(tmp, "lib")
                 .file("build.gradle", "plugins { id 'java' }\n")
                 .file("A.java", "class A {}\n").commit("base");
-        // no gradlew; base_sha points at a different sha
         PreFlight.Result result = PreFlight.check(
-                Map.of("lib", step(repo.path())), planWithBase("0000000000000000000000000000000000000000"));
+                Map.of("lib", step(repo.path())), planWithBase("0000000000000000000000000000000000000000"),
+                tmp.resolve("no-gradle-here"));
 
         assertThat(result.ok()).isFalse();
-        assertThat(result.problems()).anyMatch(p -> p.contains("gradle wrapper"))
+        assertThat(result.problems()).anyMatch(p -> p.contains("gradle_home"))
                 .anyMatch(p -> p.contains("HEAD"));
     }
 

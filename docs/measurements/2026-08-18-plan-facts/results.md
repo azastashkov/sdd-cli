@@ -301,3 +301,34 @@ single-commit range on one repo; multi-commit ranges, renames and deletions are 
 repo whose modules sit outside the repo directory (an included build), where the path join could
 still break. The annotation rules are measured on two changes in one provider, neither constructed
 to provoke a false `BUMP_REBUILD_ONLY`.
+
+
+---
+
+# After the fixes (re-measured 2026-08-18, same probe, still zero model calls)
+
+Four of the five surviving candidates are implemented. Re-running the same corpus:
+
+| | baseline | after |
+|---|---|---|
+| **Case 3a** seeds | none → **blocked** (`no seeds`) | seeded from git, **0 blocking questions** |
+| **Case 3a** annotations | 1/5 correct (4 false CODE_CHANGE) | **5/5** |
+| **Case 3a** changed types in prompt | 0 of 3 | **3 of 3** (4, 11, 15 mentions) |
+| **Case 2** annotations | 3/5 (product-a/b false CODE_CHANGE) | **5/5** |
+| **Case 2** implementors in prompt | 2 of 5 | **3 of 5** |
+| Members reaching service repos | 0 | 60 per repo |
+| Drafter prompt (6 repos) | ~14.9k chars | ~35k chars |
+
+**What is fixed, and by what.** Evidence budgets split per section and the `is_api` member filter
+removed; the annotation anchored on the changed types; `--since` turned into git seeds whose changed
+types join the anchor set. The anchor set is the common thread — it is a *source of names* feeding
+`PlanDrafter.ranked()`, which is what promotes facts that were always in the KB but ranked past the
+budget.
+
+**What is not.** Case 2's `ExchangeSimulator` (rank 48) and `VenueMarketDataSimulator` (rank 65) are
+still absent. They are *subtypes* of the changed interface, and nothing names them: the KB records
+`api_usage(EXTENDS)` per MODULE and discards the subtype's own fqcn at extraction. That is the fifth
+survivor — a subtype table, whose value is precisely to supply those two names as anchors.
+
+The prompt is 2.3× bigger. That is one call per plan against a 384k-context planner, and it buys
+every service repo's method signatures, which previously did not exist in the prompt at all.

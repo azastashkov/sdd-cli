@@ -102,11 +102,15 @@ class EstateRebuildTest {
     }
 
     @Test
-    void missingWrapperFails() {
-        EstateRebuild.Result result = new EstateRebuild()
-                .verify(ws.resolve("nowhere"), null, List.of("check"), List.of());
+    void noWrapperAndNoConfiguredGradleFails() {
+        // A missing wrapper alone no longer fails: GradleLauncher falls back to a configured
+        // Gradle. Passing an empty gradle_home pins the both-missing case deterministically,
+        // regardless of whether the test machine has gradle on its PATH.
+        EstateRebuild.Result result =
+                new EstateRebuild(java.time.Duration.ofMinutes(1), ws.resolve("none"))
+                        .verify(ws.resolve("nowhere"), null, List.of("check"), List.of());
 
         assertThat(result.ok()).isFalse();
-        assertThat(result.log()).contains("no gradle wrapper");
+        assertThat(result.log()).contains("gradle_home");
     }
 }

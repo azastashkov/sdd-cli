@@ -40,7 +40,21 @@ public final class Closure {
     private Closure() {
     }
 
+    /** Unanchored: every consumer of the provider counts, which is the pre-anchoring behaviour. */
     public static Expansion expand(Jdbi jdbi, Set<String> rootRepos) {
+        return expand(jdbi, rootRepos, Set.of());
+    }
+
+    /**
+     * @param changedTypes the fully-qualified types the change is anchored on — from {@code class:}
+     *     touchpoints and from a {@code --since} change set. Used ONLY to sharpen the
+     *     CODE_CHANGE_LIKELY / BUMP_REBUILD_ONLY annotation. It never gates traversal: design
+     *     invariant M1 says an annotation may not limit propagation, so every consumer of an
+     *     affected repo is still reached transitively whatever this set contains. Empty means
+     *     unanchored, and then the old unfiltered count applies — over-reporting is the safe
+     *     direction when there is no basis for narrowing.
+     */
+    public static Expansion expand(Jdbi jdbi, Set<String> rootRepos, Set<String> changedTypes) {
         List<RepoEdge> edges = jdbi.withHandle(h -> h.createQuery("""
                         SELECT DISTINCT rf.name AS consumer, rt.name AS provider, v.mode AS mode
                         FROM v_repo_dep_edge v
@@ -58,7 +72,8 @@ public final class Closure {
         Map<String, AffectedRepo> added = new LinkedHashMap<>();
         Set<String> affected = new LinkedHashSet<>(rootRepos);
         Set<String> bomConsumersSeen = new HashSet<>();
-        expandBuildEdges(jdbi, byProvider, rootRepos, affected, added, bomConsumersSeen, warnings);
+        expandBuildEdges(jdbi, byProvider, rootRepos, affected, added, bomConsumersSeen, warnings,
+                changedTypes);
 
         // Contract edges add exactly one hop and never recurse into further contracts — but a repo
         // reached that way is affected like any other, so its own build-edge consumers must still be
@@ -67,7 +82,8 @@ public final class Closure {
         // whose endpoint changed reaches the SDK that calls it, and then everything built on that
         // SDK. Without this the blast radius stops one repo short, silently.
         Set<String> viaContracts = contracts(jdbi, affected, added, warnings);
-        expandBuildEdges(jdbi, byProvider, viaContracts, affected, added, bomConsumersSeen, warnings);
+        expandBuildEdges(jdbi, byProvider, viaContracts, affected, added, bomConsumersSeen, warnings,
+                changedTypes);
         runtimeHosts(jdbi, affected, added);
         List<String> cycles = cycles(edges, affected, warnings);
         statusWarnings(jdbi, affected, warnings);
@@ -82,14 +98,14 @@ public final class Closure {
     private static void expandBuildEdges(Jdbi jdbi, Map<String, List<RepoEdge>> byProvider,
                                          Set<String> seeds, Set<String> affected,
                                          Map<String, AffectedRepo> added, Set<String> bomConsumersSeen,
-                                         List<String> warnings) {
+                                         List<String> warnings, Set<String> changedTypes) {
         Deque<String> queue = new ArrayDeque<>(new TreeSet<>(seeds));
         while (!queue.isEmpty()) {
             String provider = queue.removeFirst();
             for (RepoEdge edge : byProvider.getOrDefault(provider, List.of())) {
                 String reason = "depends on " + provider + " (" + edge.mode() + ")";
                 if (affected.add(edge.consumer())) {
-                    String annotation = usesApiOf(jdbi, edge.consumer(), provider)
+                    String annotation = usesApiOf(jdbi, edge.consumer(), provider, changedTypes)
                             ? "CODE_CHANGE_LIKELY" : "BUMP_REBUILD_ONLY";
                     added.put(edge.consumer(), new AffectedRepo(edge.consumer(), "dependent",
                             annotation, List.of(), List.of(reason)));
@@ -110,14 +126,38 @@ public final class Closure {
         }
     }
 
-    private static boolean usesApiOf(Jdbi jdbi, String consumerRepo, String providerRepo) {
+    /**
+     * Whether the consumer's code touches the provider — narrowed to the changed types when the
+     * change is anchored.
+     *
+     * <p>Unanchored this is the original question, "does this repo use anything at all from that
+     * repo", which over-reports whenever a consumer depends on a wide library for unrelated
+     * reasons. Measured on the real estate: 3/5 and 1/5 correct on two real changes, every error a
+     * false CODE_CHANGE_LIKELY. Restricting the same query to the changed types scored 5/5 on both,
+     * which is why this narrowing is a filter on an existing query rather than a new fact —
+     * member-level usage was measured against it and bought nothing.
+     */
+    private static boolean usesApiOf(Jdbi jdbi, String consumerRepo, String providerRepo,
+                                     Set<String> changedTypes) {
+        if (changedTypes.isEmpty()) {
+            return jdbi.withHandle(h -> h.createQuery("""
+                            SELECT count(*) FROM api_usage u
+                            JOIN module mc ON mc.id = u.from_module_id
+                            JOIN repo rc ON rc.id = mc.repo_id
+                            JOIN module mp ON mp.id = u.target_module_id
+                            JOIN repo rp ON rp.id = mp.repo_id
+                            WHERE rc.name = :c AND rp.name = :p""")
+                    .bind("c", consumerRepo).bind("p", providerRepo).mapTo(Integer.class).one()) > 0;
+        }
         return jdbi.withHandle(h -> h.createQuery("""
                         SELECT count(*) FROM api_usage u
                         JOIN module mc ON mc.id = u.from_module_id
                         JOIN repo rc ON rc.id = mc.repo_id
                         JOIN module mp ON mp.id = u.target_module_id
                         JOIN repo rp ON rp.id = mp.repo_id
-                        WHERE rc.name = :c AND rp.name = :p""")
+                        WHERE rc.name = :c AND rp.name = :p
+                          AND u.target_fqcn IN (<types>)""")
+                .bindList("types", List.copyOf(changedTypes))
                 .bind("c", consumerRepo).bind("p", providerRepo).mapTo(Integer.class).one()) > 0;
     }
 

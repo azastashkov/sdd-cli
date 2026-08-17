@@ -21,27 +21,33 @@ public final class MavenLocalPublisher {
     private static final int MAX_LOG = 200_000;
 
     private final Duration timeout;
+    private final Path gradleHome;
 
     public MavenLocalPublisher() {
         this(Duration.ofMinutes(10));
     }
 
     public MavenLocalPublisher(Duration timeout) {
+        this(timeout, null);
+    }
+
+    public MavenLocalPublisher(Duration timeout, Path gradleHome) {
         this.timeout = timeout;
+        this.gradleHome = gradleHome;
     }
 
     public record Result(boolean ok, String log) {
     }
 
     public Result publish(Path repoRoot, Path javaHome, String version, Path m2Dir) {
-        Path gradlew = repoRoot.resolve("gradlew");
-        if (!Files.isExecutable(gradlew)) {
-            return new Result(false, "no gradle wrapper in " + repoRoot);
+        var launcher = sdd.core.toolchain.GradleLauncher.resolve(repoRoot, gradleHome);
+        if (!launcher.found()) {
+            return new Result(false, launcher.problem());
         }
         try {
             Files.createDirectories(m2Dir);
             Subprocess.Outcome outcome = Subprocess.run(
-                    List.of("./gradlew", "publishToMavenLocal",
+                    List.of(launcher.executable(), "publishToMavenLocal",
                             "-Pversion=" + version,
                             "-Dmaven.repo.local=" + m2Dir.toAbsolutePath(),
                             "--no-configuration-cache", "--no-daemon", "-q"),

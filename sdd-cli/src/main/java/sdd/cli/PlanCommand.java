@@ -75,6 +75,17 @@ public final class PlanCommand implements Callable<Integer> {
             + "positional, since a bare string is indistinguishable from a path")
     List<String> texts = new ArrayList<>();
 
+    /**
+     * A CLI flag rather than a spec section, deliberately. A spec is a durable, reviewed artifact
+     * that {@code sdd plan approve} SHA-hashes; a git ref is a mutable machine-local coordinate, and
+     * {@code since: HEAD~5} written into a spec would mean something different every day, silently.
+     * The RESOLVED sha travels into the plan through the seed's provenance, which is what keeps the
+     * plan self-describing without making the spec time-dependent.
+     */
+    @Option(names = "--since", description = "Seed impact analysis from what changed in git: "
+            + "<ref>, <a>..<b>, or <repo>=<ref> to scope it (repeatable)")
+    List<String> since = new ArrayList<>();
+
     @Parameters(arity = "0..*",
             description = "Spec refs: canonical .md, or exported Confluence .html/.htm/.xhtml "
                     + "(0 or more; a canonical .md ref cannot be combined with anything else)")
@@ -83,6 +94,42 @@ public final class PlanCommand implements Callable<Integer> {
     @Spec CommandSpec spec;
 
     ChatModel plannerForTest;   // test seam — mirrors IndexService's injectable ChatModel
+
+    /**
+     * Resolves {@code --since} into per-repo revision ranges. A bare ref applies to every indexed
+     * repo that can resolve it; {@code <repo>=<ref>} scopes it to one.
+     *
+     * <p>A repo that cannot resolve the ref is a WARNING, never a problem: an operator typo or a
+     * repo that simply predates the tag must not become a blocking question about the estate, which
+     * is a different kind of claim entirely.
+     */
+    static List<sdd.plan.impact.ChangeSet.RepoChange> changeSet(org.jdbi.v3.core.Jdbi jdbi,
+                                                                List<String> since,
+                                                                PrintWriter errWriter) {
+        if (since.isEmpty()) {
+            return List.of();
+        }
+        java.util.Map<String, String> ranges = new java.util.LinkedHashMap<>();
+        for (String entry : since) {
+            int eq = entry.indexOf('=');
+            if (eq > 0) {
+                ranges.put(entry.substring(0, eq).trim(), entry.substring(eq + 1).trim());
+            } else {
+                for (String repo : sdd.core.kb.KbEntities.repoNames(jdbi)) {
+                    ranges.putIfAbsent(repo, entry.trim());
+                }
+            }
+        }
+        List<sdd.plan.impact.ChangeSet.RepoChange> changes =
+                sdd.plan.impact.ChangeSet.compute(jdbi, ranges);
+        for (sdd.plan.impact.ChangeSet.RepoChange change : changes) {
+            if (!"RESOLVED".equals(change.resolution())) {
+                errWriter.println("warn: --since " + change.repo() + " " + change.range()
+                        + ": " + change.resolution().toLowerCase().replace('_', ' '));
+            }
+        }
+        return changes.stream().filter(c -> "RESOLVED".equals(c.resolution())).toList();
+    }
 
     /** Test seam — mirrors {@code IndexCommand.progressForTest}/{@code ReviewCommand.progressForTest}:
      *  {@code null} in real use, where {@link #call} falls back to {@link SddCli#resolve}. */
@@ -415,8 +462,10 @@ public final class PlanCommand implements Callable<Integer> {
             ChatModel model = plannerForTest != null ? plannerForTest : new HttpChatModel(planner, SEED_MAX_ATTEMPTS);
 
             progress.phase("impact analysis");
+            List<sdd.plan.impact.ChangeSet.RepoChange> changes =
+                    changeSet(db.jdbi(), since, errWriter);
             ImpactResult result = ImpactAnalysis.analyze(db.jdbi(), new FtsRetriever(db.jdbi()),
-                    parsed, model, planner.model(), planner.maxTokens());
+                    parsed, model, planner.model(), planner.maxTokens(), changes);
             // printImpact is a report block, but — unlike IndexCommand/ReviewCommand — it prints
             // midway through this method, with execution-order/open-questions/drafting still to
             // come: stop() would END the session, leaving those later phases nothing to paint

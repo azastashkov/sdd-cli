@@ -16,20 +16,26 @@ import java.util.List;
  */
 public final class GradleSmokeRunner implements SmokeRunner {
     private final Duration timeout;
+    private final Path gradleHome;
 
     public GradleSmokeRunner() {
         this(Duration.ofSeconds(120));
     }
 
     public GradleSmokeRunner(Duration timeout) {
+        this(timeout, null);
+    }
+
+    public GradleSmokeRunner(Duration timeout, Path gradleHome) {
         this.timeout = timeout;
+        this.gradleHome = gradleHome;
     }
 
     @Override
     public Result probe(Path consumerRepo, Path providerRepo) {
-        Path gradlew = consumerRepo.resolve("gradlew");
-        if (!Files.isExecutable(gradlew)) {
-            return new Result(false, "no gradle wrapper in " + consumerRepo);
+        var launcher = sdd.core.toolchain.GradleLauncher.resolve(consumerRepo, gradleHome);
+        if (!launcher.found()) {
+            return new Result(false, launcher.problem());
         }
         try {
             // EnvPolicy.INHERIT and KillPolicy.PROCESS_ONLY are this site's two deliberate
@@ -37,7 +43,7 @@ public final class GradleSmokeRunner implements SmokeRunner {
             // Scrubbing the environment here would change which propagation mechanism Gate 1
             // records for every cross-repo edge in the estate; see EnvPolicy's javadoc.
             Subprocess.Outcome outcome = Subprocess.run(
-                    List.of("./gradlew", "help",
+                    List.of(launcher.executable(), "help",
                             "--include-build", providerRepo.toAbsolutePath().toString(),
                             "--no-configuration-cache", "-q"),
                     consumerRepo, EnvPolicy.INHERIT, timeout,

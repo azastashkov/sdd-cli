@@ -48,11 +48,15 @@ class MavenLocalPublisherTest {
     }
 
     @Test
-    void missingWrapperFailsWithoutRunningAnything() {
-        MavenLocalPublisher.Result result = new MavenLocalPublisher()
-                .publish(ws.resolve("nowhere"), null, "1.0.0", ws.resolve("m2"));
+    void noWrapperAndNoConfiguredGradleFailsWithoutRunningAnything() {
+        // A missing wrapper alone no longer fails: GradleLauncher falls back to a configured
+        // Gradle. Passing an empty gradle_home pins the both-missing case deterministically,
+        // regardless of whether the test machine has gradle on its PATH.
+        MavenLocalPublisher.Result result =
+                new MavenLocalPublisher(java.time.Duration.ofSeconds(5), ws.resolve("none"))
+                        .publish(ws.resolve("nowhere"), null, "1.0.0", ws.resolve("m2"));
 
         assertThat(result.ok()).isFalse();
-        assertThat(result.log()).contains("no gradle wrapper");
+        assertThat(result.log()).contains("gradle_home");
     }
 }

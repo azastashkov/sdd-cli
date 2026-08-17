@@ -153,6 +153,13 @@ run:
 # quiet fallback, so a typo here cannot silently change which compiler reads the estate.
 # node_home: /Users/me/.nvm/versions/node/v22.11.0
 
+# Where Gradle lives, for repos that do NOT ship a wrapper. A repo's own ./gradlew always wins when
+# it is present and executable: a wrapper pins the Gradle version its repo was written for, and this
+# estate spans several, so preferring one configured Gradle over a present wrapper would run an old
+# repo on a new Gradle. This is only the fallback. Omit to take gradle from $SDD_GRADLE then PATH.
+# A gradle_home that does not exist is an error rather than a quiet fallback, same rule as node_home.
+# gradle_home: /Users/me/.sdkman/candidates/gradle/current
+
 excludes: []              # workspace directories to skip
 
 # Requirement ingestion (Jira issues, Confluence pages) and Bitbucket source control, for a self-

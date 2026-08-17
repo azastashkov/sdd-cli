@@ -66,6 +66,8 @@ public final class ConfigLoader {
 
         Path nodeHome = root.get("node_home") == null
                 ? null : Path.of(str(root.get("node_home"), env, "node_home"));
+        Path gradleHome = root.get("gradle_home") == null
+                ? null : Path.of(str(root.get("gradle_home"), env, "gradle_home"));
 
         Object excludesNode = root.get("excludes");
         List<String> excludes;
@@ -201,7 +203,7 @@ public final class ConfigLoader {
         Object atlassianNode = root.get("atlassian");
         AtlassianConfig atlassian = atlassianNode == null ? null : parseAtlassian(atlassianNode, env);
 
-        return new SddConfig(workspace, Map.copyOf(models), Map.copyOf(jdkHomes), nodeHome,
+        return new SddConfig(workspace, Map.copyOf(models), Map.copyOf(jdkHomes), nodeHome, gradleHome,
                 excludes, Map.copyOf(artifactOverrides), List.copyOf(manualEdges),
                 List.copyOf(runtimeEdges), run, Map.copyOf(verificationExclusions), atlassian);
     }

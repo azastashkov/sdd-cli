@@ -25,13 +25,19 @@ public final class EstateRebuild {
     private static final int MAX_LOG = 200_000;
 
     private final Duration timeout;
+    private final Path gradleHome;
 
     public EstateRebuild() {
         this(Duration.ofMinutes(15));
     }
 
     public EstateRebuild(Duration timeout) {
+        this(timeout, null);
+    }
+
+    public EstateRebuild(Duration timeout, Path gradleHome) {
         this.timeout = timeout;
+        this.gradleHome = gradleHome;
     }
 
     public record Result(boolean ok, String log) {
@@ -67,10 +73,9 @@ public final class EstateRebuild {
     }
 
     /** What this repo needs and does not have, or null when it can be built. */
-    private static String missingToolchain(Path repoRoot, Toolchain toolchain) {
+    private String missingToolchain(Path repoRoot, Toolchain toolchain) {
         return switch (toolchain) {
-            case GRADLE -> Files.isExecutable(repoRoot.resolve("gradlew"))
-                    ? null : "no gradle wrapper in " + repoRoot;
+            case GRADLE -> sdd.core.toolchain.GradleLauncher.resolve(repoRoot, gradleHome).problem();
             case NPM -> Files.isDirectory(repoRoot.resolve("node_modules"))
                     ? null : "node_modules is not installed in " + repoRoot
                             + " — run npm install (or npm ci) before sdd review";
@@ -92,7 +97,7 @@ public final class EstateRebuild {
                 command.add(task);
                 env = EnvPolicy.scrubbedNode(nodeHome);
             } else {
-                command.add("./gradlew");
+                command.add(sdd.core.toolchain.GradleLauncher.resolve(repoRoot, gradleHome).executable());
                 command.add(task);
                 command.addAll(extraArgs);
                 command.add("--no-configuration-cache");

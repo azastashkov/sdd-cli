@@ -11,6 +11,7 @@ import sdd.core.llm.ModelException;
 import sdd.core.llm.Usage;
 import sdd.core.retrieve.FtsRetriever;
 import sdd.core.testing.ScriptedChatModel;
+import sdd.plan.impact.ChangeSet;
 import sdd.plan.impact.Closure;
 import sdd.plan.impact.ImpactAnalysis;
 import sdd.plan.impact.ImpactResult;
@@ -86,9 +87,10 @@ class PlanFactsHarness {
             report.append("candidates: ").append(fmt(scan.candidates())).append('\n');
             report.append("problems:   ").append(scan.problems()).append('\n');
 
-            emit(db, spec, declared, name, "deterministic", unavailableModel(), out, report);
-            emit(db, spec, declared, name, "declared", declaringModel(declared, spec), out, report);
-            changeSet(db, specFile, report);
+            List<ChangeSet.RepoChange> changes = changeSet(db, specFile, report);
+            emit(db, spec, declared, name, "deterministic", unavailableModel(), out, report, changes);
+            emit(db, spec, declared, name, "declared", declaringModel(declared, spec), out, report,
+                    changes);
             annotations(db, specFile, report);
         }
         Files.writeString(out.resolve("report.md"), report.toString());
@@ -96,10 +98,11 @@ class PlanFactsHarness {
     }
 
     private void emit(Database db, NormalizedSpec spec, List<String> declared, String name,
-                      String mode, ChatModel model, Path out, StringBuilder report)
+                      String mode, ChatModel model, Path out, StringBuilder report,
+                      List<ChangeSet.RepoChange> changes)
             throws IOException {
         ImpactResult result = ImpactAnalysis.analyze(db.jdbi(), new FtsRetriever(db.jdbi()), spec,
-                model, "measure", MAX_TOKENS);
+                model, "measure", MAX_TOKENS, changes);
         List<ExecutionOrder.Unit> order = ExecutionOrder.order(db.jdbi(), result);
         List<Question> questions = OpenQuestions.detect(db.jdbi(), result);
         String prompt = PlanDrafter.composeInput(db.jdbi(), spec, result, order, "");
@@ -143,10 +146,11 @@ class PlanFactsHarness {
      * because the point is to measure the deterministic reach of git-derived seeds with no model in
      * the loop at all.
      */
-    private void changeSet(Database db, Path specFile, StringBuilder report) throws IOException {
+    private List<ChangeSet.RepoChange> changeSet(Database db, Path specFile, StringBuilder report)
+            throws IOException {
         Path sinceFile = specFile.resolveSibling(
                 specFile.getFileName().toString().replace(".md", ".since"));
-        if (!Files.exists(sinceFile)) return;
+        if (!Files.exists(sinceFile)) return List.of();
 
         Map<String, String> ranges = new LinkedHashMap<>();
         for (String line : Files.readAllLines(sinceFile)) {
@@ -154,10 +158,10 @@ class PlanFactsHarness {
             if (l.isEmpty() || l.startsWith("#") || !l.contains("=")) continue;
             ranges.put(l.substring(0, l.indexOf('=')).trim(), l.substring(l.indexOf('=') + 1).trim());
         }
-        List<ChangeSetProbe.RepoChange> changes = ChangeSetProbe.compute(db.jdbi(), ranges);
+        List<ChangeSet.RepoChange> changes = ChangeSet.compute(db.jdbi(), ranges);
 
         report.append("\n### change set (prototype)\n");
-        for (ChangeSetProbe.RepoChange c : changes) {
+        for (ChangeSet.RepoChange c : changes) {
             report.append(c.repo()).append(' ').append(c.range()).append(" -> ")
                     .append(c.resolution()).append(' ')
                     .append(c.fromSha()).append("..").append(c.toSha()).append('\n');
@@ -165,15 +169,16 @@ class PlanFactsHarness {
                     .append(f.path()).append(f.fqcn() == null ? "   (no indexed type)"
                             : "   -> " + f.fqcn() + (f.isApi() ? " [api]" : "")).append('\n'));
         }
-        report.append("would-be seeds:\n").append(ChangeSetProbe.seedLines(changes));
+        report.append("would-be seeds:\n").append(ChangeSet.seedLines(changes));
 
         Set<String> roots = changes.stream().filter(c -> !c.mapped().isEmpty())
-                .map(ChangeSetProbe.RepoChange::repo)
+                .map(ChangeSet.RepoChange::repo)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         Closure.Expansion expansion = Closure.expand(db.jdbi(), roots);
         report.append("closure from git seeds: roots=").append(roots).append('\n');
         expansion.added().forEach(a -> report.append("  + ").append(a.repo()).append(" | ")
                 .append(a.role()).append(" | ").append(a.annotation()).append('\n'));
+        return changes.stream().filter(c -> "RESOLVED".equals(c.resolution())).toList();
     }
 
     /**

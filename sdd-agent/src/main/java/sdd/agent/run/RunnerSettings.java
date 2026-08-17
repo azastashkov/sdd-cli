@@ -13,7 +13,20 @@ public record RunnerSettings(AgentBudget budget, int contextSoftCap, InstantSour
                              Path javaHome, Duration gradleTimeout, List<String> verificationTasks,
                              int maxTokensPerCall, String systemPrompt, List<String> gradleExtraArgs,
                              Semaphore gradlePermits, sdd.core.toolchain.Toolchain toolchain,
-                             Path nodeHome) {
+                             Path nodeHome,
+                             /** Fallback Gradle for a repo with no wrapper; null = $SDD_GRADLE then PATH. */
+                             Path gradleHome) {
+    /** Pre-{@code gradleHome} shape, so existing construction sites compile untouched. */
+    public RunnerSettings(AgentBudget budget, int contextSoftCap, InstantSource clock,
+                          Path javaHome, Duration gradleTimeout, List<String> verificationTasks,
+                          int maxTokensPerCall, String systemPrompt, List<String> gradleExtraArgs,
+                          Semaphore gradlePermits, sdd.core.toolchain.Toolchain toolchain,
+                          Path nodeHome) {
+        this(budget, contextSoftCap, clock, javaHome, gradleTimeout, verificationTasks,
+                maxTokensPerCall, systemPrompt, gradleExtraArgs, gradlePermits, toolchain,
+                nodeHome, null);
+    }
+
     public static final String DEFAULT_SYSTEM_PROMPT = """
             You are a careful senior engineer making a focused change to ONE repository. Use the
             tools to read files, make minimal edits, and run Gradle to check your work. Change

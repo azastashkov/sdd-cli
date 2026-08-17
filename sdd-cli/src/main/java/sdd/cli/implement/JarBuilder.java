@@ -26,26 +26,32 @@ public final class JarBuilder {
     private static final int MAX_LOG = 200_000;
 
     private final Duration timeout;
+    private final Path gradleHome;
 
     public JarBuilder() {
         this(Duration.ofMinutes(10));
     }
 
     public JarBuilder(Duration timeout) {
+        this(timeout, null);
+    }
+
+    public JarBuilder(Duration timeout, Path gradleHome) {
         this.timeout = timeout;
+        this.gradleHome = gradleHome;
     }
 
     public record Result(boolean ok, List<Path> jars, String log) {
     }
 
     public Result build(Path repoRoot, Path javaHome, Path outDir, List<String> extraArgs) {
-        Path gradlew = repoRoot.resolve("gradlew");
-        if (!Files.isExecutable(gradlew)) {
-            return new Result(false, List.of(), "no gradle wrapper in " + repoRoot);
+        var launcher = sdd.core.toolchain.GradleLauncher.resolve(repoRoot, gradleHome);
+        if (!launcher.found()) {
+            return new Result(false, List.of(), launcher.problem());
         }
         try {
             List<String> command = new ArrayList<>();
-            command.add("./gradlew");
+            command.add(launcher.executable());
             command.add("assemble");
             command.addAll(extraArgs);   // orchestrator-appended substitution flags (same slot as GradleTool)
             command.add("--no-configuration-cache");
