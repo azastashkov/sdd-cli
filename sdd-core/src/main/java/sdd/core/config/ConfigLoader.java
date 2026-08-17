@@ -269,7 +269,15 @@ public final class ConfigLoader {
         if (rawPort == null) {
             throw new ConfigException("atlassian.proxy.port is required");
         }
-        int port = parseInt("atlassian.proxy.port", str(rawPort, env, "atlassian.proxy.port"));
+        // Gate re-review Fix 2: this used to run rawPort through str(rawPort, env, ...) — which
+        // expands a ${VAR} reference — BEFORE parseInt ever saw it, matching no other numeric key
+        // in this file (follow_depth/max_pages/max_linked_issues all parseInt the RAW node). A
+        // misconfigured `port: ${JIRA_API_KEY}` therefore threw "... must be an integer, got
+        // '<the real resolved token>'" straight to the terminal — worse than the literal-node echo
+        // I4 fixed, since this one actually resolves an environment variable. A port number has no
+        // legitimate reason to come from a secret-shaped ${VAR} anyway, so this now matches its
+        // numeric siblings: parse the raw node, never resolve it as an env reference.
+        int port = parseInt("atlassian.proxy.port", String.valueOf(rawPort));
         List<String> noProxy = stringList(m.get("no_proxy"), "atlassian.proxy.no_proxy");
         return new AtlassianProxy(host, port, noProxy);
     }

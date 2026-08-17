@@ -721,6 +721,25 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void anEnvVarReferenceInProxyPortIsNeverResolvedIntoTheErrorMessage() throws Exception {
+        // Gate re-review Fix 2: atlassian.proxy.port used to run the raw node through str(...,
+        // env, ...) — which expands a ${VAR} reference — BEFORE parseInt saw it, so a
+        // `port: ${JIRA_PAT}` config error printed the REAL RESOLVED TOKEN ("jira-token-abc") in
+        // "... must be an integer, got '...'" — worse than the literal-node echo I4 fixed. The raw
+        // "${JIRA_PAT}" reference itself is fine to appear (it is not a secret), but the resolved
+        // value must never reach this message.
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                atlassian:
+                  proxy:
+                    host: proxy.corp.local
+                    port: ${JIRA_PAT}
+                """), ATLASSIAN_ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("atlassian.proxy.port must be an integer")
+                .hasMessageNotContaining("jira-token-abc");
+    }
+
+    @Test
     void tlsTruststoreRequiredWhenTlsBlockPresent() throws Exception {
         assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
                 atlassian:
