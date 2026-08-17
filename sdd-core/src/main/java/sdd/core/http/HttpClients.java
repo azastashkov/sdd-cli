@@ -400,7 +400,7 @@ public final class HttpClients {
      * ({@code tls.truststore}, or importing the CA into {@code cacerts}) — never a third,
      * independent message. {@code AtlassianProbe}/{@code RestClient} deliberately keep calling the
      * un-extended {@link #tlsFailureMessage} — Atlassian's failure table in
-     * {@code docs/atlassian-runbook.md} and two tests ({@code HttpClientsTest},
+     * {@code docs/runbook.md} and two tests ({@code HttpClientsTest},
      * {@code AtlassianProbeTest}) already pin that exact byte-for-byte text, and this is a new,
      * separate entry point precisely so extending the model-endpoint message never touches it.
      */

@@ -46,7 +46,7 @@ Bitbucket.** No Jira/Confluence/Bitbucket Data Center instance has ever been
 reachable from this codebase — the live-verification run that was originally
 planned to replace every hand-written fixture with a recording and settle
 every guessed API shape was cancelled (see
-[`atlassian-runbook.md`](atlassian-runbook.md)). What exists instead is documentation-level
+[`runbook.md`](runbook.md)). What exists instead is documentation-level
 verification: every invented request/response shape was checked against
 Atlassian's official Data Center documentation and recorded in
 `api-verification-report.md` (repo root of the requirements this branch was
@@ -86,7 +86,7 @@ in this branch — see below), **2 UNVERIFIABLE** (bucket 3).
 | 6 | Jira `issuelinks[].type.name`/`inward`/`outward` field names | CORRECT |
 | 7 | Jira/Confluence PAT auth via `Authorization: Bearer <token>` | CORRECT |
 | 8 | Jira `GET /rest/api/2/myself` is the whoami endpoint | CORRECT |
-| 9 | Jira/Confluence PAT creation method | **WRONG** — was `PUT`, is `POST /rest/pat/latest/tokens`. **Fixed**: documented in [`atlassian-runbook.md`](atlassian-runbook.md) §5, for the operator minting their own token by hand |
+| 9 | Jira/Confluence PAT creation method | **WRONG** — was `PUT`, is `POST /rest/pat/latest/tokens`. **Fixed**: documented in [`runbook.md`](runbook.md)'s "Obtaining Personal Access Tokens" section, for the operator minting their own token by hand |
 | 10 | Confluence `GET .../content/{id}?expand=body.storage,version,space` shape | CORRECT |
 | 11 | Confluence `GET .../content?spaceKey=X&title=Y` search shape | CORRECT |
 | 12 | Confluence URL forms (`viewpage.action`, `/display/`, `/spaces/.../pages/`, `/x/`) are genuine Data Center forms | CORRECT |
