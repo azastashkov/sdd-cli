@@ -9,6 +9,7 @@ import sdd.core.llm.ChatModel;
 import sdd.core.llm.ChatRequest;
 import sdd.core.llm.ChatResponse;
 import sdd.core.llm.ModelException;
+import sdd.core.progress.Progress;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -39,8 +40,24 @@ public final class RepoCardGenerator {
     private RepoCardGenerator() {}
 
     public static CardResult generate(Jdbi jdbi, Path workspace, ChatModel model, String modelName) {
+        return generate(jdbi, workspace, model, modelName, Progress.noOp());
+    }
+
+    /**
+     * Same as {@link #generate(Jdbi, Path, ChatModel, String)}, with progress reporting threaded
+     * through the per-repo loop. {@link Progress#start}/{@link Progress#finish} bracket only a
+     * repo that actually reaches the model: the {@code upToDate} cache hit just below (this
+     * method's common steady-state case — most repos' inputs are unchanged on most runs) and the
+     * consecutive-failure circuit breaker a little further down both {@code continue} before
+     * either call, on purpose, so neither shows up as work in a renderer. Every pre-existing
+     * caller of the four-arg overload above (this class's own test, and {@code IndexService})
+     * keeps getting exactly today's behaviour via {@link Progress#noOp()}.
+     */
+    public static CardResult generate(Jdbi jdbi, Path workspace, ChatModel model, String modelName,
+            Progress progress) {
         List<Map<String, Object>> repos = jdbi.withHandle(h ->
                 h.createQuery("SELECT id, name FROM repo ORDER BY name").mapToMap().list());
+        progress.phase("cards", repos.size());
         int generated = 0;
         int cached = 0;
         int failed = 0;
@@ -69,6 +86,7 @@ public final class RepoCardGenerator {
                         + " consecutive model failures");
                 continue;
             }
+            progress.start(name);
             try {
                 ChatResponse response = model.complete(new ChatRequest(modelName,
                         List.of(ChatMessage.system(SYSTEM_PROMPT), ChatMessage.user(input)),
@@ -100,6 +118,8 @@ public final class RepoCardGenerator {
                 consecutiveModelFailures++;
                 failed++;
                 failures.add(name + ": model error: " + e.getMessage());
+            } finally {
+                progress.finish(name);
             }
         }
         return new CardResult(generated, cached, failed, List.copyOf(failures));
