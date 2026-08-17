@@ -76,7 +76,9 @@ public internet. Configure it under `sdd.yml`'s `atlassian:` block (see
   variables**, referenced as `${VAR}` in `sdd.yml` — never written into the
   file itself. The corporate convention this project targets exports
   `JIRA_API_KEY`, `CONFLUENCE_API_KEY` and `BITBUCKET_API_KEY` from
-  `~/.zshrc` (see `.env.example`); `sdd.yml.example` uses those same names.
+  `~/.zshrc`, the same place the model credentials in step 2 of the
+  Quickstart live (see `.env.example` for the full list of variables);
+  `sdd.yml.example` uses those same names.
   The variable name is not special-cased anywhere in `sdd`'s own code — it is
   parsed out of whichever `${VAR}` reference `sdd.yml` actually contains — so
   any name works, these are simply the ones this estate's shell profile uses.
@@ -116,12 +118,36 @@ reference.
    below call it as `sdd`; put that path on your `PATH`, or prefix every
    command with it.
 
-2. **Configure model credentials.** `cp .env.example .env`, paste the real
-   keys, `source .env`. Never commit `.env`. The example configuration uses
-   hosted endpoints for every tier; to keep the coding tier on your own
-   machine instead (Apple Silicon, ~40 GB disk), run `scripts/serve-qwen.sh`
-   and point `models.coder` at it — `sdd.yml.example` carries that variant
-   commented out.
+2. **Configure model credentials.** `sdd` reads every credential from the
+   **process environment**, never from a file of its own: `sdd.yml` holds
+   only a `${VAR}` reference, which `ConfigLoader` expands at load time. So
+   export the keys the example configuration references from your shell
+   profile —
+
+   ```sh
+   export ROUTER_AI_API_KEY=...
+   export DEEPSEEK_API_KEY=...
+   ```
+
+   — from `~/.zshrc` (recommended: one profile serves every workspace), then
+   `source ~/.zshrc` or open a new shell. For a single workspace you can
+   instead `cp .env.example .env`, fill it in and `source .env`; that is the
+   same mechanism, just scoped narrower. There is no dotenv reader in `sdd` —
+   `.env` works only because you sourced it. **Never commit `.env`.**
+
+   `.env.example` is the checklist of which variables exist; the names above
+   are what `sdd.yml.example` happens to reference, and nothing in `sdd`'s
+   code special-cases them.
+
+   On a closed corporate network the model tiers use **no API key at all** —
+   a client certificate is the credential. See
+   [`docs/runbook.md`](docs/runbook.md), which covers both environments end
+   to end.
+
+   The example configuration uses hosted endpoints for every tier; to keep
+   the coding tier on your own machine instead (Apple Silicon, ~40 GB disk),
+   run `scripts/serve-qwen.sh` and point `models.coder` at it —
+   `sdd.yml.example` carries that variant commented out.
 
 3. **Configure the workspace.** A *workspace* is a directory holding one
    checkout of every repo in the estate, plus one `sdd.yml`:
