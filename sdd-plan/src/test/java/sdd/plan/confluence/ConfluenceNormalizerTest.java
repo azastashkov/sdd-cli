@@ -64,13 +64,51 @@ class ConfluenceNormalizerTest {
                 new SpecItem("Q3", "[unmapped touchpoint] service: bogus"));
         assertThat(spec.attachments()).containsExactly("tiers.png");
 
-        // prompt shape: system prompt + the extracted text; planner maxTokens passed through
+        // prompt shape: single-doc system prompt (no multi-source addendum — see the dedicated
+        // byte-identical test below) + the extracted text; planner maxTokens passed through
         assertThat(planner.requests()).hasSize(1);
         assertThat(planner.requests().get(0).messages().get(0).content())
-                .isEqualTo(ConfluenceNormalizer.SYSTEM_PROMPT);
+                .isEqualTo(ConfluenceNormalizer.SYSTEM_PROMPT_BASE);
         assertThat(planner.requests().get(0).messages().get(1).content())
                 .contains("We want tiers.");
         assertThat(planner.requests().get(0).maxTokens()).isEqualTo(16384);
+    }
+
+    @Test
+    void aOneDocumentBundleYieldsExactlyTheBasePrePreTask3Prompt() {
+        // Gate review I2: with no atlassian: block at all, sdd plan <export>.html is a pre-existing
+        // path whose behaviour must not change — the planner must see byte-identical input to what
+        // it saw before Task 3 introduced SourceBundle. This test pins that against a hardcoded
+        // copy of the ORIGINAL (pre-Task-3) system prompt, not against ConfluenceNormalizer's own
+        // constant — comparing against the class's own field would not catch a regression that
+        // changed both together.
+        String originalSystemPrompt = """
+                You convert one raw feature-specification document into strict JSON for a \
+                spec-driven development pipeline. Return exactly ONE JSON object - no markdown \
+                fences, no commentary - with exactly these fields:
+                {"title": string, "owner": string, "status": string, "goal": string,
+                 "background": string, "requirements": [string, ...], "acceptance": [string, ...],
+                 "constraints": [string, ...],
+                 "touchpoints": [{"kind": "repo"|"endpoint"|"topic"|"class"|"artifact", "value": string}, ...],
+                 "out_of_scope": [string, ...], "open_questions": [string, ...], "unmapped": [string, ...]}
+                Rules:
+                - Use only information present in the document. Never invent requirements.
+                - "requirements" are behaviours to build; "acceptance" are checks that prove them.
+                - "goal" is 1-3 sentences; longer context belongs in "background".
+                - Use "" for owner/status when the document does not state them.
+                - Anything you cannot confidently place goes into "unmapped" verbatim.
+                """;
+        SourceBundle bundle = bundleOf("# Loyalty\nWe want tiers.", List.of("tiers.png", "tiers.png"));
+        ScriptedChatModel planner = new ScriptedChatModel(List.of(response(GOOD_JSON, "stop")));
+
+        NormalizedSpec spec = ConfluenceNormalizer.normalize(bundle, planner, "m", 100, "id");
+
+        assertThat(planner.requests().get(0).messages().get(0).content()).isEqualTo(originalSystemPrompt);
+        // Bare text, no "## Source 1: ..." header — exactly extracted.text() as the base path sent.
+        assertThat(planner.requests().get(0).messages().get(1).content()).isEqualTo("# Loyalty\nWe want tiers.");
+        // Mapped-through, not de-duplicated — the base path never merged attachments across
+        // documents because there was never more than one to merge.
+        assertThat(spec.attachments()).containsExactly("tiers.png", "tiers.png");
     }
 
     @Test
