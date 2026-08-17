@@ -222,6 +222,70 @@ class HttpClientsTlsConfigTest {
                 .hasMessageStartingWith("cannot load atlassian.tls.truststore " + corrupt);
     }
 
+    // Follow-up fix: a model endpoint's TlsConfig carries its own configPath ("models.<name>.tls",
+    // set by ConfigLoader.parseModelTls) so these three messages name the real sdd.yml key an
+    // operator must edit, exactly the way the Atlassian prefix above always has — instead of the
+    // bare "tls.cert"/"tls.truststore" that names no key that actually exists for a model tier.
+    // These mirror the Atlassian-prefix tests above one-for-one, on the model side.
+
+    @Test
+    void trustManagersWithAMissingModelTruststoreNamesTheModelsConfigKey() {
+        Path missing = dir.resolve("does-not-exist.p12");
+        TlsConfig tls = new TlsConfig(missing, "changeit", null, null, null, null, null, List.of(),
+                "models.corp.tls");
+
+        assertThatThrownBy(() -> HttpClients.trustManagers(tls))
+                .isInstanceOf(ConfigException.class)
+                .hasMessage("models.corp.tls.truststore " + missing + " does not exist");
+    }
+
+    @Test
+    void trustManagersWithACorruptModelTruststoreNamesTheModelsConfigKey() throws Exception {
+        Path corrupt = dir.resolve("corrupt.p12");
+        Files.writeString(corrupt, "not a real keystore");
+        TlsConfig tls = new TlsConfig(corrupt, "changeit", null, null, null, null, null, List.of(),
+                "models.corp.tls");
+
+        assertThatThrownBy(() -> HttpClients.trustManagers(tls))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageStartingWith("cannot load models.corp.tls.truststore " + corrupt);
+    }
+
+    @Test
+    void keyManagersWithAMissingModelCertNamesTheModelsConfigKey() {
+        Path cert = dir.resolve("client.crt");
+        TlsConfig tls = new TlsConfig(null, null, null, cert, dir.resolve("client.key"), null, null,
+                List.of(), "models.corp.tls");
+
+        assertThatThrownBy(() -> HttpClients.keyManagers(tls))
+                .isInstanceOf(ConfigException.class)
+                .hasMessage("models.corp.tls.cert " + cert + " does not exist");
+    }
+
+    @Test
+    void keyManagersWithAMissingModelKeyNamesTheModelsConfigKey() throws Exception {
+        CertFixtures fixtures = new CertFixtures(dir);
+        fixtures.generate();
+        Path missingKey = dir.resolve("missing.key");
+        TlsConfig tls = new TlsConfig(null, null, null, fixtures.clientCertPem(), missingKey, null, null,
+                List.of(), "models.corp.tls");
+
+        assertThatThrownBy(() -> HttpClients.keyManagers(tls))
+                .isInstanceOf(ConfigException.class)
+                .hasMessage("models.corp.tls.key " + missingKey + " does not exist");
+    }
+
+    @Test
+    void keyManagersWithAModelCertButNoKeyNamesBothModelsConfigKeys() {
+        TlsConfig tls = new TlsConfig(null, null, null, dir.resolve("client.crt"), null, null, null,
+                List.of(), "models.corp.tls");
+
+        assertThatThrownBy(() -> HttpClients.keyManagers(tls))
+                .isInstanceOf(ConfigException.class)
+                .hasMessage("models.corp.tls.cert and models.corp.tls.key must both be "
+                        + "configured, or neither");
+    }
+
     @Test
     void aDeferredAtlassianTruststorePasswordErrorIsNeverDoublePrefixed() {
         // The deferred passwordError text ConfigLoader would have produced already says
@@ -270,6 +334,19 @@ class HttpClientsTlsConfigTest {
         assertThat(extended).startsWith(base);
         assertThat(extended).contains("curl").contains("does not mean the JDK trusts")
                 .contains("tls.truststore").contains("cacerts");
+    }
+
+    // Follow-up fix: given the endpoint's own configPath, the remedy sentence names the real
+    // sdd.yml key ("models.corp.tls.truststore") instead of the generic "tls.truststore" the
+    // 3-arg overload above still produces for a caller with no namespace to give it (e.g. this
+    // class's own test above, which pins that generic text deliberately).
+    @Test
+    void modelTlsFailureMessageWithAConfigPathNamesTheModelsTruststoreKey() {
+        String extended = HttpClients.modelTlsFailureMessage("corp-ift.example",
+                Path.of("/etc/ssl/corp-ca.p12"), new SSLHandshakeException("PKIX path building failed"),
+                "models.corp.tls");
+
+        assertThat(extended).contains("models.corp.tls.truststore").doesNotContain(" tls.truststore");
     }
 
     @Test

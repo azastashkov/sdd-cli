@@ -96,8 +96,9 @@ public final class EndpointProbe {
             // endpoint (api-key-only endpoints never build an SSLContext beyond the JDK default, so
             // this is exactly as likely to fire there as it always was — i.e. essentially never).
             Path truststore = ep.tls() != null ? ep.tls().truststore() : null;
+            String configPath = ep.tls() != null ? ep.tls().configPath() : null;
             return new ProbeResult(false, HttpClients.modelTlsFailureMessage(UrlHosts.hostOf(ep.baseUrl()),
-                    truststore, e));
+                    truststore, e, configPath));
         } catch (Exception e) {
             return new ProbeResult(false, String.valueOf(e.getMessage()));
         }

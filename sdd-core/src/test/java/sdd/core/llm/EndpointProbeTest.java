@@ -152,4 +152,47 @@ class EndpointProbeTest {
                         + "truststore /etc/ssl/corp-ca.p12: PKIX path building failed")
                 .contains("curl").contains("cacerts");
     }
+
+    // Follow-up fix: the remedy sentence above ("Fix by setting tls.truststore in sdd.yml...") used
+    // to name no real config key for a model endpoint. With this endpoint's TlsConfig.configPath
+    // threaded through (set by ConfigLoader.parseModelTls, same as every other field on this
+    // record), it now names this endpoint's own dotted key instead of the generic one the test
+    // above pins deliberately (that TlsConfig carries no configPath, mirroring a caller with no
+    // endpoint namespace to give).
+    @Test
+    void anSslHandshakeFailureNamesThisEndpointsOwnTruststoreConfigKeyWhenConfigPathIsKnown() {
+        HttpClient sslRefusing = new HttpClient() {
+            @Override public java.util.Optional<Duration> connectTimeout() { return java.util.Optional.empty(); }
+            @Override public Redirect followRedirects() { return Redirect.NEVER; }
+            @Override public java.util.Optional<java.net.ProxySelector> proxy() { return java.util.Optional.empty(); }
+            @Override public javax.net.ssl.SSLContext sslContext() { return null; }
+            @Override public javax.net.ssl.SSLParameters sslParameters() { return null; }
+            @Override public java.util.Optional<java.net.Authenticator> authenticator() { return java.util.Optional.empty(); }
+            @Override public java.util.Optional<java.util.concurrent.Executor> executor() { return java.util.Optional.empty(); }
+            @Override public java.util.Optional<java.net.CookieHandler> cookieHandler() { return java.util.Optional.empty(); }
+            @Override public Version version() { return Version.HTTP_1_1; }
+            @Override public <T> java.net.http.HttpResponse<T> send(java.net.http.HttpRequest req,
+                    java.net.http.HttpResponse.BodyHandler<T> h) throws java.io.IOException {
+                throw new SSLHandshakeException("PKIX path building failed");
+            }
+            @Override public <T> java.util.concurrent.CompletableFuture<java.net.http.HttpResponse<T>> sendAsync(
+                    java.net.http.HttpRequest req, java.net.http.HttpResponse.BodyHandler<T> h) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public <T> java.util.concurrent.CompletableFuture<java.net.http.HttpResponse<T>> sendAsync(
+                    java.net.http.HttpRequest req, java.net.http.HttpResponse.BodyHandler<T> h,
+                    java.net.http.HttpResponse.PushPromiseHandler<T> p) {
+                throw new UnsupportedOperationException();
+            }
+        };
+        TlsConfig tls = new TlsConfig(Path.of("/etc/ssl/corp-ca.p12"), null, null,
+                Path.of("/does/not/matter/client.crt"), Path.of("/does/not/matter/client.key"), null, null,
+                List.of(), "models.corp.tls");
+        ModelEndpoint ep = new ModelEndpoint("https://corp-ift.example/v1", "m", null,
+                256, 0.0, Duration.ofSeconds(5), Map.of(), null, tls);
+
+        EndpointProbe.ProbeResult r = EndpointProbe.probe(ep, sslRefusing);
+
+        assertThat(r.detail()).contains("models.corp.tls.truststore").doesNotContain(" tls.truststore");
+    }
 }

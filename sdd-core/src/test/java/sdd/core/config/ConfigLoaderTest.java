@@ -199,6 +199,24 @@ class ConfigLoaderTest {
         assertThat(tls.truststore()).isEqualTo(Path.of("/etc/ssl/corp-ca.p12"));
     }
 
+    // Follow-up fix: parseModelTls's own "path" (already "models.<name>.tls", used throughout this
+    // method for every deferred-credential message below) is now carried on TlsConfig itself, so
+    // HttpClients can name this endpoint's real config key in a load-time TLS error instead of a
+    // bare "tls.cert"/"tls.truststore" that names no key that actually exists in sdd.yml.
+    @Test
+    void tlsBlockCarriesItsOwnModelsDottedConfigPath() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL + """
+                  corp:
+                    base_url: https://corp-ift.example/v1
+                    model: DeepSeek-V4-Flash
+                    tls:
+                      cert: /certs/client.crt
+                      key: /certs/client.key
+                """), ENV);
+
+        assertThat(c.models().get("corp").tls().configPath()).isEqualTo("models.corp.tls");
+    }
+
     @Test
     void tlsBlockDefaultsKeyPasswordProtocolsAndTruststoreWhenOmitted() throws Exception {
         SddConfig c = ConfigLoader.load(write(MINIMAL + """

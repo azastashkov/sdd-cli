@@ -184,14 +184,14 @@ would otherwise fail opaquely at the TLS layer
 
 | Validated | On failure | Verified |
 |---|---|---|
-| `tls.cert`/`tls.key` exist and are readable, and the key actually parses | Names the path (never file contents); a PKCS#1/SEC1/legacy-encrypted key names the header found and the exact `openssl pkcs8 -topk8 -nocrypt` conversion command | `DoctorCommand.java:255-264`, `HttpClients.java:233-270` |
+| `tls.cert`/`tls.key` exist and are readable, and the key actually parses | Names the path (never file contents); a PKCS#1/SEC1/legacy-encrypted key names the header found and the exact `openssl pkcs8 -topk8 -nocrypt` conversion command | `DoctorCommand.java:255-264`, `HttpClients.java:228-266` |
 | The client certificate is not expired | `client certificate expired <notAfter> (subject=<subject>)` | `DoctorCommand.java:269-275` |
 
 Two more things happen alongside that check, printed as `  warn: ` lines —
 same convention as every other `sdd` sub-diagnostic — rather than as a
 pass/fail check, since neither one is itself a reason to distrust the
 endpoint: the client key file is group- or world-readable
-(`HttpClients.java:298-306`, wired at `DoctorCommand.java:265-268`), and the
+(`HttpClients.java:294-303`, wired at `DoctorCommand.java:265-268`), and the
 certificate expires within 30 days (`DoctorCommand.java:276-282`). The
 existing endpoint probe then runs exactly as it always has, whether or not
 the pre-flight check passed — a broken certificate is reported, never hidden,
@@ -224,7 +224,7 @@ to reissue (`"<site> rejected the token in $<VAR> (HTTP 401) — reissue it"`,
 `RestClient.java:186-187, 285-288`); a TLS handshake failure names the host
 and which truststore was in play (`"TLS handshake with <host> failed using
 truststore <path>: <detail>"`, or `"(JDK default truststore)"` when none is
-configured, `HttpClients.java:383-386`, wired for Atlassian at
+configured, `HttpClients.java:384-387`, wired for Atlassian at
 `AtlassianProbe.java:98-102`); any other transport failure (a connect timeout
 being the common proxy-related case) prints the JDK's own message under
 `"transport error talking to <site>: <detail>"` (`RestClient.java:201-203`)
@@ -244,9 +244,11 @@ certificate chain** — curl trusts the OS certificate store (macOS keychain;
 `/etc/ssl/certs` on Linux), the JDK trusts only its own `cacerts`, so a
 corporate CA installed system-wide but never imported into the JDK produces a
 bare `PKIX path building failed` right after curl succeeded against the same
-URL. The message names both fixes — set `tls.truststore`, or import the CA
-into `$JAVA_HOME/lib/security/cacerts` (`HttpClients.java:407-412`, wired at
-`EndpointProbe.java:92-100`).
+URL. The message names both fixes — set `models.<name>.tls.truststore` (the
+endpoint's own `TlsConfig.configPath`, threaded through by `ConfigLoader.
+parseModelTls`; a generic `tls.truststore` only when built with no known
+path), or import the CA into `$JAVA_HOME/lib/security/cacerts`
+(`HttpClients.java:421-427`, wired at `EndpointProbe.java:92-101`).
 
 **Flags**
 

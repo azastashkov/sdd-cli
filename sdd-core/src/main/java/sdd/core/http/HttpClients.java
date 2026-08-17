@@ -56,17 +56,14 @@ public final class HttpClients {
      *  same-arity overloads with unrelated parameter types make that call ambiguous at compile
      *  time (neither {@code AtlassianTls} nor {@code TlsConfig} is more specific than the other),
      *  which would break {@link HttpClientsTest} — a name that can never collide is worth more
-     *  here than one more overload of {@code build}. Re-labels a {@code tls.truststore}-prefixed
-     *  {@link ConfigException} back to {@code atlassian.tls.truststore} via
-     *  {@link #relabelForAtlassian} — {@code DoctorCommand} prints this message verbatim, and the
-     *  generic prefix {@link #trustManagers(TlsConfig)} produces names no config key that actually
-     *  exists in {@code sdd.yml}. */
+     *  here than one more overload of {@code build}. {@code DoctorCommand} prints a
+     *  {@link ConfigException} from this method verbatim, and needs {@code atlassian.tls.truststore}
+     *  named in it, not a generic key no {@code sdd.yml} actually has — {@link #toTlsConfig} is
+     *  what supplies that, by stamping {@code "atlassian.tls"} onto the {@link TlsConfig#configPath}
+     *  of the value built here, so no re-labelling step is needed after the fact (see that method's
+     *  javadoc for why the earlier re-labelling shim was deleted rather than kept alongside this). */
     public static HttpClient build(AtlassianTls tls, AtlassianProxy proxy) {
-        try {
-            return buildClient(toTlsConfig(tls), toProxyConfig(proxy));
-        } catch (ConfigException e) {
-            throw relabelForAtlassian(e);
-        }
+        return buildClient(toTlsConfig(tls), toProxyConfig(proxy));
     }
 
     /** The neutral-typed counterpart to {@link #build(AtlassianTls, AtlassianProxy)} — what a
@@ -138,15 +135,16 @@ public final class HttpClients {
      * trusts this gateway's CA" per the plan's example config — so this branch exists for the
      * model path without changing a single byte of the Atlassian one, which never exercises it.
      *
-     * <p>Error messages here use the generic {@code tls.truststore} config-key name — this method
-     * is the one shared by both an Atlassian truststore and a model endpoint's, and it has no way
-     * to know which dotted path a given {@link TlsConfig} actually came from. {@code sdd doctor}
-     * prints an Atlassian truststore failure's message verbatim to an operator who needs to know
-     * to edit {@code atlassian.tls.truststore} specifically, not a generic {@code tls.truststore}
-     * that names no real config key in that file — so {@link #trustManagers(AtlassianTls)} restores
-     * the exact {@code "atlassian.tls.truststore"} prefix these two error paths produced before
-     * this generalisation, by re-labelling the {@link ConfigException} this method threw rather
-     * than duplicating the load logic.
+     * <p>Error messages here are built from {@code tls.configPath()} — {@code "atlassian.tls"} for
+     * the one Atlassian truststore, {@code "models.<name>.tls"} for a model endpoint, {@code null}
+     * (falling back to the bare {@code tls} prefix — see {@link TlsConfig}'s javadoc) for a
+     * {@link TlsConfig} built with no known namespace, e.g. directly in a test — rather than a
+     * hardcoded literal, since this method is shared by every caller regardless of which
+     * differently-namespaced key actually owns the block. This used to be a hardcoded
+     * {@code "tls.truststore"} that was correct for neither caller on its own, re-labelled back to
+     * {@code atlassian.tls.truststore} after the fact for the Atlassian one alone by a now-deleted
+     * {@code relabelForAtlassian} shim — see this class's javadoc for why that shim was removed
+     * rather than given a model-side twin.
      */
     public static TrustManager[] trustManagers(TlsConfig tls) {
         // Deferred from ConfigLoader: an unset truststore_password ${VAR} does not fail config
@@ -160,8 +158,9 @@ public final class HttpClients {
         if (path == null) {
             return null;
         }
+        String truststoreKey = truststoreConfigKey(tls.configPath());
         if (!Files.isRegularFile(path)) {
-            throw new ConfigException("tls.truststore " + path + " does not exist");
+            throw new ConfigException(truststoreKey + " " + path + " does not exist");
         }
         char[] password = tls.truststorePassword() == null ? new char[0] : tls.truststorePassword().toCharArray();
         try (InputStream in = Files.newInputStream(path)) {
@@ -171,7 +170,7 @@ public final class HttpClients {
             tmf.init(keyStore);
             return tmf.getTrustManagers();
         } catch (IOException | GeneralSecurityException e) {
-            throw new ConfigException("cannot load tls.truststore " + path + ": " + e.getMessage(), e);
+            throw new ConfigException("cannot load " + truststoreKey + " " + path + ": " + e.getMessage(), e);
         }
     }
 
@@ -180,37 +179,30 @@ public final class HttpClients {
      *  {@code HttpClientsTest}) keeps compiling and behaving exactly as before, since a real
      *  {@code AtlassianTls} always converts to a {@link TlsConfig} with a non-null
      *  {@code truststore} (the one branch above this class's javadoc calls out never triggers
-     *  here). Re-labels the {@code tls.truststore}-prefixed messages {@link #trustManagers(TlsConfig)}
-     *  produces back to {@code atlassian.tls.truststore} — the exact prefix {@code DoctorCommand}
-     *  has always printed verbatim to an operator, and the only config key that actually exists for
-     *  them to edit — WITHOUT re-implementing the file-existence/load logic a second time; only the
-     *  message text of the two errors that name a config key is re-labelled, never the deferred
-     *  {@code truststorePasswordError} message (that one is {@code ConfigLoader}'s own text,
-     *  already correctly prefixed at the source, and must be echoed byte-identically). */
+     *  here) AND a non-null {@code configPath} of {@code "atlassian.tls"} (set by
+     *  {@link #toTlsConfig(AtlassianTls)}), so {@link #trustManagers(TlsConfig)} already names
+     *  {@code atlassian.tls.truststore} on its own — no re-labelling step needed after the fact. */
     public static TrustManager[] trustManagers(AtlassianTls tls) {
-        try {
-            return trustManagers(toTlsConfig(tls));
-        } catch (ConfigException e) {
-            throw relabelForAtlassian(e);
-        }
+        return trustManagers(toTlsConfig(tls));
     }
 
-    /** Re-labels the generic {@code tls.truststore ...} text {@link #trustManagers(TlsConfig)}
-     *  produces (for a file that does not exist, or one that fails to load) back to
-     *  {@code atlassian.tls.truststore ...} — the exact prefix both error paths produced before
-     *  {@link TlsConfig} generalised them, and the only one naming a real {@code sdd.yml} config
-     *  key an Atlassian operator can act on. The deferred {@code truststorePasswordError} message
-     *  is never touched here: that text is {@code ConfigLoader}'s own, already correctly prefixed
-     *  at the source, and both {@link #build(AtlassianTls, AtlassianProxy)} and
-     *  {@link #trustManagers(AtlassianTls)} must still echo it byte-identically (it never contains
-     *  the literal {@code "tls.truststore "} this method looks for, so it passes through
-     *  untouched). */
-    private static ConfigException relabelForAtlassian(ConfigException e) {
-        String message = e.getMessage();
-        if (message != null && message.contains("tls.truststore ")) {
-            return new ConfigException(message.replace("tls.truststore ", "atlassian.tls.truststore "), e.getCause());
-        }
-        return e;
+    /** The {@code <configPath>.truststore} config key a truststore error should name —
+     *  {@code configPath + ".truststore"}, or the bare {@code "tls.truststore"} {@link TlsConfig}'s
+     *  javadoc documents as the fallback when {@code configPath} is null. Shared by
+     *  {@link #trustManagers(TlsConfig)} and {@link #modelTlsFailureMessage(String, Path, Throwable,
+     *  String)} so the two truststore-naming call sites can never drift apart on the fallback rule. */
+    private static String truststoreConfigKey(String configPath) {
+        return (configPath == null ? "tls" : configPath) + ".truststore";
+    }
+
+    /** {@code <configPath>.cert}/{@code <configPath>.key} — {@link #truststoreConfigKey}'s
+     *  counterparts for {@link #keyManagers(TlsConfig)}'s two config-key-naming errors. */
+    private static String certConfigKey(String configPath) {
+        return (configPath == null ? "tls" : configPath) + ".cert";
+    }
+
+    private static String keyConfigKey(String configPath) {
+        return (configPath == null ? "tls" : configPath) + ".key";
     }
 
     /**
@@ -220,9 +212,12 @@ public final class HttpClients {
      * either). Exactly one of the pair set is a config error: a cert without a key (or the
      * reverse) can never produce a working {@link SSLContext}, and failing fast here with a plain
      * message is better than an opaque {@code NullPointerException} three calls deeper. The dotted
-     * config path in that message belongs to {@code ConfigLoader} (Phase 2), which alone knows
-     * whether this came from {@code models.corp.tls} or another endpoint entirely; this class
-     * only knows the file paths themselves.
+     * config path in that message is {@code tls.configPath()} — {@code ConfigLoader.parseModelTls}
+     * already validates this same pairing eagerly, at load time, with its own {@code
+     * models.<name>.tls.cert}-prefixed message (so this branch rarely fires for a real {@code
+     * sdd.yml}), but a {@link TlsConfig} can also reach this class built some other way — directly
+     * in a test, for instance — so this class names its own key too rather than assuming that
+     * earlier check always ran first.
      *
      * <p>Certificate and key parsing is {@link PemKeyLoader}'s job — see its class javadoc for the
      * exact PEM-header handling and Ruling M3 (no PKCS#1 DER wrap). The parsed chain and key are
@@ -235,7 +230,8 @@ public final class HttpClients {
             return null;
         }
         if (tls.clientCert() == null || tls.clientKey() == null) {
-            throw new ConfigException("tls.cert and tls.key must both be configured, or neither");
+            throw new ConfigException(certConfigKey(tls.configPath()) + " and " + keyConfigKey(tls.configPath())
+                    + " must both be configured, or neither");
         }
         // Deferred from ConfigLoader: an unset key_password ${VAR} does not fail config loading
         // for a command that never opens the key, so it is raised here instead — the earliest
@@ -247,10 +243,10 @@ public final class HttpClients {
         Path certPath = tls.clientCert();
         Path keyPath = tls.clientKey();
         if (!Files.isRegularFile(certPath)) {
-            throw new ConfigException("tls.cert " + certPath + " does not exist");
+            throw new ConfigException(certConfigKey(tls.configPath()) + " " + certPath + " does not exist");
         }
         if (!Files.isRegularFile(keyPath)) {
-            throw new ConfigException("tls.key " + keyPath + " does not exist");
+            throw new ConfigException(keyConfigKey(tls.configPath()) + " " + keyPath + " does not exist");
         }
         char[] keyPassword = tls.keyPassword() == null ? null : tls.keyPassword().toCharArray();
         List<X509Certificate> chain = PemKeyLoader.certificateChain(certPath);
@@ -307,12 +303,17 @@ public final class HttpClients {
         return loose ? "  warn: client key " + keyPath + " is group- or world-readable" : null;
     }
 
+    /** The Atlassian adapter from {@code AtlassianTls} to this class's neutral {@link TlsConfig} —
+     *  {@code configPath} is stamped {@code "atlassian.tls"} here, the one and only place an
+     *  {@code AtlassianTls} ever becomes a {@link TlsConfig}, so every error {@link
+     *  #trustManagers(TlsConfig)} builds from the result already names {@code atlassian.tls.truststore}
+     *  without any re-labelling step afterward. */
     private static TlsConfig toTlsConfig(AtlassianTls tls) {
         if (tls == null) {
             return null;
         }
         return new TlsConfig(tls.truststore(), tls.password(), tls.passwordError(),
-                null, null, null, null, List.of());
+                null, null, null, null, List.of(), "atlassian.tls");
     }
 
     private static ProxyConfig toProxyConfig(AtlassianProxy proxy) {
@@ -403,12 +404,26 @@ public final class HttpClients {
      * {@code docs/runbook.md} and two tests ({@code HttpClientsTest},
      * {@code AtlassianProbeTest}) already pin that exact byte-for-byte text, and this is a new,
      * separate entry point precisely so extending the model-endpoint message never touches it.
+     *
+     * <p>Delegates to the 4-argument overload below with a null {@code configPath} — the generic
+     * {@code tls.truststore} remedy, same fallback {@link TlsConfig#configPath()} documents — kept
+     * as its own 3-argument overload so every existing caller of this exact signature (this class's
+     * own tests included) keeps compiling and behaving unchanged.
      */
     public static String modelTlsFailureMessage(String host, Path truststore, Throwable cause) {
+        return modelTlsFailureMessage(host, truststore, cause, null);
+    }
+
+    /** {@link #modelTlsFailureMessage(String, Path, Throwable)}, naming {@code configPath}'s own
+     *  truststore key ({@code "models.<name>.tls.truststore"}) in the remedy sentence instead of
+     *  the generic {@code tls.truststore} — {@link EndpointProbe} is the one caller with an actual
+     *  endpoint namespace to give it, via {@code ep.tls().configPath()}. */
+    public static String modelTlsFailureMessage(String host, Path truststore, Throwable cause, String configPath) {
         return tlsFailureMessage(host, truststore, cause) + " — a working \"curl\" to this same URL "
                 + "does not mean the JDK trusts this certificate chain: curl trusts the OS certificate "
-                + "store, the JDK trusts only its own cacerts. Fix by setting tls.truststore in sdd.yml "
-                + "to the corporate CA chain, or by importing that CA into $JAVA_HOME/lib/security/cacerts.";
+                + "store, the JDK trusts only its own cacerts. Fix by setting " + truststoreConfigKey(configPath)
+                + " in sdd.yml to the corporate CA chain, or by importing that CA into "
+                + "$JAVA_HOME/lib/security/cacerts.";
     }
 
     /**

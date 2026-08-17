@@ -169,10 +169,10 @@ check.** A working `curl` to the gateway's URL is not evidence the JDK
 trusts the same certificate chain: curl trusts the OS certificate store
 (macOS keychain; `/etc/ssl/certs` on Linux), the JDK trusts only its own
 `cacerts`. If `doctor` reports `PKIX path building failed` for a model
-endpoint that `curl` reaches fine, the fix is the same one
-`atlassian.tls.truststore` needs below: either set this endpoint's
-`tls.truststore` to the corporate CA chain, or import that CA into
-`$JAVA_HOME/lib/security/cacerts`. This is the single most likely first
+endpoint that `curl` reaches fine, the fix is the same kind
+`atlassian.tls.truststore` needs below: either set this endpoint's own
+`models.<name>.tls.truststore` to the corporate CA chain, or import that CA
+into `$JAVA_HOME/lib/security/cacerts`. This is the single most likely first
 failure in this environment.
 
 #### Jira, Confluence, Bitbucket Data Center
