@@ -60,7 +60,8 @@ public final class LiveProgress implements Progress {
     /** Package-private, not {@code ForTest}-suffixed: not an injected fake, just the real
      *  scheduler, exposed so {@code LiveProgressTest} can assert {@link #stop} actually shuts
      *  the daemon ticker down (a non-daemon thread left running would hang the JVM — see the
-     *  class javadoc and design doc, "Renderers"). */
+     *  class javadoc and design doc, "Renderers"). {@code null} only on the P5 fallback path
+     *  below, when the ticker itself could not be created — every use of it is guarded. */
     final ScheduledExecutorService scheduler;
 
     private final Object lock = new Object();
@@ -76,18 +77,54 @@ public final class LiveProgress implements Progress {
     private final Map<String, Instant> inFlight = new LinkedHashMap<>();
     private String currentDetail = "";
 
+    /**
+     * P5 applies to construction too, not just the per-event methods below — the fact that the
+     * sole call site ({@code SddCli.resolve}) happens to sit inside a try block, and that
+     * production only ever passes the non-throwing {@link InstantSource#system()}, would make
+     * "never throws" a property of the caller rather than of this class, which is exactly the
+     * shape the ruling exists to rule out. {@link #safeInitialInstant} and {@link #safeScheduler}
+     * are the two operations here that can throw ({@code clock.instant()}, thread/executor
+     * creation) — both degrade rather than propagate.
+     */
     public LiveProgress(PrintWriter writer, InstantSource clock) {
         this.writer = writer;
         this.clock = clock;
-        this.phaseStart = clock.instant();
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "sdd-progress");
-            t.setDaemon(true);
-            return t;
-        });
-        // scheduleWithFixedDelay, not at-a-fixed-rate: a GC pause or a long paint must not queue
-        // up a catch-up burst of ticks once the JVM is free again (design doc, "Renderers").
-        this.scheduler.scheduleWithFixedDelay(this::tick, 1, 1, TimeUnit.SECONDS);
+        this.phaseStart = safeInitialInstant(clock);
+        this.scheduler = safeScheduler();
+    }
+
+    private static Instant safeInitialInstant(InstantSource clock) {
+        try {
+            return clock.instant();
+        } catch (RuntimeException e) {
+            // P5: a throwing clock must not fail construction. Every later read of `clock` goes
+            // through a method already wrapped in its own catch-all (mutateAndPaint/tick/note),
+            // so this fallback only ever affects the very first frame's phase-elapsed baseline.
+            return Instant.EPOCH;
+        }
+    }
+
+    private ScheduledExecutorService safeScheduler() {
+        try {
+            ScheduledExecutorService created = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "sdd-progress");
+                t.setDaemon(true);
+                return t;
+            });
+            // scheduleWithFixedDelay, not at-a-fixed-rate: a GC pause or a long paint must not
+            // queue up a catch-up burst of ticks once the JVM is free again (design doc,
+            // "Renderers").
+            created.scheduleWithFixedDelay(this::tick, 1, 1, TimeUnit.SECONDS);
+            return created;
+        } catch (RuntimeException e) {
+            // P5: if the ticker cannot even be created (e.g. the JVM refuses new threads), this
+            // renderer must still not fail construction. Every Progress event still paints
+            // synchronously on its own call; only the between-events tick is lost. Left null
+            // rather than substituted with a dummy executor, since creating ANY executor here —
+            // including a non-scheduling fallback — is exactly the operation that just failed;
+            // every use of #scheduler below is guarded accordingly.
+            return null;
+        }
     }
 
     @Override
@@ -110,11 +147,20 @@ public final class LiveProgress implements Progress {
         });
     }
 
+    /**
+     * Idempotent per item: {@code done} advances only when {@code item} was actually in flight
+     * ({@link Map#remove} returns non-null only the first time). Without this, a repeated {@code
+     * finish} on an already-finished item — or one with no matching {@link #start} at all — would
+     * inflate {@code done} past what the estate actually did. This matters most for {@code
+     * implement} (a later task), whose scheduler drives this off {@code Orchestrator} state
+     * transitions, where a repo can plausibly reach a terminal state by more than one path.
+     */
     @Override
     public void finish(String item) {
         mutateAndPaint(() -> {
-            inFlight.remove(item);
-            done++;
+            if (inFlight.remove(item) != null) {
+                done++;
+            }
         });
     }
 
@@ -153,7 +199,9 @@ public final class LiveProgress implements Progress {
                 // P5 — fall through: the scheduler must still be shut down below regardless.
             }
         }
-        scheduler.shutdownNow();
+        if (scheduler != null) {
+            scheduler.shutdownNow();
+        }
     }
 
     private void tick() {

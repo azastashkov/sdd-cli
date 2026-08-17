@@ -17,8 +17,13 @@ import java.io.PrintWriter;
                 ImplementCommand.class, ReviewCommand.class, CleanCommand.class, StatusCommand.class,
                 ExplainCommand.class})
 public final class SddCli {
-    @Option(names = "--quiet", description = "Disable the progress indicator, regardless of "
-            + "SDD_PROGRESS or whether stdout is a terminal")
+    // scope = INHERIT because picocli does NOT inherit parent options: without it, only
+    // "sdd --quiet index" would parse, and "sdd index --quiet" — the form a user actually
+    // types — would fail with an unmatched-argument error. Same footgun ReviewCommand.java:60-63
+    // documents for --workspace.
+    @Option(names = "--quiet", scope = CommandLine.ScopeType.INHERIT,
+            description = "Disable the progress indicator, regardless of "
+                    + "SDD_PROGRESS or whether stdout is a terminal")
     boolean quiet;
 
     /**

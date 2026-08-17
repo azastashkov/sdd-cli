@@ -134,6 +134,60 @@ class LiveProgressTest {
         }
     }
 
+    /** Fix 3: a repeated finish() on the same item must not double-count "done" — the parallel
+     *  implement caller (a later task) drives this off state transitions where a repo can
+     *  plausibly reach a terminal state by more than one path. */
+    @Test
+    void finishIsIdempotentPerItemRepeatingItDoesNotDoubleCountDone() {
+        StringWriter sw = new StringWriter();
+        LiveProgress progress = new LiveProgress(new PrintWriter(sw), new TestClock(T0));
+        try {
+            progress.phase("implement", 11);
+            progress.start("order-service");
+            progress.finish("order-service");
+            progress.finish("order-service"); // repeated — must not double-count
+
+            progress.start("billing");
+
+            assertThat(lastFrame(sw)).contains("2/11").contains("billing");
+        } finally {
+            progress.stop();
+        }
+    }
+
+    /** Fix 3: a finish() with no matching start() (never in flight) must not count either. */
+    @Test
+    void finishWithNoMatchingStartDoesNotIncrementDone() {
+        StringWriter sw = new StringWriter();
+        LiveProgress progress = new LiveProgress(new PrintWriter(sw), new TestClock(T0));
+        try {
+            progress.phase("implement", 11);
+            progress.finish("never-started");
+
+            progress.start("order-service");
+
+            assertThat(lastFrame(sw)).contains("1/11").contains("order-service");
+        } finally {
+            progress.stop();
+        }
+    }
+
+    /** Fix 2 / P5: construction itself must never throw, even when the injected clock does —
+     *  otherwise "never throws" would be a property of the sole call site (SddCli.resolve's try
+     *  block), not of this class. */
+    @Test
+    void aThrowingClockAtConstructionDoesNotFailConstruction() {
+        InstantSource throwing = () -> {
+            throw new RuntimeException("boom");
+        };
+
+        assertThatCode(() -> {
+            LiveProgress progress = new LiveProgress(new PrintWriter(new StringWriter()), throwing);
+            progress.start("order-service"); // still must not throw: every later read of the
+            progress.stop();                 // same clock goes through its own catch-all too.
+        }).doesNotThrowAnyException();
+    }
+
     @Test
     void withNoTotalKnownTheCounterIsOmittedRatherThanShowingAFractionOverZero() {
         StringWriter sw = new StringWriter();
