@@ -43,49 +43,82 @@ models:
   #   model: mlx-community/Qwen3.6-35B-A3B-8bit
   #   max_tokens: 4096
 
-  # A model endpoint that authenticates with a client certificate (mutual TLS)
-  # instead of, or alongside, api_key — the shape a gateway that speaks TLS
-  # client-cert auth rather than a bearer token needs. cert/key are the exact
-  # PEM pair `curl --cert <cert> --key <key>` would use for the same gateway;
-  # if a working curl command already exists for this endpoint, its --cert/
-  # --key/--tlsv1.2 flags map directly onto tls.cert/tls.key/tls.protocols
-  # below. Only PEM key forms are supported: unencrypted PKCS#8 (BEGIN PRIVATE
-  # KEY) and encrypted PKCS#8 (BEGIN ENCRYPTED PRIVATE KEY, needs key_password).
-  # A PKCS#1 (BEGIN RSA PRIVATE KEY) or SEC1 (BEGIN EC PRIVATE KEY) key is
+  # ------------------------------------------------------------------------
+  # CLOSED CORPORATE NETWORK: the same three tiers, over mutual TLS
+  # ------------------------------------------------------------------------
+  # The corporate gateway serves the SAME models under the SAME tier names as
+  # the blocks above — only the transport differs. So REPLACE the coder/
+  # planner/pro blocks above with the three below; do not uncomment them here,
+  # or `models:` ends up with two `coder:` keys. `model:` values are unchanged,
+  # and `run.escalation_ladder` needs no edit at all.
+  #
+  # What changes: one base_url for every tier, no api_key (the client
+  # certificate IS the credential — sdd sends no Authorization header when
+  # api_key is absent), and a tls: block per tier.
+  #
+  # cert/key are the exact PEM pair `curl --cert <cert> --key <key>` uses for
+  # the same gateway, so a working curl maps straight onto this: --cert →
+  # tls.cert, --key → tls.key, --tlsv1.2 --tls-max 1.2 → tls.protocols. Only
+  # PEM key forms are supported — unencrypted PKCS#8 (BEGIN PRIVATE KEY) and
+  # encrypted PKCS#8 (BEGIN ENCRYPTED PRIVATE KEY, needs key_password). A
+  # PKCS#1 (BEGIN RSA PRIVATE KEY) or SEC1 (BEGIN EC PRIVATE KEY) key is
   # rejected with the exact `openssl pkcs8 -topk8 -nocrypt` command to convert
-  # it — run `sdd doctor` (or `sdd doctor --endpoint <name>` to check just this
-  # one) before anything else once this block is filled in: cert/key existence,
-  # whether the key parses, and the certificate's expiry are all validated
-  # before the endpoint is ever probed, since an expired client cert is the
+  # it.
+  #
+  # Run `sdd doctor` first — or `sdd doctor --endpoint coder` to iterate on
+  # one tier. It validates cert/key existence, whether the key parses, and the
+  # certificate's expiry BEFORE probing, because an expired client cert is the
   # most common mTLS failure and the handshake alert it produces on its own
   # (bad_certificate) says nothing useful.
-  # corp:
-  #   base_url: https://corp-ift.example.corp/v1
-  #   model: DeepSeek-V4-Flash
-  #   tls:
+  #
+  # coder:
+  #   base_url: ${MODEL_URL}          # MODEL_URL MINUS its /chat/completions
+  #                                      # suffix — sdd appends that itself, so a
+  #                                      # full completions URL here becomes
+  #                                      # /chat/completions/chat/completions
+  #   model: qwen/qwen3.5-397b-a17b
+  #   max_tokens: 8192
+  #   tls: &corp_tls
   #     cert: ${MODEL_CERT_PATH}
   #     key: ${MODEL_KEY_PATH}
-  #     key_password: ${MODEL_KEY_PASSWORD}   # omit when the key is unencrypted
-  #     protocols: [TLSv1.2]                     # omit to leave the JDK's own TLS
-  #                                               # version negotiation alone; set
-  #                                               # this when a gateway rejects the
-  #                                               # JDK's TLS 1.3 default the way
-  #                                               # `curl --tlsv1.2 --tls-max 1.2`
-  #                                               # pins the same gateway to 1.2
-  #     truststore: /path/to/corp-ca.p12         # only if the JDK's own cacerts
+  #     # key_password: ${MODEL_KEY_PASSWORD}  # only for BEGIN ENCRYPTED
+  #                                               # PRIVATE KEY; omit for a
+  #                                               # plain BEGIN PRIVATE KEY
+  #     protocols: [TLSv1.2]                      # what `curl --tlsv1.2
+  #                                               # --tls-max 1.2` pins. Omit to
+  #                                               # leave the JDK's own version
+  #                                               # negotiation alone; set it
+  #                                               # when a gateway rejects the
+  #                                               # JDK's TLS 1.3 default
+  #     # truststore: /path/to/corp-ca.p12        # ONLY if the JDK's cacerts
   #                                               # does not already trust this
-  #                                               # gateway's CA — a working curl
+  #                                               # gateway's CA. A working curl
   #                                               # to the same URL does NOT mean
-  #                                               # the JDK trusts the same chain
-  #                                               # (curl trusts the OS store; the
-  #                                               # JDK trusts only its own cacerts)
-  #     truststore_password: ${MODEL_TRUSTSTORE_PASSWORD}   # omit if the
-  #                                               # truststore has no password —
-  #                                               # note `keytool` itself refuses
-  #                                               # to create a password-less
-  #                                               # PKCS12/JKS store, so this is
-  #                                               # required for anything keytool
-  #                                               # produced
+  #                                               # the JDK trusts the chain:
+  #                                               # curl reads the OS store, the
+  #                                               # JDK reads only its own
+  #                                               # cacerts. This is the most
+  #                                               # likely first failure here,
+  #                                               # and it surfaces as
+  #                                               # `PKIX path building failed`
+  #     # truststore_password: ${MODEL_TRUSTSTORE_PASSWORD}   # required for
+  #                                               # anything keytool produced —
+  #                                               # keytool refuses to create a
+  #                                               # password-less store
+  #   extra_body:
+  #     repetition_penalty: 1
+  # planner:
+  #   base_url: ${MODEL_URL}
+  #   model: deepseek-v4-flash
+  #   max_tokens: 32768
+  #   tls: *corp_tls                     # same cert, key and CA for every tier
+  #   extra_body:
+  #     repetition_penalty: 1
+  # pro:
+  #   base_url: ${MODEL_URL}
+  #   model: deepseek-v4-pro
+  #   max_tokens: 32768
+  #   tls: *corp_tls
   #   extra_body:
   #     repetition_penalty: 1
 
