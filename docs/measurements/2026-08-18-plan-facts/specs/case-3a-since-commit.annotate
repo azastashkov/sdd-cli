@@ -1,0 +1,7 @@
+# Ground truth for commit 8e54df6. None of the three changed types is referenced
+# by any repo outside trading-platform-libs, so EVERY consumer is rebuild-only.
+# Audited: api_usage has zero rows targeting TierUpdateListener or SubscriptionReconciler
+# from any consumer module, and grep over src/main confirms it.
+provider=trading-platform-libs
+changed=com.trading.pricing.core.TierUpdateListener,com.trading.pricing.core.SubscriptionReconciler,com.trading.pricing.core.PricingCoreAutoConfiguration
+truth.code=
