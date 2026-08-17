@@ -1,0 +1,9 @@
+# Ground truth for the FixSessionListener change.
+# Audited: grep -rn "implements .*FixSessionListener" --include=*.java over src/main only.
+#   trading-candles  : CandleMdRejectListener
+#   trading-core     : VenueMarketDataSimulator, ExchangeSimulator
+#   trading-product-a: LogonCounter -- src/TEST only, so NOT a code-change consumer
+#   trading-ops      : SubscriptionReconciler appears only in a javadoc comment and design .md
+provider=trading-platform-libs
+changed=com.trading.fix.engine.FixSessionListener
+truth.code=trading-candles,trading-core

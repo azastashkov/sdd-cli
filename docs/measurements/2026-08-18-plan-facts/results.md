@@ -170,6 +170,49 @@ touchpoints *is* the git archaeology the developer wanted the tool to do. The ch
 
 ---
 
+## Case 4 — rebuild-only annotation accuracy: the cheap rule wins outright
+
+`Closure.usesApiOf` asks *"does this repo use anything at all from that repo"*, never *"does it use
+the thing that changed"*. Measured against two real changes, with every non-listed consumer being
+ground-truth rebuild-only. Ground truth audited over `src/main` only, and two apparent
+counter-examples were chased down and dismissed — product-a's `FixSessionListener` reference is in
+`src/test` (not indexed), and ops's `SubscriptionReconciler` appears only in a javadoc comment and
+in design markdown. The KB is right in both cases.
+
+**Change A — `FixSessionListener`** (truth: candles + core need code):
+
+| rule | correct | false CODE_CHANGE | false REBUILD_ONLY |
+|---|---|---|---|
+| TODAY (unfiltered) | **3/5** | 2 (product-a, product-b) | 0 |
+| TYPE_FILTERED | **5/5** | 0 | 0 |
+| KIND_AWARE (reads `ref_kind`) | **5/5** | 0 | 0 |
+
+**Change B — commit `8e54df6`** (truth: *nobody* needs code; none of the three changed types is
+referenced outside platform-libs):
+
+| rule | correct | false CODE_CHANGE | false REBUILD_ONLY |
+|---|---|---|---|
+| TODAY (unfiltered) | **1/5** | 4 (candles, core, product-a, product-b) | 0 |
+| TYPE_FILTERED | **5/5** | 0 | 0 |
+| KIND_AWARE | **5/5** | 0 | 0 |
+
+**Member-level usage is killed.** Restricting the existing query to the changed types fixes 100% of
+the measured errors — a one-query change with no schema change. Member granularity buys nothing on
+either case, and it was the expensive candidate.
+
+**`ref_kind` reading is *not* justified either — it ties.** KIND_AWARE scores identically to
+TYPE_FILTERED on both changes, so on this evidence it is unmotivated. It stays an orphan fact, and
+that is now a measured judgement rather than an oversight.
+
+**Honest limits of this result.** Every error today is in the *safe* direction (false
+`CODE_CHANGE_LIKELY`), and neither candidate produced a false `BUMP_REBUILD_ONLY` — but neither case
+was constructed to provoke one. The way type-filtering could produce the dangerous direction is a
+consumer that breaks *transitively*: platform-libs changes type X, the consumer references only Y
+which extends X, so the consumer never names X and would be scored rebuild-only. That is exactly
+where hierarchy facts would be load-bearing, and it is untested here.
+
+---
+
 ## The unified diagnosis
 
 Cases 2 and 3 fail by one mechanism:
@@ -245,10 +288,16 @@ Computed by comparison only — nothing feeds back into `affected`, so M1 holds.
 exception from a model client propagates and aborts `sdd plan` instead of degrading to the
 documented deterministic-only path.
 
+## Determinism
+
+The whole report is **byte-identical across two runs** — checked by diff, not asserted. That matters
+because `sdd plan approve` SHA-hashes the `plan.md` this evidence produces.
+
 ## Not yet measured
 
-Case 4 (rebuild-only annotation accuracy) is not built. No Layer-2 run against the real CLI yet, so
-blocking-question *rendering*, `plan.json`'s `repo_steps[].files`, and determinism of the hashed
-artifact are unmeasured. The change-set prototype is measured only against a single-commit range on
-one repo; multi-commit ranges, renames, and deletions are untested, as is any repo whose modules sit
-outside the repo directory (an included build), where the path join could still break.
+No Layer-2 run against the real CLI yet, so blocking-question *rendering* and `plan.json`'s
+`repo_steps[].files` are unmeasured. The change-set prototype is measured only against a
+single-commit range on one repo; multi-commit ranges, renames and deletions are untested, as is any
+repo whose modules sit outside the repo directory (an included build), where the path join could
+still break. The annotation rules are measured on two changes in one provider, neither constructed
+to provoke a false `BUMP_REBUILD_ONLY`.

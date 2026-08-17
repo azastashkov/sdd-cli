@@ -89,6 +89,7 @@ class PlanFactsHarness {
             emit(db, spec, declared, name, "deterministic", unavailableModel(), out, report);
             emit(db, spec, declared, name, "declared", declaringModel(declared, spec), out, report);
             changeSet(db, specFile, report);
+            annotations(db, specFile, report);
         }
         Files.writeString(out.resolve("report.md"), report.toString());
         System.out.println("wrote " + out.resolve("report.md"));
@@ -173,6 +174,63 @@ class PlanFactsHarness {
         report.append("closure from git seeds: roots=").append(roots).append('\n');
         expansion.added().forEach(a -> report.append("  + ").append(a.repo()).append(" | ")
                 .append(a.role()).append(" | ").append(a.annotation()).append('\n'));
+    }
+
+    /**
+     * Case 4: how accurate is the CODE_CHANGE_LIKELY / BUMP_REBUILD_ONLY annotation, and would a
+     * cheaper rule than member-level usage fix it? Driven by a sidecar {@code <spec>.annotate} with
+     * {@code provider=}, {@code changed=} (comma-separated fqcns) and {@code truth.code=} lines;
+     * every other affected repo is ground-truth rebuild-only.
+     */
+    private void annotations(Database db, Path specFile, StringBuilder report) throws IOException {
+        Path file = specFile.resolveSibling(
+                specFile.getFileName().toString().replace(".md", ".annotate"));
+        if (!Files.exists(file)) return;
+
+        Map<String, String> cfg = new LinkedHashMap<>();
+        for (String line : Files.readAllLines(file)) {
+            String l = line.trim();
+            if (l.isEmpty() || l.startsWith("#") || !l.contains("=")) continue;
+            cfg.put(l.substring(0, l.indexOf('=')).trim(), l.substring(l.indexOf('=') + 1).trim());
+        }
+        String provider = cfg.get("provider");
+        Set<String> changed = split(cfg.get("changed"));
+        Set<String> truthCode = split(cfg.get("truth.code"));
+
+        // The consumers under test are exactly what the closure reaches from the provider — the
+        // repos the annotation has to classify.
+        Closure.Expansion expansion = Closure.expand(db.jdbi(), Set.of(provider));
+        Set<String> consumers = expansion.added().stream().map(a -> a.repo())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        report.append("\n### annotation accuracy (case 4)\n");
+        report.append("provider: ").append(provider).append('\n');
+        report.append("changed types: ").append(changed).append('\n');
+        report.append("consumers reached by closure: ").append(consumers).append('\n');
+        report.append("ground truth needing code change: ")
+                .append(truthCode.stream().filter(consumers::contains).toList()).append('\n');
+
+        List<AnnotationProbe.Verdict> verdicts = List.of(
+                AnnotationProbe.today(db.jdbi(), provider, consumers),
+                AnnotationProbe.typeFiltered(db.jdbi(), changed, consumers),
+                AnnotationProbe.kindAware(db.jdbi(), changed, consumers));
+        for (AnnotationProbe.Verdict v : verdicts) {
+            AnnotationProbe.Scored s = AnnotationProbe.score(v, truthCode);
+            report.append("\n  rule: ").append(s.rule()).append('\n');
+            v.byRepo().forEach((r, a) -> report.append("    ").append(r).append(" -> ")
+                    .append(a).append('\n'));
+            report.append("    correct ").append(s.correct()).append('/')
+                    .append(v.byRepo().size())
+                    .append(", false CODE_CHANGE ").append(s.falseCodeChange())
+                    .append(", false REBUILD_ONLY ").append(s.falseRebuild()).append('\n');
+            s.mistakes().forEach(m -> report.append("      x ").append(m).append('\n'));
+        }
+    }
+
+    private static Set<String> split(String csv) {
+        if (csv == null || csv.isBlank()) return Set.of();
+        return java.util.Arrays.stream(csv.split(",")).map(String::trim).filter(s -> !s.isEmpty())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     /** Characters between "## &lt;repo&gt;" in the evidence block and the next "## ". */
