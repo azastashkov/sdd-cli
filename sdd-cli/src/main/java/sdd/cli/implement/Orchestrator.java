@@ -750,25 +750,45 @@ public final class Orchestrator {
         state.set(repo, to, branch, sha, detail, failureCode);
         store.appendEvent(runDir, repo, from, to, detail);
         store.writeState(runDir, state);
-        return paintAction(repo, to);
+        return paintAction(repo, to, detail);
     }
 
     /**
      * The design doc's mapping table, as code: {@code IN_PROGRESS} starts an item, every terminal
      * outcome finishes it (advancing "done" — {@link Progress#finish} is idempotent per item, so a
-     * repo that somehow reached a terminal state twice cannot double-count), and a run-level pause
-     * stops the whole line (a paused run has nothing left to show progress on). Every {@link
+     * repo that somehow reached a terminal state twice cannot double-count). Every {@link
      * RepoState} is listed explicitly, {@code PENDING} included even though {@link
      * #transitionLocked} never targets it — an exhaustive switch over a repo's own state enum is
      * the one place a future eighth state cannot silently fall through unhandled.
+     *
+     * <p><b>Corrected mapping for a pause (was {@code progress::stop}, a UX bug a review caught):
+     * </b> {@code PAUSED_INFRA}/{@code PAUSED_ENDPOINT} is ONE repo's outcome, not the whole run's —
+     * {@code pauseLocked} only refuses repos not yet started ({@code runRepo}'s own
+     * {@code state.pausedReason() != null} check), so sibling repos already in flight in the same
+     * parallel layer keep running to their own conclusion after this one pauses. Calling {@code
+     * progress.stop()} here would permanently kill the renderer (erase the line, shut down the
+     * ticker, set a one-way {@code stopped} flag) the instant the FIRST repo paused, silently
+     * turning every sibling's subsequent {@code start}/{@code finish} into a no-op while work
+     * visibly continued — the live line would vanish mid-run. A pause is recorded as a {@link
+     * Progress#note} instead (a line that survives on its own, exactly what {@code note} is for),
+     * and the line keeps running for whoever is still working. The real, run-wide {@link
+     * Progress#stop()} belongs to — and already happens at — the command's own call once {@link
+     * #run} fully returns, not to any single repo's transition.
      */
-    private Runnable paintAction(String repo, RepoState to) {
+    private Runnable paintAction(String repo, RepoState to, String detail) {
         return switch (to) {
             case IN_PROGRESS -> () -> progress.start(repo);
             case SUCCEEDED, FAILED, SKIPPED_UPSTREAM_FAILED -> () -> progress.finish(repo);
-            case PAUSED_INFRA, PAUSED_ENDPOINT -> progress::stop;
+            case PAUSED_INFRA, PAUSED_ENDPOINT -> () -> progress.note(pauseNote(repo, detail));
             case PENDING -> () -> { };
         };
+    }
+
+    /** Never a {@code <repo>: } prefix (standing constraint — {@code RebuildPass.java:88-89}
+     *  documents why that exact shape is load-bearing elsewhere, and this seam obeys the same rule
+     *  even though nothing here parses it): leads with "paused:" instead. */
+    private static String pauseNote(String repo, String detail) {
+        return detail == null || detail.isBlank() ? "paused: " + repo : "paused: " + repo + " — " + detail;
     }
 
     /**

@@ -553,6 +553,42 @@ class OrchestratorTest {
         assertThat(resultRef.get().exitCode()).isEqualTo(0);
     }
 
+    @Test
+    void aRepoPausingDoesNotStopProgressForAnIndependentSiblingStillRunning() throws Exception {
+        // Fix 3 regression: an earlier mapping painted PAUSED_INFRA/PAUSED_ENDPOINT as
+        // progress.stop() — a run-wide, one-way kill switch — the instant ONE repo paused, even
+        // though independent siblings in the same parallel layer (planTwoIndependent: no edge
+        // between alib and blib) keep running to their own conclusion (pauseLocked only refuses
+        // repos that haven't started yet). alib's script sleeps before its infra-classified
+        // failure, giving blib — trivial and near-instant — a wide, deterministic head start to
+        // reach its own SUCCEEDED transition first, so this isn't a timing coin flip.
+        FixtureRepo alib = repoWith("alib", "sleep 1; echo 'Could not resolve com.acme:x'; "
+                + "echo 'Connection refused'; exit 1");
+        FixtureRepo blib = repoWith("blib", "exit 0");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        // planTwoIndependent hardcodes "alib"/"blib" as its repo names — the steps map's keys
+        // must match, or the runnable filter (Orchestrator.run) drops both repos silently.
+        Map<String, RepoStep> steps = Map.of("alib", step("alib", alib.path()),
+                "blib", step("blib", blib.path()));
+        ChatModel parallelSafe = req -> call("x", "done", "{\"result\":\"success\",\"summary\":\"ok\"}");
+        RecordingProgress progress = new RecordingProgress();
+
+        Orchestrator.RunResult result = orchestratorWithProgress(parallelSafe, progress)
+                .run(runDir, planTwoIndependent(alib.headSha(), blib.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(3);
+        assertThat(result.state().stateOf("alib")).isEqualTo(RepoState.PAUSED_INFRA);
+        assertThat(result.state().stateOf("blib")).isEqualTo(RepoState.SUCCEEDED);
+        // The regression itself: Orchestrator must never call progress.stop() — that belongs to
+        // the command, once run() fully returns (already the case; unaffected by this fix).
+        assertThat(progress.events()).doesNotContain("stop");
+        // A pause is recorded as a note (survives on its own line) instead...
+        assertThat(progress.events()).anyMatch(e -> e.startsWith("note:paused: alib"));
+        // ... and blib's own start/finish still went through Progress — the live line did not
+        // vanish out from under a sibling that was still working.
+        assertThat(progress.events()).contains("start:blib", "finish:blib");
+    }
+
     private static PlanModel planSharedIncludeBuildProvider(String libBase, String aBase, String bBase) {
         return new PlanModel("S", 1, "", "",
                 List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", libBase),
