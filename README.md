@@ -95,9 +95,9 @@ configured sites and reports exactly what's reachable before you write a
 spec. See [`docs/commands.md`](docs/commands.md)'s "Atlassian integration:
 what's verified, what's assumed" section for how much confidence stands
 behind each Jira/Confluence/Bitbucket behaviour, and
-[`docs/atlassian-runbook.md`](docs/atlassian-runbook.md) for a step-by-step
-corporate-network runbook, including what to do the moment something goes
-wrong.
+[`docs/runbook.md`](docs/runbook.md) for a step-by-step operator runbook —
+its "Closed corporate network environment" section covers this network,
+including what to do the moment something goes wrong.
 
 ## Quickstart: an end-to-end run
 

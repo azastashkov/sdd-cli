@@ -55,6 +55,28 @@ class HttpChatModelTest {
                 .withRequestBody(matchingJsonPath("$.max_tokens", equalTo("256"))));
     }
 
+    // Phase 2 (model mTLS): HttpChatModel's default-client constructors now build via
+    // HttpClients.buildClient(endpoint.tls(), null) instead of inlining HttpClient.newHttpClient().
+    // This is the regression that matters most — every existing workspace is api-key-only with no
+    // tls block, and this feature must be invisible to it: same client, same headers, same body.
+    // Unlike model() above (which always injects a client, bypassing buildClient entirely), this
+    // goes through the real 1-arg constructor to exercise the code path that changed.
+    @Test
+    void defaultClientConstructorSendsAnIdenticalRequestWhenTheEndpointHasNoTls() {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+        ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "test-model", "sk-key",
+                256, 0.0, Duration.ofSeconds(5), Map.of());
+        assertThat(ep.tls()).isNull();
+
+        ChatResponse resp = new HttpChatModel(ep).complete(request());
+
+        assertThat(resp.message().content()).isEqualTo("hello");
+        wm.verify(postRequestedFor(urlEqualTo("/v1/chat/completions"))
+                .withHeader("Authorization", equalTo("Bearer sk-key"))
+                .withRequestBody(matchingJsonPath("$.model", equalTo("test-model")))
+                .withRequestBody(matchingJsonPath("$.max_tokens", equalTo("256"))));
+    }
+
     @Test
     void retriesOn5xxThenSucceeds() {
         wm.stubFor(post("/v1/chat/completions").inScenario("flaky")

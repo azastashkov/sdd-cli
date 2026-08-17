@@ -12,9 +12,9 @@ retrieval: fts            # fts is the only backend that exists — every comman
 # clean) never call a model and never need the credential; implement, plan, index
 # and doctor fail at first use if it is missing.
 models:
-  flash:                  # tier 1: cheapest capable model — most repos resolve here
+  coder:                  # tier 1: most repos resolve here
     base_url: https://routerai.ru/api/v1
-    model: qwen/qwen3.5-flash-02-23
+    model: qwen/qwen3.5-397b-a17b
     api_key: ${ROUTER_AI_API_KEY}
     max_tokens: 8192
     extra_body:
@@ -22,21 +22,13 @@ models:
       # finish_reason=length with empty content. Disable it for structured work.
       chat_template_kwargs:
         enable_thinking: false
-  coder:                  # tier 2: larger model for repos tier 1 could not finish
-    base_url: https://routerai.ru/api/v1
-    model: qwen/qwen3.5-397b-a17b
-    api_key: ${ROUTER_AI_API_KEY}
-    max_tokens: 8192
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  planner:                # tier 3, and the whole-estate synthesis model
+  planner:                # tier 2, and the whole-estate synthesis model
     base_url: https://api.deepseek.com/v1
     model: deepseek-v4-flash
     api_key: ${DEEPSEEK_API_KEY}
     # drafting a Gate-1 plan needs ~2x the seeding budget; 16384 truncates on medium estates
     max_tokens: 32768
-  pro:                    # tier 4: last resort
+  pro:                    # tier 3: last resort
     base_url: https://api.deepseek.com/v1
     model: deepseek-v4-pro
     api_key: ${DEEPSEEK_API_KEY}
@@ -51,12 +43,91 @@ models:
   #   model: mlx-community/Qwen3.6-35B-A3B-8bit
   #   max_tokens: 4096
 
+  # ------------------------------------------------------------------------
+  # CLOSED CORPORATE NETWORK: the same three tiers, over mutual TLS
+  # ------------------------------------------------------------------------
+  # The corporate gateway serves the SAME models under the SAME tier names as
+  # the blocks above — only the transport differs. So REPLACE the coder/
+  # planner/pro blocks above with the three below; do not uncomment them here,
+  # or `models:` ends up with two `coder:` keys. `model:` values are unchanged,
+  # and `run.escalation_ladder` needs no edit at all.
+  #
+  # What changes: one base_url for every tier, no api_key (the client
+  # certificate IS the credential — sdd sends no Authorization header when
+  # api_key is absent), and a tls: block per tier.
+  #
+  # cert/key are the exact PEM pair `curl --cert <cert> --key <key>` uses for
+  # the same gateway, so a working curl maps straight onto this: --cert →
+  # tls.cert, --key → tls.key, --tlsv1.2 --tls-max 1.2 → tls.protocols. Only
+  # PEM key forms are supported — unencrypted PKCS#8 (BEGIN PRIVATE KEY) and
+  # encrypted PKCS#8 (BEGIN ENCRYPTED PRIVATE KEY, needs key_password). A
+  # PKCS#1 (BEGIN RSA PRIVATE KEY) or SEC1 (BEGIN EC PRIVATE KEY) key is
+  # rejected with the exact `openssl pkcs8 -topk8 -nocrypt` command to convert
+  # it.
+  #
+  # Run `sdd doctor` first — or `sdd doctor --endpoint coder` to iterate on
+  # one tier. It validates cert/key existence, whether the key parses, and the
+  # certificate's expiry BEFORE probing, because an expired client cert is the
+  # most common mTLS failure and the handshake alert it produces on its own
+  # (bad_certificate) says nothing useful.
+  #
+  # coder:
+  #   base_url: ${MODEL_URL}          # MODEL_URL MINUS its /chat/completions
+  #                                      # suffix — sdd appends that itself, so a
+  #                                      # full completions URL here becomes
+  #                                      # /chat/completions/chat/completions
+  #   model: qwen/qwen3.5-397b-a17b
+  #   max_tokens: 8192
+  #   tls: &corp_tls
+  #     cert: ${MODEL_CERT_PATH}
+  #     key: ${MODEL_KEY_PATH}
+  #     # key_password: ${MODEL_KEY_PASSWORD}  # only for BEGIN ENCRYPTED
+  #                                               # PRIVATE KEY; omit for a
+  #                                               # plain BEGIN PRIVATE KEY
+  #     protocols: [TLSv1.2]                      # what `curl --tlsv1.2
+  #                                               # --tls-max 1.2` pins. Omit to
+  #                                               # leave the JDK's own version
+  #                                               # negotiation alone; set it
+  #                                               # when a gateway rejects the
+  #                                               # JDK's TLS 1.3 default
+  #     # truststore: /path/to/corp-ca.p12        # ONLY if the JDK's cacerts
+  #                                               # does not already trust this
+  #                                               # gateway's CA. A working curl
+  #                                               # to the same URL does NOT mean
+  #                                               # the JDK trusts the chain:
+  #                                               # curl reads the OS store, the
+  #                                               # JDK reads only its own
+  #                                               # cacerts. This is the most
+  #                                               # likely first failure here,
+  #                                               # and it surfaces as
+  #                                               # `PKIX path building failed`
+  #     # truststore_password: ${MODEL_TRUSTSTORE_PASSWORD}   # required for
+  #                                               # anything keytool produced —
+  #                                               # keytool refuses to create a
+  #                                               # password-less store
+  #   extra_body:
+  #     repetition_penalty: 1
+  # planner:
+  #   base_url: ${MODEL_URL}
+  #   model: deepseek-v4-flash
+  #   max_tokens: 32768
+  #   tls: *corp_tls                     # same cert, key and CA for every tier
+  #   extra_body:
+  #     repetition_penalty: 1
+  # pro:
+  #   base_url: ${MODEL_URL}
+  #   model: deepseek-v4-pro
+  #   max_tokens: 32768
+  #   tls: *corp_tls
+  #   extra_body:
+  #     repetition_penalty: 1
+
 run:
   # Attempt order for sdd implement. After an attempt that needs escalation
   # (VERIFY_FAILED / EXHAUSTED / BUDGET / MALFORMED / WEDGED) the repo is reset to
   # base and retried on the next tier. A 1-entry ladder never escalates.
   # Default when omitted: [coder, planner].
-  escalation_ladder: [flash, coder, planner, pro]
+  escalation_ladder: [coder, planner, pro]
   agent_turns: 100        # per-attempt turn cap (default 40)
   agent_tokens: 6000000   # per-attempt token cap (default 1500000)
   token_budget: 30000000  # whole-run cap; the run pauses at exit 3 when it is hit

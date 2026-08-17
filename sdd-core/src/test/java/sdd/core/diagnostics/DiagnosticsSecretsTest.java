@@ -6,11 +6,14 @@ import sdd.core.config.AtlassianProxy;
 import sdd.core.config.AtlassianSite;
 import sdd.core.config.AtlassianTls;
 import sdd.core.config.BitbucketSite;
+import sdd.core.config.ModelEndpoint;
 import sdd.core.config.WriteBack;
+import sdd.core.http.TlsConfig;
 
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -54,5 +57,55 @@ class DiagnosticsSecretsTest {
     @Test
     void nullConfigCollectsNoSecretsRatherThanThrowing() {
         assertThat(DiagnosticsSecrets.collect(null)).isEmpty();
+    }
+
+    // Fix 2 (Gate re-review): docs/commands.md claims sdd doctor's model-tls line "still applies
+    // the redaction pass ... as a backstop" — true only once a model endpoint's tls.key_password
+    // and tls.truststore_password are actually in the collected set, since DiagnosticWriter can
+    // only redact a secret it knows about.
+
+    private ModelEndpoint endpointWithTls(String keyPassword, String truststorePassword) {
+        TlsConfig tls = new TlsConfig(Path.of("/etc/ssl/corp-ca.p12"), truststorePassword, null,
+                Path.of("/certs/client.crt"), Path.of("/certs/client.key"), keyPassword, null, List.of());
+        return new ModelEndpoint("https://corp-ift.example/v1", "DeepSeek-V4-Flash", null, 256, 0.0,
+                Duration.ofSeconds(5), Map.of(), null, tls);
+    }
+
+    @Test
+    void collectsEveryConfiguredModelEndpointsKeyAndTruststorePasswords() {
+        Map<String, ModelEndpoint> models = Map.of(
+                "corp", endpointWithTls("key-pass-1", "trust-pass-1"),
+                "backup", endpointWithTls("key-pass-2", "trust-pass-2"));
+
+        Set<String> secrets = DiagnosticsSecrets.collect(null, models);
+
+        assertThat(secrets).containsExactlyInAnyOrder("key-pass-1", "trust-pass-1", "key-pass-2", "trust-pass-2");
+    }
+
+    @Test
+    void skipsModelEndpointsWithNoTlsBlockOrUnresolvedPasswords() {
+        Map<String, ModelEndpoint> models = Map.of(
+                "planner", new ModelEndpoint("https://api.deepseek.com/v1", "deepseek-v4-flash", "sk-test", 4096,
+                        0.15, Duration.ofSeconds(600), Map.of(), null, null),
+                "corp", endpointWithTls(null, null));
+
+        Set<String> secrets = DiagnosticsSecrets.collect(null, models);
+
+        assertThat(secrets).isEmpty();
+    }
+
+    @Test
+    void collectPlainOverloadIsEquivalentToCollectWithNoModels() {
+        AtlassianTls tls = new AtlassianTls(Path.of("/etc/ssl/corp.p12"), "trust-pass-123", null);
+        AtlassianConfig config = new AtlassianConfig(tls, null,
+                site("https://jira.corp.local", "jira-tok-1", "JIRA_API_KEY"), null, null, 1, 20, 10,
+                WriteBack.NONE, false);
+
+        assertThat(DiagnosticsSecrets.collect(config)).isEqualTo(DiagnosticsSecrets.collect(config, Map.of()));
+    }
+
+    @Test
+    void nullModelsCollectsNoModelSecretsRatherThanThrowing() {
+        assertThat(DiagnosticsSecrets.collect(null, null)).isEmpty();
     }
 }

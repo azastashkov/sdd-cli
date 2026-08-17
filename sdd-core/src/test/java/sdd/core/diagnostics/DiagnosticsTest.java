@@ -4,7 +4,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import sdd.core.config.AtlassianConfig;
 import sdd.core.config.AtlassianSite;
+import sdd.core.config.ModelEndpoint;
 import sdd.core.config.WriteBack;
+import sdd.core.http.TlsConfig;
 
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -15,6 +17,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -59,6 +62,27 @@ class DiagnosticsTest {
             Path file = files.findFirst().orElseThrow();
             assertThat(Files.readString(file)).doesNotContain("sk-live-token-xyz");
         }
+    }
+
+    // Fix 2 (Gate re-review): openAt's model-aware overload must actually reach DiagnosticsSecrets
+    // — proof at the facade level, not just DiagnosticsSecretsTest's unit coverage of collect()
+    // itself, that sdd doctor's writer redacts a model endpoint's tls.key_password/
+    // tls.truststore_password the same way it already redacts an Atlassian token.
+    @Test
+    void theOpenedWriterAtAPathAlreadyKnowsEveryModelEndpointsTlsPasswordsAsSecrets() throws IOException {
+        TlsConfig tls = new TlsConfig(Path.of("/etc/ssl/corp-ca.p12"), "trust-pw-xyz", null,
+                Path.of("/certs/client.crt"), Path.of("/certs/client.key"), "key-pw-abc", null, List.of());
+        ModelEndpoint corp = new ModelEndpoint("https://corp-ift.example/v1", "DeepSeek-V4-Flash", null,
+                256, 0.0, Duration.ofSeconds(5), Map.of(), null, tls);
+
+        Path file = workspace.resolve("doctor.log");
+        DiagnosticWriter w = Diagnostics.openAt(file, List.of("doctor"), null, Map.of("corp", corp),
+                CLOCK, null);
+        w.note("trust-pw-xyz and key-pw-abc must never survive to disk");
+        w.close();
+
+        String content = Files.readString(file);
+        assertThat(content).doesNotContain("trust-pw-xyz").doesNotContain("key-pw-abc");
     }
 
     @Test

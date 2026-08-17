@@ -7,6 +7,7 @@ import picocli.CommandLine.Spec;
 import sdd.core.config.AtlassianConfig;
 import sdd.core.config.AtlassianSite;
 import sdd.core.config.BitbucketSite;
+import sdd.core.config.ConfigException;
 import sdd.core.config.ConfigLoader;
 import sdd.core.config.ModelEndpoint;
 import sdd.core.config.SddConfig;
@@ -16,12 +17,16 @@ import sdd.core.diagnostics.DiagnosticWriter;
 import sdd.core.diagnostics.DiagnosticsDir;
 import sdd.core.http.AtlassianProbe;
 import sdd.core.http.HttpClients;
+import sdd.core.http.TlsConfig;
 import sdd.core.llm.EndpointProbe;
 
 import java.io.IOException;
 import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.cert.X509Certificate;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.List;
@@ -47,6 +52,20 @@ public final class DoctorCommand implements Callable<Integer> {
             description = "Write a self-contained diagnostics report (default path under "
                     + ".sdd/diagnostics/); prints the path and a one-line note that it is safe to share")
     String report;
+
+    /**
+     * Phase 3's "Command line vs configuration": the one flag that earns its place is diagnostic,
+     * not configuration — TLS settings themselves stay in {@code sdd.yml} (per-endpoint, and a
+     * flag cannot express "one cert per escalation tier" without inventing
+     * {@code --tls-cert-for-<tier>}). This restricts which model tier(s) get probed, so an operator
+     * iterating on one certificate is not stuck waiting for every other tier to be probed too on
+     * every attempt. Null (the default) means every configured model is probed, exactly as before
+     * this flag existed — {@link #call}'s definition of done requires a plain {@code sdd doctor}
+     * invocation's output to be byte-for-byte unchanged, and this default is what guarantees that.
+     */
+    @Option(names = "--endpoint", description = "Probe only this model endpoint instead of every "
+            + "configured tier — for iterating on one endpoint's TLS certificate")
+    String endpointFilter;
 
     @Spec CommandSpec spec;
 
@@ -90,7 +109,15 @@ public final class DoctorCommand implements Callable<Integer> {
             spec.commandLine().getOut().printf("[FAIL] report-path — %s%n", e.getMessage());
             return 1;
         }
-        diagnostics = Diagnostics.openAt(diagFile, commandLine(), atlassianConfig, clock, spec.commandLine().getErr());
+        // Fix 2 (Gate re-review): pass config.models() too, not just atlassianConfig — the model-tls
+        // diagnostic line below is already built to never interpolate a key/truststore password,
+        // but this gives DiagnosticsSecrets a genuine redaction backstop for that guarantee instead
+        // of leaving docs/commands.md's "still applies the redaction pass ... as a backstop" claim
+        // true in prose only. config may be null here (configError case) — Map.of() then, same as
+        // every other model-less workspace.
+        Map<String, ModelEndpoint> models = config != null ? config.models() : Map.of();
+        diagnostics = Diagnostics.openAt(diagFile, commandLine(), atlassianConfig, models, clock,
+                spec.commandLine().getErr());
 
         try {
             int javaMajor = Runtime.version().feature();
@@ -109,10 +136,9 @@ public final class DoctorCommand implements Callable<Integer> {
             }
 
             if (config != null) {
-                for (Map.Entry<String, ModelEndpoint> entry : config.models().entrySet()) {
-                    EndpointProbe.ProbeResult result = EndpointProbe.probe(entry.getValue());
-                    report(result.ok(), "model:" + entry.getKey(),
-                            entry.getValue().baseUrl() + " → " + result.detail());
+                boolean matchedFilter = probeModels(config, clock);
+                if (endpointFilter != null && !matchedFilter) {
+                    report(false, "endpoint", "no model named '" + endpointFilter + "' is configured");
                 }
                 if (config.atlassian() != null) {
                     probeAtlassian(config.atlassian());
@@ -165,6 +191,139 @@ public final class DoctorCommand implements Callable<Integer> {
         argv.add(spec.name());
         argv.addAll(spec.commandLine().getParseResult().originalArgs());
         return argv;
+    }
+
+    /**
+     * Probes every configured model, or — with {@link #endpointFilter} set — only the one named.
+     * Returns whether {@link #endpointFilter} actually matched a configured model, so {@link #call}
+     * can report a clean {@code [FAIL] endpoint} for a typo'd {@code --endpoint} name rather than
+     * silently probing nothing and exiting {@code 0}. With no filter (every existing invocation,
+     * and every pre-existing test) this iterates every entry exactly as before this flag existed.
+     */
+    private boolean probeModels(SddConfig config, InstantSource clock) {
+        boolean matched = false;
+        for (Map.Entry<String, ModelEndpoint> entry : config.models().entrySet()) {
+            if (endpointFilter != null && !entry.getKey().equals(endpointFilter)) {
+                continue;
+            }
+            matched = true;
+            probeModelEndpoint(entry.getKey(), entry.getValue(), clock);
+        }
+        return matched;
+    }
+
+    /** One model tier: the Phase 3 TLS pre-flight (a no-op for every api-key-only endpoint), then
+     *  the existing endpoint probe (byte-for-byte the same check/text as before this phase), then
+     *  the Phase 3 diagnostics line (a no-op unless a client certificate is configured). */
+    private void probeModelEndpoint(String name, ModelEndpoint ep, InstantSource clock) {
+        modelTlsPreflight(name, ep.tls(), clock);
+        EndpointProbe.ProbeResult result = EndpointProbe.probe(ep);
+        report(result.ok(), "model:" + name, ep.baseUrl() + " → " + result.detail());
+        recordModelTlsDiagnostics(name, ep.tls(), result);
+    }
+
+    /**
+     * The plan's "before probing an mTLS endpoint" pre-flight — validates exactly the failures the
+     * plan calls out as otherwise opaque: the cert/key files exist and are readable, the key
+     * actually parses (surfacing {@link HttpClients#keyManagers}'s actionable messages —
+     * built from {@code sdd.core.http.PemKeyLoader}, package-private there — including the
+     * {@code openssl} conversion hint for PKCS#1/SEC1/legacy-encrypted keys — verbatim, never
+     * reimplemented here), and the client certificate is not expired (with a
+     * warning inside 30 days) — the single most common mTLS failure, whose TLS alert
+     * ({@code bad_certificate}) says nothing useful on its own. Also wires
+     * {@link HttpClients#keyFilePermissionWarning}, deliberately left unwired by Phase 2 because
+     * {@code sdd-core} has no writer.
+     *
+     * <p>A no-op when {@code tls} carries no client certificate (null {@code tls}, or {@code tls}
+     * with {@code clientCert()}/{@code clientKey()} both null — every endpoint using only
+     * {@code api_key}, exactly {@code every existing workspace}) — this is what keeps a plain
+     * {@code sdd doctor} invocation's stdout byte-for-byte unchanged by this phase.
+     *
+     * <p>{@code clock} is never the wall clock read directly — it is the same
+     * {@link InstantSource} {@link #call} already threads through for {@code --report}'s file
+     * naming — so the expiry check is deterministic in tests: a real, currently-valid certificate
+     * generated at test time is made to look expired simply by advancing the injected clock past
+     * its {@code notAfter}, with no need for an actually-expired fixture that would itself go stale
+     * and silently start failing years from now.
+     */
+    private void modelTlsPreflight(String name, TlsConfig tls, InstantSource clock) {
+        if (tls == null || tls.clientCert() == null || tls.clientKey() == null) {
+            return;
+        }
+        String check = "model:" + name + ":tls";
+        X509Certificate leaf;
+        try {
+            // HttpClients.keyManagers alone already proves: both files exist and are readable, any
+            // deferred tls.key_password error, and that the key parses — the exact same code path
+            // (and therefore the exact same actionable messages) the real handshake below will use.
+            HttpClients.keyManagers(tls);
+            leaf = HttpClients.clientCertificateChain(tls.clientCert()).get(0);
+        } catch (ConfigException e) {
+            report(false, check, e.getMessage());
+            return;
+        }
+        String permissionWarning = HttpClients.keyFilePermissionWarning(tls.clientKey());
+        if (permissionWarning != null) {
+            spec.commandLine().getOut().println(permissionWarning);
+        }
+        Instant now = clock.instant();
+        Instant notAfter = leaf.getNotAfter().toInstant();
+        String subject = leaf.getSubjectX500Principal().getName();
+        if (!notAfter.isAfter(now)) {
+            report(false, check, "client certificate expired " + notAfter + " (subject=" + subject + ")");
+            return;
+        }
+        long daysLeft = Duration.between(now, notAfter).toDays();
+        report(true, check, "client certificate ok — subject=" + subject + ", expires " + notAfter
+                + " (" + daysLeft + "d)");
+        if (daysLeft <= 30) {
+            spec.commandLine().getOut().println("  warn: client certificate for " + check
+                    + " expires in " + daysLeft + " day(s) (" + notAfter + ")");
+        }
+    }
+
+    /**
+     * Phase 3's "Diagnostics" section, verbatim: cert path, subject, expiry, the negotiated TLS
+     * protocol, and whether a custom truststore was in use — everything a remote reader needs to
+     * diagnose an mTLS-configured model endpoint and cannot otherwise obtain, and nothing else
+     * (never the key, never {@code tls.key_password}).
+     *
+     * <p><b>Never a {@code ModelEndpoint} or {@code TlsConfig} reference reaches a diagnostic
+     * line.</b> This method's parameters are deliberately the individual fields it needs
+     * ({@code name}, {@code tls}, {@code probeResult}) — {@code tls} itself is inspected only via
+     * its accessors ({@code clientCert()}, {@code truststore()}), never concatenated or
+     * {@code toString()}'d directly. See the review note carried into this phase: neither
+     * {@code ModelEndpoint} nor {@code TlsConfig} overrides {@code toString()} (both are records, so
+     * the default prints every component — including {@code TlsConfig.keyPassword()}), and rather
+     * than add a redaction-only {@code toString()} override to production records for code that
+     * would still have to remember not to rely on it, the safer fix is the one applied everywhere
+     * else in this codebase for exactly this shape of secret ({@code ConfigLoader}'s
+     * {@code apiKeyError}/{@code keyPasswordError} idiom): never construct the interpolation in the
+     * first place. {@code DoctorCommandTest#aConfiguredKeyPasswordNeverReachesStdoutOrTheDiagnosticsFile}
+     * proves this holds for a real encrypted key's password end to end, not merely by code reading.
+     *
+     * <p>Best-effort: a re-parse failure here (already reported as a failed
+     * {@code model:<name>:tls} check by {@link #modelTlsPreflight}) simply omits subject/expiry
+     * rather than throwing a second time over the same broken certificate.
+     */
+    private void recordModelTlsDiagnostics(String name, TlsConfig tls, EndpointProbe.ProbeResult probeResult) {
+        if (tls == null || tls.clientCert() == null) {
+            return;
+        }
+        String subject = "?";
+        String expires = "?";
+        try {
+            X509Certificate leaf = HttpClients.clientCertificateChain(tls.clientCert()).get(0);
+            subject = leaf.getSubjectX500Principal().getName();
+            expires = leaf.getNotAfter().toInstant().toString();
+        } catch (RuntimeException e) {
+            // Already reported by modelTlsPreflight (or will be, by the probe below); diagnostics
+            // is best-effort only and must never throw a second time over the same broken cert.
+        }
+        String protocol = probeResult.negotiatedProtocol() != null ? probeResult.negotiatedProtocol() : "?";
+        String truststore = tls.truststore() != null ? tls.truststore().toString() : "(JDK default truststore)";
+        diagnostics.note("model-tls name=" + name + " cert=" + tls.clientCert() + " subject=" + subject
+                + " expires=" + expires + " protocol=" + protocol + " truststore=" + truststore);
     }
 
     // A missing atlassian: block must not change this output at all — every check below only

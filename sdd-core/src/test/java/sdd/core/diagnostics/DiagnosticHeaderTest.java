@@ -142,7 +142,7 @@ class DiagnosticHeaderTest {
     void pointsAtTheUnverifiedBehavioursRunbook() {
         String header = DiagnosticHeader.render(List.of("doctor"), null, "1.0", "u");
 
-        assertThat(header).containsIgnoringCase("unverified").contains("docs/atlassian-runbook.md");
+        assertThat(header).containsIgnoringCase("unverified").contains("docs/runbook.md");
     }
 
     @Test

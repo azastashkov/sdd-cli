@@ -3,6 +3,7 @@ package sdd.core.config;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
+import sdd.core.http.TlsConfig;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -428,8 +429,86 @@ public final class ConfigLoader {
                 ? DEFAULT_TIMEOUT
                 : Duration.ofSeconds(parseLong("models." + name + ".timeout_seconds", String.valueOf(m.get("timeout_seconds"))));
         Map<String, Object> extraBody = extraBody(m, name);
+        Object rawTls = m.get("tls");
+        TlsConfig tls = rawTls == null ? null : parseModelTls("models." + name + ".tls", rawTls, env);
         return new ModelEndpoint(baseUrl, model, apiKey, maxTokens, temperature, timeout, extraBody,
-                apiKeyError);
+                apiKeyError, tls);
+    }
+
+    // --- models.<name>.tls: ------------------------------------------------------------------
+
+    /**
+     * {@code models.<name>.tls} — mutual-TLS client-certificate auth for a model endpoint. {@code
+     * cert}/{@code key} are structural, like {@code base_url}/{@code model}: an unset {@code ${VAR}}
+     * in either fails config load eagerly (via {@code str}, same as every other path-shaped key —
+     * {@code node_home}, {@code jdk_homes}), because a cert/key path that cannot be resolved is a
+     * real misconfiguration, not a credential a read-only command might simply never touch. Exactly
+     * one of the pair present is also a hard, eager error, named with both dotted paths so the
+     * operator does not have to guess which one is missing — unlike {@code HttpClients.keyManagers}'
+     * generic {@code "tls.cert and tls.key..."} message (that class has no endpoint name to put in
+     * it), this one does, so it is validated here rather than left to fire later, more confusingly,
+     * deep inside {@code HttpClients}.
+     *
+     * <p>{@code key_password} alone follows the deferred-credential idiom — copied from this class's
+     * {@code api_key} handling above, and from {@code AtlassianTls.passwordError}: an unset
+     * {@code ${VAR}} must not fail config loading for a command that never opens the key (only
+     * {@code HttpChatModel}/{@code EndpointProbe}, via {@code HttpClients.keyManagers}, ever do), so
+     * the message is captured in {@code keyPasswordError} and raised byte-identically at the point
+     * the key is actually about to be read.
+     *
+     * <p>{@code truststore_password} follows that same deferred-credential idiom, copied from
+     * {@code parseAtlassianTls} exactly: an unset {@code ${VAR}} must not fail {@code
+     * ConfigLoader.load} for a command that never opens this endpoint's truststore, so the message
+     * is captured in {@code truststorePasswordError} and raised byte-identically at the point
+     * {@link sdd.core.http.HttpClients#trustManagers(TlsConfig)} is about to actually open the
+     * file. An earlier draft of this method had no such key at all — {@code keytool} itself
+     * refuses to create a password-less keystore ("Keystore password must be at least 6
+     * characters"), so that draft could never actually be satisfied by anything the JDK's own
+     * tooling produces; see the Gate re-review that added this key for the full failure mode.
+     */
+    private static TlsConfig parseModelTls(String path, Object node, Function<String, String> env) {
+        if (!(node instanceof Map<?, ?> m)) {
+            throw new ConfigException(path + " must be a mapping");
+        }
+        Object rawCert = m.get("cert");
+        Object rawKey = m.get("key");
+        if ((rawCert == null) != (rawKey == null)) {
+            throw new ConfigException(path + ".cert and " + path + ".key must both be configured, or neither");
+        }
+        Path cert = rawCert == null ? null : Path.of(str(rawCert, env, path + ".cert"));
+        Path key = rawKey == null ? null : Path.of(str(rawKey, env, path + ".key"));
+
+        Object rawKeyPassword = m.get("key_password");
+        String keyPassword = null;
+        String keyPasswordError = null;
+        if (rawKeyPassword != null) {
+            try {
+                keyPassword = str(rawKeyPassword, env, path + ".key_password");
+            } catch (ConfigException e) {
+                keyPasswordError = e.getMessage();
+            }
+        }
+
+        List<String> protocols = stringList(m.get("protocols"), path + ".protocols");
+
+        Object rawTruststore = m.get("truststore");
+        Path truststore = rawTruststore == null ? null : Path.of(str(rawTruststore, env, path + ".truststore"));
+
+        Object rawTruststorePassword = m.get("truststore_password");
+        String truststorePassword = null;
+        String truststorePasswordError = null;
+        // Deferred-credential idiom, copied from parseAtlassianTls above: an unset ${VAR} must not
+        // fail config loading for a command that never opens this endpoint's truststore.
+        if (rawTruststorePassword != null) {
+            try {
+                truststorePassword = str(rawTruststorePassword, env, path + ".truststore_password");
+            } catch (ConfigException e) {
+                truststorePasswordError = e.getMessage();
+            }
+        }
+
+        return new TlsConfig(truststore, truststorePassword, truststorePasswordError, cert, key, keyPassword,
+                keyPasswordError, protocols);
     }
 
     @SuppressWarnings("unchecked")
