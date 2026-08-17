@@ -2,7 +2,7 @@
 
 [![Java 21](https://img.shields.io/badge/Java-21-orange?logo=openjdk&logoColor=white)](https://openjdk.org/projects/jdk/21/)
 [![Build: Gradle](https://img.shields.io/badge/build-Gradle-02303A?logo=gradle&logoColor=white)](https://gradle.org)
-[![Tests](https://img.shields.io/badge/tests-1%2C674%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-1%2C595%20passing-brightgreen)](#development)
 [![No runtime dependencies added](https://img.shields.io/badge/runtime%20deps-JDK%20only-blue)](#deterministic-first)
 
 > These badges are static, and deliberately so: this repository has no CI, so a
@@ -288,6 +288,20 @@ reference.
 
     Deletes the run branches (and the run dir) for everything that was not
     `approve`d. Without `--force` it only prints what it would delete.
+
+## Progress reporting
+
+`index`, `implement`, `review` and `plan` report how far a slow run has
+gotten while it runs, instead of staying silent until everything prints at
+once. On a terminal it is a single self-updating line — no ANSI, no colour —
+showing which repo (or phase) is in flight and how long it has been there;
+piped or in CI it degrades to plain, append-only `<item>  done` lines instead.
+It always writes to **stderr**, so `sdd index 2>/dev/null` or `sdd index |
+cat` leaves stdout's own report untouched. Turn it off with `--quiet` (works
+either before or after the subcommand) or `SDD_PROGRESS=off`; see
+[`docs/commands.md`](docs/commands.md)'s "Progress reporting" section for the
+full decision ladder (`SDD_PROGRESS` → `TERM` → `CI` → console) and what each
+command reports.
 
 ## Reference
 

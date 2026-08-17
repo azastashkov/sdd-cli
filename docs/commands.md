@@ -58,7 +58,7 @@ answer instead of a reassuring one.
 ### 1. Verified by test
 
 The Jira/Confluence/Bitbucket integration, and the mutual-TLS model endpoints,
-are exercised by 1,665 tests (`sdd-core` 395, `sdd-cli` 681, `sdd-index` 242,
+are exercised by 1,595 tests (`sdd-core` 407, `sdd-cli` 597, `sdd-index` 244,
 `sdd-plan` 227, `sdd-agent` 120 — `./gradlew clean build`, current tree)
 against WireMock stand-ins for all three Atlassian products, a
 client-auth-requiring WireMock server for the mTLS handshake, and real local
@@ -342,6 +342,134 @@ write, swallow their own I/O failures and warn at most once
 is wrapped end to end so even a failure in rendering the header cannot turn a
 diagnostics problem into a failed `sdd` command (`Diagnostics.java:16-29`).
 
+## Progress reporting
+
+`doctor`, `index`, `implement`, `review` and `plan` report how far a slow run
+has gotten while it is still running, instead of staying silent until
+everything prints at once — `doctor` already had its own `[ OK ]`/`[FAIL]`
+per-probe stream before this feature and is unaffected (see "`sdd doctor`"
+above); the other four are described below. `clean` and `status` do nothing
+slow enough to need it and were never wired.
+
+**It always writes to stderr, never stdout** — the writer is captured once,
+in `SddCli.main`, as `new PrintWriter(System.err, true)`
+(`SddCli.java:47-55`) — so `sdd index 2>/dev/null` or `sdd index | cat`
+leaves stdout's own report byte-for-byte identical to a run with progress
+off. A subcommand never constructs a renderer itself; it asks for whatever
+`SddCli.main` armed via `SddCli.resolve` (`SddCli.java:67-78`), which walks
+up to the root `SddCli` object and returns `Progress.noOp()` — a real
+implementation whose every method does nothing (`Progress.java:98-102`,
+`sdd-core/src/main/java/sdd/core/progress/Progress.java`) — if nothing was
+ever armed (true of every test in this tree, which is why none of them see a
+progress line by construction, not by coincidence).
+
+**Live on a terminal, plain when piped.** `SDD_PROGRESS` = `off` / `plain` /
+`live` / `auto` (default `auto`) is checked first, ahead of everything else,
+consistent with `SDD_NODE`; any other value is treated as `auto` rather than
+rejected, so a typo in the escape hatch cannot fail a command over a progress
+bar. When it is unset or `auto`, the decision ladder runs in order —
+`SDD_PROGRESS` → `TERM` unset/`dumb` → `CI` set → console — and each rung is
+checked only once the ones before it declined to answer, so an explicit
+choice can never be overridden by a later rung, only narrowed
+(`ProgressEnvironment.java:39-60`). The last rung is a real terminal check
+(`ConsoleSupport.java:27-38`), deliberately not the simpler
+`System.console() != null`: that check is correct on Java 21 but silently
+wrong on 22+ (JDK-8295803 made `System.console()` return non-null even when
+redirected), so it is called reflectively and a `ReflectiveOperationException`
+— reachable only on 21, where a non-null console already means a real
+terminal — is treated as `true`, so a future JDK upgrade cannot quietly turn
+live rendering on in CI. `--quiet` is checked before any of this, ahead of
+the whole ladder — it is a command-line choice, not an environment one
+(`ProgressArming.java:32-47`).
+
+**`--quiet`** is a root-level option with `scope = ScopeType.INHERIT`
+(`SddCli.java:23-26`), so both `sdd --quiet index` and `sdd index --quiet`
+parse and disable progress the same way, regardless of `SDD_PROGRESS` or
+whether stdout is a terminal.
+
+**Plain (piped/CI):** no thread, no timer, no state — `phase`/`start`/
+`detail` are silent by design (rendering any of them would mean remembering
+something this renderer deliberately does not carry), and the only line it
+ever prints is one `println` per finished item, `"<item>  done"`
+(`PlainProgress.java:32-56`). **Never a `<repo>: ` prefix** — that exact
+shape is load-bearing for `ReviewReport`/`InteractiveReview.replaceForRepos`
+to parse (`RebuildPass.java:99-100`) — a mid-pass `note`/`suspend` message is
+passed straight through unchanged instead.
+
+**Live (TTY):** a single self-updating line — `\r` + space-padding +
+`flush()`, truncated to 80 columns, no ANSI, no colour, no new dependency
+(`LiveProgress.java:54-55, 261-283`). A daemon `sdd-progress` thread repaints
+it once a second via `scheduleWithFixedDelay` (fixed-*rate* would emit a
+catch-up burst after a GC pause); `stop()` erases the line and shuts the
+thread down, so a killed process never leaves a half-drawn line on the
+terminal or a non-daemon thread hanging the JVM (`LiveProgress.java:107-128,
+216-232`). Elapsed time renders as `m:ss` — `0:42`, `4:12`, `12:45`
+(`Elapsed.java:19-24`). The renderer picks its own line shape from how many
+items are simultaneously in flight, with no caller declaring which one it
+wants (`LiveProgress.java:285-322`) — three shapes share the same model:
+
+| Shape | Example | When |
+|---|---|---|
+| Sequential | `4/11  order-service  gradle extract  0:42` | exactly one item in flight (`index`'s per-repo loop) |
+| Parallel | `3/11 done  running: order-service 4:12, billing 1:07 (+1)   12:45` | more than one item in flight (`implement`'s scheduler) |
+| Idle | `impact analysis  0:15` | a `phase()` with no `start`/`finish` calls at all (`plan`) |
+
+The parallel line caps named repos at two with `(+N)` for the rest and sorts
+oldest-first — insertion order in a `LinkedHashMap` already is start order,
+so nothing has to re-sort per tick and the two shown names cannot flicker
+between adjacent repos (`LiveProgress.java:74-77, 303-322`). A phase with no
+items in flight and no phase name at all (nothing has called `phase()`
+yet, or `review`'s rebuild pass below, which never does) paints an empty
+line (`LiveProgress.java:324-329`).
+
+**What each wired command reports:**
+
+- **`index`** — one estate-wide `"index"` phase sized to the repo count, with
+  a `start`/`finish` pair per repo and a `detail` for whichever long pole
+  that repo is currently sitting at (`<build system> extract`, e.g. `gradle
+  extract`/`npm extract`, then `source extraction`), followed by fixed
+  phases for the estate-wide linking/usage/matching/runtime-edge/cleanup/
+  report passes and, unless `--no-cards`, its own `"cards"` phase with a
+  `start`/`finish` per repo card actually generated — a cache hit (an
+  up-to-date `repo_card` row) `continue`s before `start` is ever called, so
+  it never looks like work (`IndexService.java:149-186, 306, 310`;
+  `RepoCardGenerator.java:60, 89, 122`).
+- **`implement`** — the parallel line above: one `"implement"` phase sized to
+  the run's repo count, driven entirely off `Orchestrator`'s own state
+  transitions rather than a second, parallel event stream that could
+  disagree with `state.json` — `IN_PROGRESS` is a `start`, every terminal
+  state (`SUCCEEDED`/`FAILED`/`SKIPPED_UPSTREAM_FAILED`) is a `finish`, and a
+  pause (`PAUSED_INFRA`/`PAUSED_ENDPOINT`) is a `note` rather than a `stop` —
+  a pause belongs to the one repo that hit it, not to the whole run, and
+  sibling repos already in flight in the same parallel layer keep running
+  after it (`Orchestrator.java:132, 778-785`).
+- **`review`** — narrower than the other three by design: `RebuildPass.run`
+  never calls `phase`/`start`/`finish`/`detail` at all, so a live terminal
+  shows no advancing per-repo line while the rebuild runs. What `Progress`
+  actually does here is keep a mid-pass finding from colliding with a live
+  frame — a failed checkout's `` warn: could not stage <repo> at its
+  checkpoint... `` is routed through `Progress.suspend`, which erases the
+  line, prints the warning unconditionally (even under `Progress.noOp()`,
+  since this is a review finding, not progress chrome), and repaints — and
+  guarantees the line is erased, via `stop()`, before `report.md`'s own first
+  line prints (`RebuildPass.java:73-74, 139-141`; `ReviewCommand.java:110,
+  177, 188`).
+- **`plan`** — named phases around `PlanCommand.validate`'s four expensive
+  calls: `"impact analysis"`, then `"execution order"`, `"open questions"`
+  and `"draft plan"`. The `impact:` report block prints midway through this
+  sequence, not at the end, so it is routed through `Progress.suspend`
+  rather than `Progress.stop` — `stop()` would end the whole session and
+  leave the later three phases nothing to paint into — with the real
+  `stop()` deferred to right after drafting finishes, before the `plan
+  written:` block prints (`PlanCommand.java:413, 423, 425, 427, 429, 436`).
+  Confluence/Jira normalization (`sdd plan` with no canonical `.md` ref) is
+  deliberately left uninstrumented: each source's own model/network call is
+  a single blocking round trip, not a loop with a meaningful item count the
+  way the other four phases are, so a `phase()` with nothing to advance
+  through would add ceremony without adding signal — `Progress` is still
+  resolved for that path so a live renderer's ticker thread is never leaked,
+  but it never receives an event (`PlanCommand.java:94-103`).
+
 ## `sdd index`
 
 **What it does:** scans every git repo directly under the workspace
@@ -350,26 +478,26 @@ diagnostics problem into a failed `sdd` command (`Diagnostics.java:16-29`).
 its facts into `.sdd/index.db`, links internal dependencies, matches REST/Kafka
 edges, and
 (unless skipped) generates a repo-card summary per repo with the `coder`
-model. (`IndexCommand.java:23-116`)
+model. (`IndexCommand.java:51-148`)
 
 **Flags**
 
 | Flag | Default | Description | Verified |
 |---|---|---|---|
-| `--workspace <dir>` | `.` | Workspace directory | `IndexCommand.java:28-29` |
-| `--no-cards` | off | Skip model-generated repo card summaries | `IndexCommand.java:31-32` |
-| `--force` | off | Re-index every repo even when its fingerprint is unchanged, instead of skipping it as "(unchanged, skipped)". Composable with `--no-cards`; does not itself force card regeneration (cards are cached independently by content hash) | `IndexCommand.java:34-39` |
+| `--workspace <dir>` | `.` | Workspace directory | `IndexCommand.java:29-30` |
+| `--no-cards` | off | Skip model-generated repo card summaries | `IndexCommand.java:32-33` |
+| `--force` | off | Re-index every repo even when its fingerprint is unchanged, instead of skipping it as "(unchanged, skipped)". Composable with `--no-cards`; does not itself force card regeneration (cards are cached independently by content hash) | `IndexCommand.java:35-40` |
 
 **Exit codes**
 
 | Code | Meaning |
 |---|---|
-| `0` | no repo was scanned, or at least one repo did not fail — `allFailed` requires a non-empty result list whose every entry is `FAILED`, so an empty workspace exits 0 too (`IndexCommand.java:109-111`) |
-| `1` | config failed to load, `--no-cards` is absent and the `coder` endpoint's API key is unresolved, every scanned repo's status was `FAILED`, or an unhandled exception (`IndexCommand.java:50-52, 61-64, 109-115`) |
+| `0` | no repo was scanned, or at least one repo did not fail — `allFailed` requires a non-empty result list whose every entry is `FAILED`, so an empty workspace exits 0 too (`IndexCommand.java:138-140`) |
+| `1` | config failed to load, `--no-cards` is absent and the `coder` endpoint's API key is unresolved, every scanned repo's status was `FAILED`, or an unhandled exception (`IndexCommand.java:69-74, 81-87, 138-144`) |
 
 **Writes:** `.sdd/index.db` (schema tables for repos, modules, deps, REST
 endpoints/clients, Kafka roles, repo cards) and a curation report path printed
-at the end (`service.lastReportPath()`, `IndexCommand.java:108`).
+at the end (`service.lastReportPath()`, `IndexCommand.java:137`).
 
 **Build systems.** A repo is offered to each extractor in turn and the first
 that claims it wins; Gradle is asked first, so a Spring service that ships a
@@ -411,7 +539,7 @@ and then into one of two modes:
   requires a non-empty `.sdd/index.db` (i.e. `sdd index` already run), runs
   impact analysis (which repos are affected and why), computes an execution
   order, drafts open questions and a plan narrative with the `planner` model,
-  and writes `<spec-base>.plan.md`. (`PlanCommand.java:113-114, 369-414`)
+  and writes `<spec-base>.plan.md`. (`PlanCommand.java:126-127, 385-448`)
 - **Normalize mode — everything else** (one or more `CONFLUENCE_EXPORT`/
   `JIRA`/`CONFLUENCE_PAGE` refs, any mix, plus any number of `--text`):
   fetches/reads every source, assembles them into one bundle, normalizes it
@@ -419,29 +547,29 @@ and then into one of two modes:
   result re-parses, and writes a single `.spec.md`. This is spec
   *normalization*, not impact analysis — every remote mode stops here and
   prints `review and edit the spec, then run: sdd plan <path>` rather than
-  running impact analysis itself (`PlanCommand.java:116, 335-353`).
+  running impact analysis itself (`PlanCommand.java:129, 351-369`).
 
-**Combination rules** (`PlanCommand.java:96-103`): a `MARKDOWN` ref is already
+**Combination rules** (`PlanCommand.java:109-116`): a `MARKDOWN` ref is already
 a normalized, reviewable spec — combining it with anything else (a second
 ref, or `--text`) is meaningless and is rejected with `error: a canonical
 spec ref cannot be combined with other sources`. Every other kind composes
 freely: any mix of `CONFLUENCE_EXPORT`, `JIRA` and `CONFLUENCE_PAGE` refs,
 plus any number of `--text` values, is assembled into one `SourceBundle` and
-normalized together (`PlanCommand.java:182-217, 254-311`). `sdd plan` with
+normalized together (`PlanCommand.java:198-233, 270-327`). `sdd plan` with
 neither a ref nor `--text` fails with `error: missing required parameter:
-<ref>` (`PlanCommand.java:92-95`).
+<ref>` (`PlanCommand.java:105-108`).
 
 **Atlassian sources need config.** A `JIRA` ref requires `atlassian.jira`;
 a `CONFLUENCE_PAGE` ref requires `atlassian.confluence` — each checked, and
 failed with a `ConfigException` naming the missing block, before any network
-call (`PlanCommand.java:198-204`). A `JIRA` ref additionally follows linked
+call (`PlanCommand.java:214-220`). A `JIRA` ref additionally follows linked
 Confluence pages when `atlassian.confluence` is configured, bounded by
 `atlassian.follow_depth`/`max_pages`/`max_linked_issues`
-(`PlanCommand.java:239-252`); with no Confluence site configured, Jira
+(`PlanCommand.java:255-268`); with no Confluence site configured, Jira
 material is ingested with no link-following rather than erroring
-(`PlanCommand.java:235-239`).
+(`PlanCommand.java:251-255`).
 
-**`--out` and default output paths** (`PlanCommand.java:123-171, 219-311`):
+**`--out` and default output paths** (`PlanCommand.java:139-187, 235-327`):
 
 | Refs given | Default target (no `--out`) |
 |---|---|
@@ -451,37 +579,37 @@ material is ingested with no link-following rather than erroring
 | `CONFLUENCE_PAGE` ref(s), no Jira ref | first export ref's path if one is also present, else `<workspace>/<fetched page id>.spec.md` |
 
 `--out` overrides all of the above and must itself be a markdown target — a
-Confluence-export-shaped `--out` is rejected (`PlanCommand.java:124-126,
-183-185`). The slug used for a pure-`--text` filename is the first ~6 words
+Confluence-export-shaped `--out` is rejected (`PlanCommand.java:140-142,
+199-201`). The slug used for a pure-`--text` filename is the first ~6 words
 of the text, lowercased and non-alphanumerics collapsed to `-`
-(`PlanCommand.java:355-367`).
+(`PlanCommand.java:371-383`).
 
 **Diagnostics.** Any invocation that touches a `JIRA` or `CONFLUENCE_PAGE`
 ref opens one diagnostics file under `.sdd/diagnostics/` for the whole
 invocation, covering both the Jira and Confluence REST traffic
-(`PlanCommand.java:206-217`); a plain markdown or Confluence-export-only
+(`PlanCommand.java:222-233`); a plain markdown or Confluence-export-only
 `sdd plan` opens none. See "Diagnostics" under `sdd doctor` above.
 
 **Flags**
 
 | Flag | Default | Description | Verified |
 |---|---|---|---|
-| `--workspace <dir>` | `.` | Workspace directory | `PlanCommand.java:66-67` |
-| `--out <path>` | see table above | Where to write the normalized spec (rejects a non-markdown target) | `PlanCommand.java:69-71` |
-| `--text <text>` | none | Free-text requirement (repeatable); never inferred from a bare positional | `PlanCommand.java:73-75` |
-| `<ref>` (positional, arity 0..*) | none | Spec refs: canonical `.md`, exported Confluence `.html`/`.htm`/`.xhtml`, a Jira key/URL, or a Confluence page URL | `PlanCommand.java:77-80` |
+| `--workspace <dir>` | `.` | Workspace directory | `PlanCommand.java:67-68` |
+| `--out <path>` | see table above | Where to write the normalized spec (rejects a non-markdown target) | `PlanCommand.java:70-72` |
+| `--text <text>` | none | Free-text requirement (repeatable); never inferred from a bare positional | `PlanCommand.java:74-76` |
+| `<ref>` (positional, arity 0..*) | none | Spec refs: canonical `.md`, exported Confluence `.html`/`.htm`/`.xhtml`, a Jira key/URL, or a Confluence page URL | `PlanCommand.java:78-81` |
 
 **Exit codes**
 
 | Code | Meaning |
 |---|---|
 | `0` | normalization or plan-drafting succeeded |
-| `1` | missing ref/text, a canonical ref combined with other sources, config load failed, missing `atlassian.jira`/`atlassian.confluence` for a ref that needs it, spec validation problems, empty/missing knowledge base, or an unhandled exception (`PlanCommand.java:92-120, 198-204, 369-385`) |
+| `1` | missing ref/text, a canonical ref combined with other sources, config load failed, missing `atlassian.jira`/`atlassian.confluence` for a ref that needs it, spec validation problems, empty/missing knowledge base, or an unhandled exception (`PlanCommand.java:105-133, 214-220, 385-402`) |
 
 **Writes:** the normalized `.spec.md` (normalize mode) or `<spec-base>.plan.md`
 (validate mode), via `SafeWrite.writeWithBackup` — an existing file at that
 path is backed up first, and the backup path is printed if one was made
-(`PlanCommand.java:343-347, 406-410`) — plus, for any Atlassian-sourced run,
+(`PlanCommand.java:359-363, 440-444`) — plus, for any Atlassian-sourced run,
 a diagnostics file (above).
 
 ### `sdd plan approve <spec>.plan.md` — Gate 1
@@ -564,26 +692,26 @@ repo-by-repo in dependency order, with the escalation-ladder coding models
 (`sdd.yml`'s `run.escalation_ladder`, default `[coder, planner]`,
 `RunSettings.java:16`). This is the work that happens *between* the two
 gates. A run is identified by `<specId>-v<planVersion>` and persisted under
-`.sdd/runs/<runId>/`. (`ImplementCommand.java:67-430`)
+`.sdd/runs/<runId>/`. (`ImplementCommand.java:68-453`)
 
 **Flags**
 
 | Flag | Default | Description | Verified |
 |---|---|---|---|
-| `--workspace <dir>` | `.` | Workspace directory | `ImplementCommand.java:69-70` |
-| `--resume` | off | Resume a paused or crashed run of this plan from its checkpoints | `ImplementCommand.java:72-73` |
-| `--retry <repo>[,<repo>...]` | none | Re-run these already-settled (`SUCCEEDED` or `FAILED`) repos on resume; repeatable or comma-separated; implies `--resume`; retrying a `SUCCEEDED` repo discards its checkpoint and resets the branch to the plan base | `ImplementCommand.java:75-78, 232-237` |
-| `--wait-endpoint` | off | After a pause caused by an unreachable model endpoint, poll the ladder's endpoints every 30s and auto-resume once they all answer | `ImplementCommand.java:80-82, 93, 104-132` |
-| `<planJsonPath>` (positional, required) | — | The approved `<spec>.plan.json` | `ImplementCommand.java:86-87` |
+| `--workspace <dir>` | `.` | Workspace directory | `ImplementCommand.java:72-73` |
+| `--resume` | off | Resume a paused or crashed run of this plan from its checkpoints | `ImplementCommand.java:75-76` |
+| `--retry <repo>[,<repo>...]` | none | Re-run these already-settled (`SUCCEEDED` or `FAILED`) repos on resume; repeatable or comma-separated; implies `--resume`; retrying a `SUCCEEDED` repo discards its checkpoint and resets the branch to the plan base | `ImplementCommand.java:78-81, 250-256` |
+| `--wait-endpoint` | off | After a pause caused by an unreachable model endpoint, poll the ladder's endpoints every 30s and auto-resume once they all answer | `ImplementCommand.java:83-85, 96, 110-144` |
+| `<planJsonPath>` (positional, required) | — | The approved `<spec>.plan.json` | `ImplementCommand.java:87-88` |
 
 **Exit codes**
 
 | Code | Meaning |
 |---|---|
-| `0` | every repo `SUCCEEDED` ("COMPLETE") (`Orchestrator.java:139`) |
-| `2` | the run finished but at least one repo did not succeed ("PARTIAL") (`Orchestrator.java:139`) |
-| `3` | the run paused ("PAUSED") — an infra failure, an unreachable model endpoint, or the run's token budget exhausted (`Orchestrator.java:137-155, 230, 269, 331`) — resume with `sdd implement --resume <planJsonPath>` (or `--wait-endpoint`, for the endpoint case) (`ImplementCommand.java:373-382`) |
-| `4` | unusable input: wrong file extension, no run to resume, unknown `--retry` repo, preflight/resume-prep problems, the run's lock is held by another process, or an unhandled exception (`ImplementCommand.java:153-156, 168-171, 207-210, 219-229, 239-247, 267-271, 385-388`, `exitCodeOnInvalidInput = 4` at `ImplementCommand.java:69`) |
+| `0` | every repo `SUCCEEDED` ("COMPLETE") (`Orchestrator.java:181`) |
+| `2` | the run finished but at least one repo did not succeed ("PARTIAL") (`Orchestrator.java:181`) |
+| `3` | the run paused ("PAUSED") — an infra failure, an unreachable model endpoint, or the run's token budget exhausted (`Orchestrator.java:705-711, 199, 312, 491`) — resume with `sdd implement --resume <planJsonPath>` (or `--wait-endpoint`, for the endpoint case) (`ImplementCommand.java:399-408`) |
+| `4` | unusable input: wrong file extension, no run to resume, unknown `--retry` repo, preflight/resume-prep problems, the run's lock is held by another process, or an unhandled exception (`ImplementCommand.java:171-174, 186-189, 225-228, 236-248, 257-266, 280, 411-414`, `exitCodeOnInvalidInput = 4` at `ImplementCommand.java:70`) |
 
 **Writes:** under `.sdd/runs/<runId>/` — `plan.json` and `spec.md`
 (snapshots taken at run start, `RunStore.java:50-61`), `lock` (held for the
@@ -594,7 +722,7 @@ transitions; `RunStore.java:207-226`), `propagation.json`
 `<repo>/` subdirectory with `agent-events.jsonl`, `transcript.jsonl` and
 `edits.jsonl` (`RunStore.java:239-278`). When any plan edge needs a
 `mavenLocal` fallback, also writes the Maven-local init script under the run
-dir (`MavenLocalInit`, referenced at `ImplementCommand.java:305-313`).
+dir (`MavenLocalInit`, referenced at `ImplementCommand.java:324-332`).
 
 ## `sdd review <spec>.plan.json` — Gate 2 (read-only half)
 
@@ -608,11 +736,11 @@ command refuses (exit `4`) on every path — not only the mutating ones — whil
 `sdd implement`'s run lock is held, because racing it would report on an
 estate that no longer exists; a *stale* lock only warns and reviews anyway,
 since the crashed run is exactly the one a human needs to see.
-(`ReviewCommand.java:99-232`)
+(`ReviewCommand.java:104-248`)
 
 **Known scope limitation, carried from earlier phases:** the rebuild pass
 covers only repos in state `SUCCEEDED`, not "every affected repo"
-(`RebuildPass.java:24-38`) — a repo that never ran, or that `FAILED`, is not
+(`RebuildPass.java:102-106`) — a repo that never ran, or that `FAILED`, is not
 rebuilt.
 
 A repo that DECLARED `compat: binary-compatible` or `compat: type-compatible` and
@@ -621,19 +749,19 @@ green, and gets a `## Compatibility gates that did not run` section naming why.
 Exit `0` on such a run would be `sdd review` asserting a guarantee holds on the
 strength of a check that did not happen. A gate that ran and passed, or a repo
 that declared no guarantee, is silent (`SkippedGates.java`,
-`ReviewCommand.java:215, 225-228`).
+`ReviewCommand.java:231, 238-244`).
 
 **Gate-2 Jira comment.** Strictly after `report.md` is durably written, and
 only when the run's spec (`<runDir>/spec.md`) names Jira source keys, posts
 one best-effort comment per source issue: `` sdd: review report for
 `<spec-id>` `` plus the same decisions-summary line `report.md` itself
-renders (`ReviewCommand.java:181-187, 234-268`,
+renders (`ReviewCommand.java:196, 203, 250-288`,
 `ReviewReport.decisionsSummaryLine`). Same rules as Gate 1's comment (above):
 gated on `atlassian.write_back: comment`, suppressible with `--no-comment`,
 every failure warns and never changes the exit code
 (`JiraWriteBack.java:29-34, 61-125`). Unlike Gate 1, this reuses the SAME
 diagnostics file `sdd review`'s own Atlassian traffic already writes to,
-rather than opening a second one (`ReviewCommand.java:267`,
+rather than opening a second one (`ReviewCommand.java:287`,
 `RunContext.java:94-100`).
 
 **Bitbucket push and pull request, gated on `atlassian.pull_requests: true`.**
@@ -659,19 +787,19 @@ the exit code (`BitbucketReview.java:21-34, 45-58, 68-74`).
 
 | Flag | Default | Description | Verified |
 |---|---|---|---|
-| `--workspace <dir>` | `.` | Workspace directory (`scope = INHERIT`, so it also applies to the `approve`/`reject`/`redo` subcommands) | `ReviewCommand.java:63-65` |
-| `--no-rebuild` | off | Skip the estate rebuild verification pass — the report is built from whatever branch the working trees happen to be on | `ReviewCommand.java:67-68, 154-172` |
-| `--interactive` | off | After the report is written, walk every `PENDING` repo in order and prompt `[a]pprove / [r]eject / re[d]o / [v]iew diff / [s]kip / [q]uit` | `ReviewCommand.java:70-72, 193-201` |
-| `--no-comment` | off | Suppress the Jira write-back comment even when `atlassian.write_back: comment` is configured | `ReviewCommand.java:74-76` |
-| `<planJsonPath>` (positional, arity 0..1) | — | The approved `<spec>.plan.json` | `ReviewCommand.java:88-89` |
+| `--workspace <dir>` | `.` | Workspace directory (`scope = INHERIT`, so it also applies to the `approve`/`reject`/`redo` subcommands) | `ReviewCommand.java:64-66` |
+| `--no-rebuild` | off | Skip the estate rebuild verification pass — the report is built from whatever branch the working trees happen to be on | `ReviewCommand.java:68-69, 165-183` |
+| `--interactive` | off | After the report is written, walk every `PENDING` repo in order and prompt `[a]pprove / [r]eject / re[d]o / [v]iew diff / [s]kip / [q]uit` | `ReviewCommand.java:71-73, 209-217` |
+| `--no-comment` | off | Suppress the Jira write-back comment even when `atlassian.write_back: comment` is configured | `ReviewCommand.java:75-77` |
+| `<planJsonPath>` (positional, arity 0..1) | — | The approved `<spec>.plan.json` | `ReviewCommand.java:93-94` |
 
 **Exit codes**
 
 | Code | Meaning |
 |---|---|
 | `0` | every repo `SUCCEEDED`, no rebuild failure, no restore/staging failure, no checkpoint drift, every declared compatibility guarantee actually checked, and (if `--interactive`) no follow-up finding |
-| `2` | any of the above conditions failed, OR (if `--interactive`) a follow-up (a refused decision, a squash refusal, a failed re-verify) demanded it — whichever is worse wins (`ReviewCommand.java:203-231`) — the Jira comment and Bitbucket push/PR step are never part of this: both are best-effort and cannot themselves produce a `2` |
-| `4` | missing `<planJsonPath>`, no run found for it (`ReviewCommand.java:104-111`), the run's lock is held by `sdd implement` (`ReviewCommand.java:134-138`), or an unhandled exception (`ReviewCommand.java:123-126`, `exitCodeOnInvalidInput = 4` at `ReviewCommand.java:56`) |
+| `2` | any of the above conditions failed, OR (if `--interactive`) a follow-up (a refused decision, a squash refusal, a failed re-verify) demanded it — whichever is worse wins (`ReviewCommand.java:219-244`) — the Jira comment and Bitbucket push/PR step are never part of this: both are best-effort and cannot themselves produce a `2` |
+| `4` | missing `<planJsonPath>`, no run found for it (`ReviewCommand.java:112-119`), the run's lock is held by `sdd implement` (`ReviewCommand.java:145-149`), or an unhandled exception (`ReviewCommand.java:131-134`, `exitCodeOnInvalidInput = 4` at `ReviewCommand.java:57`) |
 
 **Writes:** `.sdd/runs/<runId>/review/report.md` and one
 `review/<repo>.diff` per `SUCCEEDED` repo with a resolvable checkpoint
@@ -727,7 +855,7 @@ changes the exit code (`BitbucketDecisions.java:41-68`). With
 |---|---|---|
 | `<repo>` (positional, required) | The repo to decide on | `DecisionCommand.java:56-57` |
 | `<planJsonPath>` (positional, arity 0..1) | The approved `<spec>.plan.json` | `DecisionCommand.java:62-63` |
-| `--workspace` | inherited from `sdd review` | `ReviewCommand.java:63-65` |
+| `--workspace` | inherited from `sdd review` | `ReviewCommand.java:64-66` |
 
 **Exit codes**
 
