@@ -9,6 +9,7 @@ import sdd.index.extract.BuildExtractor;
 import sdd.index.extract.BuildModel;
 import sdd.index.extract.GradleBuildExtractor;
 import sdd.index.gradle.ExtractionException;
+import sdd.core.progress.Progress;
 import sdd.core.ts.TsSidecar;
 import sdd.index.npm.NpmExtractor;
 import sdd.index.ts.TsExtraction;
@@ -28,6 +29,7 @@ import sdd.index.store.UsageLinker;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 
 public final class IndexService {
@@ -122,6 +124,29 @@ public final class IndexService {
      *              module/endpoint/dep data will not regenerate cards.
      */
     public List<RepoResult> run(SddConfig config, Database db, boolean force) {
+        return run(config, db, force, Progress.noOp());
+    }
+
+    /**
+     * Same as {@link #run(SddConfig, Database, boolean)}, with progress reporting threaded
+     * through the estate-wide loop and its downstream passes. This is the one library signature
+     * the design doc calls out as genuinely needing a new parameter: {@code IndexCommand} cannot
+     * see inside this per-repo loop to report on it itself, since the loop lives in {@code
+     * sdd-index}, below {@code sdd-cli} in the dependency graph. The three-arg overload above
+     * simply defaults {@code progress} to {@link Progress#noOp()} — every pre-existing caller
+     * ({@code IndexServiceTest}, {@code IndexServiceIT}, {@code SourceEndToEndTest}, {@code
+     * GoldenEstateTest}) keeps calling it unchanged and gets exactly today's behaviour, not
+     * "silently different" as a side effect of a null check somewhere downstream.
+     *
+     * <p>{@link Progress#start}/{@link Progress#finish} bracket the whole per-repo call
+     * unconditionally — including a repo that {@link #indexRepo} short-circuits via its
+     * fingerprint check — because from the caller's point of view a skipped repo is still one
+     * item of estate-wide progress advancing, exactly as {@code (unchanged, skipped)} already
+     * reads as a completed line in the CLI's own report today. {@link Progress#detail} calls
+     * further inside {@link #indexRepo}, closer to the actual long poles, are what let a renderer
+     * distinguish "skipped instantly" from "still extracting" within that same bracket.
+     */
+    public List<RepoResult> run(SddConfig config, Database db, boolean force, Progress progress) {
         List<String> scanFailures = new ArrayList<>();
         List<RepoScan> scans = WorkspaceScanner.scan(config.workspace(), config.excludes(), scanFailures);
         // Detection order is significant: a Spring service that ships a package.json for its
@@ -130,20 +155,32 @@ public final class IndexService {
                 ? List.of(injectedExtractor)
                 : List.of(new GradleBuildExtractor(config.jdkHomes()), new NpmExtractor());
         List<RepoResult> results = new ArrayList<>();
+        progress.phase("index", scans.size());
         for (RepoScan scan : scans) {
-            results.add(indexRepo(db.jdbi(), extractors, scan, force));
+            progress.start(scan.name());
+            try {
+                results.add(indexRepo(db.jdbi(), extractors, scan, force, progress));
+            } finally {
+                progress.finish(scan.name());
+            }
         }
         for (String failure : scanFailures) {
             results.add(scanFailureResult(db.jdbi(), config.workspace(), failure));
         }
+        progress.phase("link");
         lastLinkReport = ArtifactLinker.link(db.jdbi(), config.artifactOverrides());
+        progress.phase("usage");
         lastUsageReport = UsageLinker.link(db.jdbi());
+        progress.phase("match");
         lastRestReport = RestMatcher.match(db.jdbi(), config.manualEdges());
+        progress.phase("runtime edges");
         lastRuntimeReport = RuntimeEdgeLinker.link(db.jdbi(), config.runtimeEdges());
+        progress.phase("cleanup");
         lastTopicsCleaned = TopicJanitor.clean(db.jdbi());
-        lastCardResult = generateCards(db.jdbi(), config.workspace());
+        lastCardResult = generateCards(db.jdbi(), config.workspace(), progress);
         // Always runs, regardless of --no-cards/model availability: it only reads already-persisted
         // tables, so it has no model dependency and nothing above it can legitimately skip it.
+        progress.phase("report");
         lastReportPath = CurationReport.write(db.jdbi(), config.workspace());
         return results.stream().map(r -> withCounts(db.jdbi(), r)).toList();
     }
@@ -154,13 +191,13 @@ public final class IndexService {
      * rather than sink an otherwise-successful index. Returns null when cards were skipped
      * (no card model configured) or when generation itself blew up.
      */
-    private RepoCardGenerator.CardResult generateCards(Jdbi jdbi, Path workspace) {
+    private RepoCardGenerator.CardResult generateCards(Jdbi jdbi, Path workspace, Progress progress) {
         lastCardError = null;
         if (cardModel == null) {
             return null;
         }
         try {
-            return RepoCardGenerator.generate(jdbi, workspace, cardModel, cardModelName);
+            return RepoCardGenerator.generate(jdbi, workspace, cardModel, cardModelName, progress);
         } catch (RuntimeException e) {
             lastCardError = String.valueOf(e);
             return null;
@@ -211,16 +248,33 @@ public final class IndexService {
     }
 
     RepoResult indexRepo(Jdbi jdbi, List<BuildExtractor> extractors, RepoScan scan) {
-        return indexRepo(jdbi, extractors, scan, false);
+        return indexRepo(jdbi, extractors, scan, false, Progress.noOp());
     }
 
     /** Test seam; see {@link ExtractFn}. */
     RepoResult indexRepo(Jdbi jdbi, ExtractFn fn, RepoScan scan) {
-        return indexRepo(jdbi, List.of(asExtractor(fn)), scan, false);
+        return indexRepo(jdbi, List.of(asExtractor(fn)), scan, false, Progress.noOp());
     }
 
     /** @param force bypasses only the fingerprint short-circuit below; see {@link #run(SddConfig, Database, boolean)}. */
     RepoResult indexRepo(Jdbi jdbi, List<BuildExtractor> extractors, RepoScan scan, boolean force) {
+        return indexRepo(jdbi, extractors, scan, force, Progress.noOp());
+    }
+
+    /**
+     * Real implementation; the two overloads above (and {@code run}'s own three/four-arg
+     * overloads) all fold down to this one with {@link Progress#noOp()}. {@link Progress#detail}
+     * marks the two long poles a repo can sit at for minutes — the build-tool extract ({@code
+     * gradle extract}/{@code npm extract}, labelled from {@link BuildExtractor#buildSystem()}
+     * rather than hardcoded, since this same path runs for both extractors) and source
+     * extraction — but only on the happy path (this {@code try} block): {@link #degraded} also
+     * calls {@link #runSourceExtraction}, on the fallback path a build failure already took, but
+     * that is deliberately left uninstrumented here, matching the design doc's citations
+     * precisely ({@code IndexService.java:252,255} in the pre-Task-2 tree) rather than assumed by
+     * analogy.
+     */
+    RepoResult indexRepo(Jdbi jdbi, List<BuildExtractor> extractors, RepoScan scan, boolean force,
+            Progress progress) {
         // A FAILED parse_status must not be treated as "unchanged, skip": with repo-atomic source
         // writes, a failed extraction leaves the previous (pre-failure) data intact, so retrying
         // on the next run is coherent and cheap — unlike a gradle-status skip, nothing was lost.
@@ -249,9 +303,11 @@ public final class IndexService {
             return unsupported(jdbi, extractors, scan);
         }
         try {
+            progress.detail(extractor.buildSystem().toLowerCase(Locale.ROOT) + " extract");
             BuildModel.Extract extract = extractor.extract(scan.path());
             IndexPersistence.persistRepo(jdbi, scan, extract, extractor.buildSystem(), "OK", null);
             persistRuntimeRemotes(jdbi, scan);
+            progress.detail("source extraction");
             String parseStatus = runSourceExtraction(jdbi, scan, extract);
             return new RepoResult(scan.name(), "OK", parseStatus, extract.modules().size(), 0, false, null);
         } catch (ExtractionException buildFailure) {

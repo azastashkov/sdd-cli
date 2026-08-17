@@ -12,6 +12,7 @@ import sdd.cli.implement.RunStore;
 import sdd.cli.implement.Scheduler;
 import sdd.cli.implement.NpmOverlay;
 import sdd.cli.implement.VerificationTasks;
+import sdd.core.progress.Progress;
 import sdd.core.toolchain.Mechanism;
 import sdd.index.extract.BuildModel;
 import sdd.index.npm.NpmExtractor;
@@ -57,9 +58,20 @@ public final class RebuildPass {
     private RebuildPass() {
     }
 
+    /** Every pre-existing caller ({@code RebuildPassTest}, {@code ReviewCommand} before this task)
+     *  keeps compiling against {@link Progress#noOp()} — the same trailing-parameter-overload
+     *  convention {@code Orchestrator}'s {@code nodeHome}/{@code progress} constructors use. */
     public static Outcome run(Collection<String> repos, PlanModel plan, RunState state,
                               Map<String, Path> paths, SddConfig config, Path runDir, RunStore store,
                               boolean recheckContracts, PrintWriter err) {
+        return run(repos, plan, state, paths, config, runDir, store, recheckContracts, err,
+                Progress.noOp());
+    }
+
+    public static Outcome run(Collection<String> repos, PlanModel plan, RunState state,
+                              Map<String, Path> paths, SddConfig config, Path runDir, RunStore store,
+                              boolean recheckContracts, PrintWriter err, Progress progress) {
+        Progress safeProgress = progress != null ? progress : Progress.noOp();
         Map<String, RepoRun> byName = new LinkedHashMap<>();
         for (RepoRun run : state.repos()) {
             byName.put(run.repo(), run);
@@ -89,14 +101,14 @@ public final class RebuildPass {
                 // ReviewReport and InteractiveReview.replaceForRepos parse these lines.
                 if (state.stateOf(repo) != RepoState.SUCCEEDED) {
                     unstageable(repo, "not SUCCEEDED in this run, composed from its working tree",
-                            stagingFailures, err);
+                            stagingFailures, err, safeProgress);
                     continue;
                 }
                 Path root = paths.get(repo);
                 RepoRun run = byName.get(repo);
                 if (root == null || run == null || run.branch() == null) {
                     unstageable(repo, root == null ? "no repo path on record" : "no run branch on record",
-                            stagingFailures, err);
+                            stagingFailures, err, safeProgress);
                     continue;
                 }
                 // A checkout can legitimately fail (uncommitted conflicting changes at review
@@ -113,9 +125,20 @@ public final class RebuildPass {
                     // reach the report and the exit code, not just this warn line. Inside the
                     // subset it is ALSO its own failed verdict.
                     stagingFailures.add(repo + ": " + e.getMessage());
-                    err.println("warn: could not stage " + repo + " at its checkpoint: "
-                            + e.getMessage() + " — verdicts for its consumers do not reflect "
-                            + "this run's upstream code");
+                    // Corrected ruling (P4 revised): this is a substantive review finding that
+                    // happens to be emitted mid-pass, NOT progress chrome — it must reach err
+                    // UNCONDITIONALLY, in every Progress mode including --quiet/SDD_PROGRESS=off,
+                    // exactly as it did before Progress existed. An earlier revision routed it
+                    // through Progress.note, which is silent once a renderer is no-op/stopped —
+                    // acceptable for this seam's OWN optional commentary, wrong for a caller's own
+                    // finding. Progress.suspend exists for exactly this: it runs the action
+                    // (println, straight to err, unconditionally — the default implementation used
+                    // by no-op and plain does nothing else) with the live line erased/repainted
+                    // around it under live, so the choreography problem (a painted frame colliding
+                    // with this print) is solved WITHOUT the text ever being at this seam's mercy.
+                    safeProgress.suspend(() -> err.println("warn: could not stage " + repo
+                            + " at its checkpoint: " + e.getMessage() + " — verdicts for its "
+                            + "consumers do not reflect this run's upstream code"));
                     if (repos.contains(repo)) {
                         rebuilds.put(repo, new EstateRebuild.Result(false,
                                 "checkout failed: " + e.getMessage()));
@@ -171,8 +194,11 @@ public final class RebuildPass {
                     RunGit.checkout(paths.get(entry.getKey()), target);
                 } catch (RuntimeException e) {
                     restoreFailures.add(entry.getKey() + ": " + e.getMessage());
-                    err.println("warn: could not restore " + entry.getKey() + " to " + target
-                            + ": " + e.getMessage());
+                    // Same rule as the checkout/unstageable warns above: a substantive review
+                    // finding, not progress chrome — must reach err unconditionally, choreographed
+                    // around the live line via Progress.suspend rather than left to collide with it.
+                    safeProgress.suspend(() -> err.println("warn: could not restore " + entry.getKey()
+                            + " to " + target + ": " + e.getMessage()));
                 }
             }
         }
@@ -183,10 +209,12 @@ public final class RebuildPass {
      *  opposed to {@link #run}'s inline catch, which handles a checkout that was attempted and
      *  failed. Both are staging failures: the consequence for every downstream verdict is identical. */
     private static void unstageable(String repo, String reason, List<String> stagingFailures,
-                                    PrintWriter err) {
+                                    PrintWriter err, Progress progress) {
         stagingFailures.add(repo + ": " + reason);
-        err.println("warn: could not stage " + repo + " at a checkpoint: " + reason
-                + " — verdicts for its consumers do not reflect this run's upstream code");
+        // Same rule as the checkout-failure warn in run(): reaches err unconditionally, in every
+        // Progress mode, choreographed around the live line via Progress.suspend.
+        progress.suspend(() -> err.println("warn: could not stage " + repo + " at a checkpoint: "
+                + reason + " — verdicts for its consumers do not reflect this run's upstream code"));
     }
 
     /** Mirrors {@code ImplementCommand}'s settingsFor verification-task resolution exactly. */

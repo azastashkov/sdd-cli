@@ -22,9 +22,9 @@ import java.util.Optional;
  * it.
  *
  * <p>Call sites are written to {@code rest_client}, the same table the Spring extractor fills.
- * Sharing it is the whole point: {@code RestMatcher}, {@code ContractEdges}, the impact closure and
- * every explain fact already read that table and none of them mention a language, so a TypeScript
- * caller becomes visible everywhere a Java one is, without a line of new query code.
+ * Sharing it is the whole point: {@code RestMatcher}, {@code ContractEdges} and the impact closure
+ * already read that table and none of them mention a language, so a TypeScript caller becomes
+ * visible everywhere a Java one is, without a line of new query code.
  */
 public final class TsExtraction {
 

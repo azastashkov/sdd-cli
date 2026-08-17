@@ -9,7 +9,8 @@ import java.util.List;
  * rest_call_edge) and Kafka producer/consumer pairs on the same topic. One definition shared by
  * sdd-plan's impact closure ({@code Closure.contracts}) and execution ordering
  * ({@code ExecutionOrder.edges}), which previously each re-issued this SQL and projected away
- * the detail columns (verb, path, confidence, matched-by, topic) that sdd explain needs.
+ * the detail columns (verb, path, confidence, matched-by, topic) that {@code Closure.contracts}
+ * needs for its reason strings.
  *
  * <p>{@code OpenQuestions.disconnectedSeeds} keeps its own copy rather than delegating here: its
  * projection is not filtered by {@code rc.name <> rp.name} / {@code rp.name <> rc.name} — it
@@ -53,7 +54,8 @@ public final class ContractEdges {
                         SELECT DISTINCT rp.name AS producer_repo, rc.name AS consumer_repo, t.name AS topic
                         FROM kafka_role prod
                         -- Deliberate narrowing vs. the original ExecutionOrder query, which had no
-                        -- join to kafka_topic: the topic name is needed for sdd explain's evidence.
+                        -- join to kafka_topic: the topic name is needed by Closure.contracts for
+                        -- its reason strings.
                         -- kafka_role.topic_id is not FK-enforced (PRAGMA foreign_keys is never set
                         -- anywhere in this codebase, and SQLite defaults it OFF), so an orphan
                         -- topic_id would silently drop that role's edge here where it previously

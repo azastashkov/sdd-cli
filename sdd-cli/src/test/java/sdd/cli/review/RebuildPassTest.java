@@ -12,6 +12,7 @@ import sdd.core.config.ConfigLoader;
 import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
 import sdd.core.testing.FixtureRepo;
+import sdd.index.testing.RecordingProgress;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -435,6 +436,193 @@ class RebuildPassTest {
 
         assertThat(outcome.stagingFailures()).containsExactly("lib: no run branch on record");
         assertThat(errOut.toString()).contains("could not stage lib");
+    }
+
+    @Test
+    void aMidPassCheckoutFailureRoutesThroughProgressSuspendButStillReachesErr() throws Exception {
+        FixtureRepo lib = FixtureRepo.in(ws, "lib");
+        gradlewStub(lib);
+        lib.commit("base");
+        String libBase = lib.headSha();
+
+        writeSddYml(ws);
+        SddConfig config = ConfigLoader.load(ws);
+        PlanModel plan = new PlanModel("SPEC-9", 1, "", "",
+                List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", libBase)),
+                List.of(List.of("lib")), List.of(), List.of(), List.of());
+
+        // SUCCEEDED with a real root and a non-null branch that simply was never created in the
+        // repo — unlike aProviderWithNoRunBranchOnRecordIsAlsoAStagingFailure's null-branch case
+        // (caught by unstageable() before any checkout is attempted), this reaches RunGit.checkout
+        // and makes IT throw: the one mid-loop warn: (RebuildPass.java's checkout try/catch)
+        // ruling P4 (corrected) is about.
+        RunState state = new RunState("SPEC-9-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/never-created", "deadbeef",
+                        "ok", null)), null, 0L);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
+        StringWriter errOut = new StringWriter();
+        RecordingProgress progress = new RecordingProgress();
+
+        RebuildPass.Outcome outcome = RebuildPass.run(Set.of("lib"), plan, state,
+                Map.of("lib", lib.path()), config, runDir, store, false,
+                new PrintWriter(errOut), progress);
+
+        assertThat(outcome.stagingFailures()).hasSize(1);
+        assertThat(outcome.stagingFailures().get(0)).startsWith("lib: ");
+        // Genuinely routed through Progress.suspend (not merely printed to err some other way,
+        // which the next test alone could not rule out) ...
+        assertThat(progress.events()).contains("suspend");
+        // ... but the corrected ruling means the text still lands on err itself, unconditionally,
+        // exactly as it did before Progress existed — suspend's default just runs the action.
+        assertThat(errOut.toString())
+                .contains("warn: could not stage lib at its checkpoint: ")
+                .contains("verdicts for its consumers do not reflect this run's upstream code");
+    }
+
+    @Test
+    void theSameMidPassWarningStillPrintsToErrVerbatimWhenProgressIsOff() throws Exception {
+        // Progress.noOp() is exactly what --quiet and SDD_PROGRESS=off resolve to
+        // (ProgressArming.factory) — this is the regression Fix 1 exists to close: an earlier
+        // revision of this line went through Progress.note, which a no-op/stopped renderer may
+        // legitimately drop, silently losing a substantive review finding whenever progress
+        // reporting happened to be off. suspend()'s default has no such escape hatch.
+        FixtureRepo lib = FixtureRepo.in(ws, "lib");
+        gradlewStub(lib);
+        lib.commit("base");
+        String libBase = lib.headSha();
+
+        writeSddYml(ws);
+        SddConfig config = ConfigLoader.load(ws);
+        PlanModel plan = new PlanModel("SPEC-9", 1, "", "",
+                List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", libBase)),
+                List.of(List.of("lib")), List.of(), List.of(), List.of());
+
+        RunState state = new RunState("SPEC-9-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/never-created", "deadbeef",
+                        "ok", null)), null, 0L);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
+        StringWriter errOut = new StringWriter();
+
+        // Old 9-arg overload — no Progress argument at all, so RebuildPass falls back to
+        // Progress.noOp() internally, exactly like --quiet/SDD_PROGRESS=off in production.
+        RebuildPass.Outcome outcome = RebuildPass.run(Set.of("lib"), plan, state,
+                Map.of("lib", lib.path()), config, runDir, store, false,
+                new PrintWriter(errOut));
+
+        assertThat(outcome.stagingFailures()).hasSize(1);
+        // Byte-identical to this task's starting point: the warning is on err, verbatim, whether
+        // or not progress reporting happens to be on.
+        assertThat(errOut.toString())
+                .contains("warn: could not stage lib at its checkpoint: ")
+                .contains("verdicts for its consumers do not reflect this run's upstream code");
+    }
+
+    /**
+     * Fix 1's second gap: only the mid-loop checkout-failure warn was routed through
+     * {@code Progress.suspend} before this task; the restore-failure warn in {@code run}'s
+     * {@code finally} printed straight to {@code err} instead, which on a live TTY collided with
+     * whatever frame the (unwired-for-review, but still ticking) renderer had just painted. This
+     * pins the fix the same way {@code aMidPassCheckoutFailureRoutesThroughProgressSuspend...}
+     * pins the original one: genuinely routed through {@link sdd.core.progress.Progress#suspend}.
+     */
+    @Test
+    void aFailedRestoreRoutesThroughProgressSuspendButStillReachesErr() throws Exception {
+        FixtureRepo lib = FixtureRepo.in(ws, "lib");
+        lib.commit("base");
+        String libBase = lib.headSha();
+        String libOriginalBranch = RunGit.currentBranch(lib.path());   // "main"
+
+        String libRunBranch = "sdd/SPEC-9-v1/lib";
+        RunGit.startBranch(lib.path(), libRunBranch, libBase);
+        // gradlew, invoked by rebuild.verify while "lib" sits on its checkpoint branch, deletes
+        // the ORIGINAL branch out from under the pass with a real git operation — the only way to
+        // make the finally's restore checkout genuinely fail without corrupting git state by hand.
+        Path gradlew = lib.path().resolve("gradlew");
+        Files.writeString(gradlew, "#!/bin/sh\ngit -C " + lib.path() + " branch -D "
+                + libOriginalBranch + "\nexit 0\n");
+        Files.setPosixFilePermissions(gradlew, PosixFilePermissions.fromString("rwxr-xr-x"));
+        Path props = lib.path().resolve("gradle/wrapper/gradle-wrapper.properties");
+        Files.createDirectories(props.getParent());
+        Files.writeString(props,
+                "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n");
+        lib.commit("checkpoint");
+        String libCheckpoint = lib.headSha();
+        RunGit.checkout(lib.path(), libOriginalBranch);
+
+        writeSddYml(ws);
+        SddConfig config = ConfigLoader.load(ws);
+        PlanModel plan = new PlanModel("SPEC-9", 1, "", "",
+                List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", libBase)),
+                List.of(List.of("lib")), List.of(), List.of(), List.of());
+
+        RunState state = new RunState("SPEC-9-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, libRunBranch, libCheckpoint, "ok", null)),
+                null, 0L);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
+        StringWriter errOut = new StringWriter();
+        RecordingProgress progress = new RecordingProgress();
+
+        RebuildPass.Outcome outcome = RebuildPass.run(Set.of("lib"), plan, state,
+                Map.of("lib", lib.path()), config, runDir, store, false,
+                new PrintWriter(errOut), progress);
+
+        assertThat(outcome.restoreFailures()).hasSize(1);
+        assertThat(outcome.restoreFailures().get(0)).startsWith("lib: ");
+        assertThat(progress.events()).contains("suspend");
+        assertThat(errOut.toString()).contains("warn: could not restore lib to " + libOriginalBranch);
+    }
+
+    @Test
+    void theSameFailedRestoreWarningStillPrintsToErrVerbatimWhenProgressIsOff() throws Exception {
+        // Progress.noOp() is exactly what --quiet and SDD_PROGRESS=off resolve to
+        // (ProgressArming.factory) — same regression Fix 1 closes for the restore-failure warn as
+        // for the checkout-failure one above: suspend()'s default has no escape hatch to drop it.
+        FixtureRepo lib = FixtureRepo.in(ws, "lib");
+        lib.commit("base");
+        String libBase = lib.headSha();
+        String libOriginalBranch = RunGit.currentBranch(lib.path());   // "main"
+
+        String libRunBranch = "sdd/SPEC-9-v1/lib";
+        RunGit.startBranch(lib.path(), libRunBranch, libBase);
+        Path gradlew = lib.path().resolve("gradlew");
+        Files.writeString(gradlew, "#!/bin/sh\ngit -C " + lib.path() + " branch -D "
+                + libOriginalBranch + "\nexit 0\n");
+        Files.setPosixFilePermissions(gradlew, PosixFilePermissions.fromString("rwxr-xr-x"));
+        Path props = lib.path().resolve("gradle/wrapper/gradle-wrapper.properties");
+        Files.createDirectories(props.getParent());
+        Files.writeString(props,
+                "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n");
+        lib.commit("checkpoint");
+        String libCheckpoint = lib.headSha();
+        RunGit.checkout(lib.path(), libOriginalBranch);
+
+        writeSddYml(ws);
+        SddConfig config = ConfigLoader.load(ws);
+        PlanModel plan = new PlanModel("SPEC-9", 1, "", "",
+                List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", libBase)),
+                List.of(List.of("lib")), List.of(), List.of(), List.of());
+
+        RunState state = new RunState("SPEC-9-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, libRunBranch, libCheckpoint, "ok", null)),
+                null, 0L);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
+        StringWriter errOut = new StringWriter();
+
+        // Old 9-arg overload — no Progress argument at all, so RebuildPass falls back to
+        // Progress.noOp() internally, exactly like --quiet/SDD_PROGRESS=off in production.
+        RebuildPass.Outcome outcome = RebuildPass.run(Set.of("lib"), plan, state,
+                Map.of("lib", lib.path()), config, runDir, store, false, new PrintWriter(errOut));
+
+        assertThat(outcome.restoreFailures()).hasSize(1);
+        assertThat(errOut.toString()).contains("warn: could not restore lib to " + libOriginalBranch);
     }
 
     @Test

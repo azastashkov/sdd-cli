@@ -2,7 +2,7 @@
 
 [![Java 21](https://img.shields.io/badge/Java-21-orange?logo=openjdk&logoColor=white)](https://openjdk.org/projects/jdk/21/)
 [![Build: Gradle](https://img.shields.io/badge/build-Gradle-02303A?logo=gradle&logoColor=white)](https://gradle.org)
-[![Tests](https://img.shields.io/badge/tests-1%2C674%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-1%2C595%20passing-brightgreen)](#development)
 [![No runtime dependencies added](https://img.shields.io/badge/runtime%20deps-JDK%20only-blue)](#deterministic-first)
 
 > These badges are static, and deliberately so: this repository has no CI, so a
@@ -61,14 +61,11 @@ Every other command exists to serve two human checkpoints:
   survives `sdd clean`; nothing is squashed into a mergeable commit before a
   human says so.
 
-`sdd index`, `sdd graph`, `sdd status`, `sdd clean` and `sdd explain` are
-support for those two gates, not gates themselves: `index` builds the
-knowledge base the plan and every review rebuild reads from, `graph`
-visualizes it, `status` is a read-only look at any run's state and
-decisions, `clean` discards the branches for work that was never approved,
-and `explain <question>` answers a plain-English question about the estate
-from that same knowledge base — the one command in this list useful right
-after `sdd index`, before there is a spec or a plan to speak of.
+`sdd index`, `sdd status` and `sdd clean` are support for those two gates,
+not gates themselves: `index` builds the knowledge base the plan and every
+review rebuild reads from, `status` is a read-only look at any run's state
+and decisions, and `clean` discards the branches for work that was never
+approved.
 
 ## Closed-network estates: Jira, Confluence, Bitbucket
 
@@ -195,13 +192,6 @@ reference.
    estate's code changes — a repo whose fingerprint is unchanged is skipped
    automatically unless you pass `--force`.
 
-   This is also the point where `sdd explain <question>` first becomes
-   useful — it is the one command in this walkthrough that needs no spec and
-   no plan, only the knowledge base just built. Try `sdd explain "what
-   depends on <some-repo>?"` before writing anything; see
-   [`docs/commands.md`](docs/commands.md) for what it can and cannot tell
-   you.
-
 6. **Write a spec.** `sdd` reads a strict canonical markdown format — YAML
    front matter (`id`, `title`, `owner`, `status`), then `## ` sections in a
    fixed order, of which `Goal`, `Requirements` and `Acceptance Criteria`
@@ -298,6 +288,20 @@ reference.
 
     Deletes the run branches (and the run dir) for everything that was not
     `approve`d. Without `--force` it only prints what it would delete.
+
+## Progress reporting
+
+`index`, `implement`, `review` and `plan` report how far a slow run has
+gotten while it runs, instead of staying silent until everything prints at
+once. On a terminal it is a single self-updating line — no ANSI, no colour —
+showing which repo (or phase) is in flight and how long it has been there;
+piped or in CI it degrades to plain, append-only `<item>  done` lines instead.
+It always writes to **stderr**, so `sdd index 2>/dev/null` or `sdd index |
+cat` leaves stdout's own report untouched. Turn it off with `--quiet` (works
+either before or after the subcommand) or `SDD_PROGRESS=off`; see
+[`docs/commands.md`](docs/commands.md)'s "Progress reporting" section for the
+full decision ladder (`SDD_PROGRESS` → `TERM` → `CI` → console) and what each
+command reports.
 
 ## Reference
 
