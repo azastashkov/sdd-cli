@@ -1,6 +1,7 @@
 package sdd.plan.confluence;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import sdd.core.diagnostics.DiagnosticWriter;
 import sdd.core.http.AtlassianException;
 import sdd.core.http.RestClient;
 import sdd.plan.source.ConfluencePages;
@@ -16,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -40,6 +42,11 @@ public final class ConfluenceClient implements ConfluencePages {
     private final String token;
     private final String baseUrl;
     private final Duration timeout;
+    /** The host every {@link #resolvePageId}/{@link #resolveTinyLink} request is checked against
+     *  before it is ever sent — see those methods' javadoc. Derived from {@code baseUrl} rather
+     *  than accepted as a separate constructor parameter: the two can never disagree this way. */
+    private final String confluenceHost;
+    private final DiagnosticWriter diagnostics;
 
     /**
      * @param httpClient the same {@code HttpClients.build(...)}-constructed client the caller's
@@ -52,10 +59,13 @@ public final class ConfluenceClient implements ConfluencePages {
      *                    here (rather than adding a getter to {@code RestClient} for one caller)
      *                    because a tiny link's own auth requirement is a Confluence-specific
      *                    detail, not something the generic HTTP layer should know about.
-     * @param baseUrl     used only to render {@link #fetchPage}'s absolute, canonical
+     * @param baseUrl     used to render {@link #fetchPage}'s absolute, canonical
      *                    {@code viewpage.action} URL for provenance (the Sources bullet, the
      *                    doc's {@code label()}) — resolution itself needs no base URL since every
-     *                    URL {@link #resolvePageId} is handed is already absolute.
+     *                    URL {@link #resolvePageId} is handed is already absolute — AND (Gate
+     *                    review C1) as the source of {@link #confluenceHost}, the one host every
+     *                    request this class ever sends over {@code httpClient} directly (bypassing
+     *                    {@code restClient}'s own base-URL pinning) is checked against.
      * @param timeout     the same per-request timeout the caller's {@code RestClient} was built
      *                    with (the configured site's {@code atlassian.confluence.timeout_seconds}).
      *                    Task 3 review Fix 3: the tiny-link redirect request bypasses
@@ -67,11 +77,26 @@ public final class ConfluenceClient implements ConfluencePages {
      */
     public ConfluenceClient(RestClient restClient, HttpClient httpClient, String token, String baseUrl,
             Duration timeout) {
+        this(restClient, httpClient, token, baseUrl, timeout, null);
+    }
+
+    /** Same as the five-argument constructor, plus an optional {@link DiagnosticWriter} (nullable
+     *  — every diagnostics call below is then a no-op, matching {@code RestClient}'s own contract)
+     *  that the raw tiny-link redirect request reports to (Gate review I7). That request bypasses
+     *  {@code restClient} entirely (see {@code httpClient}'s doc above), which is exactly why it was
+     *  invisible to diagnostics before this: {@code restClient}'s own requests were already logged,
+     *  this one specifically was not. A separate overload, not a nullable parameter added to the
+     *  five-argument one, so every pre-existing call site (every {@link ConfluenceClientTest} case)
+     *  keeps compiling unchanged. */
+    public ConfluenceClient(RestClient restClient, HttpClient httpClient, String token, String baseUrl,
+            Duration timeout, DiagnosticWriter diagnostics) {
         this.restClient = restClient;
         this.httpClient = httpClient;
         this.token = token;
         this.baseUrl = baseUrl;
         this.timeout = timeout;
+        this.confluenceHost = hostOf(baseUrl);
+        this.diagnostics = diagnostics;
     }
 
     public SourceDoc fetchPage(String pageId) {
@@ -99,10 +124,20 @@ public final class ConfluenceClient implements ConfluencePages {
      * since one bad link must not abort the whole ingestion. A network failure during resolution
      * (title search, tiny-link redirect) surfaces as {@link AtlassianException} for the same
      * caller to catch and note.
+     *
+     * <p><b>Gate review C1: rejects a wrong-host URL itself, before any request.</b> {@code
+     * LinkHarvester} already checks a candidate's host before ever calling this method — but that
+     * was defence in depth, not the guarantee: a second caller ({@code PlanCommand}, resolving a
+     * direct {@code CONFLUENCE_PAGE} ref, e.g. {@code sdd plan https://evil.example/x/AbCd}) had no
+     * such check, and without one HERE the Confluence PAT this instance carries would be sent
+     * straight to whatever host a human (or a malicious ref) named on the command line. Checked
+     * first, before {@code queryPageId}/{@code PAGES_ID}/etc even look at the URL, so a wrong host
+     * is indistinguishable from "not a recognisable Confluence page reference at all" — the same
+     * null this method already returns for that case — and never reaches a network call.
      */
     public String resolvePageId(String url) {
         URI uri = parse(url);
-        if (uri == null) {
+        if (uri == null || !hostMatches(uri)) {
             return null;
         }
         String queryPageId = queryParam(uri, "pageId");
@@ -124,24 +159,37 @@ public final class ConfluenceClient implements ConfluencePages {
         return null;
     }
 
+    /**
+     * Gate review C1's second vector: the redirect chain re-sends the bearer header to {@code
+     * uri.resolve(location)} on every hop — {@code hopsLeft - 1} recursion below — so without a
+     * host check ON EVERY HOP (not just the first, which {@link #resolvePageId} already covers) a
+     * single off-host {@code Location} anywhere in the chain would hand the token to that host. The
+     * hop is refused outright (a {@code null}, exactly like any other "not a recognisable shape"
+     * outcome) rather than sent unauthenticated: an unauthenticated request still leaks that a tiny
+     * link exists and where it currently points, which is not this class's call to make once the
+     * host is no longer the one it was configured for.
+     */
     private String resolveTinyLink(URI uri, int hopsLeft) {
-        if (hopsLeft <= 0) {
+        if (hopsLeft <= 0 || !hostMatches(uri)) {
             return null;
         }
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri).GET().timeout(timeout);
         if (token != null) {
             builder.header("Authorization", "Bearer " + token);
         }
+        long startNanos = System.nanoTime();
         HttpResponse<Void> response;
         try {
             response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.discarding());
         } catch (IOException e) {
-            throw new AtlassianException("transport error resolving tiny link " + uri + ": " + e.getMessage(), e);
+            throw logTinyLinkFailure(
+                    new AtlassianException("transport error resolving tiny link " + uri + ": " + e.getMessage(), e));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new AtlassianException("interrupted resolving tiny link " + uri, e);
+            throw logTinyLinkFailure(new AtlassianException("interrupted resolving tiny link " + uri, e));
         }
         int status = response.statusCode();
+        logTinyLinkRequest(uri, status, startNanos, response);
         if (status < 300 || status >= 400) {
             return null;   // not a redirect: this "tiny link" shape did not behave like one
         }
@@ -150,6 +198,9 @@ public final class ConfluenceClient implements ConfluencePages {
             return null;
         }
         URI resolved = uri.resolve(location);
+        if (!hostMatches(resolved)) {
+            return null;
+        }
         String queryPageId = queryParam(resolved, "pageId");
         if (queryPageId != null) {
             return queryPageId;
@@ -162,6 +213,54 @@ public final class ConfluenceClient implements ConfluencePages {
             return resolveTinyLink(resolved, hopsLeft - 1);
         }
         return resolvePageId(resolved.toString());
+    }
+
+    /** Gate review I7: the one request in this class that bypasses {@code restClient} (see the
+     *  constructor's {@code httpClient} doc) was, for that exact reason, invisible to diagnostics —
+     *  a hung or response-rewriting corporate proxy on a {@code /x/} link produced only a buried
+     *  "unresolvable" Open Questions note and zero lines in the file built to debug exactly that.
+     *  A no-op when this instance has no {@link DiagnosticWriter} (every pre-Task-8 caller, every
+     *  {@link ConfluenceClientTest} case), matching {@code RestClient}'s own contract. */
+    private void logTinyLinkRequest(URI uri, int status, long startNanos, HttpResponse<Void> response) {
+        if (diagnostics == null) {
+            return;
+        }
+        long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
+        String contentType = response.headers().firstValue("Content-Type").orElse(null);
+        diagnostics.httpRequest("Confluence", "GET", uri.getPath(), status, durationMs, 1, false, contentType, null);
+    }
+
+    /** Same rationale as {@link #logTinyLinkRequest}, for the case where no response ever arrives
+     *  at all (the hang this whole method exists to bound) — the one shape a per-request line
+     *  cannot represent (there is no status), so the full failure goes to the file instead, exactly
+     *  like {@code RestClient.logFailure} does for its own transport errors. Returns {@code ex}
+     *  unchanged so the throw site stays a single expression. */
+    private AtlassianException logTinyLinkFailure(AtlassianException ex) {
+        if (diagnostics != null) {
+            diagnostics.failure("Confluence tiny-link GET", ex);
+        }
+        return ex;
+    }
+
+    /** Gate review C1: {@code true} only when {@code uri}'s host is exactly the configured
+     *  Confluence host — the one check every request this class sends directly over {@code
+     *  httpClient} (as opposed to through {@code restClient}, which is base-URL-pinned and cannot
+     *  be redirected off it) must pass before the bearer token is attached. A {@code null} host on
+     *  either side never matches (case-insensitively comparing against a {@code null confluenceHost}
+     *  is the "base URL had no host" case, which cannot legitimately occur but must fail closed, not
+     *  open, if it somehow did). */
+    private boolean hostMatches(URI uri) {
+        String host = uri.getHost();
+        return host != null && host.equalsIgnoreCase(confluenceHost);
+    }
+
+    private static String hostOf(String url) {
+        try {
+            String host = URI.create(url).getHost();
+            return host == null ? null : host.toLowerCase(Locale.ROOT);
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     private String resolveByTitleSearch(String spaceKey, String title) {

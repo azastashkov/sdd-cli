@@ -243,7 +243,7 @@ public final class PlanCommand implements Callable<Integer> {
             // ever reached once that has already succeeded — no second check needed.
             confluenceClient = new ConfluenceClient(
                     atlassianRestClient("Confluence", site, httpClient, diagnostics, transport),
-                    httpClient, site.token(), site.baseUrl(), site.timeout());
+                    httpClient, site.token(), site.baseUrl(), site.timeout(), diagnostics);
             confluenceHost = URI.create(site.baseUrl()).getHost();
         }
 

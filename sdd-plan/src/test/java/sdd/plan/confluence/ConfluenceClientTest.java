@@ -3,17 +3,23 @@ package sdd.plan.confluence;
 import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
+import sdd.core.diagnostics.DiagnosticWriter;
 import sdd.core.http.AtlassianException;
 import sdd.core.http.RestClient;
 import sdd.plan.source.SourceDoc;
 
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.io.UncheckedIOException;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.InstantSource;
+import java.util.Set;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
@@ -33,6 +39,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ConfluenceClientTest {
     @RegisterExtension
     static WireMockExtension wm = WireMockExtension.newInstance().build();
+
+    @TempDir Path tmp;
 
     private ConfluenceClient client() {
         return client(Duration.ofSeconds(5));
@@ -144,5 +152,63 @@ class ConfluenceClientTest {
 
         assertThat(id).isNull();
         wm.verify(0, getRequestedFor(urlEqualTo("/some/other/thing")));
+    }
+
+    // --- Gate review C1: the Confluence PAT must never reach a host other than the configured one --
+
+    @Test
+    void aRefWhoseHostIsNotTheConfiguredConfluenceHostIsRejectedBeforeAnyRequest() {
+        // Task 3's fix round added a second resolvePageId caller (PlanCommand, resolving a direct
+        // CONFLUENCE_PAGE ref) that — unlike LinkHarvester — performed no host check of its own.
+        // The guarantee has to live in resolvePageId itself, or a ref naming an arbitrary host on
+        // the command line (sdd plan https://evil.example/x/AbCd) would carry the bearer token
+        // straight there. No stub is registered for evil.example — a network attempt on the wrong
+        // host would fail this test with a connection error, not just a wrong assertion.
+        String id = client().resolvePageId("https://evil.example/x/AbCd");
+
+        assertThat(id).isNull();
+        wm.verify(0, getRequestedFor(urlEqualTo("/x/AbCd")));
+    }
+
+    @Test
+    void aTinyLinkRedirectToAnotherHostIsRefusedRatherThanFollowedWithTheBearerToken() {
+        // The second C1 vector: the hand-rolled redirect chain used to re-send the Authorization
+        // header to uri.resolve(location) with no host re-check, so one off-host Location anywhere
+        // in the chain handed the token away. The Location below points at a different host
+        // entirely; only the FIRST hop (to wm's own host) may ever be requested.
+        wm.stubFor(get(urlEqualTo("/x/AbCd")).willReturn(aResponse().withStatus(302)
+                .withHeader("Location", "https://evil.example/pages/viewpage.action?pageId=65601")));
+
+        String id = client().resolvePageId(wm.baseUrl() + "/x/AbCd");
+
+        assertThat(id).isNull();
+        wm.verify(1, getRequestedFor(urlEqualTo("/x/AbCd")));
+    }
+
+    // --- Gate review I7: the tiny-link request bypasses RestClient, so it must log itself --------
+
+    @Test
+    void aTinyLinkResolutionWritesItsOwnHttpRequestLineToDiagnostics() throws Exception {
+        // Task 3 review Fix 3's own rationale ("a hung /x/AbCd... would block sdd plan
+        // indefinitely") is exactly the failure this line exists to make debuggable remotely: this
+        // request is the one HTTP call in this class that does not go through RestClient, and was
+        // therefore invisible to diagnostics before this fix — zero lines in the one file built to
+        // debug exactly this kind of hang or proxy rewrite.
+        wm.stubFor(get(urlEqualTo("/x/AbCd")).willReturn(aResponse().withStatus(302)
+                .withHeader("Location", "/pages/viewpage.action?pageId=65601")));
+        Path diagFile = tmp.resolve("diag.log");
+        DiagnosticWriter diagnostics =
+                new DiagnosticWriter(diagFile, Set.of(), InstantSource.system(), new PrintWriter(new StringWriter()));
+        RestClient rc = new RestClient("Confluence", wm.baseUrl(), "sk-token", "CONFLUENCE_PAT",
+                Duration.ofSeconds(5), HttpClient.newHttpClient());
+        ConfluenceClient client = new ConfluenceClient(rc, HttpClient.newHttpClient(), "sk-token", wm.baseUrl(),
+                Duration.ofSeconds(5), diagnostics);
+
+        String id = client.resolvePageId(wm.baseUrl() + "/x/AbCd");
+        diagnostics.close();
+
+        assertThat(id).isEqualTo("65601");
+        String logged = Files.readString(diagFile);
+        assertThat(logged).contains("http site=Confluence method=GET path=/x/AbCd status=302");
     }
 }
