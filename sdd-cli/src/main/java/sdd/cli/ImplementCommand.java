@@ -39,6 +39,7 @@ import sdd.core.llm.ChatModel;
 import sdd.core.llm.EndpointProbe;
 import sdd.core.llm.HttpChatModel;
 import sdd.core.llm.ThrottledChatModel;
+import sdd.core.progress.Progress;
 import sdd.index.gradle.GradleExtractor;
 import sdd.plan.approve.Hashes;
 import sdd.plan.spec.NormalizedSpec;
@@ -93,6 +94,15 @@ public final class ImplementCommand implements Callable<Integer> {
 
     Function<ModelEndpoint, EndpointProbe.ProbeResult> probeForTest;   // test seam; null = real probe
     long waitPollMillis = 30_000;
+
+    /** Test seam — mirrors {@code IndexCommand.progressForTest}: {@code null} in real use, where
+     *  {@link #runPlan} falls back to {@link SddCli#resolve}. A fresh {@link Progress} is resolved
+     *  PER {@link #runPlan} call, not once for the whole {@code --wait-endpoint} retry loop in
+     *  {@link #call}: {@link Progress#stop()} is permanent (a stopped {@code LiveProgress} never
+     *  paints again), and {@code runPlan} calls it as soon as {@code orchestrator.run} returns
+     *  (below) — reusing one instance across a resumed attempt would leave every retry after the
+     *  first silently unrendered. */
+    Progress progressForTest;
 
     private String lastPausedReason;
     private SddConfig lastConfig;
@@ -150,6 +160,12 @@ public final class ImplementCommand implements Callable<Integer> {
     }
 
     private Integer runPlan(PrintWriter out, PrintWriter err) {
+        // Resolved before anything else and stopped in the finally below on every return path —
+        // same reasoning as IndexCommand.call(): a live renderer's ticker thread starts in its own
+        // constructor, so even the earliest error return here (bad .plan.json name) must still
+        // stop it. One instance per runPlan call, not per ImplementCommand.call() — see
+        // progressForTest's javadoc for why a --wait-endpoint retry needs a fresh one.
+        Progress progress = progressForTest != null ? progressForTest : SddCli.resolve(spec);
         try {
             String name = planJsonPath.getFileName().toString();
             if (!name.endsWith(".plan.json")) {
@@ -358,10 +374,15 @@ public final class ImplementCommand implements Callable<Integer> {
                 Orchestrator orchestrator = new Orchestrator(new RepoStepRunner(jdbi), ladder,
                         settingsFor, store, config.run().tokenBudget(),
                         activePropagation, new MavenLocalPublisher(), new JarBuilder(),
-                        config.nodeHome());
+                        config.nodeHome(), progress);
                 Orchestrator.RunResult result = initialState == null
                         ? orchestrator.run(runDir, activePlan, activeSteps)
                         : orchestrator.run(runDir, activePlan, activeSteps, initialState);
+                // Stopped here, not left to the finally below — same reason as IndexCommand: a live
+                // renderer's last frame is an unterminated line on stderr, and it must be erased
+                // before the per-repo report below starts printing. stop() is idempotent, so the
+                // finally's later call is a no-op.
+                progress.stop();
 
                 for (var repo : result.state().repos()) {
                     // Same idiom as ReviewReport's Repos section: the machine-readable failure code
@@ -390,6 +411,8 @@ public final class ImplementCommand implements Callable<Integer> {
         } catch (RuntimeException | java.io.IOException e) {
             err.println("error: " + e.getMessage());
             return 4;
+        } finally {
+            progress.stop();
         }
     }
 
