@@ -1,5 +1,15 @@
 # sdd — Spec-Driven Development pipeline for multi-repo estates
 
+[![Java 21](https://img.shields.io/badge/Java-21-orange?logo=openjdk&logoColor=white)](https://openjdk.org/projects/jdk/21/)
+[![Build: Gradle](https://img.shields.io/badge/build-Gradle-02303A?logo=gradle&logoColor=white)](https://gradle.org)
+[![Tests](https://img.shields.io/badge/tests-1%2C674%20passing-brightgreen)](#development)
+[![No runtime dependencies added](https://img.shields.io/badge/runtime%20deps-JDK%20only-blue)](#deterministic-first)
+
+> These badges are static, and deliberately so: this repository has no CI, so a
+> build-status badge would assert something nothing verifies. The test count is
+> from a local `./gradlew clean build` and is refreshed by hand — see
+> [Development](#development).
+
 `sdd` turns a written spec into coordinated, human-gated code changes across a
 multi-repo estate of Gradle/Spring services and npm/TypeScript packages: a
 human writes the spec, `sdd` plans the
