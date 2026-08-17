@@ -12,9 +12,9 @@ retrieval: fts            # fts is the only backend that exists — every comman
 # clean) never call a model and never need the credential; implement, plan, index
 # and doctor fail at first use if it is missing.
 models:
-  flash:                  # tier 1: cheapest capable model — most repos resolve here
+  coder:                  # tier 1: most repos resolve here
     base_url: https://routerai.ru/api/v1
-    model: qwen/qwen3.5-flash-02-23
+    model: qwen/qwen3.5-397b-a17b
     api_key: ${ROUTER_AI_API_KEY}
     max_tokens: 8192
     extra_body:
@@ -22,21 +22,13 @@ models:
       # finish_reason=length with empty content. Disable it for structured work.
       chat_template_kwargs:
         enable_thinking: false
-  coder:                  # tier 2: larger model for repos tier 1 could not finish
-    base_url: https://routerai.ru/api/v1
-    model: qwen/qwen3.5-397b-a17b
-    api_key: ${ROUTER_AI_API_KEY}
-    max_tokens: 8192
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: false
-  planner:                # tier 3, and the whole-estate synthesis model
+  planner:                # tier 2, and the whole-estate synthesis model
     base_url: https://api.deepseek.com/v1
     model: deepseek-v4-flash
     api_key: ${DEEPSEEK_API_KEY}
     # drafting a Gate-1 plan needs ~2x the seeding budget; 16384 truncates on medium estates
     max_tokens: 32768
-  pro:                    # tier 4: last resort
+  pro:                    # tier 3: last resort
     base_url: https://api.deepseek.com/v1
     model: deepseek-v4-pro
     api_key: ${DEEPSEEK_API_KEY}
@@ -95,7 +87,7 @@ run:
   # (VERIFY_FAILED / EXHAUSTED / BUDGET / MALFORMED / WEDGED) the repo is reset to
   # base and retried on the next tier. A 1-entry ladder never escalates.
   # Default when omitted: [coder, planner].
-  escalation_ladder: [flash, coder, planner, pro]
+  escalation_ladder: [coder, planner, pro]
   agent_turns: 100        # per-attempt turn cap (default 40)
   agent_tokens: 6000000   # per-attempt token cap (default 1500000)
   token_budget: 30000000  # whole-run cap; the run pauses at exit 3 when it is hit
