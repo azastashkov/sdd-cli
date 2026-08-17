@@ -12,6 +12,7 @@ import sdd.core.progress.Progress;
 import sdd.core.testing.FixtureRepo;
 import sdd.core.testing.ScriptedChatModel;
 import sdd.index.testing.RecordingProgress;
+import sdd.index.testing.StopMarksSharedBuffer;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -32,28 +33,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ImplementCommandProgressTest {
     @TempDir Path ws;
-
-    /** Same shape as {@code IndexCommandProgressTest}'s double: {@link Progress#stop()} and the
-     *  report's {@code out.println} calls are two different sinks in production, so only a
-     *  shared-buffer marker can prove ordering, not just "both happened". */
-    private static final class StopMarksSharedBuffer implements Progress {
-        private final StringWriter shared;
-
-        StopMarksSharedBuffer(StringWriter shared) {
-            this.shared = shared;
-        }
-
-        @Override public void phase(String name, int total) { }
-        @Override public void start(String item) { }
-        @Override public void finish(String item) { }
-        @Override public void detail(String text) { }
-        @Override public void note(String text) { }
-
-        @Override
-        public void stop() {
-            shared.append("<<progress stopped>>\n");
-        }
-    }
 
     private FixtureRepo repo(String name) throws Exception {
         FixtureRepo repo = FixtureRepo.in(ws, name).file("A.java", "class A {}\n");

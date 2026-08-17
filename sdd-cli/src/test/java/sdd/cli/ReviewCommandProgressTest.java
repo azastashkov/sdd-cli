@@ -12,6 +12,7 @@ import sdd.core.db.Database;
 import sdd.core.progress.Progress;
 import sdd.core.testing.FixtureRepo;
 import sdd.index.testing.RecordingProgress;
+import sdd.index.testing.StopMarksSharedBuffer;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -27,32 +28,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * IndexCommandProgressTest}/{@code ImplementCommandProgressTest}, which this file mirrors: same
  * {@code progressForTest} seam, same reason (design doc "Arming": no test in this tree calls
  * {@code SddCli.main}). {@code RebuildPassTest} already proves {@code RebuildPass} itself routes
- * the mid-pass checkout-failure warn through {@link Progress#note}; this file proves {@link
+ * the mid-pass checkout-failure warn through {@link Progress#suspend} (and that it still reaches
+ * {@code err} unconditionally, even under a true no-op {@link Progress}); this file proves {@link
  * ReviewCommand#call} actually threads a real {@link Progress} down into {@code RebuildPass.run}
  * and stops it before the report prints — the one part {@code RebuildPassTest}, which calls
  * {@code RebuildPass.run} directly, cannot see.
  */
 class ReviewCommandProgressTest {
     @TempDir Path ws;
-
-    private static final class StopMarksSharedBuffer implements Progress {
-        private final StringWriter shared;
-
-        StopMarksSharedBuffer(StringWriter shared) {
-            this.shared = shared;
-        }
-
-        @Override public void phase(String name, int total) { }
-        @Override public void start(String item) { }
-        @Override public void finish(String item) { }
-        @Override public void detail(String text) { }
-        @Override public void note(String text) { }
-
-        @Override
-        public void stop() {
-            shared.append("<<progress stopped>>\n");
-        }
-    }
 
     private void writeSpecAndConfig(String specId) throws Exception {
         Files.writeString(ws.resolve("sdd.yml"), """
@@ -83,9 +66,12 @@ class ReviewCommandProgressTest {
     void callThreadsProgressIntoRebuildPass() throws Exception {
         // A SUCCEEDED repo whose recorded run branch was never actually created — RebuildPass's
         // mid-pass checkout try/catch throws, and (RebuildPassTest already proves, directly
-        // against RebuildPass.run) that warn is routed through Progress.note. Here we only need
-        // proof this command actually hands RebuildPass a real Progress rather than always
-        // resolving Progress.noOp() regardless of what progressForTest was set to.
+        // against RebuildPass.run) that warn is routed through Progress.suspend, still landing on
+        // err verbatim. Here we only need proof this command actually hands RebuildPass a real
+        // Progress rather than always resolving Progress.noOp() regardless of what
+        // progressForTest was set to — checked two ways: the RecordingProgress event log shows a
+        // genuine "suspend" call (not just that err happened to receive the text, which could
+        // happen even if progress were bypassed entirely), and err itself still has the warning.
         FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
         Path g = lib.path().resolve("gradlew");
         Files.writeString(g, "#!/bin/sh\nexit 0\n");
@@ -119,13 +105,16 @@ class ReviewCommandProgressTest {
         ReviewCommand cmd = new ReviewCommand();
         RecordingProgress progress = new RecordingProgress();
         cmd.progressForTest = progress;
+        StringWriter errOut = new StringWriter();
         CommandLine cli = new CommandLine(cmd);
         cli.setOut(new PrintWriter(new StringWriter(), true));
-        cli.setErr(new PrintWriter(new StringWriter(), true));
+        cli.setErr(new PrintWriter(errOut, true));
         cli.execute("--workspace", ws.toString(), ws.resolve("s.plan.json").toString());
 
-        assertThat(progress.events()).anyMatch(e -> e.startsWith("note:warn: could not stage lib "
-                + "at its checkpoint: "));
+        assertThat(progress.events()).contains("suspend");
+        assertThat(errOut.toString())
+                .contains("warn: could not stage lib at its checkpoint: ")
+                .contains("verdicts for its consumers do not reflect this run's upstream code");
     }
 
     @Test

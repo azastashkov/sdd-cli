@@ -5,6 +5,7 @@ import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
 import sdd.core.progress.Progress;
 import sdd.index.testing.RecordingProgress;
+import sdd.index.testing.StopMarksSharedBuffer;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -21,43 +22,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Progress} down into {@code IndexService.run} and stops it before the report prints, not merely
  * "eventually" via the method-wide {@code finally}.
  *
- * <p>{@code RecordingProgress} is {@code sdd-index}'s own test fixture ({@code
- * sdd.index.testing.RecordingProgress}, {@code src/testFixtures}), reused here rather than
+ * <p>{@code RecordingProgress}/{@code StopMarksSharedBuffer} are {@code sdd-index}'s own test
+ * fixtures ({@code sdd.index.testing}, {@code src/testFixtures}), reused here rather than
  * duplicated: {@code sdd-cli}'s {@code build.gradle.kts} already declares
  * {@code testImplementation(testFixtures(project(":sdd-index")))}, so no new build wiring was
- * needed — an earlier revision of this file kept a private duplicate under the mistaken belief
- * that dependency did not exist.
+ * needed — an earlier revision of this file kept a private duplicate of each under the mistaken
+ * belief that dependency did not exist (a Task 3 review caught {@code StopMarksSharedBuffer}
+ * having quietly regrown that exact duplicate, once per command-progress test file).
  */
 class IndexCommandProgressTest {
     @TempDir Path ws;
-
-    /**
-     * A second {@link Progress} double, distinct from {@link RecordingProgress} on purpose:
-     * {@link Progress#stop()} and the report's {@code out.printf} calls are two different sinks
-     * in production (stderr vs. stdout), so a plain event list — "was {@code stop} called, and
-     * was it last among {@code Progress} calls" — cannot prove it fired *before* the report
-     * started printing, only that it fired at some point. This double writes its marker directly
-     * into the same {@link StringWriter} the report itself writes to, so both land on one
-     * timeline a test can actually order-assert against.
-     */
-    private static final class StopMarksSharedBuffer implements Progress {
-        private final StringWriter shared;
-
-        StopMarksSharedBuffer(StringWriter shared) {
-            this.shared = shared;
-        }
-
-        @Override public void phase(String name, int total) { }
-        @Override public void start(String item) { }
-        @Override public void finish(String item) { }
-        @Override public void detail(String text) { }
-        @Override public void note(String text) { }
-
-        @Override
-        public void stop() {
-            shared.append("<<progress stopped>>\n");
-        }
-    }
 
     private String yaml() {
         return """
