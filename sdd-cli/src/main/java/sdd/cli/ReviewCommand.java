@@ -20,6 +20,7 @@ import sdd.cli.review.ReportInputs;
 import sdd.cli.review.ReviewReport;
 import sdd.cli.review.RunContext;
 import sdd.cli.review.SkippedGates;
+import sdd.core.progress.Progress;
 import sdd.plan.source.SourceBullet;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecParser;
@@ -81,6 +82,10 @@ public final class ReviewCommand implements Callable<Integer> {
      *  without one. */
     BufferedReader in;
 
+    /** Test seam — mirrors {@code IndexCommand.progressForTest}/{@code ImplementCommand.progressForTest}:
+     *  {@code null} in real use, where {@link #call} falls back to {@link SddCli#resolve}. */
+    Progress progressForTest;
+
     // arity 0..1, not the default 1: picocli validates a PARENT's required positionals BEFORE it
     // recurses into a subcommand, so a required <planJsonPath> here made every
     // "review approve lib p.plan.json" die with "Missing required parameter" and exit 4 — an error
@@ -100,6 +105,9 @@ public final class ReviewCommand implements Callable<Integer> {
     public Integer call() {
         PrintWriter out = spec.commandLine().getOut();
         PrintWriter err = spec.commandLine().getErr();
+        // Resolved before anything else, stopped in the finally below on every return path — same
+        // reasoning as IndexCommand/ImplementCommand.
+        Progress progress = progressForTest != null ? progressForTest : SddCli.resolve(spec);
         try {
             if (planJsonPath == null) {
                 err.println("error: missing <spec>.plan.json");
@@ -110,7 +118,7 @@ public final class ReviewCommand implements Callable<Integer> {
                 return 4;
             }
             try {
-                return runReview(run, out, err);
+                return runReview(run, out, err, progress);
             } finally {
                 // Task 8: closes the one diagnostics file this invocation opened in
                 // RunContext.load — null when this RunContext was built directly (every existing
@@ -123,10 +131,13 @@ public final class ReviewCommand implements Callable<Integer> {
         } catch (RuntimeException | IOException e) {
             err.println("error: " + e.getMessage());
             return 4;
+        } finally {
+            progress.stop();
         }
     }
 
-    private Integer runReview(RunContext run, PrintWriter out, PrintWriter err) throws IOException {
+    private Integer runReview(RunContext run, PrintWriter out, PrintWriter err, Progress progress)
+            throws IOException {
         // Every path, not just --interactive: the rebuild pass checks the whole estate out to
         // its checkpoints and back, which would fight sdd implement over the same working
         // trees, and the state.json a concurrent run is rewriting cannot be reported on
@@ -163,13 +174,18 @@ public final class ReviewCommand implements Callable<Integer> {
         } else {
             RebuildPass.Outcome outcome = RebuildPass.run(Scheduler.sequence(run.plan().order()),
                     run.plan(), run.state(), run.paths(), run.config(), run.runDir(), run.store(),
-                    true, err);
+                    true, err, progress);
             rebuilds = outcome.rebuilds();
             notLocallyVerified = outcome.notLocallyVerified();
             stagingFailures = outcome.stagingFailures();
             restoreFailures = outcome.restoreFailures();
             contracts = outcome.contracts();
         }
+        // Stopped here, not left to call()'s finally: same "erase before the report starts"
+        // reasoning as IndexCommand/ImplementCommand. The noRebuild branch above never called
+        // start()/phase() on this Progress, so this is a harmless erase-of-nothing on that path;
+        // stop() is idempotent, so call()'s later stop() is a no-op either way.
+        progress.stop();
 
         RebuildScope scope = noRebuild ? RebuildScope.skipped() : RebuildScope.estate();
         // Built once and reused for report.md AND (Task 5) the Bitbucket pull-request
