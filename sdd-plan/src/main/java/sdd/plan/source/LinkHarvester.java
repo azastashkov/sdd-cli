@@ -73,6 +73,17 @@ public final class LinkHarvester {
 
         List<SourceDoc> pages = new ArrayList<>();
         List<String> notes = new ArrayList<>();
+        // Gate review minor: an honest note, not a silent gap. urlsIn only ever finds a BARE URL —
+        // ConfluenceExtract already dropped every <a> element's href by the time this class ever
+        // sees a fetched page's text (see urlsIn's own javadoc) — so a NAMED hyperlink inside a
+        // fetched Confluence page yields no candidate at depth 2+ and, without this, no note either.
+        // A proper fix needs raw storage HTML plumbed through SourceDoc (a shape change out of
+        // scope here); this at least stops follow_depth: 2 from silently promising more than it
+        // delivers. Emitted once per run, not once per page, since it is a property of the setting.
+        if (followDepth > 1) {
+            notes.add("note: links inside a fetched Confluence page are followed only when written "
+                    + "as bare URLs, not as named hyperlinks (follow_depth=" + followDepth + ")");
+        }
         Set<String> processedUrls = new HashSet<>();
         // Task 3 review Fix 4: this set records a page id only once it has ACTUALLY been fetched —
         // never on a mere resolve. Marking it "visited" before the cap/fetch outcome was known

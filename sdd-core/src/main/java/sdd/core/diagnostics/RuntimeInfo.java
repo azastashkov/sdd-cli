@@ -25,10 +25,14 @@ final class RuntimeInfo {
         return v != null ? v : "unknown";
     }
 
-    /** {@code git rev-parse --short=12 HEAD} run against the current working directory, with a
-     *  short timeout so a missing/broken {@code git} on a closed network never delays a command by
-     *  more than a fraction of a second — this is a "nice to have" diagnostic fact, never something
-     *  worth blocking on. */
+    /** {@code git rev-parse --short=12 HEAD} run against the current working directory — which is
+     *  the WORKSPACE {@code sdd} was invoked against, not necessarily the checkout {@code sdd}
+     *  itself was built from (Gate review minor). {@link DiagnosticHeader#render} labels this
+     *  "workspace git commit:" for exactly that reason — do not rename it back to a bare "git
+     *  commit:" without also fixing the meaning, or a remote reader will misread it as sdd's own
+     *  build sha every time. A short timeout so a missing/broken {@code git} on a closed network
+     *  never delays a command by more than a fraction of a second — this is a "nice to have"
+     *  diagnostic fact, never something worth blocking on. */
     static String gitCommit() {
         try {
             Process p = new ProcessBuilder("git", "rev-parse", "--short=12", "HEAD")

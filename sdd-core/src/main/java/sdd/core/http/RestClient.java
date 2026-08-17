@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.MissingNode;
 import sdd.core.config.AtlassianProxy;
 import sdd.core.config.AtlassianTls;
 import sdd.core.diagnostics.DiagnosticWriter;
+import sdd.core.diagnostics.Redactor;
 
 import javax.net.ssl.SSLException;
 import java.io.IOException;
@@ -16,6 +17,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 
 /**
  * JSON-over-HTTP with bearer auth, retry and the diagnostics Jira/Confluence/Bitbucket need on a
@@ -71,6 +73,15 @@ public final class RestClient {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
+    /** Gate review minor: mirrors {@code DiagnosticWriter.MAX_BODY_SNIPPET_CHARS} — the terminal
+     *  path (an {@link AtlassianException}'s message, which reaches stderr uncaught by any
+     *  best-effort catch) used to carry the entire, unscrubbed response body while the diagnostics
+     *  file's copy of the same content was already redacted and capped. Not a shared constant with
+     *  {@code DiagnosticWriter} (that field is private, and the two files serve different readers)
+     *  — kept at the same value on purpose so neither path is treated as "more trustworthy" than
+     *  the other. */
+    private static final int MAX_BODY_SNIPPET_CHARS = 500;
+
     private final String siteName;
     private final String baseUrl;
     private final String token;
@@ -81,6 +92,14 @@ public final class RestClient {
     private final Sleeper sleeper;
     private final DiagnosticWriter diagnostics;
     private final TransportContext transport;
+    /** Gate review minor: redacts (at least) this site's own bearer token — plus, unconditionally,
+     *  URL userinfo/Authorization-header/credential-query-param SHAPES regardless of value, per
+     *  {@link Redactor}'s rule 2/3 — out of any response body an {@link AtlassianException}
+     *  message carries to the caller/terminal. Built from ONLY this instance's token, not the full
+     *  cross-site secret set a {@link DiagnosticWriter}'s own {@code Redactor} has: this class has
+     *  no visibility into any other configured site's credentials, and does not need it — it only
+     *  ever talks to the one site it was constructed for. */
+    private final Redactor redactor;
 
     public RestClient(String siteName, String baseUrl, String token, String tokenVar, Duration timeout,
             HttpClient client) {
@@ -145,6 +164,7 @@ public final class RestClient {
         this.sleeper = sleeper;
         this.diagnostics = diagnostics;
         this.transport = transport == null ? TransportContext.NONE : transport;
+        this.redactor = Redactor.of(token != null ? List.of(token) : List.of());
     }
 
     public JsonNode get(String path) {
@@ -187,17 +207,17 @@ public final class RestClient {
                     throw logFailure(method, path, new AtlassianException(rejectedTokenMessage(status)));
                 }
                 if (status == 429) {
-                    last = new AtlassianException(siteOrGeneric() + " HTTP 429: " + resp.body());
+                    last = new AtlassianException(siteOrGeneric() + " HTTP 429: " + safeBody(resp.body()));
                     backoff(attempt, Backoff.retryAfterMillis(resp.headers().firstValue("Retry-After")));
                     continue;
                 }
                 if (status >= 500) {
-                    last = new AtlassianException(siteOrGeneric() + " HTTP " + status + ": " + resp.body());
+                    last = new AtlassianException(siteOrGeneric() + " HTTP " + status + ": " + safeBody(resp.body()));
                     backoff(attempt, null);
                     continue;
                 }
                 throw logFailure(method, path, new AtlassianException(siteOrGeneric() + " HTTP " + status
-                        + ": " + resp.body()));
+                        + ": " + safeBody(resp.body())));
             } catch (IOException e) {
                 String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
                 last = new AtlassianException("transport error talking to " + siteOrGeneric() + ": " + detail, e);
@@ -212,6 +232,19 @@ public final class RestClient {
 
     private static long durationMs(long startNanos) {
         return (System.nanoTime() - startNanos) / 1_000_000;
+    }
+
+    /** Gate review minor: scrub-then-cap, same order as {@code DiagnosticWriter.httpRequest}'s own
+     *  fix for the identical straddling-cutoff bug (redact BEFORE truncating, never after) — a
+     *  secret that straddles the {@link #MAX_BODY_SNIPPET_CHARS} cutoff must not survive as a
+     *  fragment that no longer exact-substring-matches what {@link #redactor} was built from. */
+    private String safeBody(String body) {
+        String scrubbed = redactor.scrub(body);
+        if (scrubbed == null || scrubbed.length() <= MAX_BODY_SNIPPET_CHARS) {
+            return scrubbed;
+        }
+        return scrubbed.substring(0, MAX_BODY_SNIPPET_CHARS)
+                + " …[truncated, " + (scrubbed.length() - MAX_BODY_SNIPPET_CHARS) + " more chars]";
     }
 
     /** Task 8 B3's "per Atlassian HTTP request" line — a no-op when this instance has no

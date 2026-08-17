@@ -248,6 +248,45 @@ class DoctorCommandTest {
         }
     }
 
+    // --- Gate review minors -----------------------------------------------------------------
+
+    @Test
+    void anInvalidReportPathFailsCleanlyRatherThanThrowingOutOfCall() throws Exception {
+        // Path.of(report) used to sit outside every guard, so a malformed --report argument
+        // propagated an uncaught InvalidPathException out of call() instead of the clean [FAIL]
+        // line every other doctor check produces. A NUL byte is invalid in a path on every
+        // platform this runs on.
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        wm.stubFor(get("/v1/models").willReturn(okJson("{\"data\":[]}")));
+
+        StringWriter sw = new StringWriter();
+        CommandLine cmd = new CommandLine(new SddCli());
+        cmd.setOut(new PrintWriter(sw, true));
+        cmd.setErr(new PrintWriter(sw, true));
+        int code = cmd.execute("doctor", "--workspace", ws.toString(), "--report", "bad path");
+
+        assertThat(code).isEqualTo(1);
+        assertThat(sw.toString()).contains("[FAIL] report-path");
+    }
+
+    @Test
+    void aTlsBlockWithNoSiteConfiguredStillReportsATruststoreLoadFailure() throws Exception {
+        // atlassian.tls set, but no jira/confluence/bitbucket site — clientBuildError was computed
+        // but every report() call for it lived inside an `if (ac.<site>() != null)` branch, so
+        // doctor used to exit 0 having printed nothing about a truststore that does not even load.
+        Files.writeString(ws.resolve("sdd.yml"), yaml() + """
+                atlassian:
+                  tls:
+                    truststore: %s
+                """.formatted(ws.resolve("does-not-exist.jks")));
+        wm.stubFor(get("/v1/models").willReturn(okJson("{\"data\":[]}")));
+
+        Run run = doctor(ws);
+
+        assertThat(run.out()).contains("[FAIL] atlassian:tls");
+        assertThat(run.exitCode()).isEqualTo(1);
+    }
+
     @Test
     void aDiagnosticsWriteFailureNeverChangesDoctorsExitCodeOrStdout() throws Exception {
         Files.writeString(ws.resolve("sdd.yml"), yaml());

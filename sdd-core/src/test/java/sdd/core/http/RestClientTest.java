@@ -131,6 +131,32 @@ class RestClientTest {
         wm.verify(1, getRequestedFor(urlEqualTo("/x")));
     }
 
+    // --- Gate review minor: the terminal-facing exception message must be at least as safe as the
+    // --- diagnostics file's own copy of the same body (scrubbed, capped) --------------------------
+
+    @Test
+    void aNonSuccessResponseBodyContainingTheBearerTokenIsRedactedInTheThrownMessage() {
+        String token = "sk-token-abcdefghijklmnop";
+        wm.stubFor(get("/x").willReturn(badRequest().withBody("error: token " + token + " was rejected")));
+
+        assertThatThrownBy(() -> client(token, "JIRA_PAT").get("/x"))
+                .isInstanceOf(AtlassianException.class)
+                .hasMessageNotContaining(token)
+                .hasMessageContaining("<redacted>");
+    }
+
+    @Test
+    void aNonSuccessResponseBodyOver500CharsIsCappedInTheThrownMessage() {
+        String hugeBody = "x".repeat(2_000);
+        wm.stubFor(get("/x").willReturn(badRequest().withBody(hugeBody)));
+
+        assertThatThrownBy(() -> client().get("/x"))
+                .isInstanceOf(AtlassianException.class)
+                .hasMessageContaining("…[truncated, 1500 more chars]")
+                .hasMessageContaining("x".repeat(500))
+                .hasMessageNotContaining("x".repeat(501));
+    }
+
     @Test
     void a401NamesTheTokenEnvVarAndSiteAndDoesNotRetry() {
         wm.stubFor(get("/x").willReturn(unauthorized()));

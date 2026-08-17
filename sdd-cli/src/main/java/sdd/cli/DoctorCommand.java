@@ -77,8 +77,19 @@ public final class DoctorCommand implements Callable<Integer> {
         }
         AtlassianConfig atlassianConfig = config != null ? config.atlassian() : null;
 
-        Path diagFile = reportRequested && !report.isBlank() ? Path.of(report)
-                : DiagnosticsDir.allocate(workspace, "doctor", clock);
+        // Gate review minor: Path.of(report) throws InvalidPathException (a RuntimeException) on a
+        // malformed --report argument, and this used to sit outside any guard — the FIRST thing
+        // this method could do after that would be an uncaught stack trace out of call(), not a
+        // clean [FAIL] line like every other doctor check produces. There is no diagnostics file to
+        // open at an invalid path either, so this reports directly and exits rather than trying.
+        Path diagFile;
+        try {
+            diagFile = reportRequested && !report.isBlank() ? Path.of(report)
+                    : DiagnosticsDir.allocate(workspace, "doctor", clock);
+        } catch (RuntimeException e) {
+            spec.commandLine().getOut().printf("[FAIL] report-path — %s%n", e.getMessage());
+            return 1;
+        }
         diagnostics = Diagnostics.openAt(diagFile, commandLine(), atlassianConfig, clock, spec.commandLine().getErr());
 
         try {
@@ -198,6 +209,14 @@ public final class DoctorCommand implements Callable<Integer> {
                         "/rest/api/1.0/projects/" + bb.project(), client, truststore, diagnostics, "X-AUSERNAME");
                 report(result.ok(), "atlassian:bitbucket", bb.site().baseUrl() + " → " + result.detail());
             }
+        }
+        // Gate review minor: atlassian.tls set but no site configured at all — clientBuildError was
+        // computed above but every report() call for it lives inside an `if (ac.<site>() != null)`
+        // block, so with no site this was silently dropped and doctor exited 0 having printed
+        // nothing about a truststore that does not even load. Reported once here, only when no
+        // per-site branch above already reported the same error against a real site.
+        if (clientBuildError != null && ac.jira() == null && ac.confluence() == null && ac.bitbucket() == null) {
+            report(false, "atlassian:tls", clientBuildError);
         }
     }
 

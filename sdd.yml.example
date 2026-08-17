@@ -126,9 +126,13 @@ excludes: []              # workspace directories to skip
 #     project: TRADING           # the Bitbucket project key repos live under
 #     default_reviewers: [alice, bob]
 #
-#   follow_depth: 1             # how many hops of linked-issue traversal requirement ingestion follows
-#   max_pages: 20                # paginated-collection page cap, so a huge Jira project cannot run away
-#   max_linked_issues: 10        # linked-issue cap per issue, same reason
+#   follow_depth: 1             # how many hops of CONFLUENCE LINK-following (bare URLs found in a
+#                                 # fetched page's own text) requirement ingestion follows — linked
+#                                 # Jira issue traversal is fixed at one level and is NOT affected by
+#                                 # this setting; see max_linked_issues below for that cap instead
+#   max_pages: 20                # total Confluence page-fetch cap across the whole run, so a huge
+#                                 # or looping link graph cannot run away
+#   max_linked_issues: 10        # linked Jira issue cap per issue, same reason
 #   write_back: none             # none | comment — off by default; a tool that can silently start
 #                                 # commenting on tickets needs an explicit opt-in
 #   pull_requests: false         # off by default, same reason

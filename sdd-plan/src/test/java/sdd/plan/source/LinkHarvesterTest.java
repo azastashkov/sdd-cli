@@ -182,6 +182,35 @@ class LinkHarvesterTest {
         LinkHarvester.Result result = harvester.harvest(List.of(issue), List.of());
 
         assertThat(result.pages()).extracting(SourceDoc::id).containsExactly("1", "2");
+        // Gate review minor: follow_depth > 1 always earns the honest "bare URLs only" note — see
+        // the dedicated test below for exactly why. Nothing else was dropped or unresolvable here,
+        // so that note is the only one.
+        assertThat(result.notes()).singleElement().asString()
+                .contains("bare URLs").contains("follow_depth=2");
+    }
+
+    @Test
+    void followDepthGreaterThanOneEmitsAnHonestNoteAboutNamedHyperlinksNotBeingFollowed() {
+        // ConfluenceExtract drops every <a> element's href by the time this class scans a fetched
+        // page's own text for nested candidates (urlsIn's own javadoc) — so a NAMED hyperlink
+        // inside a fetched Confluence page silently yields no candidate at depth 2+. Without this
+        // note, follow_depth: 2 promises more than it delivers with no warning at all.
+        FakeConfluencePages fake = new FakeConfluencePages();
+        LinkHarvester harvester = new LinkHarvester(fake, "confluence.corp.local", 2, 20);
+
+        LinkHarvester.Result result = harvester.harvest(List.of(), List.of());
+
+        assertThat(result.notes()).singleElement().asString()
+                .contains("bare URLs").contains("named hyperlinks").contains("follow_depth=2");
+    }
+
+    @Test
+    void followDepthOfOneEmitsNoHonestNoteSinceNoDepth2FollowingEverHappens() {
+        FakeConfluencePages fake = new FakeConfluencePages();
+        LinkHarvester harvester = new LinkHarvester(fake, "confluence.corp.local", 1, 20);
+
+        LinkHarvester.Result result = harvester.harvest(List.of(), List.of());
+
         assertThat(result.notes()).isEmpty();
     }
 

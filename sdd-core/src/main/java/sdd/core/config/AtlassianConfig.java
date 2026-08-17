@@ -12,11 +12,14 @@ package sdd.core.config;
  * {@code confluence}/{@code bitbucket}. Each site itself is independently optional — see
  * {@link AtlassianSite}'s javadoc.
  *
- * <p>{@code followDepth}/{@code maxPages}/{@code maxLinkedIssues} bound how far Task 3's ingestion
- * walks (linked issues, paginated collections) so a misconfigured Jira project with thousands of
- * linked issues cannot make {@code sdd plan} run away. {@code writeBack} and {@code pullRequests}
- * gate write access — off by default, since a tool that can silently start commenting on tickets
- * or opening PRs needs an explicit opt-in.
+ * <p>{@code followDepth} and {@code maxPages} (Gate review minor: previously misdescribed here and
+ * in {@code sdd.yml.example} as linked-ISSUE traversal / pagination bounds) are both {@code
+ * LinkHarvester}'s Confluence LINK-following bounds — {@code followDepth} how many hops of bare
+ * URLs found inside a fetched page's own text it will chase, {@code maxPages} the total Confluence
+ * page-fetch cap across the whole run. Linked Jira ISSUE traversal is a separate mechanism, fixed
+ * at one level and bounded independently by {@code maxLinkedIssues}. {@code writeBack} and {@code
+ * pullRequests} gate write access — off by default, since a tool that can silently start
+ * commenting on tickets or opening PRs needs an explicit opt-in.
  */
 public record AtlassianConfig(
         AtlassianTls tls,

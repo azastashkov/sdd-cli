@@ -262,7 +262,11 @@ public final class ReviewCommand implements Callable<Integer> {
             return;
         }
         Map<String, DecisionRecord> decisions = run.store().readDecisions(run.runDir());
-        String body = "sdd: review report for `" + run.plan().specId() + "`" + System.lineSeparator()
+        // Gate review minor: "\n", not System.lineSeparator() — this string is a Jira comment
+        // payload sent over HTTP to a server, not a line written to this process's own platform
+        // console. System.lineSeparator() is "\r\n" on Windows, which has no business in a JSON
+        // request body; this was the only occurrence of it in the entire main source tree.
+        String body = "sdd: review report for `" + run.plan().specId() + "`" + "\n"
                 + ReviewReport.decisionsSummaryLine(run.plan(), decisions);
         JiraWriteBack.post(workspace, jiraKeys, noComment, body, out, err, run.diagnostics());
     }

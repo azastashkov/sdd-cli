@@ -51,7 +51,9 @@ public final class DiagnosticHeader {
      *                     section then reports every site as not configured, matching {@code sdd
      *                     doctor}'s own "a missing atlassian: block changes nothing" rule.
      * @param sddVersion   best-effort, "unknown" when not resolvable (see {@code RuntimeInfo}).
-     * @param gitCommit    best-effort, "unknown" when not resolvable.
+     * @param gitCommit    best-effort, "unknown" when not resolvable — see {@code RuntimeInfo
+     *                     #gitCommit}'s javadoc for why this is the CURRENT WORKING DIRECTORY's
+     *                     commit, not necessarily sdd's own build (Gate review minor).
      */
     public static String render(List<String> commandLine, AtlassianConfig atlassian, String sddVersion,
             String gitCommit) {
@@ -71,7 +73,14 @@ public final class DiagnosticHeader {
         sb.append("which behaviours that covers.\n");
         sb.append('\n');
         sb.append("sdd version: ").append(sddVersion).append('\n');
-        sb.append("git commit: ").append(gitCommit).append('\n');
+        // Gate review minor: NOT necessarily sdd's own build sha — RuntimeInfo.gitCommit() runs
+        // `git rev-parse` in the process's CWD, which is the WORKSPACE sdd was invoked against,
+        // not sdd's own installation. Printed directly under "sdd version:" this line invited a
+        // remote reader to misread it as the build sha every time. Relabelled rather than
+        // resolved against sdd's own install: that install may not even be a git checkout (a
+        // packaged distribution), so "workspace" is the one fact this line can always honestly
+        // claim.
+        sb.append("workspace git commit: ").append(gitCommit).append('\n');
         sb.append("java: ").append(System.getProperty("java.version"))
                 .append(" (").append(System.getProperty("java.vendor")).append(")\n");
         sb.append("os: ").append(System.getProperty("os.name")).append(' ')
