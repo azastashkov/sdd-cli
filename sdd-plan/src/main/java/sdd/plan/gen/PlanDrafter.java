@@ -35,7 +35,30 @@ import java.util.function.Predicate;
  */
 public final class PlanDrafter {
     private static final ObjectMapper JSON = new ObjectMapper();
-    static final int EVIDENCE_CAP = 4000;
+    // Row budgets. Raised from 25/40 on measured evidence: on the real estate an implementor of a
+    // changed interface sat at rank 26 against a budget of 25 and was lost by a single position.
+    // They are deliberately NOT raised far enough to brute-force the problem — implementors also sat
+    // at ranks 48 and 65, and reaching those by budget alone would not survive a wider repo. Getting
+    // the right rows PROMOTED into the window is the actual fix; see salientTerms.
+    private static final int TYPE_BUDGET = 40;
+    private static final int MEMBER_BUDGET = 60;
+    private static final int ENDPOINT_BUDGET = 25;
+
+    // Per-section character caps, replacing the single whole-block cap. Their sum is the effective
+    // per-repo ceiling; splitting them is what stops a wide type list from starving the sections
+    // that render after it.
+    //
+    // Each is derived from its ROW budget times a generous per-line allowance, and that direction
+    // matters: the row budget is meant to be the binding constraint and the character cap only a
+    // guard against pathological line lengths. Setting a cap below what its budget can emit makes
+    // the cap the real limiter again — measured, when a first attempt at 2000 chars cut the type
+    // section at ~15 lines against a budget of 40 and dropped a type that used to be shown.
+    private static final int MAX_LINE = 150;
+    static final int TYPE_CAP = TYPE_BUDGET * MAX_LINE;
+    static final int MEMBER_CAP = MEMBER_BUDGET * MAX_LINE;
+    static final int ENDPOINT_CAP = ENDPOINT_BUDGET * MAX_LINE;
+    /** The per-repo ceiling, kept as one name for tests and for reasoning about prompt size. */
+    static final int EVIDENCE_CAP = TYPE_CAP + MEMBER_CAP + ENDPOINT_CAP;
     private static final Set<String> VERSION_ACTIONS = Set.of("none", "patch", "minor", "major");
     /** Whatever DeclaredContract can parse — the drafter must never be able to propose a kind the
      *  checker cannot re-derive, and the two lists drifting apart is exactly how that happens. */
@@ -362,7 +385,8 @@ public final class PlanDrafter {
     private static String evidence(Jdbi jdbi, String repo, Set<String> terms) {
         StringBuilder evidence = new StringBuilder();
         jdbi.useHandle(h -> {
-            List<Map<String, Object>> types = h.createQuery("""
+            StringBuilder types = new StringBuilder();
+            List<Map<String, Object>> typeRows = h.createQuery("""
                             SELECT t.fqcn AS fqcn, t.kind AS kind, t.file_path AS path,
                                    t.language AS lang
                             FROM java_type t
@@ -370,24 +394,27 @@ public final class PlanDrafter {
                             JOIN repo r ON r.id = m.repo_id
                             WHERE r.name = :r ORDER BY t.is_api DESC, t.fqcn LIMIT 400""")
                     .bind("r", repo).mapToMap().list();
-            for (Map<String, Object> row : ranked(types, TYPE_BUDGET,
+            for (Map<String, Object> row : ranked(typeRows, TYPE_BUDGET,
                     row -> names(terms, String.valueOf(row.get("fqcn"))))) {
                 String fqcn = String.valueOf(row.get("fqcn"));
-                evidence.append("- ").append(isTypeScript(row) ? TsNames.address(fqcn) : fqcn)
+                types.append("- ").append(isTypeScript(row) ? TsNames.address(fqcn) : fqcn)
                         .append(" (").append(row.get("kind"))
                         .append(") @ ").append(row.get("path")).append('\n');
             }
-            List<Map<String, Object>> members = h.createQuery("""
+            appendCapped(evidence, types, TYPE_CAP, "types");
+
+            StringBuilder members = new StringBuilder();
+            List<Map<String, Object>> memberRows = h.createQuery("""
                             SELECT jt.fqcn AS fqcn, am.name AS mname, am.signature AS sig,
                                    am.return_type AS ret, jt.language AS lang
                             FROM api_member am
                             JOIN java_type jt ON jt.id = am.type_id
                             JOIN module m ON m.id = jt.module_id
                             JOIN repo r ON r.id = m.repo_id
-                            WHERE r.name = :r AND jt.is_api = 1
-                            ORDER BY jt.fqcn, am.signature LIMIT 1200""")
+                            WHERE r.name = :r
+                            ORDER BY jt.is_api DESC, jt.fqcn, am.signature LIMIT 4000""")
                     .bind("r", repo).mapToMap().list();
-            for (Map<String, Object> row : ranked(members, MEMBER_BUDGET,
+            for (Map<String, Object> row : ranked(memberRows, MEMBER_BUDGET,
                     row -> names(terms, String.valueOf(row.get("fqcn")))
                             || terms.contains(lower(String.valueOf(row.get("mname")))))) {
                 String fqcn = String.valueOf(row.get("fqcn"));
@@ -397,26 +424,47 @@ public final class PlanDrafter {
                 String left = isTypeScript(row)
                         ? TsNames.memberAddress(fqcn, String.valueOf(row.get("mname")), sig)
                         : fqcn + "#" + sig;
-                evidence.append("- ").append(left).append(": ").append(row.get("ret")).append('\n');
+                members.append("- ").append(left).append(": ").append(row.get("ret")).append('\n');
             }
+            appendCapped(evidence, members, MEMBER_CAP, "members");
+
+            StringBuilder endpoints = new StringBuilder();
             for (Map<String, Object> row : h.createQuery("""
                             SELECT e.http_method AS verb, e.norm_path AS norm,
                                    e.request_type AS req, e.response_type AS res
                             FROM rest_endpoint e
                             JOIN module m ON m.id = e.module_id
                             JOIN repo r ON r.id = m.repo_id
-                            WHERE r.name = :r ORDER BY e.norm_path, e.http_method LIMIT 25""")
-                    .bind("r", repo).mapToMap().list()) {
-                evidence.append("- ").append(row.get("verb")).append(' ').append(row.get("norm"))
+                            WHERE r.name = :r ORDER BY e.norm_path, e.http_method LIMIT :cap""")
+                    .bind("r", repo).bind("cap", ENDPOINT_BUDGET).mapToMap().list()) {
+                endpoints.append("- ").append(row.get("verb")).append(' ').append(row.get("norm"))
                         .append(" req=").append(row.get("req")).append(" res=").append(row.get("res"))
                         .append('\n');
             }
+            appendCapped(evidence, endpoints, ENDPOINT_CAP, "endpoints");
         });
-        if (evidence.length() > EVIDENCE_CAP) {
-            evidence.setLength(EVIDENCE_CAP);
-            evidence.append("…(truncated)\n");
-        }
         return evidence.toString();
+    }
+
+    /**
+     * Appends one evidence section under its own character cap.
+     *
+     * <p>Sections used to share a single cap applied to the concatenation, which meant whichever
+     * rendered last was the one that vanished: on a repo with a wide type surface the endpoint
+     * section never appeared at all, silently, and exactly for the repos most likely to own an API.
+     * A per-section cap cannot express that failure. The marker names its section so a truncated
+     * section is legible as truncated rather than as empty — absence and truncation must never look
+     * the same to the reader, human or model.
+     */
+    private static void appendCapped(StringBuilder out, StringBuilder section, int cap, String label) {
+        if (section.length() <= cap) {
+            out.append(section);
+            return;
+        }
+        // Cut on a line boundary: half a rendered line is a line a model can copy and get wrong.
+        int cut = section.lastIndexOf("\n", cap);
+        out.append(section, 0, cut < 0 ? cap : cut + 1)
+                .append("…(").append(label).append(" truncated)\n");
     }
 
     /** A row's language, tolerant of the NULL a pre-npm knowledge base carries on every row. */
@@ -424,8 +472,6 @@ public final class PlanDrafter {
         return "TYPESCRIPT".equals(row.get("lang"));
     }
 
-    private static final int TYPE_BUDGET = 25;
-    private static final int MEMBER_BUDGET = 40;
 
     /** Rows the spec names, in their existing order, then the rest in theirs — capped at budget. */
     private static List<Map<String, Object>> ranked(List<Map<String, Object>> rows, int budget,

@@ -295,10 +295,52 @@ class PlanDrafterTest {
         String input = PlanDrafter.composeInput(db.jdbi(), spec(), impact(),
                 List.of(new ExecutionOrder.Unit(List.of("lib-core"))), "");
 
-        assertThat(input).contains("…(truncated)");
+        // The marker names its section: a truncated section must not read as an empty one.
+        assertThat(input).contains("…(types truncated)");
         int start = input.indexOf("## lib-core");
         int end = input.indexOf("## svc-pricing");
         assertThat(end - start).isLessThan(PlanDrafter.EVIDENCE_CAP + 200);
+        // Truncation cuts on a line boundary, so no half-rendered line is ever offered to a model
+        // as something to copy.
+        String block = input.substring(start, end);
+        assertThat(block.lines().filter(l -> l.startsWith("- ")).toList())
+                .allSatisfy(l -> assertThat(l).doesNotContain("…"));
+    }
+
+    @Test
+    void aServiceRepoContributesMemberSignaturesEvenThoughNothingInItIsApi() {
+        // is_api is set only for LIBRARY modules (ApiSurfaceExtractor), so on a real estate every
+        // SERVICE repo scored 0 and contributed not one method signature to the prompt — measured
+        // as five of six repos. A model cannot name a member it was never shown.
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path) "
+                    + "VALUES (2,'com.acme.PriceService','CLASS',0,'src/main/java/com/acme/PriceService.java')");
+            h.execute("INSERT INTO api_member(type_id, name, signature, return_type) "
+                    + "VALUES ((SELECT id FROM java_type WHERE fqcn='com.acme.PriceService'),"
+                    + "'quote','quote(String)','Quote')");
+        });
+
+        String input = PlanDrafter.composeInput(db.jdbi(), spec(), impact(), order(), "");
+
+        assertThat(input).contains("com.acme.PriceService#quote(String): Quote");
+    }
+
+    @Test
+    void aLongTypeListCannotStarveTheEndpointSection() {
+        // One shared cap over the whole repo block truncated whatever rendered last, so a repo with
+        // a wide type surface lost its endpoints entirely — silently, and exactly for the repos
+        // most likely to own an API.
+        db.jdbi().useHandle(h -> {
+            for (int i = 0; i < 60; i++) {
+                h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path) VALUES "
+                        + "(2,'com.acme.q" + i + "." + "Z".repeat(200) + i + "','CLASS',0,'src/"
+                        + "w".repeat(200) + i + ".java')");
+            }
+        });
+
+        String input = PlanDrafter.composeInput(db.jdbi(), spec(), impact(), order(), "");
+
+        assertThat(input).contains("GET /price/{}");
     }
 
     @Test
