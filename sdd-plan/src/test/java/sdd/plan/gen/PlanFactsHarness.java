@@ -1,0 +1,185 @@
+package sdd.plan.gen;
+
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import sdd.core.db.Database;
+import sdd.core.llm.ChatMessage;
+import sdd.core.llm.ChatModel;
+import sdd.core.llm.ChatResponse;
+import sdd.core.llm.ModelException;
+import sdd.core.llm.Usage;
+import sdd.core.retrieve.FtsRetriever;
+import sdd.core.testing.ScriptedChatModel;
+import sdd.plan.impact.ImpactAnalysis;
+import sdd.plan.impact.ImpactResult;
+import sdd.plan.impact.Seed;
+import sdd.plan.impact.SeedFinder;
+import sdd.plan.spec.NormalizedSpec;
+import sdd.plan.spec.SpecItem;
+import sdd.plan.spec.SpecParser;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+/**
+ * Measurement harness for the plan-generation fact diagnosis, NOT a test of behaviour.
+ *
+ * <p>It lives in {@code sdd.plan.gen} for one reason: {@link PlanDrafter#composeInput} is
+ * package-private, and calling it directly is how this project already inspects a composed prompt
+ * ({@code PlanDrafterTest}). That door removes any need for a production dump flag.
+ *
+ * <p>Zero model calls. Each spec is run twice:
+ * <ul>
+ *   <li><b>deterministic</b> — the seeding model is unavailable, so the output is exactly what the
+ *       deterministic half produces on its own: touchpoint seeds, FTS candidates, problems, closure.
+ *   <li><b>declared</b> — a scripted model returns the repos the author declared in the sidecar
+ *       {@code <spec>.expect} file, i.e. a hypothetically perfect impact analysis. What the drafter
+ *       prompt does and does not contain under that condition isolates evidence starvation from
+ *       seeding failure.
+ * </ul>
+ *
+ * <p>Run: {@code ./gradlew :sdd-plan:test --tests '*PlanFactsHarness' -Dsdd.measure.ws=<probe>
+ * -Dsdd.measure.specs=<dir> -Dsdd.measure.out=<dir>}
+ */
+@Tag("measure")
+@EnabledIfEnvironmentVariable(named = "SDD_MEASURE_WS", matches = ".+")
+class PlanFactsHarness {
+
+    private static final int MAX_TOKENS = 32768;
+
+    @Test
+    void dumpFacts() throws IOException {
+        Path ws = Path.of(System.getenv("SDD_MEASURE_WS"));
+        Path specsDir = Path.of(System.getenv("SDD_MEASURE_SPECS"));
+        Path out = Path.of(System.getenv("SDD_MEASURE_OUT"));
+        Files.createDirectories(out);
+
+        List<Path> specs;
+        try (var s = Files.list(specsDir)) {
+            specs = s.filter(p -> p.getFileName().toString().endsWith(".md")).sorted().toList();
+        }
+
+        Database db = Database.open(ws);
+        StringBuilder report = new StringBuilder("# Plan fact diagnosis — raw run\n");
+        for (Path specFile : specs) {
+            String name = specFile.getFileName().toString().replace(".md", "");
+            NormalizedSpec spec = SpecParser.parse(Files.readString(specFile));
+            List<String> declared = declaredRepos(specFile);
+
+            report.append("\n## ").append(name).append('\n');
+            report.append("declared expected repos: ").append(declared).append('\n');
+
+            // ---- deterministic half, on its own -------------------------------------------
+            SeedFinder.SeedScan scan = SeedFinder.find(db.jdbi(), new FtsRetriever(db.jdbi()), spec);
+            report.append("\n### Deterministic seeding\n");
+            report.append("seeds:      ").append(fmt(scan.seeds())).append('\n');
+            report.append("candidates: ").append(fmt(scan.candidates())).append('\n');
+            report.append("problems:   ").append(scan.problems()).append('\n');
+
+            emit(db, spec, declared, name, "deterministic", unavailableModel(), out, report);
+            emit(db, spec, declared, name, "declared", declaringModel(declared, spec), out, report);
+        }
+        Files.writeString(out.resolve("report.md"), report.toString());
+        System.out.println("wrote " + out.resolve("report.md"));
+    }
+
+    private void emit(Database db, NormalizedSpec spec, List<String> declared, String name,
+                      String mode, ChatModel model, Path out, StringBuilder report)
+            throws IOException {
+        ImpactResult result = ImpactAnalysis.analyze(db.jdbi(), new FtsRetriever(db.jdbi()), spec,
+                model, "measure", MAX_TOKENS);
+        List<ExecutionOrder.Unit> order = ExecutionOrder.order(db.jdbi(), result);
+        List<Question> questions = OpenQuestions.detect(db.jdbi(), result);
+        String prompt = PlanDrafter.composeInput(db.jdbi(), spec, result, order, "");
+        Files.writeString(out.resolve(name + "." + mode + ".prompt.txt"), prompt);
+
+        Set<String> affected = result.affected().stream()
+                .map(a -> a.repo()).collect(Collectors.toCollection(LinkedHashSet::new));
+
+        report.append("\n### ").append(mode).append('\n');
+        report.append("affected: ").append(affected).append('\n');
+        result.affected().forEach(a ->
+                report.append("  - ").append(a.repo()).append(" | ").append(a.role())
+                        .append(" | ").append(a.annotation()).append('\n'));
+        report.append("blocking questions: ")
+                .append(questions.stream().filter(Question::blocking).map(Question::text).toList())
+                .append('\n');
+        report.append("non-blocking:       ")
+                .append(questions.stream().filter(q -> !q.blocking()).map(Question::text).toList())
+                .append('\n');
+        // The declaration is compared, never merged — this is the A0 diff, computed here only to
+        // measure it. Nothing about it feeds back into `affected`.
+        report.append("expected-but-not-reached: ")
+                .append(declared.stream().filter(r -> !affected.contains(r)).toList()).append('\n');
+        report.append("reached-but-not-expected: ")
+                .append(affected.stream().filter(r -> !declared.contains(r)).toList()).append('\n');
+        report.append("prompt chars: ").append(prompt.length()).append('\n');
+        for (String repo : affected) {
+            report.append("  evidence[").append(repo).append("] chars: ")
+                    .append(sectionLength(prompt, repo))
+                    .append(sectionLength(prompt, repo) == 0 ? "  (NO SECTION)" : "")
+                    .append(prompt.contains("…(truncated)") ? "" : "").append('\n');
+        }
+    }
+
+    /** Characters between "## &lt;repo&gt;" in the evidence block and the next "## ". */
+    private static int sectionLength(String prompt, String repo) {
+        int i = prompt.indexOf("\n## " + repo + "\n");
+        if (i < 0) return 0;
+        int j = prompt.indexOf("\n## ", i + 1);
+        return (j < 0 ? prompt.length() : j) - i;
+    }
+
+    private static List<String> declaredRepos(Path specFile) throws IOException {
+        Path expect = specFile.resolveSibling(
+                specFile.getFileName().toString().replace(".md", ".expect"));
+        if (!Files.exists(expect)) return List.of();
+        return Files.readAllLines(expect).stream().map(String::trim)
+                .filter(l -> !l.isEmpty() && !l.startsWith("#")).toList();
+    }
+
+    private static String fmt(List<Seed> seeds) {
+        return seeds.stream().map(s -> s.repo() + "(" + s.source() + ": " + s.detail() + ")")
+                .collect(Collectors.joining(", ", "[", "]"));
+    }
+
+    /**
+     * Drives ModelSeeder's documented degradation path: unavailable, deterministic-only.
+     *
+     * <p>It must throw {@link ModelException} specifically — {@code ModelSeeder.seed} catches only
+     * that type, so any other runtime exception from a model client propagates and aborts the whole
+     * command instead of degrading. Noted here because that is a real narrowness in the production
+     * catch, not a quirk of this harness.
+     */
+    private static ChatModel unavailableModel() {
+        return req -> { throw new ModelException("measurement: model deliberately unavailable", 503); };
+    }
+
+    /**
+     * A hypothetically perfect seeder that returns exactly what the author declared.
+     *
+     * <p>{@code covers} must list every requirement id: {@code ImpactAnalysis} raises a
+     * {@code "no repo covers R<n>"} <em>problem</em> — and therefore a blocking question — for any
+     * requirement no model seed claims. Leaving it empty makes every run look blocked for a reason
+     * that belongs to the harness, not to the pipeline.
+     */
+    private static ChatModel declaringModel(List<String> declared, NormalizedSpec spec) {
+        String covers = spec.requirements().stream().map(SpecItem::id)
+                .map(id -> "\"" + id + "\"").collect(Collectors.joining(","));
+        List<String> entries = new ArrayList<>();
+        for (String repo : declared) {
+            entries.add("{\"repo\":\"" + repo + "\",\"role\":\"primary\",\"covers\":[" + covers + "],"
+                    + "\"reason\":\"declared by the spec author\"}");
+        }
+        String json = "{\"repos\":[" + String.join(",", entries) + "]}";
+        return new ScriptedChatModel(List.of(
+                new ChatResponse(ChatMessage.assistant(json), "stop", new Usage(1, 1))));
+    }
+}
