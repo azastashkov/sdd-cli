@@ -160,7 +160,8 @@ lands in shell history and is visible to `ps` on a shared machine.
 
 **2. Add the `atlassian:` block to `<workspace>/sdd.yml`,** copying it from
 `sdd.yml.example` — the full annotated form, including the `tls:` and `proxy:`
-blocks, is in [§1](#jira-confluence-bitbucket-data-center):
+blocks, is under
+[Jira, Confluence, Bitbucket Data Center](#jira-confluence-bitbucket-data-center):
 
 ```yaml
 atlassian:
@@ -201,8 +202,10 @@ That is the whole check: no spec, no index, no run required.
 is *not* evidence `sdd` will connect — curl reads the OS certificate store, the
 JDK reads only its own `cacerts`, so a corporate CA installed system-wide but
 not into the JDK yields `PKIX path building failed`. The fix is the `tls:`
-block in §1. `doctor`'s messages name the remedy directly: 401 → reissue the
-named token; PKIX → truststore; timeout → proxy.
+block under
+[Jira, Confluence, Bitbucket Data Center](#jira-confluence-bitbucket-data-center).
+`doctor`'s messages name the remedy directly: 401 → reissue the named token;
+PKIX → truststore; timeout → proxy.
 
 **4. Then exercise the real path:**
 
