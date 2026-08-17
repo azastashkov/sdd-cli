@@ -51,6 +51,45 @@ models:
   #   model: mlx-community/Qwen3.6-35B-A3B-8bit
   #   max_tokens: 4096
 
+  # A model endpoint that authenticates with a client certificate (mutual TLS)
+  # instead of, or alongside, api_key — the shape a gateway that speaks TLS
+  # client-cert auth rather than a bearer token needs. cert/key are the exact
+  # PEM pair `curl --cert <cert> --key <key>` would use for the same gateway;
+  # if a working curl command already exists for this endpoint, its --cert/
+  # --key/--tlsv1.2 flags map directly onto tls.cert/tls.key/tls.protocols
+  # below. Only PEM key forms are supported: unencrypted PKCS#8 (BEGIN PRIVATE
+  # KEY) and encrypted PKCS#8 (BEGIN ENCRYPTED PRIVATE KEY, needs key_password).
+  # A PKCS#1 (BEGIN RSA PRIVATE KEY) or SEC1 (BEGIN EC PRIVATE KEY) key is
+  # rejected with the exact `openssl pkcs8 -topk8 -nocrypt` command to convert
+  # it — run `sdd doctor` (or `sdd doctor --endpoint <name>` to check just this
+  # one) before anything else once this block is filled in: cert/key existence,
+  # whether the key parses, and the certificate's expiry are all validated
+  # before the endpoint is ever probed, since an expired client cert is the
+  # most common mTLS failure and the handshake alert it produces on its own
+  # (bad_certificate) says nothing useful.
+  # corp:
+  #   base_url: https://corp-ift.example.corp/v1
+  #   model: DeepSeek-V4-Flash
+  #   tls:
+  #     cert: ${MODEL_CERT_PATH}
+  #     key: ${MODEL_KEY_PATH}
+  #     key_password: ${MODEL_KEY_PASSWORD}   # omit when the key is unencrypted
+  #     protocols: [TLSv1.2]                     # omit to leave the JDK's own TLS
+  #                                               # version negotiation alone; set
+  #                                               # this when a gateway rejects the
+  #                                               # JDK's TLS 1.3 default the way
+  #                                               # `curl --tlsv1.2 --tls-max 1.2`
+  #                                               # pins the same gateway to 1.2
+  #     truststore: /path/to/corp-ca.p12         # only if the JDK's own cacerts
+  #                                               # does not already trust this
+  #                                               # gateway's CA — a working curl
+  #                                               # to the same URL does NOT mean
+  #                                               # the JDK trusts the same chain
+  #                                               # (curl trusts the OS store; the
+  #                                               # JDK trusts only its own cacerts)
+  #   extra_body:
+  #     repetition_penalty: 1
+
 run:
   # Attempt order for sdd implement. After an attempt that needs escalation
   # (VERIFY_FAILED / EXHAUSTED / BUDGET / MALFORMED / WEDGED) the repo is reset to

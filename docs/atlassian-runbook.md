@@ -64,6 +64,52 @@ from a regex match against the `${...}` reference in `ConfigLoader.parseAtlassia
 contact" item 1 below for exactly why this specific field is the highest-risk value in this whole
 block.
 
+### 1a. Model endpoints with mutual TLS (client certificates)
+
+The gateways this integration was originally built against on this same corporate network — model
+endpoints, not Jira/Confluence/Bitbucket — authenticate with a client certificate instead of a
+bearer token: no `Authorization` header, `curl --cert <cert> --key <key>` (frequently pinned to
+`--tlsv1.2 --tls-max 1.2` as well). A `models.<name>.tls` block gives one `sdd.yml` model endpoint
+that same authentication, independent of `atlassian:` entirely — see the commented example in
+`sdd.yml.example`:
+
+```yaml
+models:
+  corp:
+    base_url: https://corp-ift.example.corp/v1
+    model: DeepSeek-V4-Flash
+    tls:
+      cert: ${MODEL_CERT_PATH}
+      key: ${MODEL_KEY_PATH}
+      key_password: ${MODEL_KEY_PASSWORD}   # omit when the key is unencrypted
+      protocols: [TLSv1.2]                     # omit to leave the JDK's default negotiation alone
+      truststore: /path/to/corp-ca.p12         # only if the JDK does not already trust the chain
+```
+
+`cert`/`key` are the exact PEM pair a working `curl --cert`/`--key` command already uses for the
+same gateway — if one exists, its flags map directly onto this block with no conversion needed,
+**provided the key is PKCS#8** (`-----BEGIN PRIVATE KEY-----`, or `ENCRYPTED PRIVATE KEY` with
+`key_password`). A PKCS#1 (`BEGIN RSA PRIVATE KEY`) or SEC1 (`BEGIN EC PRIVATE KEY`) key is
+rejected with the exact `openssl pkcs8 -topk8 -nocrypt -in <key> -out <key>.pk8.pem` command needed
+to convert it — `sdd doctor` (below) surfaces that conversion hint before ever attempting to use
+the key.
+
+Run `sdd doctor --endpoint corp` (or whichever name this endpoint has) to check just this one
+tier while getting the certificate right, instead of waiting for every other configured model to
+be probed too on each attempt. Before the endpoint is probed at all, `doctor` validates that the
+cert/key files exist and are readable, that the key parses, and — the most common mTLS failure of
+all, whose TLS alert (`bad_certificate`) says nothing useful on its own — that the client
+certificate is not expired (with a warning inside 30 days); see `commands.md`'s `sdd doctor`
+section for the exact checks and messages.
+
+**The trust-store trap applies here too, and is usually the first thing to check.** A working
+`curl` to the gateway's URL is not evidence the JDK trusts the same certificate chain: curl trusts
+the OS certificate store (macOS keychain; `/etc/ssl/certs` on Linux), the JDK trusts only its own
+`cacerts`. If `doctor` reports `PKIX path building failed` for a model endpoint that `curl`
+reaches fine, the fix is the same one `atlassian.tls.truststore` needs a few paragraphs up: either
+set this endpoint's `tls.truststore` to the corporate CA chain, or import that CA into
+`$JAVA_HOME/lib/security/cacerts`.
+
 ## 2. Run `sdd doctor` first
 
 ```
