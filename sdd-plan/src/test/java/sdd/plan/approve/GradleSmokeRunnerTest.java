@@ -22,13 +22,17 @@ class GradleSmokeRunnerTest {
     }
 
     @Test
-    void missingWrapperFailsWithoutRunningAnything() throws Exception {
+    void noWrapperAndNoConfiguredGradleFailsWithoutRunningAnything() throws Exception {
         Path consumer = Files.createDirectories(dir.resolve("bare"));
+        // A missing wrapper alone no longer fails: GradleLauncher falls back to a configured
+        // Gradle. Passing an empty gradle_home pins the both-missing case deterministically,
+        // regardless of whether the test machine has gradle on its PATH.
 
-        SmokeRunner.Result result = new GradleSmokeRunner().probe(consumer, dir);
+        SmokeRunner.Result result = new GradleSmokeRunner(java.time.Duration.ofSeconds(5),
+                dir.resolve("none")).probe(consumer, dir);
 
         assertThat(result.ok()).isFalse();
-        assertThat(result.detail()).contains("no gradle wrapper");
+        assertThat(result.detail()).contains("gradle_home");
     }
 
     @Test

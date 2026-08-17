@@ -3,6 +3,7 @@ package sdd.cli.implement;
 import sdd.agent.run.RepoStep;
 
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -21,11 +22,15 @@ public final class PreFlight {
     }
 
     public static Result check(Map<String, RepoStep> steps, PlanModel plan) {
+        return check(steps, plan, null);
+    }
+
+    public static Result check(Map<String, RepoStep> steps, PlanModel plan, Path gradleHome) {
         List<String> problems = new ArrayList<>();
         for (Map.Entry<String, RepoStep> entry : steps.entrySet()) {
             String repo = entry.getKey();
             var root = entry.getValue().repoRoot();
-            if (!environment(repo, entry.getValue(), plan, problems)) {
+            if (!environment(repo, entry.getValue(), plan, problems, gradleHome)) {
                 continue;
             }
             try {
@@ -48,19 +53,25 @@ public final class PreFlight {
     /** Resume gate: environment-only checks for the repos that will actually run. Tree state is NOT
      *  checked — startBranch hard-resets to base and cleans untracked debris on entry. */
     public static Result checkResume(Map<String, RepoStep> steps, PlanModel plan, RunState state) {
+        return checkResume(steps, plan, state, null);
+    }
+
+    public static Result checkResume(Map<String, RepoStep> steps, PlanModel plan, RunState state,
+                                     Path gradleHome) {
         List<String> problems = new ArrayList<>();
         for (Map.Entry<String, RepoStep> entry : steps.entrySet()) {
             if (state.stateOf(entry.getKey()) != RepoState.PENDING) {
                 continue;
             }
-            environment(entry.getKey(), entry.getValue(), plan, problems);
+            environment(entry.getKey(), entry.getValue(), plan, problems, gradleHome);
         }
         return new Result(problems.isEmpty(), problems);
     }
 
     /** Checkout exists, the repo's toolchain is usable, base SHA is present. Returns false (and has
      *  already recorded a problem) when the checkout itself is missing, since the rest need it. */
-    private static boolean environment(String repo, RepoStep step, PlanModel plan, List<String> problems) {
+    private static boolean environment(String repo, RepoStep step, PlanModel plan, List<String> problems,
+                                       Path gradleHome) {
         var root = step.repoRoot();
         if (!Files.isDirectory(root)) {
             problems.add(repo + ": checkout not found at " + root);
@@ -68,8 +79,11 @@ public final class PreFlight {
         }
         switch (sdd.core.toolchain.Toolchain.detect(root)) {
             case GRADLE -> {
-                if (!Files.isExecutable(root.resolve("gradlew"))) {
-                    problems.add(repo + ": no executable gradle wrapper at " + root.resolve("gradlew"));
+                // A missing wrapper is no longer fatal: GradleLauncher falls back to a configured
+                // Gradle. What IS fatal is having neither, and the problem text names both levers.
+                var resolution = sdd.core.toolchain.GradleLauncher.resolve(root, gradleHome);
+                if (!resolution.found()) {
+                    problems.add(repo + ": " + resolution.problem());
                 }
             }
             case NPM -> {

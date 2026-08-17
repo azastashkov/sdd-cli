@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -62,8 +63,30 @@ class GradleToolTest {
     }
 
     @Test
-    void missingWrapperFails() {
-        assertThatThrownBy(() -> new GradleTool(repo, null, Duration.ofSeconds(5)).run("help"))
-                .isInstanceOf(ToolException.class).hasMessageContaining("no gradle wrapper");
+    void missingWrapperFallsBackToTheConfiguredGradle() throws Exception {
+        // A missing wrapper used to be fatal here, which is what turned "this repo builds with the
+        // gradle on my machine" into a hard stop. It now resolves through GradleLauncher, so the
+        // wrapper still wins when present and a configured Gradle covers the repos without one.
+        Path gradleHome = Files.createDirectories(repo.resolve("fake-gradle"));
+        Path bin = Files.createDirectories(gradleHome.resolve("bin"));
+        Path gradle = bin.resolve("gradle");
+        Files.writeString(gradle, "#!/bin/sh\necho fallback-ran\n");
+        Files.setPosixFilePermissions(gradle,
+                java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x"));
+
+        String out = new GradleTool(repo, null, Duration.ofSeconds(30), List.of(), null, gradleHome)
+                .run("help");
+
+        assertThat(out).contains("fallback-ran");
+    }
+
+    @Test
+    void neitherAWrapperNorAConfiguredGradleFailsAndNamesBothLevers() {
+        Path emptyGradleHome = repo.resolve("nothing-here");
+
+        assertThatThrownBy(() -> new GradleTool(repo, null, Duration.ofSeconds(5), List.of(), null,
+                emptyGradleHome).run("help"))
+                .isInstanceOf(ToolException.class)
+                .hasMessageContaining("gradle_home");
     }
 }

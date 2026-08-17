@@ -87,11 +87,14 @@ class JarBuilderTest {
     }
 
     @Test
-    void missingWrapperFailsWithoutRunningAnything() {
-        JarBuilder.Result result = new JarBuilder().build(ws.resolve("nowhere"), null, ws.resolve("out"),
-                List.of());
+    void noWrapperAndNoConfiguredGradleFailsWithoutRunningAnything() {
+        // A missing wrapper alone no longer fails: GradleLauncher falls back to a configured
+        // Gradle. Passing an empty gradle_home pins the both-missing case deterministically,
+        // regardless of whether the test machine has gradle on its PATH.
+        JarBuilder.Result result = new JarBuilder(java.time.Duration.ofSeconds(5), ws.resolve("none"))
+                .build(ws.resolve("nowhere"), null, ws.resolve("out"), List.of());
 
         assertThat(result.ok()).isFalse();
-        assertThat(result.log()).contains("no gradle wrapper");
+        assertThat(result.log()).contains("gradle_home");
     }
 }

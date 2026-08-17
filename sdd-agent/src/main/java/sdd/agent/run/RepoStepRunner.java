@@ -53,7 +53,7 @@ public final class RepoStepRunner {
                 ? new NpmTool(step.repoRoot(), settings.nodeHome(), settings.gradleTimeout(),
                         settings.gradlePermits())
                 : new GradleTool(step.repoRoot(), settings.javaHome(), settings.gradleTimeout(),
-                        settings.gradleExtraArgs(), settings.gradlePermits());
+                        settings.gradleExtraArgs(), settings.gradlePermits(), settings.gradleHome());
         // Hoisted (rather than inlined into the Toolbox constructor) so appliedEdits() can be read
         // after the loop finishes — this one instance is reused across every cycle below, so its
         // edits accumulate over the whole attempt regardless of how many times loop.run() is called.

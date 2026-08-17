@@ -259,7 +259,7 @@ public final class ImplementCommand implements Callable<Integer> {
                         prep.problems().forEach(p -> err.println("problem: " + p));
                         return 4;
                     }
-                    PreFlight.Result gate = PreFlight.checkResume(steps, plan, prep.state());
+                    PreFlight.Result gate = PreFlight.checkResume(steps, plan, prep.state(), config.gradleHome());
                     if (!gate.ok()) {
                         gate.problems().forEach(p -> err.println("problem: " + p));
                         return 4;
@@ -288,7 +288,7 @@ public final class ImplementCommand implements Callable<Integer> {
                                 + "or delete " + runDir + " to start over");
                         return 4;
                     }
-                    PreFlight.Result preflight = PreFlight.check(steps, plan);
+                    PreFlight.Result preflight = PreFlight.check(steps, plan, config.gradleHome());
                     if (!preflight.ok()) {
                         preflight.problems().forEach(p -> err.println("problem: " + p));
                         return 4;
@@ -373,7 +373,9 @@ public final class ImplementCommand implements Callable<Integer> {
 
                 Orchestrator orchestrator = new Orchestrator(new RepoStepRunner(jdbi), ladder,
                         settingsFor, store, config.run().tokenBudget(),
-                        activePropagation, new MavenLocalPublisher(), new JarBuilder(),
+                        activePropagation,
+                        new MavenLocalPublisher(java.time.Duration.ofMinutes(10), config.gradleHome()),
+                        new JarBuilder(java.time.Duration.ofMinutes(10), config.gradleHome()),
                         config.nodeHome(), progress);
                 Orchestrator.RunResult result = initialState == null
                         ? orchestrator.run(runDir, activePlan, activeSteps)

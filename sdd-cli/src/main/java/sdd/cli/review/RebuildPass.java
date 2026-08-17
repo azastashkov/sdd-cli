@@ -77,7 +77,7 @@ public final class RebuildPass {
             byName.put(run.repo(), run);
         }
 
-        EstateRebuild rebuild = new EstateRebuild();
+        EstateRebuild rebuild = new EstateRebuild(java.time.Duration.ofMinutes(15), config.gradleHome());
         Map<String, EstateRebuild.Result> rebuilds = new LinkedHashMap<>();
         List<String> notLocallyVerified = new ArrayList<>();
         List<String> stagingFailures = new ArrayList<>();

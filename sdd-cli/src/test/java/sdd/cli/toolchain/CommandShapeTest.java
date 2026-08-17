@@ -290,14 +290,22 @@ class CommandShapeTest {
     // ---------------------------------------------------------------- shared refusal
 
     @Test
-    void everySiteRefusesARepoWithNoExecutableWrapper() throws Exception {
+    void everySiteRefusesARepoWithNeitherAWrapperNorAConfiguredGradle() throws Exception {
+        // A missing wrapper alone is no longer a refusal — GradleLauncher falls back to a
+        // configured Gradle, which is the whole point of the fallback. What every site must still
+        // refuse, identically, is having NEITHER. An explicit empty gradle_home is what makes this
+        // deterministic: without it the assertion would depend on whether the machine running the
+        // tests happens to have gradle on its PATH.
         Path bare = Files.createDirectories(tmp.resolve("no-wrapper"));
+        Path noGradle = tmp.resolve("empty-gradle-home");
+        String expected = sdd.core.toolchain.GradleLauncher.resolve(bare, noGradle).problem();
+        assertThat(expected).contains("gradle_home");
 
-        assertThat(new JarBuilder(Duration.ofSeconds(5)).build(bare, null, tmp.resolve("o"), List.of()).log())
-                .isEqualTo("no gradle wrapper in " + bare);
-        assertThat(new MavenLocalPublisher(Duration.ofSeconds(5)).publish(bare, null, "1", tmp.resolve("m2")).log())
-                .isEqualTo("no gradle wrapper in " + bare);
-        assertThat(new GradleSmokeRunner(Duration.ofSeconds(5)).probe(bare, tmp).detail())
-                .isEqualTo("no gradle wrapper in " + bare);
+        assertThat(new JarBuilder(Duration.ofSeconds(5), noGradle)
+                .build(bare, null, tmp.resolve("o"), List.of()).log()).isEqualTo(expected);
+        assertThat(new MavenLocalPublisher(Duration.ofSeconds(5), noGradle)
+                .publish(bare, null, "1", tmp.resolve("m2")).log()).isEqualTo(expected);
+        assertThat(new GradleSmokeRunner(Duration.ofSeconds(5), noGradle)
+                .probe(bare, tmp).detail()).isEqualTo(expected);
     }
 }

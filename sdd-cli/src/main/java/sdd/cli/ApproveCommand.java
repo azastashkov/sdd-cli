@@ -105,6 +105,8 @@ public final class ApproveCommand implements Callable<Integer> {
                     return 1;
                 }
                 SmokeRunner smoke = smokeForTest != null ? smokeForTest : new GradleSmokeRunner();
+                // No SddConfig is loaded on this path, so a wrapper-less repo falls back to
+                // $SDD_GRADLE then PATH rather than to a configured gradle_home.
                 List<String> compileWarnings = new ArrayList<>();
                 String specSha = Hashes.sha256(specText);
                 String planSha = Hashes.sha256(planText);

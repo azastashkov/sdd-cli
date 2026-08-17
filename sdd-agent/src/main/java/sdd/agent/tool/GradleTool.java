@@ -1,6 +1,7 @@
 package sdd.agent.tool;
 
 import sdd.core.toolchain.EnvPolicy;
+import sdd.core.toolchain.GradleLauncher;
 import sdd.core.toolchain.Subprocess;
 
 import java.io.IOException;
@@ -32,6 +33,8 @@ public final class GradleTool implements BuildTool {
     private final Duration timeout;
     private final java.util.List<String> extraArgs;
     private final Semaphore permits;
+    /** Fallback Gradle when the repo has no wrapper; null means $SDD_GRADLE then PATH. */
+    private final Path gradleHome;
 
     public GradleTool(Path repoRoot, Path javaHome, Duration timeout) {
         this(repoRoot, javaHome, timeout, java.util.List.of(), null);
@@ -43,6 +46,12 @@ public final class GradleTool implements BuildTool {
 
     public GradleTool(Path repoRoot, Path javaHome, Duration timeout, java.util.List<String> extraArgs,
                       Semaphore permits) {
+        this(repoRoot, javaHome, timeout, extraArgs, permits, null);
+    }
+
+    public GradleTool(Path repoRoot, Path javaHome, Duration timeout, java.util.List<String> extraArgs,
+                      Semaphore permits, Path gradleHome) {
+        this.gradleHome = gradleHome;
         this.repoRoot = repoRoot;
         this.javaHome = javaHome;
         this.timeout = timeout;
@@ -86,9 +95,9 @@ public final class GradleTool implements BuildTool {
         if (!ALLOWED.contains(task)) {
             throw new ToolException("gradle task not allowed: " + task);
         }
-        Path gradlew = repoRoot.resolve("gradlew");
-        if (!Files.isExecutable(gradlew)) {
-            throw new ToolException("no gradle wrapper in " + repoRoot);
+        var launcher = GradleLauncher.resolve(repoRoot, gradleHome);
+        if (!launcher.found()) {
+            throw new ToolException(launcher.problem());
         }
         if (permits != null) {
             permits.acquireUninterruptibly();
@@ -96,7 +105,7 @@ public final class GradleTool implements BuildTool {
         try {
             try {
                 java.util.List<String> command = new java.util.ArrayList<>();
-                command.add("./gradlew");
+                command.add(launcher.executable());
                 command.add(task);
                 command.addAll(extraArgs);          // orchestrator-appended substitution flags (invisible to the model)
                 command.add("--no-configuration-cache");

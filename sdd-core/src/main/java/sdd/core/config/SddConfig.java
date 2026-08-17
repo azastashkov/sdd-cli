@@ -25,6 +25,13 @@ public record SddConfig(
          * knows about but a launcher's or a cron job's does not.
          */
         Path nodeHome,
+        /**
+         * Where a fallback Gradle installation lives ({@code <gradleHome>/bin/gradle}), or null to
+         * take it from {@code $SDD_GRADLE} then PATH. Only consulted for a repo that has no
+         * executable {@code gradlew}: a wrapper pins the Gradle version its repo was written for,
+         * and this estate spans several, so a wrapper always wins. See {@code GradleLauncher}.
+         */
+        Path gradleHome,
         List<String> excludes,
         Map<String, String> artifactOverrides,
         List<ManualEdge> manualEdges,
@@ -52,5 +59,14 @@ public record SddConfig(
             Map<String, List<String>> verificationExclusions) {
         this(workspace, models, jdkHomes, nodeHome, excludes, artifactOverrides, manualEdges,
                 runtimeEdges, run, verificationExclusions, null);
+    }
+
+    /** Pre-{@code gradle_home} shape, kept so existing construction sites compile untouched. */
+    public SddConfig(Path workspace, Map<String, ModelEndpoint> models, Map<Integer, Path> jdkHomes,
+            Path nodeHome, List<String> excludes, Map<String, String> artifactOverrides,
+            List<ManualEdge> manualEdges, List<RuntimeEdge> runtimeEdges, RunSettings run,
+            Map<String, List<String>> verificationExclusions, AtlassianConfig atlassian) {
+        this(workspace, models, jdkHomes, nodeHome, null, excludes, artifactOverrides, manualEdges,
+                runtimeEdges, run, verificationExclusions, atlassian);
     }
 }
