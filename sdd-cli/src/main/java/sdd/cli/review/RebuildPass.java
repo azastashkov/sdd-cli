@@ -88,104 +88,135 @@ public final class RebuildPass {
         Map<String, String> originalPositions = new LinkedHashMap<>();
         // One pack per provider, reused by every consumer of it in this pass.
         Map<String, List<PackedPackage>> packedProviders = new LinkedHashMap<>();
+        List<String> order = Scheduler.sequence(plan.order());
         try {
             // Topo order matters twice over: a provider is staged before the consumer that
             // composes its working tree, and rebuilt before it too.
-            for (String repo : Scheduler.sequence(plan.order())) {
-                // A repo with no checkpoint to stage is NOT a repo this pass may quietly skip.
-                // Propagation.includeBuildArgs composes every INCLUDE_BUILD provider's path
-                // unconditionally, whatever its run state, so its consumers are about to be
-                // verified against its PRE-RUN working tree — the identical finding a failed
-                // checkout produces below, and recorded the same way so unstagedRepos → voidedBy →
-                // the exit code pick it up. The "<repo>: " prefix is load-bearing: that is how
-                // ReviewReport and InteractiveReview.replaceForRepos parse these lines.
-                if (state.stateOf(repo) != RepoState.SUCCEEDED) {
-                    unstageable(repo, "not SUCCEEDED in this run, composed from its working tree",
-                            stagingFailures, err, safeProgress);
-                    continue;
-                }
-                Path root = paths.get(repo);
-                RepoRun run = byName.get(repo);
-                if (root == null || run == null || run.branch() == null) {
-                    unstageable(repo, root == null ? "no repo path on record" : "no run branch on record",
-                            stagingFailures, err, safeProgress);
-                    continue;
-                }
-                // A checkout can legitimately fail (uncommitted conflicting changes at review
-                // time). Record it and keep going — the report must still be produced
-                // (ratified (c)/(f)).
+            safeProgress.phase("rebuild", order.size());
+            for (String repo : order) {
+                // Every exit out of a repo's turn below — both unstageable() returns, a failed
+                // checkout, the not-in-subset skip, the not-locally-verified skip, and both the
+                // success and RuntimeException paths out of verify() — is either a `continue` or a
+                // fall-through to here, and a `continue` inside a `try` still runs its `finally`
+                // before the next iteration starts. Bracketing the WHOLE per-repo body in one
+                // try/finally, exactly like IndexService's own per-repo loop
+                // (IndexService.java:159-165), makes `finish` fire structurally, whatever path a
+                // repo took out — instead of depending on every branch below remembering to call it
+                // itself, which is the sprinkled-calls alternative this task's brief rejects by name.
+                safeProgress.start(repo);
                 try {
-                    String branch = RunGit.currentBranch(root);
-                    originalPositions.putIfAbsent(repo,
-                            branch.isEmpty() ? "detached:" + RunGit.head(root) : branch);
-                    RunGit.checkout(root, run.branch());
-                } catch (RuntimeException e) {
-                    // Recorded whether or not this repo was going to be verified: it is now sitting
-                    // on pre-run code that every downstream verdict composes, so the finding has to
-                    // reach the report and the exit code, not just this warn line. Inside the
-                    // subset it is ALSO its own failed verdict.
-                    stagingFailures.add(repo + ": " + e.getMessage());
-                    // Corrected ruling (P4 revised): this is a substantive review finding that
-                    // happens to be emitted mid-pass, NOT progress chrome — it must reach err
-                    // UNCONDITIONALLY, in every Progress mode including --quiet/SDD_PROGRESS=off,
-                    // exactly as it did before Progress existed. An earlier revision routed it
-                    // through Progress.note, which is silent once a renderer is no-op/stopped —
-                    // acceptable for this seam's OWN optional commentary, wrong for a caller's own
-                    // finding. Progress.suspend exists for exactly this: it runs the action
-                    // (println, straight to err, unconditionally — the default implementation used
-                    // by no-op and plain does nothing else) with the live line erased/repainted
-                    // around it under live, so the choreography problem (a painted frame colliding
-                    // with this print) is solved WITHOUT the text ever being at this seam's mercy.
-                    safeProgress.suspend(() -> err.println("warn: could not stage " + repo
-                            + " at its checkpoint: " + e.getMessage() + " — verdicts for its "
-                            + "consumers do not reflect this run's upstream code"));
-                    if (repos.contains(repo)) {
-                        rebuilds.put(repo, new EstateRebuild.Result(false,
-                                "checkout failed: " + e.getMessage()));
+                    // A repo with no checkpoint to stage is NOT a repo this pass may quietly skip.
+                    // Propagation.includeBuildArgs composes every INCLUDE_BUILD provider's path
+                    // unconditionally, whatever its run state, so its consumers are about to be
+                    // verified against its PRE-RUN working tree — the identical finding a failed
+                    // checkout produces below, and recorded the same way so unstagedRepos → voidedBy →
+                    // the exit code pick it up. The "<repo>: " prefix is load-bearing: that is how
+                    // ReviewReport and InteractiveReview.replaceForRepos parse these lines.
+                    if (state.stateOf(repo) != RepoState.SUCCEEDED) {
+                        unstageable(repo, "not SUCCEEDED in this run, composed from its working tree",
+                                stagingFailures, err, safeProgress);
+                        continue;
                     }
-                    continue;
-                }
-                if (!repos.contains(repo)) {
-                    continue;   // staged as an upstream tree only; not asked to be verified
-                }
-                Toolchain toolchain = Toolchain.detect(root);
-                List<String> tasks = tasksFor(plan, config, repo, root);
-                if (tasks.isEmpty()) {
-                    notLocallyVerified.add(repo);
-                    continue;
-                }
-                // Gradle substitution rides in as flags on the command; npm substitution is
-                // filesystem state that has to be put in place and taken away again. Without it a
-                // consumer is rebuilt against its provider's PUBLISHED version while the report
-                // says the estate was verified as a whole — which is the one thing this pass exists
-                // to be able to say.
-                List<NpmOverlay.Applied> overlays = toolchain == Toolchain.NPM
-                        ? stageNpmProviders(repo, plan, paths, config, runDir, packedProviders,
-                                stagingFailures)
-                        : List.of();
-                try {
-                    rebuilds.put(repo, rebuild.verify(root, toolchain,
-                            toolchain == Toolchain.NPM ? null : javaHomeFor(config, root),
-                            config.nodeHome(), tasks,
-                            toolchain == Toolchain.NPM ? List.of()
-                                    : extraArgsFor(plan, repo, paths, runDir)));
-                } catch (RuntimeException e) {
-                    // Same rule as a failed checkout: one repo's blow-up is a verdict, not the end
-                    // of the pass — the remaining repos still get verified and the report still
-                    // gets written.
-                    rebuilds.put(repo, new EstateRebuild.Result(false,
-                            "verification threw: " + e.getMessage()));
+                    Path root = paths.get(repo);
+                    RepoRun run = byName.get(repo);
+                    if (root == null || run == null || run.branch() == null) {
+                        unstageable(repo, root == null ? "no repo path on record" : "no run branch on record",
+                                stagingFailures, err, safeProgress);
+                        continue;
+                    }
+                    // A checkout can legitimately fail (uncommitted conflicting changes at review
+                    // time). Record it and keep going — the report must still be produced
+                    // (ratified (c)/(f)).
+                    try {
+                        String branch = RunGit.currentBranch(root);
+                        originalPositions.putIfAbsent(repo,
+                                branch.isEmpty() ? "detached:" + RunGit.head(root) : branch);
+                        safeProgress.detail("checkout");
+                        RunGit.checkout(root, run.branch());
+                    } catch (RuntimeException e) {
+                        // Recorded whether or not this repo was going to be verified: it is now sitting
+                        // on pre-run code that every downstream verdict composes, so the finding has to
+                        // reach the report and the exit code, not just this warn line. Inside the
+                        // subset it is ALSO its own failed verdict.
+                        stagingFailures.add(repo + ": " + e.getMessage());
+                        // Corrected ruling (P4 revised): this is a substantive review finding that
+                        // happens to be emitted mid-pass, NOT progress chrome — it must reach err
+                        // UNCONDITIONALLY, in every Progress mode including --quiet/SDD_PROGRESS=off,
+                        // exactly as it did before Progress existed. An earlier revision routed it
+                        // through Progress.note, which is silent once a renderer is no-op/stopped —
+                        // acceptable for this seam's OWN optional commentary, wrong for a caller's own
+                        // finding. Progress.suspend exists for exactly this: it runs the action
+                        // (println, straight to err, unconditionally — the default implementation used
+                        // by no-op and plain does nothing else) with the live line erased/repainted
+                        // around it under live, so the choreography problem (a painted frame colliding
+                        // with this print) is solved WITHOUT the text ever being at this seam's mercy.
+                        safeProgress.suspend(() -> err.println("warn: could not stage " + repo
+                                + " at its checkpoint: " + e.getMessage() + " — verdicts for its "
+                                + "consumers do not reflect this run's upstream code"));
+                        if (repos.contains(repo)) {
+                            rebuilds.put(repo, new EstateRebuild.Result(false,
+                                    "checkout failed: " + e.getMessage()));
+                        }
+                        continue;
+                    }
+                    if (!repos.contains(repo)) {
+                        continue;   // staged as an upstream tree only; not asked to be verified
+                    }
+                    Toolchain toolchain = Toolchain.detect(root);
+                    List<String> tasks = tasksFor(plan, config, repo, root);
+                    if (tasks.isEmpty()) {
+                        notLocallyVerified.add(repo);
+                        continue;
+                    }
+                    // Gradle substitution rides in as flags on the command; npm substitution is
+                    // filesystem state that has to be put in place and taken away again. Without it a
+                    // consumer is rebuilt against its provider's PUBLISHED version while the report
+                    // says the estate was verified as a whole — which is the one thing this pass exists
+                    // to be able to say.
+                    if (toolchain == Toolchain.NPM) {
+                        safeProgress.detail("npm overlay staging");
+                    }
+                    List<NpmOverlay.Applied> overlays = toolchain == Toolchain.NPM
+                            ? stageNpmProviders(repo, plan, paths, config, runDir, packedProviders,
+                                    stagingFailures)
+                            : List.of();
+                    try {
+                        // The long pole a repo can sit at for minutes: rebuild.verify shells out to
+                        // gradle/npm per task with a 15-minute-per-task timeout (EstateRebuild's own
+                        // default), which is where the wall clock actually goes for a repo that
+                        // reaches this point — everything above it is local git/filesystem work.
+                        safeProgress.detail("verify");
+                        rebuilds.put(repo, rebuild.verify(root, toolchain,
+                                toolchain == Toolchain.NPM ? null : javaHomeFor(config, root),
+                                config.nodeHome(), tasks,
+                                toolchain == Toolchain.NPM ? List.of()
+                                        : extraArgsFor(plan, repo, paths, runDir)));
+                    } catch (RuntimeException e) {
+                        // Same rule as a failed checkout: one repo's blow-up is a verdict, not the end
+                        // of the pass — the remaining repos still get verified and the report still
+                        // gets written.
+                        rebuilds.put(repo, new EstateRebuild.Result(false,
+                                "verification threw: " + e.getMessage()));
+                    } finally {
+                        restoreNpmProviders(overlays, config, restoreFailures);
+                    }
                 } finally {
-                    restoreNpmProviders(overlays, config, restoreFailures);
+                    safeProgress.finish(repo);
                 }
             }
             // Every SUCCEEDED repo in scope is now simultaneously sitting on its checkpoint
             // branch — the only point at which contract extraction reads the trees the run
             // actually produced, instead of whatever branch the human happened to be standing on.
+            // Reported as its own phase, not per-repo work: it runs once, after the loop, over the
+            // whole staged estate at once.
             if (recheckContracts) {
+                safeProgress.phase("contracts");
                 contracts.addAll(ContractRecheck.check(plan, state, paths, store, runDir, config.nodeHome()));
             }
         } finally {
+            // Estate-wide, like "contracts" above: every repo the loop checked out is walked once
+            // here, not folded into any one repo's own start/finish bracket.
+            safeProgress.phase("restore");
             // One failed restore must not strand the remaining repos on checkpoint branches.
             for (Map.Entry<String, String> entry : originalPositions.entrySet()) {
                 String target = entry.getValue().startsWith("detached:")
