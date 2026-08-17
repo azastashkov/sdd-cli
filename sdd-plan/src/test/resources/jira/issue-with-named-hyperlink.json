@@ -1,0 +1,25 @@
+{
+  "id": "10008",
+  "key": "PROJ-300",
+  "fields": {
+    "summary": "Checkout flow needs a spec",
+    "status": {"name": "Open"},
+    "updated": "2026-08-16T09:12:00.000+0000",
+    "subtasks": [],
+    "issuelinks": [],
+    "comment": {
+      "comments": [
+        {"id": "10020", "updated": "2026-08-16T10:00:00.000+0000"}
+      ]
+    }
+  },
+  "renderedFields": {
+    "description": "<p>Please see <a href=\"https://confluence.corp.local/pages/viewpage.action?pageId=65601\">the spec</a> before starting.</p>",
+    "comment": {
+      "comments": [
+        {"id": "10020", "updated": "2026-08-16T10:00:00.000+0000",
+         "body": "<p>Also check <a href=\"https://confluence.corp.local/x/AbCd\">this note</a> and <a href=\"mailto:someone@corp.local\">someone</a> and <a href=\"/relative/path\">relative</a>.</p>"}
+      ]
+    }
+  }
+}

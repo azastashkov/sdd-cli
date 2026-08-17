@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import sdd.core.config.ModelEndpoint;
 
+import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.Map;
 
@@ -56,5 +57,17 @@ class EndpointProbeTest {
         assertThat(r.detail())
                 .isEqualTo("models.flash.api_key: environment variable ROUTER_AI_API_KEY is not set");
         wm.verify(0, getRequestedFor(urlEqualTo("/v1/models")));   // failed before any call
+    }
+
+    // Task 2: EndpointProbe.probe(ModelEndpoint) inlined HttpClient.newHttpClient() and could not
+    // have TLS/proxy settings applied, or be pointed at a WireMock server that requires them. The
+    // injectable overload keeps the existing single-arg signature working (see the two tests
+    // above, both still calling it) while making the client swappable.
+    @Test
+    void injectedClientOverloadIsUsedInsteadOfANewDefaultClient() {
+        wm.stubFor(get("/v1/models").willReturn(okJson("{\"data\":[]}")));
+        EndpointProbe.ProbeResult r = EndpointProbe.probe(ep("sk-x"), HttpClient.newHttpClient());
+        assertThat(r.ok()).isTrue();
+        assertThat(r.detail()).isEqualTo("HTTP 200");
     }
 }

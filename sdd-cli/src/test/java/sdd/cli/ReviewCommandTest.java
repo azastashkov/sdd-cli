@@ -1,6 +1,8 @@
 package sdd.cli;
 
+import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
 import sdd.cli.implement.ContractActualizer;
@@ -23,9 +25,17 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import java.util.Map;
 
+import static com.github.tomakehurst.wiremock.client.WireMock.created;
+import static com.github.tomakehurst.wiremock.client.WireMock.post;
+import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
+import static com.github.tomakehurst.wiremock.client.WireMock.unauthorized;
+import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ReviewCommandTest {
+    @RegisterExtension
+    static WireMockExtension wm = WireMockExtension.newInstance().build();
+
     @TempDir Path ws;
 
     @Test
@@ -931,5 +941,159 @@ class ReviewCommandTest {
         assertThat(exit).isEqualTo(0);
         assertThat(Files.readString(ws.resolve(".sdd/runs/SPEC-9-v1/review/report.md")))
                 .doesNotContain("Compatibility gates that did not run");
+    }
+
+    // --- Task 4: Gate-2 Jira write-back -----------------------------------------------------
+
+    private static final String MODELS_YAML = """
+            models:
+              planner: { base_url: http://x/v1, model: p, api_key: k }
+              coder: { base_url: http://y/v1, model: qwen }
+            """;
+
+    /** Same one-repo estate {@link #fixture()} builds, except {@code spec.md} carries a "##
+     *  Sources" bullet naming a fetched Jira root issue — the write-back's only trigger for
+     *  touching config/network at all (see {@code JiraWriteBack.post}'s empty-{@code jiraKeys}
+     *  short-circuit and {@code ReviewCommand.commentOnJiraSources}'s own re-read of this file). */
+    private Fixture jiraSourceFixture() throws Exception {
+        FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n");
+        lib.commit("base");
+        String baseSha = lib.headSha();
+        String originalBranch = RunGit.currentBranch(lib.path());
+
+        String runBranch = "sdd/SPEC-9-v1/lib";
+        RunGit.startBranch(lib.path(), runBranch, baseSha);
+        lib.file("A.java", "class A { int x; }\n").commit("sdd: checkpoint");
+        String checkpointSha = lib.headSha();
+        RunGit.checkout(lib.path(), originalBranch);
+
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')",
+                    lib.path().toString()));
+        }
+        String specText = """
+                ---
+                id: SPEC-9
+                title: Tiers
+                owner: me
+                status: approved
+                ---
+
+                ## Goal
+                g
+
+                ## Requirements
+                - R1: Expose tierFor.
+
+                ## Acceptance Criteria
+                - A1: tierFor returns a tier.
+
+                ## Sources
+                - jira PROJ-9 updated 2026-08-16T09:12:00Z %s/browse/PROJ-9
+                """.formatted(wm.baseUrl());
+        String planJson = """
+                { "spec_id":"SPEC-9","plan_version":1,"spec_sha256":"z","plan_sha256":"z",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x to A."}] }
+                """.formatted(baseSha);
+        Path planPath = ws.resolve("s.plan.json");
+        Files.writeString(planPath, planJson);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", planJson, specText);
+        store.releaseLock(runDir);
+        store.writeState(runDir, new RunState("SPEC-9-v1",
+                List.of(new RepoRun("lib", RepoState.SUCCEEDED, runBranch, checkpointSha, "ok", null)), null, 5L));
+
+        return new Fixture(lib, runBranch, checkpointSha, originalBranch, planPath, runDir);
+    }
+
+    @Test
+    void reviewCommentsOnEachJiraSourceIssueWhenWriteBackIsConfigured() throws Exception {
+        wm.stubFor(post(urlEqualTo("/rest/api/2/issue/PROJ-9/comment")).willReturn(created()));
+        Fixture f = jiraSourceFixture();
+        Files.writeString(ws.resolve("sdd.yml"), MODELS_YAML + """
+                atlassian:
+                  jira:
+                    base_url: %s
+                    token: sk-jira
+                  write_back: comment
+                """.formatted(wm.baseUrl()));
+
+        StringWriter out = new StringWriter();
+        int exit = review(out, new StringWriter(), "--no-rebuild", f.planPath().toString());
+
+        assertThat(exit).isZero();
+        assertThat(out.toString()).contains("review written: ").contains("commented on PROJ-9");
+        List<com.github.tomakehurst.wiremock.stubbing.ServeEvent> requests =
+                wm.getServeEvents().getServeEvents();
+        String postedBody = requests.stream()
+                .filter(e -> e.getRequest().getUrl().equals("/rest/api/2/issue/PROJ-9/comment"))
+                .findFirst().orElseThrow().getRequest().getBodyAsString();
+        assertThat(postedBody).contains("SPEC-9")
+                .contains("Decisions: 0 approved, 0 rejected, 0 redo, 1 pending");
+    }
+
+    @Test
+    void reviewWithWriteBackNoneOrAbsentPostsNothingAndPrintsNothing() throws Exception {
+        Fixture f = jiraSourceFixture();
+        Files.writeString(ws.resolve("sdd.yml"), MODELS_YAML + """
+                atlassian:
+                  jira:
+                    base_url: %s
+                    token: sk-jira
+                """.formatted(wm.baseUrl()));   // write_back defaults to none
+
+        StringWriter out = new StringWriter();
+        int exit = review(out, new StringWriter(), "--no-rebuild", f.planPath().toString());
+
+        assertThat(exit).isZero();
+        assertThat(out.toString()).doesNotContain("commented on").doesNotContain("jira comment failed");
+        wm.verify(0, postRequestedFor(urlEqualTo("/rest/api/2/issue/PROJ-9/comment")));
+    }
+
+    @Test
+    void reviewNoCommentFlagSuppressesEvenWhenWriteBackIsConfigured() throws Exception {
+        Fixture f = jiraSourceFixture();
+        Files.writeString(ws.resolve("sdd.yml"), MODELS_YAML + """
+                atlassian:
+                  jira:
+                    base_url: %s
+                    token: sk-jira
+                  write_back: comment
+                """.formatted(wm.baseUrl()));
+
+        StringWriter out = new StringWriter();
+        int exit = review(out, new StringWriter(), "--no-rebuild", "--no-comment", f.planPath().toString());
+
+        assertThat(exit).isZero();
+        assertThat(out.toString()).doesNotContain("commented on");
+        wm.verify(0, postRequestedFor(urlEqualTo("/rest/api/2/issue/PROJ-9/comment")));
+    }
+
+    @Test
+    void reviewWithAFailingJiraCommentWarnsButExitCodeStaysZeroAndReportStillWritten() throws Exception {
+        wm.stubFor(post(urlEqualTo("/rest/api/2/issue/PROJ-9/comment")).willReturn(unauthorized()));
+        Fixture f = jiraSourceFixture();
+        Files.writeString(ws.resolve("sdd.yml"), MODELS_YAML + """
+                atlassian:
+                  jira:
+                    base_url: %s
+                    token: sk-jira
+                  write_back: comment
+                """.formatted(wm.baseUrl()));
+
+        StringWriter out = new StringWriter();
+        StringWriter err = new StringWriter();
+        int exit = review(out, err, "--no-rebuild", f.planPath().toString());
+
+        // The property most likely to regress (Task 4 brief): a failed post must never flip an
+        // otherwise-clean review's exit code.
+        assertThat(exit).isZero();
+        assertThat(err.toString()).contains("  warn: jira comment failed: ");
+        assertThat(f.runDir().resolve("review/report.md")).exists();
     }
 }

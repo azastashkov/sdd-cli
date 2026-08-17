@@ -47,13 +47,7 @@ public final class ReviewReport {
         String runbook = in.runbook();
         RebuildScope rebuild = in.rebuild();
 
-        Map<String, RepoRun> byName = new LinkedHashMap<>();
-        for (RepoRun run : state.repos()) {
-            byName.put(run.repo(), run);
-        }
         Set<String> unstaged = unstagedRepos(plan, stagingFailures);
-        // Every verdict below an unstaged repo was computed against that repo's pre-run tree.
-        Map<String, String> voidedBy = voidedBy(plan, unstaged);
 
         StringBuilder md = new StringBuilder();
         md.append("# Review report\n\n");
@@ -65,8 +59,7 @@ public final class ReviewReport {
         // meets "rebuild: OK" first has already formed a verdict by the time the caveat arrives.
         appendStagingFailures(md, stagingFailures);
         appendCheckpointDrift(md, checkpoints.drift());
-        appendRepos(md, plan, byName, diffStats, rebuilds, notLocallyVerified, decisions, unstaged,
-                voidedBy, checkpoints.branchGone());
+        appendRepos(md, plan, in);
         appendRebuildFailures(md, rebuilds);
         appendContracts(md, contracts, unstaged);
         appendSkippedGates(md, in.skippedGates());
@@ -225,62 +218,85 @@ public final class ReviewReport {
                 + " pending";
     }
 
-    private static void appendRepos(StringBuilder md, PlanModel plan, Map<String, RepoRun> byName,
-                                    Map<String, RunGit.DiffStat> diffStats,
-                                    Map<String, EstateRebuild.Result> rebuilds,
-                                    List<String> notLocallyVerified,
-                                    Map<String, DecisionRecord> decisions, Set<String> unstaged,
-                                    Map<String, String> voidedBy, Set<String> branchGone) {
+    private static void appendRepos(StringBuilder md, PlanModel plan, ReportInputs in) {
         md.append("## Repos\n\n");
         for (String repo : Scheduler.sequence(plan.order())) {
-            RepoRun run = byName.get(repo);
-            RepoState repoState = run == null ? null : run.state();
-            md.append("- **").append(repo).append("**: ").append(repoState == null ? "UNKNOWN" : repoState);
-            md.append(", decision: ").append(decisionOf(decisions, repo));
-            String reason = decisions.containsKey(repo) ? decisions.get(repo).reason() : "";
-            if (reason != null && !reason.isBlank()) {
-                md.append(" (").append(reason).append(')');
-            }
-            if (run != null && run.checkpointSha() != null) {
-                md.append(", checkpoint ").append(run.checkpointSha());
-            }
-            if (branchGone.contains(repo)) {
-                // The runbook below still names this branch. Say it is gone here rather than let a
-                // human discover it at merge time.
-                md.append(", run branch ").append(run == null ? "?" : run.branch())
-                        .append(" no longer exists");
-            }
-            RunGit.DiffStat stat = diffStats.get(repo);
-            if (stat != null) {
-                md.append(", ").append(stat.filesChanged()).append(" files changed (+")
-                        .append(stat.insertions()).append("/-").append(stat.deletions()).append(')');
-            }
-            if (unstaged.contains(repo)) {
-                md.append(", not staged at its checkpoint — see Staging failures");
-            }
-            if (notLocallyVerified.contains(repo)) {
-                md.append(", not locally verified (all verification tasks excluded)");
-            } else if (rebuilds.containsKey(repo)) {
-                EstateRebuild.Result result = rebuilds.get(repo);
-                md.append(", rebuild: ").append(result.ok() ? "OK" : "FAILED");
-                // The caveat travels WITH the verdict: a reader scanning per-repo lines must not be
-                // able to take an OK at face value and never reach the staging section.
-                if (voidedBy.containsKey(repo)) {
-                    md.append(" (UNRELIABLE — upstream ").append(voidedBy.get(repo))
-                            .append(" was not staged at its checkpoint)");
-                }
-            }
-            // Machine-readable reason before the free-text prose — a human (or a script) that stops
-            // reading after the first token still learns why, rather than needing the whole paragraph.
-            if (run != null && run.failureCode() != null && repoState != RepoState.SUCCEEDED) {
-                md.append(" [").append(run.failureCode()).append(']');
-            }
-            if (run != null && run.detail() != null && !run.detail().isBlank()) {
-                md.append(" — ").append(run.detail());
-            }
-            md.append('\n');
+            md.append(renderRepo(repo, in)).append('\n');
         }
         md.append('\n');
+    }
+
+    /**
+     * One repo's status line — {@code "- **repo**: STATE, decision: ..."} — rendered identically
+     * for {@code report.md}'s Repos section and Task 5's Bitbucket pull-request description, so the
+     * two artifacts can never disagree about what a repo's run produced. Precedent:
+     * {@link #decisionsSummaryLine}, extracted for exactly this reason so {@code sdd status} could
+     * print it identically.
+     *
+     * <p>Recomputes {@code unstaged}/{@code voidedBy} per call rather than accepting them as
+     * precomputed arguments (the way {@code appendRepos} used to derive them once for the whole
+     * loop): this method is now the single public entry point a caller outside this class reaches
+     * for ONE repo at a time, and estate sizes here are small enough that recomputing a couple of
+     * plan-wide sets per repo is not worth a second, precomputed-arguments overload.
+     */
+    public static String renderRepo(String repo, ReportInputs in) {
+        Map<String, RepoRun> byName = new LinkedHashMap<>();
+        for (RepoRun run : in.state().repos()) {
+            byName.put(run.repo(), run);
+        }
+        Set<String> unstaged = unstagedRepos(in.plan(), in.stagingFailures());
+        Map<String, String> voidedBy = voidedBy(in.plan(), unstaged);
+        Set<String> branchGone = in.checkpoints().branchGone();
+        Map<String, DecisionRecord> decisions = in.decisions();
+        Map<String, EstateRebuild.Result> rebuilds = in.rebuilds();
+
+        RepoRun run = byName.get(repo);
+        RepoState repoState = run == null ? null : run.state();
+        StringBuilder md = new StringBuilder();
+        md.append("- **").append(repo).append("**: ").append(repoState == null ? "UNKNOWN" : repoState);
+        md.append(", decision: ").append(decisionOf(decisions, repo));
+        String reason = decisions.containsKey(repo) ? decisions.get(repo).reason() : "";
+        if (reason != null && !reason.isBlank()) {
+            md.append(" (").append(reason).append(')');
+        }
+        if (run != null && run.checkpointSha() != null) {
+            md.append(", checkpoint ").append(run.checkpointSha());
+        }
+        if (branchGone.contains(repo)) {
+            // The runbook below still names this branch. Say it is gone here rather than let a
+            // human discover it at merge time.
+            md.append(", run branch ").append(run == null ? "?" : run.branch())
+                    .append(" no longer exists");
+        }
+        RunGit.DiffStat stat = in.diffStats().get(repo);
+        if (stat != null) {
+            md.append(", ").append(stat.filesChanged()).append(" files changed (+")
+                    .append(stat.insertions()).append("/-").append(stat.deletions()).append(')');
+        }
+        if (unstaged.contains(repo)) {
+            md.append(", not staged at its checkpoint — see Staging failures");
+        }
+        if (in.notLocallyVerified().contains(repo)) {
+            md.append(", not locally verified (all verification tasks excluded)");
+        } else if (rebuilds.containsKey(repo)) {
+            EstateRebuild.Result result = rebuilds.get(repo);
+            md.append(", rebuild: ").append(result.ok() ? "OK" : "FAILED");
+            // The caveat travels WITH the verdict: a reader scanning per-repo lines must not be
+            // able to take an OK at face value and never reach the staging section.
+            if (voidedBy.containsKey(repo)) {
+                md.append(" (UNRELIABLE — upstream ").append(voidedBy.get(repo))
+                        .append(" was not staged at its checkpoint)");
+            }
+        }
+        // Machine-readable reason before the free-text prose — a human (or a script) that stops
+        // reading after the first token still learns why, rather than needing the whole paragraph.
+        if (run != null && run.failureCode() != null && repoState != RepoState.SUCCEEDED) {
+            md.append(" [").append(run.failureCode()).append(']');
+        }
+        if (run != null && run.detail() != null && !run.detail().isBlank()) {
+            md.append(" — ").append(run.detail());
+        }
+        return md.toString();
     }
 
     private static void appendRebuildFailures(StringBuilder md, Map<String, EstateRebuild.Result> rebuilds) {

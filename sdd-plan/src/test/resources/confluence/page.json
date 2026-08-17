@@ -1,0 +1,13 @@
+{
+  "id": "65601",
+  "type": "page",
+  "title": "Order API spec",
+  "space": {"key": "ENG"},
+  "version": {"number": 7},
+  "body": {
+    "storage": {
+      "value": "<h1>Order API</h1><p>Pagination uses opaque cursors.</p>",
+      "representation": "storage"
+    }
+  }
+}

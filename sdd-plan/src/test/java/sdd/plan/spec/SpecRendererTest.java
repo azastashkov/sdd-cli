@@ -36,6 +36,24 @@ class SpecRendererTest {
     }
 
     @Test
+    void parseOfRenderIsIdentityWithSources() {
+        // the 14-argument shape — round trip must hold with a populated Sources section too,
+        // not just via the delegating 13-argument overload the other tests exercise
+        NormalizedSpec spec = new NormalizedSpec("S-4", "T", "o", "draft", "G.", "",
+                List.of(new SpecItem("R1", "req")), List.of(new SpecItem("A1", "acc")),
+                List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of("jira PROJ-123 updated 2026-08-16T09:12:00Z https://jira.corp.local/browse/PROJ-123",
+                        "confluence 65601 v7 \"Order API spec\" "
+                                + "https://confluence.corp.local/pages/viewpage.action?pageId=65601"));
+        String rendered = SpecRenderer.render(spec);
+        assertThat(rendered).contains("## Sources\n"
+                + "- jira PROJ-123 updated 2026-08-16T09:12:00Z https://jira.corp.local/browse/PROJ-123\n"
+                + "- confluence 65601 v7 \"Order API spec\" "
+                + "https://confluence.corp.local/pages/viewpage.action?pageId=65601\n");
+        assertThat(SpecParser.parse(rendered)).isEqualTo(spec);
+    }
+
+    @Test
     void yamlTrapScalarsAreQuotedAndRoundTrip() {
         // bare 'no'/'123'/'2026-08-11' would be resolved by SnakeYAML to Boolean/Integer/Date —
         // the renderer must quote anything that does not read back as the identical string

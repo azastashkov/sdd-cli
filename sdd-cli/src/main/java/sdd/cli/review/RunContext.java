@@ -12,11 +12,14 @@ import sdd.cli.implement.Scheduler;
 import sdd.core.config.ConfigLoader;
 import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
+import sdd.core.diagnostics.Diagnostics;
+import sdd.core.diagnostics.DiagnosticWriter;
 
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -34,7 +37,17 @@ import java.util.Set;
  * humans looking at the same run through different eyes.
  */
 public record RunContext(String runId, Path runDir, RunStore store, PlanModel plan, RunState state,
-                         SddConfig config, Map<String, Path> paths) {
+                         SddConfig config, Map<String, Path> paths, DiagnosticWriter diagnostics) {
+
+    /** Task 8: every pre-Task-8 caller (every existing test that builds a {@code RunContext}
+     *  directly rather than through {@link #load}) keeps compiling unchanged, with diagnostics
+     *  simply off — see {@link DiagnosticWriter}'s own "a null writer is a no-op" contract, which
+     *  every {@code Bitbucket*}/{@code DecisionCommand} call site handling {@link #diagnostics}
+     *  relies on. */
+    public RunContext(String runId, Path runDir, RunStore store, PlanModel plan, RunState state,
+                      SddConfig config, Map<String, Path> paths) {
+        this(runId, runDir, store, plan, state, config, paths, null);
+    }
 
     /** Per-repo diffs written to the review dir, plus the repos whose diff could not be produced. */
     public record Diffs(Map<String, RunGit.DiffStat> stats, List<String> failures) {
@@ -78,7 +91,13 @@ public record RunContext(String runId, Path runDir, RunStore store, PlanModel pl
                     .forEach(row -> paths.put(String.valueOf(row.get("name")),
                             Path.of(String.valueOf(row.get("path"))))));
         }
-        return new RunContext(runId, runDir, store, plan, state, config, paths);
+        // Task 8: one diagnostics file for the whole invocation — "review", covering the plain
+        // review AND its approve/reject/redo decision subcommands alike, since all four load a run
+        // through this same method and B2 asks for one file per COMMAND invocation, not a finer
+        // split by which of the four this particular process happens to be.
+        DiagnosticWriter diagnostics = Diagnostics.open(workspace, "review", List.of("review"),
+                config.atlassian(), InstantSource.system(), err);
+        return new RunContext(runId, runDir, store, plan, state, config, paths, diagnostics);
     }
 
     /** Writes {@code <repo>.diff} for every SUCCEEDED repo with a resolvable checkpoint. */
@@ -121,13 +140,35 @@ public record RunContext(String runId, Path runDir, RunStore store, PlanModel pl
                             List<String> notLocallyVerified, List<String> stagingFailures,
                             List<String> restoreFailures, List<ContractRecheck.Finding> contracts,
                             RebuildScope rebuild) {
-        Map<String, DecisionRecord> decisions = store.readDecisions(runDir);
-        String runbook = ReleaseRunbook.render(plan, state);
-        String report = ReviewReport.render(new ReportInputs(runId, plan, state, diffs.stats(),
-                rebuilds, notLocallyVerified, stagingFailures, restoreFailures, diffs.failures(),
-                contracts, skippedGates(), decisions, checkpoints(decisions), runbook, rebuild));
+        return writeReport(reportInputs(diffs, rebuilds, notLocallyVerified, stagingFailures,
+                restoreFailures, contracts, rebuild));
+    }
+
+    /** Like {@link #writeReport(Diffs, Map, List, List, List, List, RebuildScope)}, but for a
+     *  caller that already built the {@link ReportInputs} via {@link #reportInputs} and needs to
+     *  reuse the SAME object for something else — Task 5's Bitbucket pull-request description, via
+     *  {@link ReviewReport#renderRepo}, which must render off the identical inputs {@code report.md}
+     *  used or the two artifacts could disagree about what a repo's run produced. */
+    public Path writeReport(ReportInputs in) {
+        String report = ReviewReport.render(in);
         store.writeReview(runDir, "report.md", report);
         return store.reviewDir(runDir).resolve("report.md");
+    }
+
+    /** Builds the {@link ReportInputs} {@link #writeReport} renders — split out so a caller (Task
+     *  5's Bitbucket integration) can build it once, hand it to {@link #writeReport(ReportInputs)}
+     *  to produce {@code report.md}, and reuse the exact same object for the pull-request
+     *  description afterward, rather than each independently re-deriving decisions/runbook/
+     *  checkpoints and risking the two drifting apart. */
+    public ReportInputs reportInputs(Diffs diffs, Map<String, EstateRebuild.Result> rebuilds,
+                                     List<String> notLocallyVerified, List<String> stagingFailures,
+                                     List<String> restoreFailures, List<ContractRecheck.Finding> contracts,
+                                     RebuildScope rebuild) {
+        Map<String, DecisionRecord> decisions = store.readDecisions(runDir);
+        String runbook = ReleaseRunbook.render(plan, state);
+        return new ReportInputs(runId, plan, state, diffs.stats(), rebuilds, notLocallyVerified,
+                stagingFailures, restoreFailures, diffs.failures(), contracts, skippedGates(),
+                decisions, checkpoints(decisions), runbook, rebuild);
     }
 
     /** Declared compatibility guarantees whose gate reached no verdict. Read here rather than

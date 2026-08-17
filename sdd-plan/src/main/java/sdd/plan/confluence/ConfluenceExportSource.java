@@ -1,6 +1,8 @@
 package sdd.plan.confluence;
 
 import sdd.core.llm.ChatModel;
+import sdd.plan.source.SourceBundle;
+import sdd.plan.source.SourceDoc;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecSource;
 
@@ -8,6 +10,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Locale;
 
 /** v1 Confluence adapter: exported page file -> deterministic extract -> model normalization. */
@@ -24,6 +27,17 @@ public final class ConfluenceExportSource implements SpecSource {
 
     @Override
     public NormalizedSpec load(String ref) {
+        SourceDoc doc = loadDoc(ref);
+        SourceBundle bundle = new SourceBundle(List.of(doc), List.of());
+        return ConfluenceNormalizer.normalize(bundle, planner, modelName, maxTokens, doc.id());
+    }
+
+    /** Read -> deterministic extract -> {@link SourceDoc}, with no model involvement. Public so
+     *  {@code sdd.cli.PlanCommand}'s multi-ref/{@code --text} path can build one {@link SourceDoc}
+     *  per Confluence-export ref without re-implementing this file-read-and-extract step; {@code
+     *  PlanCommand} already reaches into this package for {@link #load}, so this adds no new
+     *  package boundary. */
+    public static SourceDoc loadDoc(String ref) {
         Path file = Path.of(ref);
         String html;
         try {
@@ -32,7 +46,8 @@ public final class ConfluenceExportSource implements SpecSource {
             throw new UncheckedIOException(e);
         }
         ConfluenceExtract.Extracted extracted = ConfluenceExtract.extract(html);
-        return ConfluenceNormalizer.normalize(extracted, planner, modelName, maxTokens, specId(file));
+        return new SourceDoc(SourceDoc.Kind.CONFLUENCE_PAGE, specId(file), null, null, null,
+                extracted.text(), extracted.attachments());
     }
 
     static String specId(Path file) {

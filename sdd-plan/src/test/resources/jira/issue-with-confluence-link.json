@@ -1,0 +1,16 @@
+{
+  "id": "10001",
+  "key": "PROJ-123",
+  "fields": {
+    "summary": "Order API needs pagination",
+    "status": {"name": "In Progress"},
+    "updated": "2026-08-16T09:12:00.000+0000",
+    "subtasks": [],
+    "issuelinks": [],
+    "comment": {"comments": []}
+  },
+  "renderedFields": {
+    "description": "<p>See https://confluence.corp.local/pages/viewpage.action?pageId=65601 for full details.</p>",
+    "comment": {"comments": []}
+  }
+}

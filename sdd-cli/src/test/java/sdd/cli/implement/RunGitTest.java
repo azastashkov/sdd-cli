@@ -165,4 +165,38 @@ class RunGitTest {
                 .isInstanceOf(IllegalStateException.class);
         assertThat(RunGit.branchHead(repo.path(), "sdd/run/lib")).isNotEmpty();   // untouched
     }
+
+    // --- isAncestor (Task 5: the review's base-ancestry check) --------------------------------
+
+    @Test
+    void isAncestorIsTrueWhenTheFirstShaIsAnAncestorOfTheSecond() throws Exception {
+        FixtureRepo repo = FixtureRepo.in(tmp, "lib").file("A.java", "class A {}\n").commit("base");
+        String base = repo.headSha();
+        repo.file("A.java", "class A { int x; }\n").commit("second");
+        String tip = repo.headSha();
+
+        assertThat(RunGit.isAncestor(repo.path(), base, tip)).isTrue();
+    }
+
+    @Test
+    void isAncestorIsTrueForAShaComparedToItself() throws Exception {
+        FixtureRepo repo = FixtureRepo.in(tmp, "lib").file("A.java", "class A {}\n").commit("base");
+        String base = repo.headSha();
+
+        assertThat(RunGit.isAncestor(repo.path(), base, base)).isTrue();
+    }
+
+    @Test
+    void isAncestorIsFalseWhenTheHistoriesHaveDiverged() throws Exception {
+        FixtureRepo repo = FixtureRepo.in(tmp, "lib").file("A.java", "class A {}\n").commit("base");
+        String base = repo.headSha();
+        RunGit.startBranch(repo.path(), "branch-a", base);
+        repo.file("A.java", "class A { int a; }\n").commit("on branch-a");
+        String tipA = repo.headSha();
+        RunGit.startBranch(repo.path(), "branch-b", base);
+        repo.file("A.java", "class A { int b; }\n").commit("on branch-b");
+        String tipB = repo.headSha();
+
+        assertThat(RunGit.isAncestor(repo.path(), tipA, tipB)).isFalse();
+    }
 }

@@ -21,6 +21,10 @@ public final class ConfigLoader {
     private static final int DEFAULT_MAX_TOKENS = 4096;
     private static final double DEFAULT_TEMPERATURE = 0.15;
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(600);
+    private static final Duration DEFAULT_ATLASSIAN_TIMEOUT = Duration.ofSeconds(30);
+    private static final int DEFAULT_FOLLOW_DEPTH = 1;
+    private static final int DEFAULT_MAX_PAGES = 20;
+    private static final int DEFAULT_MAX_LINKED_ISSUES = 10;
 
     private ConfigLoader() {}
 
@@ -193,9 +197,164 @@ public final class ConfigLoader {
             throw new ConfigException("verification_exclusions must be a mapping, got: " + exclusionsNode);
         }
 
+        Object atlassianNode = root.get("atlassian");
+        AtlassianConfig atlassian = atlassianNode == null ? null : parseAtlassian(atlassianNode, env);
+
         return new SddConfig(workspace, Map.copyOf(models), Map.copyOf(jdkHomes), nodeHome,
                 excludes, Map.copyOf(artifactOverrides), List.copyOf(manualEdges),
-                List.copyOf(runtimeEdges), run, Map.copyOf(verificationExclusions));
+                List.copyOf(runtimeEdges), run, Map.copyOf(verificationExclusions), atlassian);
+    }
+
+    // --- atlassian: block ------------------------------------------------------------------
+
+    private static AtlassianConfig parseAtlassian(Object node, Function<String, String> env) {
+        if (!(node instanceof Map<?, ?> m)) {
+            // Gate review I4: unlike every other "must be a mapping" message in this file, the
+            // atlassian.* messages used to echo the raw node — and sdd.yml permits a LITERAL token
+            // (AtlassianSite.tokenVar() is then null), so a malformed block echoed the secret
+            // straight to stdout. Matches the pre-existing models."X" must be a mapping" convention
+            // (no node echoed) across every atlassian.* message below.
+            throw new ConfigException("atlassian must be a mapping");
+        }
+        AtlassianTls tls = m.get("tls") == null ? null : parseAtlassianTls(m.get("tls"), env);
+        AtlassianProxy proxy = m.get("proxy") == null ? null : parseAtlassianProxy(m.get("proxy"), env);
+        AtlassianSite jira = m.get("jira") == null ? null : parseAtlassianSite("atlassian.jira", m.get("jira"), env);
+        AtlassianSite confluence = m.get("confluence") == null
+                ? null : parseAtlassianSite("atlassian.confluence", m.get("confluence"), env);
+        BitbucketSite bitbucket = m.get("bitbucket") == null ? null : parseBitbucketSite(m.get("bitbucket"), env);
+
+        int followDepth = m.get("follow_depth") == null
+                ? DEFAULT_FOLLOW_DEPTH : parseInt("atlassian.follow_depth", String.valueOf(m.get("follow_depth")));
+        int maxPages = m.get("max_pages") == null
+                ? DEFAULT_MAX_PAGES : parseInt("atlassian.max_pages", String.valueOf(m.get("max_pages")));
+        int maxLinkedIssues = m.get("max_linked_issues") == null
+                ? DEFAULT_MAX_LINKED_ISSUES
+                : parseInt("atlassian.max_linked_issues", String.valueOf(m.get("max_linked_issues")));
+        WriteBack writeBack = parseWriteBack(m.get("write_back"));
+        boolean pullRequests = m.get("pull_requests") != null
+                && parseBool("atlassian.pull_requests", String.valueOf(m.get("pull_requests")));
+
+        return new AtlassianConfig(tls, proxy, jira, confluence, bitbucket, followDepth, maxPages,
+                maxLinkedIssues, writeBack, pullRequests);
+    }
+
+    private static AtlassianTls parseAtlassianTls(Object node, Function<String, String> env) {
+        if (!(node instanceof Map<?, ?> m)) {
+            throw new ConfigException("atlassian.tls must be a mapping");
+        }
+        String truststore = requiredAt(m, "truststore", "atlassian.tls", env);
+        Object rawPassword = m.get("truststore_password");
+        String password = null;
+        String passwordError = null;
+        // Deferred-credential idiom, same as a site's token below: an unset ${VAR} must not fail
+        // config loading for every command — sdd index/status/clean never open an Atlassian
+        // connection and must not be blocked by a truststore password they will never use. See
+        // AtlassianTls's javadoc for why an earlier draft got this wrong by resolving eagerly.
+        if (rawPassword != null) {
+            try {
+                password = str(rawPassword, env, "atlassian.tls.truststore_password");
+            } catch (ConfigException e) {
+                passwordError = e.getMessage();
+            }
+        }
+        return new AtlassianTls(Path.of(truststore), password, passwordError);
+    }
+
+    private static AtlassianProxy parseAtlassianProxy(Object node, Function<String, String> env) {
+        if (!(node instanceof Map<?, ?> m)) {
+            throw new ConfigException("atlassian.proxy must be a mapping");
+        }
+        String host = requiredAt(m, "host", "atlassian.proxy", env);
+        Object rawPort = m.get("port");
+        if (rawPort == null) {
+            throw new ConfigException("atlassian.proxy.port is required");
+        }
+        // Gate re-review Fix 2: this used to run rawPort through str(rawPort, env, ...) — which
+        // expands a ${VAR} reference — BEFORE parseInt ever saw it, matching no other numeric key
+        // in this file (follow_depth/max_pages/max_linked_issues all parseInt the RAW node). A
+        // misconfigured `port: ${JIRA_API_KEY}` therefore threw "... must be an integer, got
+        // '<the real resolved token>'" straight to the terminal — worse than the literal-node echo
+        // I4 fixed, since this one actually resolves an environment variable. A port number has no
+        // legitimate reason to come from a secret-shaped ${VAR} anyway, so this now matches its
+        // numeric siblings: parse the raw node, never resolve it as an env reference.
+        int port = parseInt("atlassian.proxy.port", String.valueOf(rawPort));
+        List<String> noProxy = stringList(m.get("no_proxy"), "atlassian.proxy.no_proxy");
+        return new AtlassianProxy(host, port, noProxy);
+    }
+
+    // Shared by jira/confluence directly and by bitbucket via its embedded AtlassianSite — path is
+    // the dotted prefix ("atlassian.jira", "atlassian.bitbucket", ...) every error message under
+    // this site is reported at.
+    private static AtlassianSite parseAtlassianSite(String path, Object node, Function<String, String> env) {
+        if (!(node instanceof Map<?, ?> m)) {
+            // Gate review I4: this is the one path a LITERAL token can reach (a human pasting a raw
+            // PAT instead of a mapping) — echoing `node` here is precisely the secret-leak case.
+            throw new ConfigException(path + " must be a mapping");
+        }
+        String baseUrl = requiredAt(m, "base_url", path, env);
+        Object rawToken = m.get("token");
+        String token = null;
+        String tokenVar = null;
+        String tokenError = null;
+        // Deferred-credential idiom, copied from ConfigLoader.endpoint's api_key handling
+        // (models.<name>.api_key): a token is only ever consumed by something about to make a
+        // network call (RestClient), so an unset ${VAR} must not fail config loading and block a
+        // read-only command that never touches this site.
+        if (rawToken != null) {
+            Matcher wholeValueVarRef = ENV_REF.matcher(String.valueOf(rawToken));
+            if (wholeValueVarRef.matches()) {
+                tokenVar = wholeValueVarRef.group(1);
+            }
+            try {
+                token = str(rawToken, env, path + ".token");
+            } catch (ConfigException e) {
+                tokenError = e.getMessage();
+            }
+        }
+        Duration timeout = m.get("timeout_seconds") == null
+                ? DEFAULT_ATLASSIAN_TIMEOUT
+                : Duration.ofSeconds(parseLong(path + ".timeout_seconds", String.valueOf(m.get("timeout_seconds"))));
+        return new AtlassianSite(baseUrl, token, tokenVar, timeout, tokenError);
+    }
+
+    private static BitbucketSite parseBitbucketSite(Object node, Function<String, String> env) {
+        if (!(node instanceof Map<?, ?> m)) {
+            throw new ConfigException("atlassian.bitbucket must be a mapping");
+        }
+        AtlassianSite site = parseAtlassianSite("atlassian.bitbucket", node, env);
+        String project = requiredAt(m, "project", "atlassian.bitbucket", env);
+        List<String> defaultReviewers = stringList(m.get("default_reviewers"), "atlassian.bitbucket.default_reviewers");
+        return new BitbucketSite(site, project, defaultReviewers);
+    }
+
+    private static WriteBack parseWriteBack(Object node) {
+        if (node == null) {
+            return WriteBack.NONE;
+        }
+        String v = String.valueOf(node);
+        return switch (v) {
+            case "none" -> WriteBack.NONE;
+            case "comment" -> WriteBack.COMMENT;
+            default -> throw new ConfigException("atlassian.write_back must be 'none' or 'comment', got '" + v + "'");
+        };
+    }
+
+    private static List<String> stringList(Object node, String path) {
+        if (node == null) {
+            return List.of();
+        }
+        if (!(node instanceof List<?> l)) {
+            throw new ConfigException(path + " must be a list, got: " + node);
+        }
+        return l.stream().map(String::valueOf).toList();
+    }
+
+    private static String requiredAt(Map<?, ?> m, String key, String path, Function<String, String> env) {
+        Object v = m.get(key);
+        if (v == null) {
+            throw new ConfigException(path + "." + key + " is required");
+        }
+        return str(v, env, path + "." + key);
     }
 
     // No EmbeddingsRetriever exists and every command retrieves with SQLite FTS5 regardless of this
@@ -354,6 +513,16 @@ public final class ConfigLoader {
         } catch (NumberFormatException e) {
             throw new ConfigException(where + " must be an integer, got '" + value + "'");
         }
+    }
+
+    private static boolean parseBool(String where, String value) {
+        if (value.equalsIgnoreCase("true")) {
+            return true;
+        }
+        if (value.equalsIgnoreCase("false")) {
+            return false;
+        }
+        throw new ConfigException(where + " must be true or false, got '" + value + "'");
     }
 
     private static double parseDouble(String where, String value) {

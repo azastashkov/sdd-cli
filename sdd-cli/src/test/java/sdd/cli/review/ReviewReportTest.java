@@ -511,4 +511,41 @@ class ReviewReportTest {
         assertThat(render(planNoContracts(), threeSucceeded()))
                 .doesNotContain("Compatibility gates that did not run");
     }
+
+    // --- renderRepo (Task 5: the same line a Bitbucket pull-request description reuses) --------
+
+    @Test
+    void renderRepoProducesExactlyTheLineTheReposSectionRendersForThatRepo() {
+        RunState state = new RunState("SPEC-1-v1", List.of(
+                new RepoRun("lib", RepoState.FAILED, "sdd/SPEC-1-v1/lib", null, "boom", "VERIFY_FAILED"),
+                new RepoRun("svc", RepoState.SUCCEEDED, "sdd/SPEC-1-v1/svc", "sha", "ok", null)), null, 0L);
+        ReportInputs in = new ReportInputs("SPEC-1-v1", planWithEdge(), state, Map.of(), Map.of(),
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), Map.of(),
+                RunContext.Checkpoints.none(), "runbook", RebuildScope.estate());
+
+        String report = ReviewReport.render(in);
+
+        String libLine = report.lines().filter(l -> l.contains("**lib**")).findFirst().orElseThrow();
+        String svcLine = report.lines().filter(l -> l.contains("**svc**")).findFirst().orElseThrow();
+        assertThat(ReviewReport.renderRepo("lib", in)).isEqualTo(libLine);
+        assertThat(ReviewReport.renderRepo("svc", in)).isEqualTo(svcLine);
+    }
+
+    @Test
+    void renderRepoCarriesTheRebuildVerdictAndTheVoidedByCaveat() {
+        RunState state = new RunState("SPEC-1-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-1-v1/lib", "sha", "ok", null),
+                new RepoRun("svc", RepoState.SUCCEEDED, "sdd/SPEC-1-v1/svc", "sha", "ok", null)), null, 0L);
+        Map<String, EstateRebuild.Result> rebuilds = Map.of(
+                "svc", new EstateRebuild.Result(true, "log"));
+        ReportInputs in = new ReportInputs("SPEC-1-v1", planWithEdge(), state, Map.of(), rebuilds,
+                List.of(), List.of("lib: could not stage"), List.of(), List.of(), List.of(), List.of(),
+                Map.of(), RunContext.Checkpoints.none(), "runbook", RebuildScope.estate());
+
+        String report = ReviewReport.render(in);
+        String svcLine = report.lines().filter(l -> l.contains("**svc**")).findFirst().orElseThrow();
+
+        assertThat(svcLine).contains("UNRELIABLE — upstream lib was not staged at its checkpoint");
+        assertThat(ReviewReport.renderRepo("svc", in)).isEqualTo(svcLine);
+    }
 }

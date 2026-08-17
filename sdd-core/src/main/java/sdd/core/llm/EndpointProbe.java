@@ -17,6 +17,17 @@ public final class EndpointProbe {
     private EndpointProbe() {}
 
     public static ProbeResult probe(ModelEndpoint ep) {
+        return probe(ep, HttpClient.newHttpClient());
+    }
+
+    /**
+     * Task 2: the single-arg {@link #probe(ModelEndpoint)} used to inline
+     * {@code HttpClient.newHttpClient()} and could not be pointed at a client carrying
+     * {@code atlassian.tls}/{@code atlassian.proxy} settings, or a WireMock server that requires
+     * them. This overload takes the client instead — {@link #probe(ModelEndpoint)} is now a thin
+     * wrapper over it, so every existing caller keeps compiling and behaving identically.
+     */
+    public static ProbeResult probe(ModelEndpoint ep, HttpClient client) {
         try {
             // Deferred from ConfigLoader (Fix 1): raise it here, as early as this class can — the
             // generic catch below turns it into a failed ProbeResult carrying the exact deferred
@@ -32,8 +43,7 @@ public final class EndpointProbe {
             if (ep.apiKey() != null) {
                 builder.header("Authorization", "Bearer " + ep.apiKey());
             }
-            HttpResponse<Void> resp = HttpClient.newHttpClient()
-                    .send(builder.build(), HttpResponse.BodyHandlers.discarding());
+            HttpResponse<Void> resp = client.send(builder.build(), HttpResponse.BodyHandlers.discarding());
             int status = resp.statusCode();
             return new ProbeResult(status >= 200 && status < 300, "HTTP " + status);
         } catch (InterruptedException e) {

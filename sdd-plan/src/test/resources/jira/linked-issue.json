@@ -1,0 +1,16 @@
+{
+  "id": "PLACEHOLDER_ID",
+  "key": "PLACEHOLDER_KEY",
+  "fields": {
+    "summary": "PLACEHOLDER_SUMMARY",
+    "status": {"name": "Open"},
+    "updated": "2026-08-16T09:00:00.000+0000",
+    "subtasks": [],
+    "issuelinks": [],
+    "comment": {"comments": []}
+  },
+  "renderedFields": {
+    "description": "<p>Linked issue description.</p>",
+    "comment": {"comments": []}
+  }
+}

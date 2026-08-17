@@ -505,3 +505,45 @@ blocking question asking the field's exact name rather than declaring it. Making
 Gate 2 able to check surface that does not exist yet is a change to what a
 declaration MEANS — a design claim to be checked, rather than an observation to
 be copied — and belongs in its own phase.
+
+## Amendment (2026-08-16): Bitbucket gives Gate 2 a shared human review surface
+
+Line 58's invariant — "orchestrator owns git via JGit: branch/checkout/add/
+commit/diff/reset-to-recorded-SHA only, never push/remote"; "agent has zero git
+verbs" — is amended, narrowly, on its `never push/remote` half only. `sdd` is
+destined for a closed corporate network where the human gate lives in a pull
+request, not just a terminal diff review: `sdd review` now pushes each
+succeeded repo's run branch to Bitbucket Data Center and opens (or updates) the
+pull request that drives it, and `sdd review approve/reject` force-push the
+squashed branch and merge/decline that PR.
+
+The amendment is kept as narrow as the push verb itself:
+
+- `sdd.cli.implement.RunGit` — the class line 58 and RunGit's own javadoc both
+  name — **stays push-free**. It gained no push method and its javadoc's claim
+  is unchanged in substance, only made precise about where push now lives.
+- A NEW class, `sdd.cli.review.RemoteGit`, owns push — force-with-lease over
+  git-over-HTTP with a Bitbucket PAT, never SSH. It is reachable only from
+  Gate-2 code paths (`ReviewCommand`, `DecisionCommand`, and the
+  `BitbucketReview`/`BitbucketDecisions` helpers that drive them), never from
+  `sdd implement`.
+- The property line 58 actually protects — the agent loop (`sdd implement`)
+  cannot reach the network — is therefore still true. `RunGit` is the git
+  facade the agent's tool surface and the orchestrator both route every git
+  operation through; keeping it push-free is what makes the agent's
+  zero-git-verbs guardrail hold all the way down to the transport, not just at
+  the tool-call layer. That property was judged worth more than the
+  convenience of one shared push-capable git class, so `RemoteGit` duplicates
+  none of `RunGit`'s read/write surface and adds only the one verb `RunGit`
+  was never allowed to have.
+
+Bitbucket is opt-in (`atlassian.pull_requests: true`, default false) and
+best-effort in both directions: a push/PR failure during `sdd review` warns
+and never changes the run's exit code (mirroring Task 4's `JiraWriteBack`
+discipline), and — the ordering guarantee this amendment depends on — the
+Bitbucket merge on `approve` is attempted only AFTER the local squash has
+already been granted and `state.json` already carries the new checkpoint.
+A refused local squash reaches Bitbucket not at all. The inverse order (merge
+first, squash after) could leave Bitbucket holding a merge the local
+checkpoint does not know about — exactly the drift `RunContext#checkpoints`
+exists to detect.

@@ -22,7 +22,7 @@ import java.util.regex.Pattern;
 public final class SpecParser {
     static final List<String> ORDER = List.of("Goal", "Background", "Requirements",
             "Acceptance Criteria", "Constraints", "Touchpoints", "Out of Scope",
-            "Open Questions", "Attachments");
+            "Open Questions", "Attachments", "Sources");
     private static final List<String> REQUIRED = List.of("Goal", "Requirements", "Acceptance Criteria");
     private static final List<String> FRONT_KEYS = List.of("id", "title", "owner", "status");
     private static final Map<String, Pattern> ITEM_PATTERNS = Map.of(
@@ -81,7 +81,8 @@ public final class SpecParser {
         }
         return new NormalizedSpec(front.get("id"), front.get("title"), front.get("owner"),
                 front.get("status"), b.goal, b.background, b.requirements, b.acceptance,
-                b.constraints, b.touchpoints, b.outOfScope, b.openQuestions, b.attachments);
+                b.constraints, b.touchpoints, b.outOfScope, b.openQuestions, b.attachments,
+                b.sources);
     }
 
     private static Map<String, String> frontMatter(List<String> yamlLines, int closingLine) {
@@ -156,7 +157,9 @@ public final class SpecParser {
         if (!m.matches()) {
             throw new SpecParseException(lineNo, section + " items must look like '- <text>'");
         }
-        (section.equals("Out of Scope") ? b.outOfScope : b.attachments).add(m.group(1));
+        List<String> target = section.equals("Out of Scope") ? b.outOfScope
+                : section.equals("Attachments") ? b.attachments : b.sources;
+        target.add(m.group(1));
     }
 
     private static void closeSection(Builder b, String section, List<String> prose) {
@@ -178,5 +181,6 @@ public final class SpecParser {
         final List<String> outOfScope = new ArrayList<>();
         final List<SpecItem> openQuestions = new ArrayList<>();
         final List<String> attachments = new ArrayList<>();
+        final List<String> sources = new ArrayList<>();
     }
 }

@@ -35,6 +35,7 @@ public final class SpecRenderer {
         plain(md, "Out of Scope", spec.outOfScope());
         items(md, "Open Questions", spec.openQuestions(), false);
         plain(md, "Attachments", spec.attachments());
+        plain(md, "Sources", spec.sources());
         return md.toString();
     }
 

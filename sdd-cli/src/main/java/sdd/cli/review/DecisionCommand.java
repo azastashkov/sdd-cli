@@ -150,56 +150,70 @@ public abstract class DecisionCommand implements Callable<Integer> {
             if (run == null) {
                 return 4;
             }
-            // Deciding mid-run would race sdd implement over state.json and the run branches, and
-            // would judge work that is still being written.
-            if (run.store().isLockHeld(run.runDir())) {
-                err.println("error: run " + run.runId() + " is in progress (lock held) — wait for "
-                        + "sdd implement to finish");
-                return 4;
+            try {
+                return decideAndFollowUp(run, out, err);
+            } finally {
+                // Task 8: closes the one diagnostics file this invocation opened in
+                // RunContext.load — null when this RunContext was built directly (every existing
+                // test) rather than through load(), matching DiagnosticWriter's own "a null writer
+                // is a no-op" contract.
+                if (run.diagnostics() != null) {
+                    run.diagnostics().close();
+                }
             }
-            if (run.plan().repo(repo).isEmpty()) {
-                err.println("error: " + repo + " is not in this plan");
-                return 4;
-            }
-
-            // Persist before anything else observable happens: a crash in the follow-up work must
-            // not lose the verdict a human just gave. applyWithRetry both applies decide() and
-            // persists it, re-reading and re-applying against fresh state if another writer's
-            // decision landed underneath us first.
-            Applied applied = applyWithRetry(run, repo, this::decide);
-            Decisions.Outcome outcome = applied.outcome();
-            if (!outcome.applied()) {
-                err.println("refused: " + outcome.message());
-                return 2;
-            }
-            Decisions decisions = applied.decisions();
-            Decision after = decisions.of(repo);
-            run.store().appendEvent(run.runDir(), repo, applied.before(), after, decisions.reasonOf(repo));
-            for (String downgraded : outcome.downgraded()) {
-                run.store().appendEvent(run.runDir(), downgraded, Decision.APPROVED, Decision.PENDING,
-                        "upstream " + repo + " is " + after);
-            }
-
-            out.println(outcome.message());
-            if (!outcome.downgraded().isEmpty()) {
-                out.println("downgraded to PENDING (re-decide): " + String.join(", ", outcome.downgraded()));
-            }
-
-            Followup followup = followUp(run, out, err);
-            RebuildPass.Outcome rebuild = followup.rebuild();
-            out.println("review written: " + run.writeReport(run.collectDiffs(),
-                    rebuild == null ? Map.of() : rebuild.rebuilds(),
-                    rebuild == null ? List.of() : rebuild.notLocallyVerified(),
-                    rebuild == null ? List.of() : rebuild.stagingFailures(),
-                    rebuild == null ? List.of() : rebuild.restoreFailures(),
-                    rebuild == null ? List.of() : rebuild.contracts(),
-                    followup.scope()));
-            followup.trailer().forEach(out::println);
-            return followup.exitCode();
         } catch (RuntimeException | IOException e) {
             err.println("error: " + e.getMessage());
             return 4;
         }
+    }
+
+    private Integer decideAndFollowUp(RunContext run, PrintWriter out, PrintWriter err) throws IOException {
+        // Deciding mid-run would race sdd implement over state.json and the run branches, and
+        // would judge work that is still being written.
+        if (run.store().isLockHeld(run.runDir())) {
+            err.println("error: run " + run.runId() + " is in progress (lock held) — wait for "
+                    + "sdd implement to finish");
+            return 4;
+        }
+        if (run.plan().repo(repo).isEmpty()) {
+            err.println("error: " + repo + " is not in this plan");
+            return 4;
+        }
+
+        // Persist before anything else observable happens: a crash in the follow-up work must
+        // not lose the verdict a human just gave. applyWithRetry both applies decide() and
+        // persists it, re-reading and re-applying against fresh state if another writer's
+        // decision landed underneath us first.
+        Applied applied = applyWithRetry(run, repo, this::decide);
+        Decisions.Outcome outcome = applied.outcome();
+        if (!outcome.applied()) {
+            err.println("refused: " + outcome.message());
+            return 2;
+        }
+        Decisions decisions = applied.decisions();
+        Decision after = decisions.of(repo);
+        run.store().appendEvent(run.runDir(), repo, applied.before(), after, decisions.reasonOf(repo));
+        for (String downgraded : outcome.downgraded()) {
+            run.store().appendEvent(run.runDir(), downgraded, Decision.APPROVED, Decision.PENDING,
+                    "upstream " + repo + " is " + after);
+        }
+
+        out.println(outcome.message());
+        if (!outcome.downgraded().isEmpty()) {
+            out.println("downgraded to PENDING (re-decide): " + String.join(", ", outcome.downgraded()));
+        }
+
+        Followup followup = followUp(run, out, err);
+        RebuildPass.Outcome rebuild = followup.rebuild();
+        out.println("review written: " + run.writeReport(run.collectDiffs(),
+                rebuild == null ? Map.of() : rebuild.rebuilds(),
+                rebuild == null ? List.of() : rebuild.notLocallyVerified(),
+                rebuild == null ? List.of() : rebuild.stagingFailures(),
+                rebuild == null ? List.of() : rebuild.restoreFailures(),
+                rebuild == null ? List.of() : rebuild.contracts(),
+                followup.scope()));
+        followup.trailer().forEach(out::println);
+        return followup.exitCode();
     }
 
     @Command(name = "approve",
@@ -244,6 +258,11 @@ public abstract class DecisionCommand implements Callable<Integer> {
         if (!result.applied()) {
             // The decision stands; only the squash was refused (dirty tree, or the branch moved
             // off its checkpoint). Exit 2 so a script notices the repo still needs attention.
+            // Task 8 B3: this is the exact line a reader confirms from — a "squash refused" gate2
+            // event with no "checkpoint write" or "merge" event after it for this repo IS the proof
+            // that no merge followed a refused squash (BitbucketDecisions.afterApprove is simply
+            // never reached in this branch — see its class javadoc).
+            gate2(run, repo, "squash refused: " + result.message());
             err.println("squash refused: " + result.message());
             return afterRestore(result, 2, err);
         }
@@ -253,9 +272,17 @@ public abstract class DecisionCommand implements Callable<Integer> {
             // read very differently to a human ("already a single commit past <base>" vs "had
             // no net change since <base>"), and SquashApprove already knows which one fired —
             // so print its message rather than flattening both into one re-derived line.
+            gate2(run, repo, "squash applied (squashed=false, no-op): " + result.message());
+            gate2(run, repo, "checkpoint write skipped (squash was a no-op)");
             out.println(result.message());
+            // Task 5: the squash was APPLIED (just a no-op), so this repo is genuinely approved —
+            // reachable here, unlike the refusal branch above. See BitbucketDecisions' javadoc for
+            // why this ordering (only after SquashApprove.approve granted the decision) is the
+            // single most important property this task adds.
+            BitbucketDecisions.afterApprove(run, repo, root, out, err);
             return afterRestore(result, 0, err);
         }
+        gate2(run, repo, "squash applied (squashed=true) sha=" + Shas.shortSha(result.sha()));
         // Load-bearing, not bookkeeping: Resume.prepare fails any SUCCEEDED repo whose branch
         // head differs from its recorded checkpoint with exit 4, so without this write-back the
         // very "sdd implement --retry" that redo prints would hard-fail once any sibling had
@@ -263,11 +290,25 @@ public abstract class DecisionCommand implements Callable<Integer> {
         run.state().set(repo, repoRun.state(), repoRun.branch(), result.sha(), repoRun.detail(),
                 repoRun.failureCode());
         run.store().writeState(run.runDir(), run.state());
+        gate2(run, repo, "checkpoint write succeeded");
         // Counted against the PRE-squash checkpoint, whose objects are still resolvable (the
         // squash only moved the branch ref); SquashApprove made the identical call moments ago.
         out.println("squashed " + RunGit.commitsBetween(root, baseSha, repoRun.checkpointSha())
                 + " commits into " + Shas.shortSha(result.sha()));
+        // Task 5: strictly AFTER the state.json write-back above, never before — see
+        // BitbucketDecisions' class javadoc for why the ordering is load-bearing, not incidental.
+        BitbucketDecisions.afterApprove(run, repo, root, out, err);
         return afterRestore(result, 0, err);
+    }
+
+    /** Task 8 B3's Gate-2 decision events — a no-op when {@code run} has no diagnostics writer
+     *  (every existing test's directly-built {@link RunContext}). See this method's call sites in
+     *  {@link #squashAndRecord} for the squash/checkpoint half of the per-repo event stream, and
+     *  {@link BitbucketDecisions}' identically-named private helper for the merge/decline half. */
+    private static void gate2(RunContext run, String repo, String event) {
+        if (run.diagnostics() != null) {
+            run.diagnostics().gate2(repo, event);
+        }
     }
 
     /**
@@ -302,6 +343,15 @@ public abstract class DecisionCommand implements Callable<Integer> {
         @Override
         protected Decisions.Outcome decide(Decisions decisions, RunContext run) {
             return decisions.reject(repo, run.plan(), reason);
+        }
+
+        @Override
+        protected Followup followUp(RunContext run, PrintWriter out, PrintWriter err) {
+            // Reached only once decide() above has already applied and persisted REJECTED (see
+            // DecisionCommand#call) — no ordering hazard here the way approve's squash-then-merge
+            // has: declining has no local git side effect to get out of order with.
+            BitbucketDecisions.afterReject(run, repo, out, err);
+            return Followup.none();
         }
     }
 

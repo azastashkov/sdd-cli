@@ -15,6 +15,7 @@ import sdd.plan.approve.PlanJson;
 import sdd.plan.approve.PlanMdParser;
 import sdd.plan.approve.PlanValidator;
 import sdd.plan.approve.SmokeRunner;
+import sdd.plan.source.SourceBullet;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecParser;
 import sdd.plan.spec.SpecValidator;
@@ -35,6 +36,10 @@ public final class ApproveCommand implements Callable<Integer> {
 
     @Parameters(index = "0", description = "The reviewed <spec>.plan.md")
     Path planPath;
+
+    @Option(names = "--no-comment", description = "Suppress the Jira write-back comment even when "
+            + "atlassian.write_back: comment is configured")
+    boolean noComment;
 
     @Spec CommandSpec spec;
 
@@ -113,11 +118,36 @@ public final class ApproveCommand implements Callable<Integer> {
                 outWriter.println("plan approved: " + jsonPath);
                 outWriter.println("spec sha256: " + specSha);
                 outWriter.println("plan sha256: " + planSha);
+                // Task 4 (Gate 1 write-back): strictly AFTER plan.json is durably written above,
+                // and via JiraWriteBack — which never throws — so a Jira outage can never turn
+                // this successful approval into a failed one. jsonPath's existence is exactly the
+                // artifact the brief says must never be lost to a Jira problem.
+                commentOnJiraSources(parsedSpec, plan, outWriter, errWriter);
                 return 0;
             }
         } catch (RuntimeException | java.io.IOException e) {
             errWriter.println("error: " + e.getMessage());
             return 1;
         }
+    }
+
+    /** Task 4 brief section 3's Gate-1 wording, verbatim: {@code sdd: plan approved for
+     *  `<spec-id>` — `<N>` repos affected, execution order: `<repo>, <repo>, …`}. A no-op (no
+     *  config load, no output) when the spec has no Jira sources — see
+     *  {@code JiraWriteBack.post}'s short-circuit — which is the normal case for a hand-written or
+     *  free-text-derived spec, not an error. */
+    private void commentOnJiraSources(NormalizedSpec parsedSpec, PlanDocument plan,
+            PrintWriter outWriter, PrintWriter errWriter) {
+        List<String> jiraKeys = SourceBullet.jiraIssueKeys(parsedSpec.sources());
+        if (jiraKeys.isEmpty()) {
+            return;
+        }
+        List<String> order = new ArrayList<>();
+        for (List<String> unit : plan.order()) {
+            order.addAll(unit);
+        }
+        String body = "sdd: plan approved for `" + parsedSpec.id() + "` — `" + plan.affected().size()
+                + "` repos affected, execution order: `" + String.join(", ", order) + "`";
+        JiraWriteBack.post(workspace, jiraKeys, noComment, body, outWriter, errWriter);
     }
 }

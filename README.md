@@ -24,12 +24,23 @@ is the source of truth for what exists and what depends on what.
 
 Every other command exists to serve two human checkpoints:
 
-- **Gate 1 — `sdd plan approve`.** `sdd plan <spec>.md` drafts `plan.md`: the
-  affected repos, the execution order, and a narrative. A human reads and
-  edits `plan.md` by hand. `sdd plan approve <spec>.plan.md` re-validates it
-  against the current knowledge base and the repos' live git state, then
-  freezes it into `plan.json` — the only input `sdd implement` will accept.
-  Nothing is built or changed on disk in any repo before this gate.
+- **Gate 1 — `sdd plan approve`.** A spec can come from a canonical markdown
+  file, an exported Confluence page, a live Jira issue, a live Confluence
+  page, or free text on the command line (any mix of the last four
+  composes into one bundle; a canonical markdown spec must stand alone) —
+  see [`docs/commands.md`](docs/commands.md) for the exact combination
+  rules. Every one of those sources normalizes into the same canonical
+  markdown spec, at which point the two-gate model is unchanged: `sdd plan
+  <spec>.md` drafts `plan.md` — the affected repos, the execution order, and
+  a narrative. A human reads and edits `plan.md` by hand. `sdd plan approve
+  <spec>.plan.md` re-validates it against the current knowledge base and the
+  repos' live git state, then freezes it into `plan.json` — the only input
+  `sdd implement` will accept. Nothing is built or changed on disk in any
+  repo before this gate. The Jira/Confluence path adds one extra human
+  checkpoint ahead of that: normalizing a Jira issue or Confluence page
+  always stops at a `.spec.md` for review, exactly like the pre-existing
+  Confluence-export path — `sdd plan` never runs impact analysis directly
+  against a remote source.
 - **Gate 2 — `sdd review` + a decision.** `sdd implement <spec>.plan.json`
   runs the agent loop across the estate, leaving every repo on its own run
   branch. `sdd review <spec>.plan.json` rebuilds the estate against those
@@ -48,6 +59,45 @@ decisions, `clean` discards the branches for work that was never approved,
 and `explain <question>` answers a plain-English question about the estate
 from that same knowledge base — the one command in this list useful right
 after `sdd index`, before there is a spec or a plan to speak of.
+
+## Closed-network estates: Jira, Confluence, Bitbucket
+
+`sdd` can talk to a self-hosted Jira, Confluence and/or Bitbucket Data
+Center — each independently optional — for requirement ingestion and source
+control, entirely inside a closed corporate network that never reaches the
+public internet. Configure it under `sdd.yml`'s `atlassian:` block (see
+`sdd.yml.example`):
+
+- **The three sites** — `atlassian.jira`, `atlassian.confluence`,
+  `atlassian.bitbucket` — each with a `base_url` and a `token`. Declare only
+  the ones this estate actually uses; an absent `atlassian:` block, or an
+  absent individual site, changes no other command's behaviour at all.
+- **Credentials come from Personal Access Tokens exported as environment
+  variables**, referenced as `${VAR}` in `sdd.yml` — never written into the
+  file itself. The corporate convention this project targets exports
+  `JIRA_API_KEY`, `CONFLUENCE_API_KEY` and `BITBUCKET_API_KEY` from
+  `~/.zshrc` (see `.env.example`); `sdd.yml.example` uses those same names.
+  The variable name is not special-cased anywhere in `sdd`'s own code — it is
+  parsed out of whichever `${VAR}` reference `sdd.yml` actually contains — so
+  any name works, these are simply the ones this estate's shell profile uses.
+- **A private CA and a forward proxy**, under `atlassian.tls`/
+  `atlassian.proxy`, for the common case where self-hosted Jira/Confluence/
+  Bitbucket sit behind a certificate the JDK's bundled trust store does not
+  recognize, and/or egress is only reachable through a corporate proxy.
+- **No new third-party runtime dependency was added to support any of
+  this** — a closed network cannot resolve one on demand at build time
+  anyway. Jira/Confluence/Bitbucket integration is built entirely on the
+  JDK's own `HttpClient` and the JSON/XML libraries already in the tree for
+  the pre-existing Confluence-export path.
+
+Run `sdd doctor` first on a network like this — it probes all three
+configured sites and reports exactly what's reachable before you write a
+spec. See [`docs/commands.md`](docs/commands.md)'s "Atlassian integration:
+what's verified, what's assumed" section for how much confidence stands
+behind each Jira/Confluence/Bitbucket behaviour, and
+[`docs/atlassian-runbook.md`](docs/atlassian-runbook.md) for a step-by-step
+corporate-network runbook, including what to do the moment something goes
+wrong.
 
 ## Quickstart: an end-to-end run
 
