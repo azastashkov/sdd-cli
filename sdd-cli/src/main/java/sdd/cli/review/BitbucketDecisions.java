@@ -3,6 +3,7 @@ package sdd.cli.review;
 import sdd.cli.implement.RepoRun;
 import sdd.core.config.AtlassianConfig;
 import sdd.core.config.BitbucketSite;
+import sdd.core.diagnostics.Failures;
 
 import java.io.PrintWriter;
 import java.nio.file.Path;
@@ -61,9 +62,16 @@ final class BitbucketDecisions {
             merge(client, repo, repoRun.prId(), out, err);
             gate2(run, repo, "merge succeeded");
         } catch (RuntimeException e) {
-            gate2(run, repo, "merge failed: " + e.getMessage());
+            // Gate review I3: getMessage() alone is null for plenty of JGit/JDK failures — degrade
+            // to the exception's simple name instead of printing the literal word "null", and give
+            // the diagnostics file the full cause chain this catch used to swallow entirely.
+            String detail = Failures.message(e);
+            if (run.diagnostics() != null) {
+                run.diagnostics().failure("bitbucket: merge " + repo, e);
+            }
+            gate2(run, repo, "merge failed: " + detail);
             err.println("  warn: bitbucket: could not merge PR for " + repo
-                    + " — merge it manually in the Bitbucket UI: " + e.getMessage());
+                    + " — merge it manually in the Bitbucket UI: " + detail);
         }
     }
 
@@ -105,7 +113,10 @@ final class BitbucketDecisions {
         try {
             decline(BitbucketClients.rest(atlassian, run.diagnostics()), repo, repoRun.prId(), out, err);
         } catch (RuntimeException e) {
-            err.println("  warn: bitbucket: could not decline PR for " + repo + ": " + e.getMessage());
+            if (run.diagnostics() != null) {
+                run.diagnostics().failure("bitbucket: decline " + repo, e);
+            }
+            err.println("  warn: bitbucket: could not decline PR for " + repo + ": " + Failures.message(e));
         }
     }
 

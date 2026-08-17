@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.file.Files;
@@ -133,6 +134,35 @@ class JiraWriteBackTest {
 
         assertThat(result.err()).contains("  warn: jira comment failed: ");
         assertThat(result.out()).contains("commented on PROJ-2").doesNotContain("commented on PROJ-1");
+    }
+
+    private String diagnosticsContent() throws IOException {
+        Path dir = ws.resolve(".sdd/diagnostics");
+        if (!Files.isDirectory(dir)) {
+            return "";
+        }
+        StringBuilder all = new StringBuilder();
+        try (var files = Files.list(dir)) {
+            for (Path f : files.toList()) {
+                all.append(Files.readString(f));
+            }
+        }
+        return all.toString();
+    }
+
+    @Test
+    void aFailingPostWritesAFailureEntryToDiagnosticsNotJustTheWarnLine() throws Exception {
+        // Gate review I3: BitbucketReview/BitbucketDecisions/JiraWriteBack's best-effort catch
+        // sites used to print only e.getMessage() and leave the diagnostics file — the one thing
+        // built for a remote reader to debug a first-contact failure with — completely empty. This
+        // pins that the per-issue failure now reaches diagnostics().failure(...) too, not only err.
+        writeYaml("comment");
+        wm.stubFor(post(urlEqualTo("/rest/api/2/issue/PROJ-1/comment")).willReturn(unauthorized()));
+
+        Out result = postComment(List.of("PROJ-1"), false, "body");
+
+        assertThat(result.err()).contains("  warn: jira comment failed: ");
+        assertThat(diagnosticsContent()).contains("failure: jira comment: PROJ-1");
     }
 
     @Test

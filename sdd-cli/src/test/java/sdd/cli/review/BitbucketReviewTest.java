@@ -250,4 +250,68 @@ class BitbucketReviewTest {
         assertThat(errBuf.toString()).contains("  warn: bitbucket: lib:");
         assertThat(wm.getAllServeEvents()).isEmpty();
     }
+
+    @Test
+    void aSetupFailureWritesAFailureEntryToDiagnosticsNotJustTheWarnLine() throws Exception {
+        // Gate review I3: pull_requests is on but no atlassian.bitbucket is configured, so
+        // requireBitbucket throws before any HTTP call — the exact catch site that used to print
+        // only e.getMessage() and leave a null-message failure as a bare "null" on stderr with
+        // nothing at all in the diagnostics file built to debug it remotely.
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                atlassian:
+                  pull_requests: true
+                """);
+        SddConfig config = ConfigLoader.load(ws);
+        FixtureRepo lib = FixtureRepo.in(ws, "lib").file("A.java", "class A {}\n").commit("base");
+        PlanModel plan = new PlanModel("SPEC-1", 1, "s", "p",
+                List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", lib.headSha())),
+                List.of(List.of("lib")), List.of(), List.of(), List.of());
+        RepoRun repoRun = new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-1-v1/lib", lib.headSha(), "ok", null);
+        RunState state = new RunState("SPEC-1-v1", List.of(repoRun), null, 0L);
+        RunStore store = new RunStore(InstantSource.fixed(Instant.EPOCH));
+        Path runDir = store.create(ws, "SPEC-1-v1", "{}", """
+                ---
+                id: SPEC-1
+                title: Tiers
+                owner: me
+                status: approved
+                ---
+
+                ## Goal
+                g
+
+                ## Requirements
+                - R1: x.
+
+                ## Acceptance Criteria
+                - A1: y.
+                """);
+        store.releaseLock(runDir);
+        store.writeState(runDir, state);
+        sdd.core.diagnostics.DiagnosticWriter diagnostics = sdd.core.diagnostics.Diagnostics.open(
+                ws, "review", List.of("review"), config.atlassian(), InstantSource.system(),
+                new PrintWriter(new StringWriter()));
+        RunContext run = new RunContext("SPEC-1-v1", runDir, store, plan, state, config, Map.of("lib", lib.path()),
+                diagnostics);
+        ReportInputs in = reportInputs(run);
+
+        StringWriter errBuf = new StringWriter();
+        try (PrintWriter out = new PrintWriter(new StringWriter()); PrintWriter err = new PrintWriter(errBuf)) {
+            BitbucketReview.run(run, in, out, err);
+        }
+        diagnostics.close();
+
+        assertThat(errBuf.toString()).contains("  warn: bitbucket: atlassian.pull_requests is true but no atlassian.bitbucket is configured");
+        Path diagDir = ws.resolve(".sdd/diagnostics");
+        StringBuilder content = new StringBuilder();
+        try (var files = Files.list(diagDir)) {
+            for (Path f : files.toList()) {
+                content.append(Files.readString(f));
+            }
+        }
+        assertThat(content.toString()).contains("failure: bitbucket: setup");
+    }
 }

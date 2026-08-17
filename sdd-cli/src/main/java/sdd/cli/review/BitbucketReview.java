@@ -7,6 +7,7 @@ import sdd.cli.implement.RunGit;
 import sdd.cli.implement.Scheduler;
 import sdd.core.config.AtlassianConfig;
 import sdd.core.config.BitbucketSite;
+import sdd.core.diagnostics.Failures;
 import sdd.plan.source.SourceBullet;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecParser;
@@ -53,7 +54,14 @@ public final class BitbucketReview {
             bitbucket = BitbucketClients.requireBitbucket(atlassian);
             client = BitbucketClients.rest(atlassian, run.diagnostics());
         } catch (RuntimeException e) {
-            err.println("  warn: bitbucket: " + e.getMessage());
+            // Gate review I3: this used to print e.getMessage() and nothing else — for common
+            // JGit/JDK failures with a null message that is literally the word "null" on a human's
+            // terminal, AND it left the diagnostics file (built for exactly this: a remote reader
+            // debugging a first-contact failure) with zero lines about it.
+            if (run.diagnostics() != null) {
+                run.diagnostics().failure("bitbucket: setup", e);
+            }
+            err.println("  warn: bitbucket: " + Failures.message(e));
             return;
         }
 
@@ -69,7 +77,10 @@ public final class BitbucketReview {
                 pushAndOpen(run, reportInputs, repo, repoRun, client, atlassian, bitbucket, title,
                         specInfo.jiraUrl(), out, err);
             } catch (RuntimeException e) {
-                err.println("  warn: bitbucket: " + repo + ": " + e.getMessage());
+                if (run.diagnostics() != null) {
+                    run.diagnostics().failure("bitbucket: " + repo, e);
+                }
+                err.println("  warn: bitbucket: " + repo + ": " + Failures.message(e));
             }
         }
     }

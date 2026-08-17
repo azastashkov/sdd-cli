@@ -8,6 +8,7 @@ import sdd.core.config.SddConfig;
 import sdd.core.config.WriteBack;
 import sdd.core.diagnostics.Diagnostics;
 import sdd.core.diagnostics.DiagnosticWriter;
+import sdd.core.diagnostics.Failures;
 import sdd.core.http.HttpClients;
 import sdd.core.http.RestClient;
 import sdd.plan.jira.JiraClient;
@@ -85,42 +86,57 @@ public final class JiraWriteBack {
         if (noComment || jiraKeys.isEmpty()) {
             return;
         }
+        SddConfig config;
+        AtlassianConfig atlassian;
         try {
-            SddConfig config = ConfigLoader.load(workspace);
-            AtlassianConfig atlassian = config.atlassian();
-            if (atlassian == null || atlassian.writeBack() != WriteBack.COMMENT) {
-                // Default (or explicit "none"): "nothing is posted and nothing is printed" —
-                // brief section 4. Not an error, so this is not inside the catch below.
-                return;
-            }
-            boolean ownsDiagnostics = diagnostics == null;
-            DiagnosticWriter effectiveDiagnostics = ownsDiagnostics
-                    ? Diagnostics.open(workspace, "jira-write-back", List.of("jira-write-back"), atlassian,
-                            InstantSource.system(), err)
-                    : diagnostics;
-            try {
-                JiraClient client = buildClient(atlassian, effectiveDiagnostics);
-                for (String key : jiraKeys) {
-                    try {
-                        client.comment(key, commentBody);
-                        out.println("commented on " + key);
-                    } catch (RuntimeException e) {
-                        // Best-effort PER ISSUE: one issue's Jira failure (deleted, no permission,
-                        // transient outage) must not stop the comment attempt on the rest.
-                        err.println("  warn: jira comment failed: " + e.getMessage());
-                    }
-                }
-            } finally {
-                if (ownsDiagnostics) {
-                    effectiveDiagnostics.close();
+            config = ConfigLoader.load(workspace);
+            atlassian = config.atlassian();
+        } catch (RuntimeException e) {
+            // No atlassian: is known yet at this point — there is no secret set to build a
+            // diagnostics writer's Redactor from, so (unlike the setup failure below) this one
+            // genuinely has no file to be written into. I4's fix (ConfigLoader no longer echoes
+            // the raw YAML node into its error messages) is what keeps this message itself safe.
+            err.println("  warn: jira comment failed: " + Failures.message(e));
+            return;
+        }
+        if (atlassian == null || atlassian.writeBack() != WriteBack.COMMENT) {
+            // Default (or explicit "none"): "nothing is posted and nothing is printed" —
+            // brief section 4. Not an error, so this is not inside the catch below.
+            return;
+        }
+        boolean ownsDiagnostics = diagnostics == null;
+        DiagnosticWriter effectiveDiagnostics = ownsDiagnostics
+                ? Diagnostics.open(workspace, "jira-write-back", List.of("jira-write-back"), atlassian,
+                        InstantSource.system(), err)
+                : diagnostics;
+        try {
+            JiraClient client = buildClient(atlassian, effectiveDiagnostics);
+            for (String key : jiraKeys) {
+                try {
+                    client.comment(key, commentBody);
+                    out.println("commented on " + key);
+                } catch (RuntimeException e) {
+                    // Best-effort PER ISSUE: one issue's Jira failure (deleted, no permission,
+                    // transient outage) must not stop the comment attempt on the rest. Gate review
+                    // I3: also report the full cause chain to diagnostics — this used to print only
+                    // e.getMessage() (literally "null" for plenty of failures) and leave the
+                    // diagnostics file with nothing about it at all.
+                    effectiveDiagnostics.failure("jira comment: " + key, e);
+                    err.println("  warn: jira comment failed: " + Failures.message(e));
                 }
             }
         } catch (RuntimeException e) {
-            // Config missing/invalid, no atlassian.jira site, an unset ${VAR} credential, a bad
-            // TLS truststore — none of that was reachable before Gate 1/2 already wrote its
-            // artifact, so it is reported the same way a single failed post is: a warning, not a
-            // command failure.
-            err.println("  warn: jira comment failed: " + e.getMessage());
+            // Client-build failure (no atlassian.jira site, an unset ${VAR} credential, a bad TLS
+            // truststore) — none of that was reachable before Gate 1/2 already wrote its artifact,
+            // so it is reported the same way a single failed post is: a warning, not a command
+            // failure. effectiveDiagnostics is already open at this point (config/atlassian are
+            // known), so — unlike the ConfigLoader.load failure above — this one DOES have a file.
+            effectiveDiagnostics.failure("jira write-back setup", e);
+            err.println("  warn: jira comment failed: " + Failures.message(e));
+        } finally {
+            if (ownsDiagnostics) {
+                effectiveDiagnostics.close();
+            }
         }
     }
 
