@@ -50,11 +50,18 @@ public final class IndexCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
-        // Resolved before anything else, and stopped in the finally below regardless of which
-        // return path is taken (design doc, "Renderers": "Pair it with try/finally in the
-        // command") — a live renderer's ticker thread is started in its own constructor
-        // (LiveProgress), so even the earliest error return (bad config) must still stop it
-        // rather than leaking a scheduler that outlives this call.
+        // Resolved before anything else, and stopped no later than the finally below on every
+        // return path (design doc, "Renderers": "Pair it with try/finally in the command") — a
+        // live renderer's ticker thread is started in its own constructor (LiveProgress), so
+        // even the earliest error return (bad config) must still stop it rather than leaking a
+        // scheduler that outlives this call. But on the success path, stop() is called RIGHT
+        // AFTER service.run(...) returns, well before the finally: LiveProgress's
+        // last frame is an unterminated `\r` + padding sitting on stderr with no trailing
+        // newline, on the same tty the report block is about to start writing to on stdout —
+        // leaving it un-erased until the method-wide finally would let the report's own first
+        // printf collide with that frame, and the eventual erase would then wipe part of the
+        // report instead of the frame. stop() is idempotent (Progress's contract), so this early
+        // call and the finally's later no-op call are both safe to keep.
         Progress progress = progressForTest != null ? progressForTest : SddCli.resolve(spec);
         try {
             PrintWriter out = spec.commandLine().getOut();
@@ -87,6 +94,13 @@ public final class IndexCommand implements Callable<Integer> {
                     service = new IndexService(null, new HttpChatModel(coder, CARD_MAX_ATTEMPTS), coder.model());
                 }
                 List<IndexService.RepoResult> results = service.run(config, db, force, progress);
+                // Stopped here, not left to the method-wide finally: a live renderer's last frame
+                // is an unterminated line on stderr, on the same tty the report below is about to
+                // write to on stdout. stop() must erase it before the very first line of the
+                // report prints, or the frame and the report garble each other (design doc,
+                // "Renderers": "stop() must erase the line ... so the following output block
+                // starts clean"). stop() is idempotent, so the finally's later call is a no-op.
+                progress.stop();
                 for (IndexService.RepoResult r : results) {
                     out.printf(Locale.ROOT, "%-28s %-9s parse=%-8s modules=%-3d internal-deps=%-3d%s%s%n",
                             r.repo(), r.status(), r.parseStatus() == null ? "-" : r.parseStatus(),
