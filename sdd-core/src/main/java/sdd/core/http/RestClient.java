@@ -353,14 +353,19 @@ public final class RestClient {
         }
     }
 
-    private static JsonNode parse(String body) {
+    private JsonNode parse(String body) {
         if (body == null || body.isBlank()) {
             return MissingNode.getInstance();
         }
         try {
             return JSON.readTree(body);
         } catch (IOException e) {
-            throw new AtlassianException("unparseable response: " + body, e);
+            // Gate re-review Fix 4: the last body-to-terminal hole safeBody's introduction missed —
+            // reachable from the 2xx path (get/post/put/getWithHeaders all funnel through here), so
+            // an Atlassian endpoint returning malformed "JSON" carried its entire raw, unscrubbed,
+            // uncapped body into this exception's message exactly like the three non-2xx sites did
+            // before that fix. Routed through the same safeBody(...) for the same reason.
+            throw new AtlassianException("unparseable response: " + safeBody(body), e);
         }
     }
 }

@@ -158,6 +158,24 @@ class RestClientTest {
     }
 
     @Test
+    void anUnparseable2xxResponseBodyIsAlsoScrubbedAndCappedInTheThrownMessage() {
+        // Gate re-review Fix 4: the safeBody fix above missed this site — parse() is reachable
+        // from the 2xx path (get/post/put/getWithHeaders all funnel through it), so a malformed
+        // "JSON" body from an Atlassian endpoint carried the ENTIRE raw, unscrubbed, uncapped body
+        // into "unparseable response: ..." exactly like the three non-2xx sites did before that fix.
+        String token = "sk-token-abcdefghijklmnop";
+        String hugeGarbage = "not json " + token + " " + "x".repeat(2_000);
+        wm.stubFor(get("/x").willReturn(okJson("null").withBody(hugeGarbage)));
+
+        assertThatThrownBy(() -> client(token, "JIRA_PAT").get("/x"))
+                .isInstanceOf(AtlassianException.class)
+                .hasMessageContaining("unparseable response")
+                .hasMessageContaining("<redacted>")
+                .hasMessageContaining("…[truncated,")
+                .hasMessageNotContaining(token);
+    }
+
+    @Test
     void a401NamesTheTokenEnvVarAndSiteAndDoesNotRetry() {
         wm.stubFor(get("/x").willReturn(unauthorized()));
 
