@@ -2,6 +2,7 @@ package sdd.core.llm;
 
 import sdd.core.config.ConfigException;
 import sdd.core.config.ModelEndpoint;
+import sdd.core.http.HttpClients;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -16,8 +17,25 @@ public final class EndpointProbe {
 
     private EndpointProbe() {}
 
+    /**
+     * Phase 2: {@code HttpClient.newHttpClient()} was inlined here, which could never see a model
+     * endpoint's {@code tls} block. Routed through {@link HttpClients#buildClient} instead — a
+     * no-op ({@code HttpClient.newHttpClient()}, byte-identical to before) for every endpoint that
+     * predates this feature, since {@code endpoint.tls()} is null there. Unlike
+     * {@link #probe(ModelEndpoint, HttpClient)}'s internal {@code apiKeyError} handling, a TLS
+     * misconfiguration (missing cert file, unset {@code key_password}, cert without key) is caught
+     * here and turned into a failed {@link ProbeResult} rather than thrown — {@code doctor}'s
+     * per-tier probe loop must keep reporting every other endpoint even when one tier's client
+     * certificate is broken, exactly the contract {@code apiKeyError} already established below.
+     */
     public static ProbeResult probe(ModelEndpoint ep) {
-        return probe(ep, HttpClient.newHttpClient());
+        HttpClient client;
+        try {
+            client = HttpClients.buildClient(ep.tls(), null);
+        } catch (ConfigException e) {
+            return new ProbeResult(false, e.getMessage());
+        }
+        return probe(ep, client);
     }
 
     /**

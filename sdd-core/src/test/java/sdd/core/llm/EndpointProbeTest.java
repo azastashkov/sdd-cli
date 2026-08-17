@@ -4,9 +4,12 @@ import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import sdd.core.config.ModelEndpoint;
+import sdd.core.http.TlsConfig;
 
 import java.net.http.HttpClient;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
@@ -56,6 +59,27 @@ class EndpointProbeTest {
         assertThat(r.ok()).isFalse();
         assertThat(r.detail())
                 .isEqualTo("models.flash.api_key: environment variable ROUTER_AI_API_KEY is not set");
+        wm.verify(0, getRequestedFor(urlEqualTo("/v1/models")));   // failed before any call
+    }
+
+    // Phase 2 (model mTLS): the default-client probe(ModelEndpoint) overload now builds via
+    // HttpClients.buildClient(ep.tls(), null), which can throw ConfigException for a broken tls
+    // block (here, a client cert file that does not exist). doctor's per-tier probe loop must keep
+    // reporting every other endpoint even when one tier's certificate is misconfigured — the exact
+    // contract the apiKeyError test above already established for a bad credential — so this must
+    // surface as a failed ProbeResult, never an uncaught exception.
+    @Test
+    void aBrokenTlsConfigSurfacesAsAFailedProbeInsteadOfThrowing() {
+        TlsConfig brokenTls = new TlsConfig(null, null, null,
+                Path.of("/does/not/exist/client.crt"), Path.of("/does/not/exist/client.key"),
+                null, null, List.of());
+        ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "m", null, 256, 0.0,
+                Duration.ofSeconds(5), Map.of(), null, brokenTls);
+
+        EndpointProbe.ProbeResult r = EndpointProbe.probe(ep);
+
+        assertThat(r.ok()).isFalse();
+        assertThat(r.detail()).contains("does not exist");
         wm.verify(0, getRequestedFor(urlEqualTo("/v1/models")));   // failed before any call
     }
 

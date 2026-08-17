@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import sdd.core.config.ConfigException;
 import sdd.core.config.ModelEndpoint;
 import sdd.core.http.Backoff;
+import sdd.core.http.HttpClients;
 
 import java.io.IOException;
 import java.net.URI;
@@ -39,8 +40,17 @@ public final class HttpChatModel implements ChatModel {
         this(endpoint, MAX_ATTEMPTS);
     }
 
+    /**
+     * Phase 2: {@code HttpClient.newHttpClient()} was inlined here, which could never see a model
+     * endpoint's {@code tls} block. Routed through {@link HttpClients#buildClient} instead — it
+     * returns exactly {@code HttpClient.newHttpClient()} when {@code endpoint.tls()} is null (every
+     * existing workspace, api-key-only), so this is a no-op for every endpoint that predates this
+     * feature; a cert-configured endpoint gets an {@link javax.net.ssl.SSLContext} built from its
+     * client certificate instead. No proxy is passed — models have never had a per-endpoint proxy
+     * setting and this phase does not add one.
+     */
     public HttpChatModel(ModelEndpoint endpoint, int maxAttempts) {
-        this(endpoint, maxAttempts, HttpClient.newHttpClient(), Thread::sleep);
+        this(endpoint, maxAttempts, HttpClients.buildClient(endpoint.tls(), null), Thread::sleep);
     }
 
     public HttpChatModel(ModelEndpoint endpoint, HttpClient client, Sleeper sleeper) {

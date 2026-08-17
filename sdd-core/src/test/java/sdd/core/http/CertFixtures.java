@@ -19,38 +19,42 @@ import java.util.concurrent.TimeUnit;
  * intermediate cannot build a trusted path, which is exactly what proves "every certificate in
  * the file, in order" rather than merely the first one.
  *
- * <p>Not a {@code @Test} class itself — a plain package-private helper other test classes in this
- * package call from a {@code @TempDir}.
+ * <p>Not a {@code @Test} class itself — a plain helper other test classes call from a
+ * {@code @TempDir}. Public (Phase 2, model-mTLS): {@code sdd.core.llm}'s tests need the same
+ * generated PKI to prove a {@code ModelEndpoint.tls()}-configured {@code HttpChatModel}/
+ * {@code EndpointProbe} completes a real handshake, and duplicating this generator into a second
+ * package is exactly the "two places to get certificate handling wrong" this whole feature's
+ * design otherwise avoids — see {@code HttpClients}' class javadoc.
  */
-final class CertFixtures {
+public final class CertFixtures {
     private final Path dir;
 
-    CertFixtures(Path dir) {
+    public CertFixtures(Path dir) {
         this.dir = dir;
     }
 
-    Path caCert() { return dir.resolve("ca.crt"); }
-    Path caTrustStoreP12() { return dir.resolve("ca-truststore.p12"); }
-    static final char[] TRUSTSTORE_PASSWORD = "changeit".toCharArray();
+    public Path caCert() { return dir.resolve("ca.crt"); }
+    public Path caTrustStoreP12() { return dir.resolve("ca-truststore.p12"); }
+    public static final char[] TRUSTSTORE_PASSWORD = "changeit".toCharArray();
 
-    Path serverKeystoreP12() { return dir.resolve("server.p12"); }
-    static final String SERVER_KEYSTORE_PASSWORD = "changeit";
+    public Path serverKeystoreP12() { return dir.resolve("server.p12"); }
+    public static final String SERVER_KEYSTORE_PASSWORD = "changeit";
 
-    Path clientCertPem() { return dir.resolve("client.crt"); }
-    Path clientKeyPkcs8Unencrypted() { return dir.resolve("client_pkcs8.key"); }
-    Path clientKeyPkcs8Encrypted() { return dir.resolve("client_pkcs8_enc.key"); }
-    static final String CLIENT_KEY_PASSWORD = "test-key-pass-1234";
-    Path clientKeyPkcs1() { return dir.resolve("client_pkcs1.key"); }
-    Path clientKeyEc() { return dir.resolve("client_ec.key"); }
-    Path clientKeyLegacyEncrypted() { return dir.resolve("client_pkcs1_legacy_enc.key"); }
-    static final String LEGACY_KEY_PASSWORD = "legacy-pass-1234";
+    public Path clientCertPem() { return dir.resolve("client.crt"); }
+    public Path clientKeyPkcs8Unencrypted() { return dir.resolve("client_pkcs8.key"); }
+    public Path clientKeyPkcs8Encrypted() { return dir.resolve("client_pkcs8_enc.key"); }
+    public static final String CLIENT_KEY_PASSWORD = "test-key-pass-1234";
+    public Path clientKeyPkcs1() { return dir.resolve("client_pkcs1.key"); }
+    public Path clientKeyEc() { return dir.resolve("client_ec.key"); }
+    public Path clientKeyLegacyEncrypted() { return dir.resolve("client_pkcs1_legacy_enc.key"); }
+    public static final String LEGACY_KEY_PASSWORD = "legacy-pass-1234";
 
-    Path chainClientKey() { return dir.resolve("chain_client.key"); }
-    Path chainClientCertAndIntermediate() { return dir.resolve("chain_client_bundle.pem"); }
-    Path chainClientCertLeafOnly() { return dir.resolve("chain_client_leaf.crt"); }
+    public Path chainClientKey() { return dir.resolve("chain_client.key"); }
+    public Path chainClientCertAndIntermediate() { return dir.resolve("chain_client_bundle.pem"); }
+    public Path chainClientCertLeafOnly() { return dir.resolve("chain_client_leaf.crt"); }
 
     /** Builds every fixture this class exposes. Idempotent within one {@code @TempDir}. */
-    void generate() throws IOException, InterruptedException {
+    public void generate() throws IOException, InterruptedException {
         run("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
                 "-keyout", str("ca.key"), "-out", str("ca.crt"), "-days", "3", "-subj", "/CN=sdd-test Root CA");
 
