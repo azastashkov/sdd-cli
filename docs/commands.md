@@ -58,7 +58,7 @@ answer instead of a reassuring one.
 ### 1. Verified by test
 
 The Jira/Confluence/Bitbucket integration, and the mutual-TLS model endpoints,
-are exercised by 1,598 tests (`sdd-core` 407, `sdd-cli` 600, `sdd-index` 244,
+are exercised by 1,599 tests (`sdd-core` 407, `sdd-cli` 601, `sdd-index` 244,
 `sdd-plan` 227, `sdd-agent` 120 — `./gradlew clean build`, current tree)
 against WireMock stand-ins for all three Atlassian products, a
 client-auth-requiring WireMock server for the mTLS handshake, and real local

@@ -2,7 +2,7 @@
 
 [![Java 21](https://img.shields.io/badge/Java-21-orange?logo=openjdk&logoColor=white)](https://openjdk.org/projects/jdk/21/)
 [![Build: Gradle](https://img.shields.io/badge/build-Gradle-02303A?logo=gradle&logoColor=white)](https://gradle.org)
-[![Tests](https://img.shields.io/badge/tests-1%2C598%20passing-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-1%2C599%20passing-brightgreen)](#development)
 [![No runtime dependencies added](https://img.shields.io/badge/runtime%20deps-JDK%20only-blue)](#deterministic-first)
 
 > These badges are static, and deliberately so: this repository has no CI, so a
