@@ -270,6 +270,22 @@ public final class HttpClients {
     }
 
     /**
+     * The parsed certificate chain {@code tls.clientCert()} names — a public passthrough to
+     * {@link PemKeyLoader#certificateChain}, which is package-private, for {@code sdd doctor}'s
+     * pre-flight validation and diagnostics (Phase 3, {@code sdd.cli.DoctorCommand}): both need the
+     * leaf certificate's subject and expiry, which {@link #keyManagers} parses internally but never
+     * returns (it only needs a {@link KeyManager}, not the certificate objects themselves). The
+     * leaf is parsed a second time as a result — once inside {@link #keyManagers} to build the
+     * handshake keystore, once here purely to read {@code subject}/{@code notAfter} off it — rather
+     * than changing {@link #keyManagers}' return type, which every existing caller and test already
+     * depends on as {@code KeyManager[]}. A deliberate, disclosed duplication: parsing a small PEM
+     * file twice costs microseconds and is far cheaper than widening a tested public contract.
+     */
+    public static List<X509Certificate> clientCertificateChain(Path certPath) {
+        return PemKeyLoader.certificateChain(certPath);
+    }
+
+    /**
      * {@code "  warn: "}-prefixed (the two-space prefix every {@code sdd} warning uses) when
      * {@code keyPath} is group- or world-readable, null otherwise. A PEM private key is a
      * plaintext secret on disk, and this is the environment where that matters — but
@@ -368,6 +384,31 @@ public final class HttpClients {
         String using = truststore != null ? "truststore " + truststore : "(JDK default truststore)";
         String detail = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
         return "TLS handshake with " + host + " failed using " + using + ": " + detail;
+    }
+
+    /**
+     * {@link #tlsFailureMessage}, extended with the explanation the plan's "The failure this will
+     * most likely hit first" section calls out by name: curl trusts the OS certificate store
+     * (macOS keychain; {@code /etc/ssl/certs} on Linux), the JDK trusts only its own {@code
+     * cacerts}, so a corporate CA installed system-wide but never imported into the JDK produces
+     * exactly this handshake failure while {@code curl -v} against the same URL succeeds — from
+     * which a reasonable operator concludes {@code sdd} is broken rather than that trust is
+     * misconfigured. Reuses {@link #tlsFailureMessage} for the host/truststore-naming half (the
+     * assertion in {@code HttpClientsTlsConfigTest} that this method's output {@code startsWith}
+     * the base message is what pins that this is genuinely reused, not a second implementation)
+     * and appends the "curl succeeding proves nothing here" sentence plus the two fixes
+     * ({@code tls.truststore}, or importing the CA into {@code cacerts}) — never a third,
+     * independent message. {@code AtlassianProbe}/{@code RestClient} deliberately keep calling the
+     * un-extended {@link #tlsFailureMessage} — Atlassian's failure table in
+     * {@code docs/atlassian-runbook.md} and two tests ({@code HttpClientsTest},
+     * {@code AtlassianProbeTest}) already pin that exact byte-for-byte text, and this is a new,
+     * separate entry point precisely so extending the model-endpoint message never touches it.
+     */
+    public static String modelTlsFailureMessage(String host, Path truststore, Throwable cause) {
+        return tlsFailureMessage(host, truststore, cause) + " — a working \"curl\" to this same URL "
+                + "does not mean the JDK trusts this certificate chain: curl trusts the OS certificate "
+                + "store, the JDK trusts only its own cacerts. Fix by setting tls.truststore in sdd.yml "
+                + "to the corporate CA chain, or by importing that CA into $JAVA_HOME/lib/security/cacerts.";
     }
 
     /**

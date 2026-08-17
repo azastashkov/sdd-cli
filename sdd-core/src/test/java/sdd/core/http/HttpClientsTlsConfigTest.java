@@ -6,11 +6,13 @@ import sdd.core.config.AtlassianProxy;
 import sdd.core.config.AtlassianTls;
 import sdd.core.config.ConfigException;
 
+import javax.net.ssl.SSLHandshakeException;
 import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.KeyStore;
+import java.security.cert.X509Certificate;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
@@ -211,5 +213,48 @@ class HttpClientsTlsConfigTest {
                 .isInstanceOf(ConfigException.class)
                 .hasMessage("atlassian.tls.truststore_password: environment variable "
                         + "CORP_TRUSTSTORE_PASSWORD is not set");
+    }
+
+    // --- Phase 3: clientCertificateChain / modelTlsFailureMessage ---------------------------
+
+    // sdd doctor's TLS pre-flight validation and diagnostics (Phase 3) live in sdd-cli and need
+    // the parsed client certificate's subject/expiry for a message, but PemKeyLoader is
+    // package-private to sdd.core.http — this is the thin, public passthrough that lets them get
+    // at it without a second PEM parser.
+    @Test
+    void clientCertificateChainExposesThePemKeyLoaderParseResultPublicly() throws Exception {
+        CertFixtures fixtures = new CertFixtures(dir);
+        fixtures.generate();
+
+        List<X509Certificate> chain = HttpClients.clientCertificateChain(fixtures.clientCertPem());
+
+        assertThat(chain).hasSize(1);
+        assertThat(chain.get(0).getSubjectX500Principal().getName()).contains("sdd-test-client");
+    }
+
+    // "The failure this will most likely hit first" (plan): curl succeeding against a corporate
+    // gateway is not evidence the JDK's cacerts trusts the same chain. modelTlsFailureMessage
+    // extends tlsFailureMessage's host/truststore naming (reused, not reimplemented — the assertion
+    // below pins that the base text is a literal prefix) with that explanation and the two fixes.
+    @Test
+    void modelTlsFailureMessageExtendsTheBaseMessageWithTheCurlVersusJdkTrustExplanation() {
+        Path truststore = Path.of("/etc/ssl/corp-ca.p12");
+        SSLHandshakeException cause = new SSLHandshakeException("PKIX path building failed");
+
+        String base = HttpClients.tlsFailureMessage("corp-ift.example", truststore, cause);
+        String extended = HttpClients.modelTlsFailureMessage("corp-ift.example",
+                truststore, cause);
+
+        assertThat(extended).startsWith(base);
+        assertThat(extended).contains("curl").contains("does not mean the JDK trusts")
+                .contains("tls.truststore").contains("cacerts");
+    }
+
+    @Test
+    void modelTlsFailureMessageNamesJdkDefaultWhenNoTruststoreConfigured() {
+        String extended = HttpClients.modelTlsFailureMessage("corp-ift.example", null,
+                new SSLHandshakeException("PKIX path building failed"));
+
+        assertThat(extended).contains("(JDK default truststore)").contains("cacerts");
     }
 }
