@@ -54,6 +54,28 @@ class HttpClientsTlsConfigTest {
         assertThat(client.sslContext()).isNotNull();
     }
 
+    // Fix 1 (Gate re-review): models.<name>.tls.truststore_password now exists (ConfigLoader used
+    // to hardcode a null password, so no keytool-produced — necessarily password-protected — store
+    // could ever be opened). A wrong password must fail naming the same "tls.truststore <path>"
+    // key trustManagersWithAMissingTlsConfigTruststoreStaysGenericAndNeverClaimsAnAtlassianConfigKey
+    // already pins for this neutral TlsConfig-typed path, and must never echo either password.
+    @Test
+    void trustManagersWithAWrongTruststorePasswordFailsNamingTheConfigKeyNeverThePassword() throws Exception {
+        Path p12 = dir.resolve("corp-ca.p12");
+        KeyStore ks = KeyStore.getInstance("PKCS12");
+        ks.load(null, "correct-pw".toCharArray());
+        try (var out = Files.newOutputStream(p12)) {
+            ks.store(out, "correct-pw".toCharArray());
+        }
+        TlsConfig tls = new TlsConfig(p12, "wrong-pw", null, null, null, null, null, List.of());
+
+        assertThatThrownBy(() -> HttpClients.trustManagers(tls))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageStartingWith("cannot load tls.truststore " + p12)
+                .hasMessageNotContaining("wrong-pw")
+                .hasMessageNotContaining("correct-pw");
+    }
+
     @Test
     void trustManagersWithNoTruststoreConfiguredReturnsNullMeaningJdkDefaultTrust() {
         TlsConfig tls = new TlsConfig(null, null, null, null, null, null, null, List.of());

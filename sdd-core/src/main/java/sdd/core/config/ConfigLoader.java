@@ -456,9 +456,15 @@ public final class ConfigLoader {
      * the message is captured in {@code keyPasswordError} and raised byte-identically at the point
      * the key is actually about to be read.
      *
-     * <p>No {@code truststore_password} key exists here (unlike {@code atlassian.tls}) — the plan's
-     * example config has none, and adding one nobody asked for would be speculative surface this
-     * feature otherwise avoids everywhere else.
+     * <p>{@code truststore_password} follows that same deferred-credential idiom, copied from
+     * {@code parseAtlassianTls} exactly: an unset {@code ${VAR}} must not fail {@code
+     * ConfigLoader.load} for a command that never opens this endpoint's truststore, so the message
+     * is captured in {@code truststorePasswordError} and raised byte-identically at the point
+     * {@link sdd.core.http.HttpClients#trustManagers(TlsConfig)} is about to actually open the
+     * file. An earlier draft of this method had no such key at all — {@code keytool} itself
+     * refuses to create a password-less keystore ("Keystore password must be at least 6
+     * characters"), so that draft could never actually be satisfied by anything the JDK's own
+     * tooling produces; see the Gate re-review that added this key for the full failure mode.
      */
     private static TlsConfig parseModelTls(String path, Object node, Function<String, String> env) {
         if (!(node instanceof Map<?, ?> m)) {
@@ -488,7 +494,21 @@ public final class ConfigLoader {
         Object rawTruststore = m.get("truststore");
         Path truststore = rawTruststore == null ? null : Path.of(str(rawTruststore, env, path + ".truststore"));
 
-        return new TlsConfig(truststore, null, null, cert, key, keyPassword, keyPasswordError, protocols);
+        Object rawTruststorePassword = m.get("truststore_password");
+        String truststorePassword = null;
+        String truststorePasswordError = null;
+        // Deferred-credential idiom, copied from parseAtlassianTls above: an unset ${VAR} must not
+        // fail config loading for a command that never opens this endpoint's truststore.
+        if (rawTruststorePassword != null) {
+            try {
+                truststorePassword = str(rawTruststorePassword, env, path + ".truststore_password");
+            } catch (ConfigException e) {
+                truststorePasswordError = e.getMessage();
+            }
+        }
+
+        return new TlsConfig(truststore, truststorePassword, truststorePasswordError, cert, key, keyPassword,
+                keyPasswordError, protocols);
     }
 
     @SuppressWarnings("unchecked")

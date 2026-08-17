@@ -217,6 +217,84 @@ class ConfigLoaderTest {
         assertThat(tls.truststore()).isNull();
     }
 
+    // Fix 1 (Gate re-review): models.<name>.tls had no truststore_password key at all, so the
+    // documented remedy for the plan's #1 predicted failure (curl trusts the OS store, the JDK
+    // trusts only its own cacerts — set tls.truststore) could never actually be satisfied by a
+    // keytool-produced store, since keytool itself refuses to create a password-less one
+    // ("Keystore password must be at least 6 characters"). These mirror the equivalent
+    // atlassian.tls.truststore_password tests above exactly.
+
+    @Test
+    void truststorePasswordDefaultsNullWhenOmitted() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL + """
+                  corp:
+                    base_url: https://corp-ift.example/v1
+                    model: DeepSeek-V4-Flash
+                    tls:
+                      cert: /certs/client.crt
+                      key: /certs/client.key
+                      truststore: /etc/ssl/corp-ca.p12
+                """), ENV);
+
+        TlsConfig tls = c.models().get("corp").tls();
+        assertThat(tls.truststorePassword()).isNull();
+        assertThat(tls.truststorePasswordError()).isNull();
+    }
+
+    @Test
+    void unsetTruststorePasswordEnvVarDoesNotFailModelConfigLoadingAndCarriesTheDeferredError() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL + """
+                  corp:
+                    base_url: https://corp-ift.example/v1
+                    model: DeepSeek-V4-Flash
+                    tls:
+                      cert: /certs/client.crt
+                      key: /certs/client.key
+                      truststore: /etc/ssl/corp-ca.p12
+                      truststore_password: ${MODEL_TRUSTSTORE_PASSWORD}
+                """), k -> null);   // no env var resolves — including api_key's own DEEPSEEK_API_KEY,
+                                     // which is fine, exactly as unsetKeyPasswordEnvVarLoadsSuccessfullyAndCarriesTheErrorOnTls
+                                     // above already relies on.
+
+        TlsConfig tls = c.models().get("corp").tls();
+        assertThat(tls.truststorePassword()).isNull();
+        assertThat(tls.truststorePasswordError()).isEqualTo("models.corp.tls.truststore_password: "
+                + "environment variable MODEL_TRUSTSTORE_PASSWORD is not set");
+    }
+
+    @Test
+    void truststorePasswordParsedFromConfigActuallyOpensAPasswordProtectedTruststore() throws Exception {
+        // The regression this whole fix closes: ConfigLoader used to hardcode `null, null` for the
+        // truststore password here, so HttpClients.trustManagers always opened a model truststore
+        // with an empty password — which works only for a password-less store, and keytool refuses
+        // to create one. This builds a REAL password-protected PKCS12 store (6+ character password,
+        // same as keytool would insist on), parses it through the ordinary ConfigLoader.load path,
+        // and proves HttpClients can actually open it — not merely that a string got parsed.
+        Path p12 = ws.resolve("corp-ca.p12");
+        java.security.KeyStore ks = java.security.KeyStore.getInstance("PKCS12");
+        ks.load(null, "s3cr3t-pw".toCharArray());
+        try (var out = Files.newOutputStream(p12)) {
+            ks.store(out, "s3cr3t-pw".toCharArray());
+        }
+
+        SddConfig c = ConfigLoader.load(write(MINIMAL + """
+                  corp:
+                    base_url: https://corp-ift.example/v1
+                    model: DeepSeek-V4-Flash
+                    tls:
+                      cert: /certs/client.crt
+                      key: /certs/client.key
+                      truststore: %s
+                      truststore_password: ${MODEL_TRUSTSTORE_PASSWORD}
+                """.formatted(p12)),
+                k -> "MODEL_TRUSTSTORE_PASSWORD".equals(k) ? "s3cr3t-pw" : ENV.apply(k));
+
+        TlsConfig tls = c.models().get("corp").tls();
+        assertThat(tls.truststorePassword()).isEqualTo("s3cr3t-pw");
+        assertThat(tls.truststorePasswordError()).isNull();
+        assertThat(sdd.core.http.HttpClients.trustManagers(tls)).isNotEmpty();
+    }
+
     @Test
     void certWithoutKeyFailsNamingBothDottedKeys() throws Exception {
         assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """

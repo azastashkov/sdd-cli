@@ -168,52 +168,52 @@ else — Java major version, `sdd.yml` loads, `.sdd/index.db` opens (creating it
 if absent), every configured model endpoint answers a probe (or, with
 `--endpoint <name>`, just that one), and — when `sdd.yml` has an
 `atlassian:` block — one probe per configured Jira/Confluence/Bitbucket site.
-(`DoctorCommand.java:80-138`)
+(`DoctorCommand.java:80-146`)
 
 **Model endpoints authenticated with a client certificate (mutual TLS).** A
 `models.<name>.tls` block (`cert`/`key`/`key_password`/`protocols`/
 `truststore` — see `sdd.yml.example`) authenticates that endpoint with a
 client certificate instead of, or alongside, `api_key`; a plain endpoint with
 no `tls:` block is unaffected by any of what follows
-(`DoctorCommand.java:241-244`). Before probing such an endpoint, `doctor`
+(`DoctorCommand.java:249-252`). Before probing such an endpoint, `doctor`
 runs one pre-flight check, `model:<name>:tls`, that validates exactly what
 would otherwise fail opaquely at the TLS layer
-(`DoctorCommand.java:241-275`):
+(`DoctorCommand.java:249-283`):
 
 | Validated | On failure | Verified |
 |---|---|---|
-| `tls.cert`/`tls.key` exist and are readable, and the key actually parses | Names the path (never file contents); a PKCS#1/SEC1/legacy-encrypted key names the header found and the exact `openssl pkcs8 -topk8 -nocrypt` conversion command | `DoctorCommand.java:247-256`, `HttpClients.java:233-270` |
-| The client certificate is not expired | `client certificate expired <notAfter> (subject=<subject>)` | `DoctorCommand.java:261-267` |
+| `tls.cert`/`tls.key` exist and are readable, and the key actually parses | Names the path (never file contents); a PKCS#1/SEC1/legacy-encrypted key names the header found and the exact `openssl pkcs8 -topk8 -nocrypt` conversion command | `DoctorCommand.java:255-264`, `HttpClients.java:233-270` |
+| The client certificate is not expired | `client certificate expired <notAfter> (subject=<subject>)` | `DoctorCommand.java:269-275` |
 
 Two more things happen alongside that check, printed as `  warn: ` lines —
 same convention as every other `sdd` sub-diagnostic — rather than as a
 pass/fail check, since neither one is itself a reason to distrust the
 endpoint: the client key file is group- or world-readable
-(`HttpClients.java:298-306`, wired at `DoctorCommand.java:257-260`), and the
-certificate expires within 30 days (`DoctorCommand.java:268-274`). The
+(`HttpClients.java:298-306`, wired at `DoctorCommand.java:265-268`), and the
+certificate expires within 30 days (`DoctorCommand.java:276-282`). The
 existing endpoint probe then runs exactly as it always has, whether or not
 the pre-flight check passed — a broken certificate is reported, never hidden,
 but it does not prevent every other check from running
-(`DoctorCommand.java:210-215`) — and one line is added to the diagnostics
+(`DoctorCommand.java:218-223`) — and one line is added to the diagnostics
 file for this endpoint; see "Diagnostics" below.
 
 **The three Atlassian probes**, run only when `config.atlassian() != null`
-(`DoctorCommand.java:135-137`) — a missing `atlassian:` block changes this
+(`DoctorCommand.java:143-145`) — a missing `atlassian:` block changes this
 command's output not at all:
 
 | Site | Probe | Success text | Verified |
 |---|---|---|---|
-| `atlassian:jira` | `GET /rest/api/2/myself` | `HTTP 200 as <name or displayName>` | `DoctorCommand.java:339-342` |
-| `atlassian:confluence` | `GET /rest/api/user/current` | `HTTP 200 as <username or displayName>` | `DoctorCommand.java:343-346` |
-| `atlassian:bitbucket` | `GET /rest/api/1.0/projects/{project}` | `HTTP 200 as <X-AUSERNAME header>` | `DoctorCommand.java:347-363` |
+| `atlassian:jira` | `GET /rest/api/2/myself` | `HTTP 200 as <name or displayName>` | `DoctorCommand.java:347-350` |
+| `atlassian:confluence` | `GET /rest/api/user/current` | `HTTP 200 as <username or displayName>` | `DoctorCommand.java:351-354` |
+| `atlassian:bitbucket` | `GET /rest/api/1.0/projects/{project}` | `HTTP 200 as <X-AUSERNAME header>` | `DoctorCommand.java:355-371` |
 
 Each of the three is **independently optional** — declaring only
 `atlassian.jira` runs only the Jira probe, and the other two lines simply do
-not appear (`DoctorCommand.java:339, 343, 347`). Bitbucket has no
+not appear (`DoctorCommand.java:347, 351, 355`). Bitbucket has no
 `/users/self` resource on Data Center's REST 1.0 API, so its probe reuses the
 one authenticated call it already needs (confirming the configured project is
 reachable) and reads the identity off that response's `X-AUSERNAME` header
-instead of making a second call (`DoctorCommand.java:349-361`,
+instead of making a second call (`DoctorCommand.java:357-369`,
 `AtlassianProbe.java:62-69`).
 
 **Failure diagnostics.** A probe failure's message is built to point at a
@@ -233,7 +233,7 @@ but `AtlassianProbe`'s own `RestClient` is built with no `TransportContext`,
 so it does not apply to `doctor`'s probes specifically). A bad
 `atlassian.tls.truststore` (missing file, unreadable, wrong password) is
 reported against every configured site rather than aborting the rest of
-`doctor`'s checks (`DoctorCommand.java:324-337`).
+`doctor`'s checks (`DoctorCommand.java:332-345`).
 
 A model endpoint's TLS handshake failure gets the same host/truststore
 naming, extended with the specific trap this is most likely to be: **a
@@ -251,15 +251,15 @@ into `$JAVA_HOME/lib/security/cacerts` (`HttpClients.java:407-412`, wired at
 | Flag | Default | Description | Verified |
 |---|---|---|---|
 | `--workspace <dir>` | `.` | Workspace directory | `DoctorCommand.java:38-39` |
-| `--report [path]` | off | Also write a self-contained diagnostics report — default path under `.sdd/diagnostics/` when given with no value, or the exact path given; prints the path plus a one-line note on what is/isn't redacted | `DoctorCommand.java:51-54, 105-107, 140-146` |
-| `--endpoint <name>` | off (probe every configured model) | Probe only this model endpoint instead of every configured tier — for iterating on one endpoint's TLS certificate without waiting for the rest; an unknown name reports `[FAIL] endpoint` rather than silently probing nothing. The `atlassian:*`, java, config and database checks are unaffected either way | `DoctorCommand.java:56-68, 130-138, 188-205` |
+| `--report [path]` | off | Also write a self-contained diagnostics report — default path under `.sdd/diagnostics/` when given with no value, or the exact path given; prints the path plus a one-line note on what is/isn't redacted | `DoctorCommand.java:51-54, 105-107, 148-154` |
+| `--endpoint <name>` | off (probe every configured model) | Probe only this model endpoint instead of every configured tier — for iterating on one endpoint's TLS certificate without waiting for the rest; an unknown name reports `[FAIL] endpoint` rather than silently probing nothing. The `atlassian:*`, java, config and database checks are unaffected either way | `DoctorCommand.java:56-68, 138-146, 196-213` |
 
 **Exit codes**
 
 | Code | Meaning |
 |---|---|
 | `0` | every check passed |
-| `1` | at least one check failed (`DoctorCommand.java:147`, `allOk ? 0 : 1`) |
+| `1` | at least one check failed (`DoctorCommand.java:155`, `allOk ? 0 : 1`) |
 
 **Writes to disk:** `Database.open`'s side effect of creating `.sdd/index.db`
 (and the `.sdd/` directory) if it does not already exist, same as every other
@@ -268,8 +268,8 @@ under `<workspace>/.sdd/diagnostics/` for this invocation (see "Diagnostics"
 below); `--report` either reuses that same file (default path) or writes it
 at the given path instead, and additionally appends a `probe <check>:
 OK|FAIL — <detail>` line for every check (not only the Atlassian ones) plus a
-tail of the 3 most recent other diagnostic files (`DoctorCommand.java:140-146,
-158-176`).
+tail of the 3 most recent other diagnostic files (`DoctorCommand.java:148-154,
+166-184`).
 
 ## Diagnostics
 
@@ -297,10 +297,10 @@ certificate path, its subject and expiry, the TLS protocol actually
 negotiated during the probe (or `?` when the probe never completed a
 handshake — a plain HTTP endpoint, or one that failed before the TLS layer),
 and whether a custom `tls.truststore` was in play — never the key, never
-`tls.key_password` (`DoctorCommand.java:301-319`). The code that builds this
+`tls.key_password` (`DoctorCommand.java:309-327`). The code that builds this
 line never touches the key or its password, and never interpolates the whole
 `TlsConfig`/`ModelEndpoint` record either — only individual accessors like
-`clientCert()`/`truststore()` (`DoctorCommand.java:283-295`) — so it is
+`clientCert()`/`truststore()` (`DoctorCommand.java:291-303`) — so it is
 written the same way every other line in this file is, through
 `DiagnosticWriter`, which still applies the redaction pass described below
 as a backstop.
@@ -308,7 +308,12 @@ as a backstop.
 **Redacted by construction, not by caller discipline.** Every resolved
 Atlassian token and the TLS truststore password are collected once, from the
 whole `atlassian:` config, before anything is written, and every string
-written to the file is scrubbed against that set — plus three
+written to the file is scrubbed against that set. `sdd doctor`'s writer also
+collects every configured model endpoint's `tls.key_password` and
+`tls.truststore_password` the same way (`DiagnosticsSecrets.java:46-91`,
+wired from `DoctorCommand.java:112-119`) — belt-and-braces alongside the
+model-tls line's own "never construct the interpolation" guarantee above,
+not a substitute for it — plus three
 pattern-based rules needing no known-secret list at all: URL userinfo
 elision, `Authorization:` header elision, and a credential-shaped query
 parameter (`token=`/`access_token=`/`pat=`/`password=`/`secret=`/
@@ -323,7 +328,7 @@ the cutoff cannot survive as an unredacted fragment (`DiagnosticWriter.java:126-
 Bitbucket project and issue keys appear unredacted, because a file with them
 scrubbed out would be useless for diagnosis — the header block says this in
 plain words (`DiagnosticHeader.java:59-71`), and `sdd doctor --report` prints
-the same caveat to stdout (`DoctorCommand.java:143-145`). Decide for yourself
+the same caveat to stdout (`DoctorCommand.java:151-153`). Decide for yourself
 whether that satisfies your own sharing policy before pasting a file
 anywhere; if not, redact those manually first.
 

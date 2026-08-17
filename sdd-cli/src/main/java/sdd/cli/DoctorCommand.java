@@ -109,7 +109,15 @@ public final class DoctorCommand implements Callable<Integer> {
             spec.commandLine().getOut().printf("[FAIL] report-path — %s%n", e.getMessage());
             return 1;
         }
-        diagnostics = Diagnostics.openAt(diagFile, commandLine(), atlassianConfig, clock, spec.commandLine().getErr());
+        // Fix 2 (Gate re-review): pass config.models() too, not just atlassianConfig — the model-tls
+        // diagnostic line below is already built to never interpolate a key/truststore password,
+        // but this gives DiagnosticsSecrets a genuine redaction backstop for that guarantee instead
+        // of leaving docs/commands.md's "still applies the redaction pass ... as a backstop" claim
+        // true in prose only. config may be null here (configError case) — Map.of() then, same as
+        // every other model-less workspace.
+        Map<String, ModelEndpoint> models = config != null ? config.models() : Map.of();
+        diagnostics = Diagnostics.openAt(diagFile, commandLine(), atlassianConfig, models, clock,
+                spec.commandLine().getErr());
 
         try {
             int javaMajor = Runtime.version().feature();
@@ -291,7 +299,7 @@ public final class DoctorCommand implements Callable<Integer> {
      * would still have to remember not to rely on it, the safer fix is the one applied everywhere
      * else in this codebase for exactly this shape of secret ({@code ConfigLoader}'s
      * {@code apiKeyError}/{@code keyPasswordError} idiom): never construct the interpolation in the
-     * first place. {@code DoctorCommandTest#aConfiguredKeyPasswordNeverReachesStdoutOrDiagnostics}
+     * first place. {@code DoctorCommandTest#aConfiguredKeyPasswordNeverReachesStdoutOrTheDiagnosticsFile}
      * proves this holds for a real encrypted key's password end to end, not merely by code reading.
      *
      * <p>Best-effort: a re-parse failure here (already reported as a failed

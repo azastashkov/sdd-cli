@@ -84,6 +84,10 @@ models:
       key_password: ${MODEL_KEY_PASSWORD}   # omit when the key is unencrypted
       protocols: [TLSv1.2]                     # omit to leave the JDK's default negotiation alone
       truststore: /path/to/corp-ca.p12         # only if the JDK does not already trust the chain
+      truststore_password: ${MODEL_TRUSTSTORE_PASSWORD}   # omit if the truststore has no
+                                                # password — `keytool` itself refuses to create a
+                                                # password-less PKCS12/JKS store, so this is
+                                                # required for anything keytool produced
 ```
 
 `cert`/`key` are the exact PEM pair a working `curl --cert`/`--key` command already uses for the
@@ -127,7 +131,7 @@ say "down":
 | Symptom | Meaning | Fix |
 |---|---|---|
 | `... rejected the token in $JIRA_API_KEY (HTTP 401) — reissue it` (or 403) | The PAT is expired, revoked, or wrong | Mint a new token for that product and re-export the named variable |
-| `TLS handshake with <host> failed using truststore <path>: ...` (or `(JDK default truststore)`) | A private CA is in play and either isn't configured, or the configured file/password is wrong | Point `atlassian.tls.truststore` at the corporate CA chain (`.jks` or `.p12`), and check `truststore_password` |
+| `TLS handshake with <host> failed using truststore <path>: ...` (or `(JDK default truststore)`) | A private CA is in play and either isn't configured, or the configured file/password is wrong | Point `atlassian.tls.truststore` at the corporate CA chain (`.jks` or `.p12`), and check `truststore_password` — `atlassian.tls.truststore_password` for an Atlassian site, `models.<name>.tls.truststore_password` for a model endpoint (see "1a. Model endpoints with mutual TLS" above) |
 | `transport error talking to <site>: ...` mentioning a timeout or connection refused | Usually the corporate proxy — either not configured, misconfigured, or the host needs a `no_proxy` bypass | Check `atlassian.proxy`; try adding the failing host to `no_proxy` if it should be reachable directly |
 
 Every probe result — including failures — is also written to a diagnostics file under

@@ -79,6 +79,13 @@ models:
   #                                               # the JDK trusts the same chain
   #                                               # (curl trusts the OS store; the
   #                                               # JDK trusts only its own cacerts)
+  #     truststore_password: ${MODEL_TRUSTSTORE_PASSWORD}   # omit if the
+  #                                               # truststore has no password —
+  #                                               # note `keytool` itself refuses
+  #                                               # to create a password-less
+  #                                               # PKCS12/JKS store, so this is
+  #                                               # required for anything keytool
+  #                                               # produced
   #   extra_body:
   #     repetition_penalty: 1
 

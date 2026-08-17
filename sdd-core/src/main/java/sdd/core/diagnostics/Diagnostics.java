@@ -1,11 +1,13 @@
 package sdd.core.diagnostics;
 
 import sdd.core.config.AtlassianConfig;
+import sdd.core.config.ModelEndpoint;
 
 import java.io.PrintWriter;
 import java.nio.file.Path;
 import java.time.InstantSource;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The one-line facade every command's {@code call()} uses to open its diagnostics file: allocate a
@@ -57,12 +59,31 @@ public final class Diagnostics {
      * Like {@link #open}, but at a CALLER-CHOSEN path rather than one {@link DiagnosticsDir}
      * allocates — {@code sdd doctor --report <path>} is the one place a human names the exact
      * output location instead of accepting the default under {@code .sdd/diagnostics/}.
+     *
+     * <p>Delegates to {@link #openAt(Path, List, AtlassianConfig, Map, InstantSource, PrintWriter)}
+     * with no model endpoints — every existing caller of this overload predates model mTLS and
+     * never writes a model-tls diagnostic line, so there is nothing to add to the redaction set.
      */
     public static DiagnosticWriter openAt(Path file, List<String> argv, AtlassianConfig atlassian,
             InstantSource clock, PrintWriter warnOut) {
+        return openAt(file, argv, atlassian, Map.of(), clock, warnOut);
+    }
+
+    /**
+     * {@link #openAt(Path, List, AtlassianConfig, InstantSource, PrintWriter)}, plus the loaded
+     * config's {@code models:} block — {@code sdd doctor} is the one caller that ever writes a
+     * {@code model-tls} diagnostic line ({@code DoctorCommand.recordModelTlsDiagnostics}), and that
+     * line is already built to never interpolate a model endpoint's {@code tls.key_password}/
+     * {@code tls.truststore_password}. Passing {@code models} here adds both secrets to {@link
+     * DiagnosticsSecrets#collect(AtlassianConfig, Map)}'s redaction set anyway, as a genuine
+     * backstop for that guarantee rather than a documentation claim about one — see {@link
+     * DiagnosticsSecrets}'s class javadoc.
+     */
+    public static DiagnosticWriter openAt(Path file, List<String> argv, AtlassianConfig atlassian,
+            Map<String, ModelEndpoint> models, InstantSource clock, PrintWriter warnOut) {
         try {
-            DiagnosticWriter writer = new DiagnosticWriter(file, DiagnosticsSecrets.collect(atlassian), clock,
-                    warnOut);
+            DiagnosticWriter writer = new DiagnosticWriter(file, DiagnosticsSecrets.collect(atlassian, models),
+                    clock, warnOut);
             writer.header(DiagnosticHeader.render(argv, atlassian, RuntimeInfo.sddVersion(), RuntimeInfo.gitCommit()));
             return writer;
         } catch (RuntimeException e) {
