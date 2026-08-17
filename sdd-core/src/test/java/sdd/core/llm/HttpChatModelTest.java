@@ -5,8 +5,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import sdd.core.config.ConfigException;
 import sdd.core.config.ModelEndpoint;
+import sdd.core.http.TlsConfig;
 
 import java.net.http.HttpClient;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -119,6 +121,25 @@ class HttpChatModelTest {
                 .isInstanceOf(ConfigException.class)
                 .hasMessage("models.flash.api_key: environment variable ROUTER_AI_API_KEY is not set");
         wm.verify(0, postRequestedFor(urlEqualTo("/v1/chat/completions")));   // failed before any call
+    }
+
+    // Follow-up fix: this is the "no doctor label" path the report calls out — an escalation
+    // tier's TLS misconfiguration reaching HttpChatModel directly, never through sdd doctor (which
+    // supplies its own "model:<name>:tls" check label around HttpClients.keyManagers' message).
+    // Outside that label, the message alone has to name the real sdd.yml key: HttpClients has no
+    // endpoint name of its own, so this depends entirely on ConfigLoader.parseModelTls having
+    // stamped this TlsConfig's configPath — never a bare "tls.cert" that names no key that
+    // actually exists in sdd.yml.
+    @Test
+    void constructingOnAnEndpointWithAMissingModelCertFailsNamingTheModelsConfigKeyWithNoDoctorLabelInvolved() {
+        TlsConfig tls = new TlsConfig(null, null, null, Path.of("/certs/client.crt"),
+                Path.of("/certs/client.key"), null, null, List.of(), "models.corp.tls");
+        ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "test-model", null,
+                256, 0.0, Duration.ofSeconds(5), Map.of(), null, tls);
+
+        assertThatThrownBy(() -> new HttpChatModel(ep))
+                .isInstanceOf(ConfigException.class)
+                .hasMessage("models.corp.tls.cert /certs/client.crt does not exist");
     }
 
     @Test
