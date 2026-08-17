@@ -2,6 +2,7 @@ package sdd.core.config;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import sdd.core.http.TlsConfig;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -158,6 +159,131 @@ class ConfigLoaderTest {
         ModelEndpoint coder = c.models().get("coder");   // MINIMAL's coder has no api_key at all
         assertThat(coder.apiKey()).isNull();
         assertThat(coder.apiKeyError()).isNull();
+    }
+
+    // --- models.<name>.tls (mutual-TLS client-certificate auth) --------------------------------
+
+    @Test
+    void tlsIsNullWhenNoTlsBlockIsConfigured() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL), ENV);
+        assertThat(c.models().get("planner").tls()).isNull();
+        assertThat(c.models().get("coder").tls()).isNull();
+    }
+
+    @Test
+    void parsesTlsBlockWithEveryKeyAndResolvesEnvRefs() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL + """
+                  corp:
+                    base_url: https://corp-ift.example/v1
+                    model: DeepSeek-V4-Flash
+                    tls:
+                      cert: ${MODEL_CERT_PATH}
+                      key: ${MODEL_KEY_PATH}
+                      key_password: ${MODEL_KEY_PASSWORD}
+                      protocols: [TLSv1.2]
+                      truststore: /etc/ssl/corp-ca.p12
+                """), k -> switch (k) {
+                    case "MODEL_CERT_PATH" -> "/certs/client.crt";
+                    case "MODEL_KEY_PATH" -> "/certs/client.key";
+                    case "MODEL_KEY_PASSWORD" -> "s3cret";
+                    default -> ENV.apply(k);
+                });
+
+        TlsConfig tls = c.models().get("corp").tls();
+        assertThat(tls).isNotNull();
+        assertThat(tls.clientCert()).isEqualTo(Path.of("/certs/client.crt"));
+        assertThat(tls.clientKey()).isEqualTo(Path.of("/certs/client.key"));
+        assertThat(tls.keyPassword()).isEqualTo("s3cret");
+        assertThat(tls.keyPasswordError()).isNull();
+        assertThat(tls.protocols()).containsExactly("TLSv1.2");
+        assertThat(tls.truststore()).isEqualTo(Path.of("/etc/ssl/corp-ca.p12"));
+    }
+
+    @Test
+    void tlsBlockDefaultsKeyPasswordProtocolsAndTruststoreWhenOmitted() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL + """
+                  corp:
+                    base_url: https://corp-ift.example/v1
+                    model: DeepSeek-V4-Flash
+                    tls:
+                      cert: /certs/client.crt
+                      key: /certs/client.key
+                """), ENV);
+
+        TlsConfig tls = c.models().get("corp").tls();
+        assertThat(tls.keyPassword()).isNull();
+        assertThat(tls.keyPasswordError()).isNull();
+        assertThat(tls.protocols()).isEmpty();
+        assertThat(tls.truststore()).isNull();
+    }
+
+    @Test
+    void certWithoutKeyFailsNamingBothDottedKeys() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                  corp:
+                    base_url: https://corp-ift.example/v1
+                    model: DeepSeek-V4-Flash
+                    tls:
+                      cert: /certs/client.crt
+                """), ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("models.corp.tls.cert")
+                .hasMessageContaining("models.corp.tls.key");
+    }
+
+    @Test
+    void keyWithoutCertFailsNamingBothDottedKeys() throws Exception {
+        assertThatThrownBy(() -> ConfigLoader.load(write(MINIMAL + """
+                  corp:
+                    base_url: https://corp-ift.example/v1
+                    model: DeepSeek-V4-Flash
+                    tls:
+                      key: /certs/client.key
+                """), ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("models.corp.tls.cert")
+                .hasMessageContaining("models.corp.tls.key");
+    }
+
+    // The regression that matters most for key_password specifically: sdd status/index/clean never
+    // open a model's client key, so an unset ${MODEL_KEY_PASSWORD} must not fail config load —
+    // exactly the deferred-credential idiom api_key already follows above.
+    @Test
+    void unsetKeyPasswordEnvVarLoadsSuccessfullyAndCarriesTheErrorOnTls() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL + """
+                  corp:
+                    base_url: https://corp-ift.example/v1
+                    model: DeepSeek-V4-Flash
+                    tls:
+                      cert: /certs/client.crt
+                      key: /certs/client.key
+                      key_password: ${MODEL_KEY_PASSWORD}
+                """), k -> null);   // no env var resolves — including api_key's own DEEPSEEK_API_KEY,
+                                     // which is fine: MINIMAL's coder has no api_key and planner's
+                                     // is deferred too, so nothing here fails config load eagerly.
+
+        TlsConfig tls = c.models().get("corp").tls();
+        assertThat(tls.keyPassword()).isNull();
+        assertThat(tls.keyPasswordError())
+                .isEqualTo("models.corp.tls.key_password: environment variable MODEL_KEY_PASSWORD is not set");
+    }
+
+    @Test
+    void anEndpointMayCarryBothApiKeyAndTls() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL + """
+                  corp:
+                    base_url: https://corp-ift.example/v1
+                    model: DeepSeek-V4-Flash
+                    api_key: ${DEEPSEEK_API_KEY}
+                    tls:
+                      cert: /certs/client.crt
+                      key: /certs/client.key
+                """), ENV);
+
+        ModelEndpoint corp = c.models().get("corp");
+        assertThat(corp.apiKey()).isEqualTo("sk-test-123");
+        assertThat(corp.tls()).isNotNull();
+        assertThat(corp.tls().clientCert()).isEqualTo(Path.of("/certs/client.crt"));
     }
 
     @Test
