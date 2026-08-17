@@ -465,6 +465,15 @@ public final class ConfigLoader {
      * refuses to create a password-less keystore ("Keystore password must be at least 6
      * characters"), so that draft could never actually be satisfied by anything the JDK's own
      * tooling produces; see the Gate re-review that added this key for the full failure mode.
+     *
+     * <p>{@code path} — already {@code "models.<name>.tls"}, threaded through every dotted key
+     * above — is also stamped onto the returned {@link TlsConfig} as {@code configPath}, the same
+     * way {@code parseAtlassianTls} stamps {@code "atlassian.tls"} onto the {@code AtlassianTls} it
+     * builds. That is what lets {@code HttpClients} name this endpoint's own {@code models.<name>.tls.cert}/
+     * {@code .key}/{@code .truststore} in a load-time TLS error thrown later — a bare {@code
+     * PKIX path building failed} or generic {@code tls.cert ... does not exist} sends an operator
+     * hunting for a top-level {@code tls:} block that does not exist in {@code sdd.yml}, when the
+     * key they actually need to edit is right here.
      */
     private static TlsConfig parseModelTls(String path, Object node, Function<String, String> env) {
         if (!(node instanceof Map<?, ?> m)) {
@@ -508,7 +517,7 @@ public final class ConfigLoader {
         }
 
         return new TlsConfig(truststore, truststorePassword, truststorePasswordError, cert, key, keyPassword,
-                keyPasswordError, protocols);
+                keyPasswordError, protocols, path);
     }
 
     @SuppressWarnings("unchecked")
