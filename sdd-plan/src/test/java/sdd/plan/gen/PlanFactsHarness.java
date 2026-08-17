@@ -11,6 +11,7 @@ import sdd.core.llm.ModelException;
 import sdd.core.llm.Usage;
 import sdd.core.retrieve.FtsRetriever;
 import sdd.core.testing.ScriptedChatModel;
+import sdd.plan.impact.Closure;
 import sdd.plan.impact.ImpactAnalysis;
 import sdd.plan.impact.ImpactResult;
 import sdd.plan.impact.Seed;
@@ -23,8 +24,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -85,6 +88,7 @@ class PlanFactsHarness {
 
             emit(db, spec, declared, name, "deterministic", unavailableModel(), out, report);
             emit(db, spec, declared, name, "declared", declaringModel(declared, spec), out, report);
+            changeSet(db, specFile, report);
         }
         Files.writeString(out.resolve("report.md"), report.toString());
         System.out.println("wrote " + out.resolve("report.md"));
@@ -127,6 +131,48 @@ class PlanFactsHarness {
                     .append(sectionLength(prompt, repo) == 0 ? "  (NO SECTION)" : "")
                     .append(prompt.contains("…(truncated)") ? "" : "").append('\n');
         }
+    }
+
+    /**
+     * The change-set half: what a {@code --since} seed source would contribute, and what the
+     * deterministic closure would then produce from it. Driven by a sidecar {@code <spec>.since}
+     * holding {@code <repo>=<range>} lines; specs without one are skipped.
+     *
+     * <p>Seeded through {@link Closure#expand} directly rather than through {@code ImpactAnalysis},
+     * because the point is to measure the deterministic reach of git-derived seeds with no model in
+     * the loop at all.
+     */
+    private void changeSet(Database db, Path specFile, StringBuilder report) throws IOException {
+        Path sinceFile = specFile.resolveSibling(
+                specFile.getFileName().toString().replace(".md", ".since"));
+        if (!Files.exists(sinceFile)) return;
+
+        Map<String, String> ranges = new LinkedHashMap<>();
+        for (String line : Files.readAllLines(sinceFile)) {
+            String l = line.trim();
+            if (l.isEmpty() || l.startsWith("#") || !l.contains("=")) continue;
+            ranges.put(l.substring(0, l.indexOf('=')).trim(), l.substring(l.indexOf('=') + 1).trim());
+        }
+        List<ChangeSetProbe.RepoChange> changes = ChangeSetProbe.compute(db.jdbi(), ranges);
+
+        report.append("\n### change set (prototype)\n");
+        for (ChangeSetProbe.RepoChange c : changes) {
+            report.append(c.repo()).append(' ').append(c.range()).append(" -> ")
+                    .append(c.resolution()).append(' ')
+                    .append(c.fromSha()).append("..").append(c.toSha()).append('\n');
+            c.files().forEach(f -> report.append("  ").append(f.changeKind().charAt(0)).append(' ')
+                    .append(f.path()).append(f.fqcn() == null ? "   (no indexed type)"
+                            : "   -> " + f.fqcn() + (f.isApi() ? " [api]" : "")).append('\n'));
+        }
+        report.append("would-be seeds:\n").append(ChangeSetProbe.seedLines(changes));
+
+        Set<String> roots = changes.stream().filter(c -> !c.mapped().isEmpty())
+                .map(ChangeSetProbe.RepoChange::repo)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Closure.Expansion expansion = Closure.expand(db.jdbi(), roots);
+        report.append("closure from git seeds: roots=").append(roots).append('\n');
+        expansion.added().forEach(a -> report.append("  + ").append(a.repo()).append(" | ")
+                .append(a.role()).append(" | ").append(a.annotation()).append('\n'));
     }
 
     /** Characters between "## &lt;repo&gt;" in the evidence block and the next "## ". */
