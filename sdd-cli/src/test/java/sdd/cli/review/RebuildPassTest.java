@@ -438,6 +438,82 @@ class RebuildPassTest {
     }
 
     @Test
+    void aMidPassCheckoutFailureIsRoutedThroughProgressNoteNotErrDirectly() throws Exception {
+        FixtureRepo lib = FixtureRepo.in(ws, "lib");
+        gradlewStub(lib);
+        lib.commit("base");
+        String libBase = lib.headSha();
+
+        writeSddYml(ws);
+        SddConfig config = ConfigLoader.load(ws);
+        PlanModel plan = new PlanModel("SPEC-9", 1, "", "",
+                List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", libBase)),
+                List.of(List.of("lib")), List.of(), List.of(), List.of());
+
+        // SUCCEEDED with a real root and a non-null branch that simply was never created in the
+        // repo — unlike aProviderWithNoRunBranchOnRecordIsAlsoAStagingFailure's null-branch case
+        // (caught by unstageable() before any checkout is attempted), this reaches RunGit.checkout
+        // and makes IT throw: the one mid-loop warn: (RebuildPass.java's checkout try/catch)
+        // ruling P4 is about.
+        RunState state = new RunState("SPEC-9-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/never-created", "deadbeef",
+                        "ok", null)), null, 0L);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
+        StringWriter errOut = new StringWriter();
+        StringWriter progressOut = new StringWriter();
+        sdd.cli.progress.PlainProgress progress =
+                new sdd.cli.progress.PlainProgress(new PrintWriter(progressOut));
+
+        RebuildPass.Outcome outcome = RebuildPass.run(Set.of("lib"), plan, state,
+                Map.of("lib", lib.path()), config, runDir, store, false,
+                new PrintWriter(errOut), progress);
+
+        assertThat(outcome.stagingFailures()).hasSize(1);
+        assertThat(outcome.stagingFailures().get(0)).startsWith("lib: ");
+        // Identical wording to the direct err.println this replaced (PlainProgress.note passes
+        // text straight through, per its own javadoc) — but on progress's writer, not on err.
+        assertThat(progressOut.toString())
+                .contains("warn: could not stage lib at its checkpoint: ")
+                .contains("verdicts for its consumers do not reflect this run's upstream code");
+        assertThat(errOut.toString()).doesNotContain("could not stage lib");
+    }
+
+    @Test
+    void theSameMidPassWarningIsSilentButTheFindingSurvivesWhenProgressIsOff() throws Exception {
+        FixtureRepo lib = FixtureRepo.in(ws, "lib");
+        gradlewStub(lib);
+        lib.commit("base");
+        String libBase = lib.headSha();
+
+        writeSddYml(ws);
+        SddConfig config = ConfigLoader.load(ws);
+        PlanModel plan = new PlanModel("SPEC-9", 1, "", "",
+                List.of(new PlanModel.PlanRepo("lib", "seed", "SEED", "minor", libBase)),
+                List.of(List.of("lib")), List.of(), List.of(), List.of());
+
+        RunState state = new RunState("SPEC-9-v1", List.of(
+                new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/never-created", "deadbeef",
+                        "ok", null)), null, 0L);
+
+        RunStore store = RunStore.system();
+        Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
+        StringWriter errOut = new StringWriter();
+
+        // Old 9-arg overload — no Progress argument at all, so RebuildPass falls back to
+        // Progress.noOp() internally.
+        RebuildPass.Outcome outcome = RebuildPass.run(Set.of("lib"), plan, state,
+                Map.of("lib", lib.path()), config, runDir, store, false,
+                new PrintWriter(errOut));
+
+        // No live heads-up when progress is off — but the finding is not lost: stagingFailures
+        // still drives the durable report.md and this review's exit code either way.
+        assertThat(outcome.stagingFailures()).hasSize(1);
+        assertThat(errOut.toString()).isEmpty();
+    }
+
+    @Test
     void whenContractRecheckThrowsEveryRepoIsStillRestored() throws Exception {
         // ContractRecheck.check now degrades gracefully for a non-git provider path (it can't
         // throw that way any more), but RunStore.readContract can still throw for a genuinely

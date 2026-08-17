@@ -12,6 +12,7 @@ import sdd.cli.implement.RunStore;
 import sdd.cli.implement.Scheduler;
 import sdd.cli.implement.NpmOverlay;
 import sdd.cli.implement.VerificationTasks;
+import sdd.core.progress.Progress;
 import sdd.core.toolchain.Mechanism;
 import sdd.index.extract.BuildModel;
 import sdd.index.npm.NpmExtractor;
@@ -57,9 +58,20 @@ public final class RebuildPass {
     private RebuildPass() {
     }
 
+    /** Every pre-existing caller ({@code RebuildPassTest}, {@code ReviewCommand} before this task)
+     *  keeps compiling against {@link Progress#noOp()} — the same trailing-parameter-overload
+     *  convention {@code Orchestrator}'s {@code nodeHome}/{@code progress} constructors use. */
     public static Outcome run(Collection<String> repos, PlanModel plan, RunState state,
                               Map<String, Path> paths, SddConfig config, Path runDir, RunStore store,
                               boolean recheckContracts, PrintWriter err) {
+        return run(repos, plan, state, paths, config, runDir, store, recheckContracts, err,
+                Progress.noOp());
+    }
+
+    public static Outcome run(Collection<String> repos, PlanModel plan, RunState state,
+                              Map<String, Path> paths, SddConfig config, Path runDir, RunStore store,
+                              boolean recheckContracts, PrintWriter err, Progress progress) {
+        Progress safeProgress = progress != null ? progress : Progress.noOp();
         Map<String, RepoRun> byName = new LinkedHashMap<>();
         for (RepoRun run : state.repos()) {
             byName.put(run.repo(), run);
@@ -113,7 +125,23 @@ public final class RebuildPass {
                     // reach the report and the exit code, not just this warn line. Inside the
                     // subset it is ALSO its own failed verdict.
                     stagingFailures.add(repo + ": " + e.getMessage());
-                    err.println("warn: could not stage " + repo + " at its checkpoint: "
+                    // Ruling P4 (binding, scoped by the task to exactly this line): this checkout
+                    // failure is the one warn: in this pass that fires mid-loop, so it is routed
+                    // through Progress.note rather than straight to err — unlike unstageable()'s
+                    // warn (repos skipped before any checkout is attempted) and the restore-failure
+                    // warn in the finally below (after every repo's rebuild is already done), which
+                    // stay on err directly, unchanged. This pass does not itself call phase()/
+                    // start() on progress (out of scope for this task — see the task report), so in
+                    // the CURRENT wiring none of the three actually paints over a live frame yet;
+                    // this call site is where that plumbing lands regardless, so a future caller
+                    // that does drive start()/finish() around this loop gets the collision handling
+                    // for free. note()'s wording and stream are identical to the direct err.println
+                    // this replaces under PlainProgress (its own javadoc: "passed straight through
+                    // unchanged"); under a truly no-op Progress (--quiet, SDD_PROGRESS=off) this one
+                    // heads-up goes quiet along with everything else progress renders — the finding
+                    // itself is not lost, since stagingFailures (added just above) still drives the
+                    // durable report.md and this review's exit code either way.
+                    safeProgress.note("warn: could not stage " + repo + " at its checkpoint: "
                             + e.getMessage() + " — verdicts for its consumers do not reflect "
                             + "this run's upstream code");
                     if (repos.contains(repo)) {
