@@ -128,6 +128,102 @@ against it and settling every item in
 ["First contact"](#3-first-contact-what-to-check-when-something-disagrees-with-what-sdd-expects)
 below.
 
+### Quickstart: from three tokens to a verified connection
+
+The four steps below are the whole path for the Atlassian side. Each links to
+the section that explains it properly — read those when a step does not behave.
+Model endpoints over mutual TLS are configured separately, under
+[Model endpoints over mutual TLS](#model-endpoints-over-mutual-tls) below.
+
+**1. Export the tokens and URLs from `~/.zshrc`.** Issue one Personal Access
+Token per product yourself — see
+[§4](#4-obtaining-personal-access-tokens) — then:
+
+```sh
+# --- Atlassian, corporate network ---
+export JIRA_URL=https://jira.corp.local
+export CONFLUENCE_URL=https://confluence.corp.local
+export BITBUCKET_URL=https://bitbucket.corp.local
+
+export JIRA_API_KEY=...
+export CONFLUENCE_API_KEY=...
+export BITBUCKET_API_KEY=...
+
+# only when the truststore in step 2 has a password
+export CORP_TRUSTSTORE_PASSWORD=...
+```
+
+Then `source ~/.zshrc`, or open a new shell. `sdd` reads credentials from the
+**process environment** — there is no dotenv reader, so an unsourced profile
+reads as an unset variable. Never pass a token as a command-line argument: it
+lands in shell history and is visible to `ps` on a shared machine.
+
+**2. Add the `atlassian:` block to `<workspace>/sdd.yml`,** copying it from
+`sdd.yml.example` — the full annotated form, including the `tls:` and `proxy:`
+blocks, is in [§1](#jira-confluence-bitbucket-data-center):
+
+```yaml
+atlassian:
+  jira:
+    base_url: ${JIRA_URL}
+    token: ${JIRA_API_KEY}
+  confluence:
+    base_url: ${CONFLUENCE_URL}
+    token: ${CONFLUENCE_API_KEY}
+  bitbucket:
+    base_url: ${BITBUCKET_URL}
+    token: ${BITBUCKET_API_KEY}
+    project: TRADING            # EXACT case — see "First contact" risk 1
+    default_reviewers: [alice, bob]
+
+  write_back: none              # none | comment — Jira comments at both gates
+  pull_requests: false          # Bitbucket PRs at Gate 2
+```
+
+Each site is independently optional; declare only the ones this estate uses.
+Two asymmetries are deliberate: **`base_url` fails config loading immediately**
+when missing, while **an unset `${...}` token does not** — that is raised only
+when something actually calls the site, naming the variable to reissue, so
+`sdd index` never needs a Bitbucket token it will never use. And `write_back`
+and `pull_requests` are **off by default**: turn them on once the read path
+works, not before.
+
+**3. Verify with `sdd doctor`** — see [§2](#2-run-sdd-doctor-first). Each
+configured site prints one line:
+
+```
+[ OK ] atlassian:jira — https://jira.corp.local → HTTP 200 as a.zastashkov
+```
+
+That is the whole check: no spec, no index, no run required.
+
+**Expect the trust store to be the first thing that fails.** A working `curl`
+is *not* evidence `sdd` will connect — curl reads the OS certificate store, the
+JDK reads only its own `cacerts`, so a corporate CA installed system-wide but
+not into the JDK yields `PKIX path building failed`. The fix is the `tls:`
+block in §1. `doctor`'s messages name the remedy directly: 401 → reissue the
+named token; PKIX → truststore; timeout → proxy.
+
+**4. Then exercise the real path:**
+
+```sh
+sdd index
+sdd plan PROJ-123          # writes PROJ-123.spec.md, then STOPS for review
+```
+
+Check by hand that the spec drew requirements from **both** the ticket and its
+linked Confluence page, that `## Sources` lists every fetched document with its
+version, and that anything unfollowed appears under Open Questions. The full
+sequence continues in [Running the pipeline](#running-the-pipeline).
+
+Before relying on any of it, read
+["First contact"](#3-first-contact-what-to-check-when-something-disagrees-with-what-sdd-expects) —
+none of this has ever run against a live instance, and that section lists the
+nine specific assumptions most likely to be wrong, each with the symptom it
+produces. When something does break,
+[`sdd doctor --report`](#the-single-best-tool-for-reporting-a-problem-sdd-doctor---report)
+writes the one file worth sending.
+
 ### 1. Configure `<workspace>/sdd.yml`
 
 #### Model endpoints over mutual TLS
