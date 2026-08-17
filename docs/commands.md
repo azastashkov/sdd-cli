@@ -57,10 +57,12 @@ answer instead of a reassuring one.
 
 ### 1. Verified by test
 
-The Jira/Confluence/Bitbucket integration is exercised by 1,591 tests
-(`sdd-core` 331, `sdd-cli` 671, `sdd-index` 242, `sdd-plan` 227, `sdd-agent`
-120 — `./gradlew clean build`, current tree) against WireMock stand-ins for all
-three products and real local bare git repositories for the push/clone path.
+The Jira/Confluence/Bitbucket integration, and the mutual-TLS model endpoints,
+are exercised by 1,665 tests (`sdd-core` 395, `sdd-cli` 681, `sdd-index` 242,
+`sdd-plan` 227, `sdd-agent` 120 — `./gradlew clean build`, current tree)
+against WireMock stand-ins for all three Atlassian products, a
+client-auth-requiring WireMock server for the mTLS handshake, and real local
+bare git repositories for the push/clone path.
 **Say plainly what this proves and does not prove:** it proves `sdd`'s own
 code does what its authors think it does WHEN the server responds exactly
 the way `sdd` assumes it will — the request shapes it sends, the response
