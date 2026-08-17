@@ -13,9 +13,8 @@ import java.io.PrintWriter;
         description = "Spec-Driven Development pipeline for multi-repo estates",
         mixinStandardHelpOptions = true,
         version = "sdd 0.1.0",
-        subcommands = {DoctorCommand.class, IndexCommand.class, PlanCommand.class, GraphCommand.class,
-                ImplementCommand.class, ReviewCommand.class, CleanCommand.class, StatusCommand.class,
-                ExplainCommand.class})
+        subcommands = {DoctorCommand.class, IndexCommand.class, PlanCommand.class,
+                ImplementCommand.class, ReviewCommand.class, CleanCommand.class, StatusCommand.class})
 public final class SddCli {
     // scope = INHERIT because picocli does NOT inherit parent options: without it, only
     // "sdd --quiet index" would parse, and "sdd index --quiet" — the form a user actually
