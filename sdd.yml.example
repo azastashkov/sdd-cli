@@ -72,7 +72,7 @@ models:
   # (bad_certificate) says nothing useful.
   #
   # coder:
-  #   base_url: ${MODEL_URL}          # MODEL_URL MINUS its /chat/completions
+  #   base_url: ${MODEL_URL}             # MODEL_URL MINUS its /chat/completions
   #                                      # suffix — sdd appends that itself, so a
   #                                      # full completions URL here becomes
   #                                      # /chat/completions/chat/completions
@@ -185,14 +185,14 @@ excludes: []              # workspace directories to skip
 #   # it is raised only when something actually calls this site, naming the variable to reissue
 #   # (PATs expire) in the error.
 #   jira:
-#     base_url: https://jira.corp.local
+#     base_url: ${JIRA_URL}       # this site's base URL, e.g. https://jira.corp.local
 #     token: ${JIRA_API_KEY}
 #     timeout_seconds: 30       # default when omitted
 #   confluence:
-#     base_url: https://confluence.corp.local
+#     base_url: ${CONFLUENCE_URL} # e.g. https://confluence.corp.local
 #     token: ${CONFLUENCE_API_KEY}
 #   bitbucket:
-#     base_url: https://bitbucket.corp.local
+#     base_url: ${BITBUCKET_URL}  # e.g. https://bitbucket.corp.local
 #     token: ${BITBUCKET_API_KEY}
 #     project: TRADING           # the Bitbucket project key repos live under
 #     default_reviewers: [alice, bob]

@@ -192,13 +192,13 @@ atlassian:
     no_proxy: [jira.corp.local, confluence.corp.local, bitbucket.corp.local]
 
   jira:
-    base_url: https://jira.corp.local
+    base_url: ${JIRA_URL}              # this site's base URL, e.g. https://jira.corp.local
     token: ${JIRA_API_KEY}
   confluence:
-    base_url: https://confluence.corp.local
+    base_url: ${CONFLUENCE_URL}        # e.g. https://confluence.corp.local
     token: ${CONFLUENCE_API_KEY}
   bitbucket:
-    base_url: https://bitbucket.corp.local
+    base_url: ${BITBUCKET_URL}         # e.g. https://bitbucket.corp.local
     token: ${BITBUCKET_API_KEY}
     project: TRADING            # the Bitbucket project key repos live under, EXACT case
     default_reviewers: [alice, bob]
