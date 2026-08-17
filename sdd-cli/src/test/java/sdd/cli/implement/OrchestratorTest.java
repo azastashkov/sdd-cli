@@ -14,8 +14,10 @@ import sdd.core.llm.ChatResponse;
 import sdd.core.llm.ModelException;
 import sdd.core.llm.ToolCall;
 import sdd.core.llm.Usage;
+import sdd.core.progress.Progress;
 import sdd.core.testing.FixtureRepo;
 import sdd.core.testing.ScriptedChatModel;
+import sdd.index.testing.RecordingProgress;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -24,6 +26,10 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -445,6 +451,106 @@ class OrchestratorTest {
         assertThat(result.exitCode()).isEqualTo(0);
         assertThat(result.state().stateOf("alib")).isEqualTo(RepoState.SUCCEEDED);
         assertThat(result.state().stateOf("blib")).isEqualTo(RepoState.SUCCEEDED);
+    }
+
+    private Orchestrator orchestratorWithProgress(ChatModel model, Progress progress) {
+        return new Orchestrator(new RepoStepRunner(db.jdbi()),
+                List.of(new Orchestrator.ModelTier(model, "qwen")),
+                repo -> RunnerSettings.defaults(null), new RunStore(InstantSource.fixed(Instant.EPOCH)),
+                30_000_000L, Map.of(), new MavenLocalPublisher(), new JarBuilder(), null, progress);
+    }
+
+    @Test
+    void bothReposStartBeforeEitherFinishesThroughProgress() throws Exception {
+        // Same mutual-wait technique as independentReposRunConcurrentlyWithinALayer, immediately
+        // above: it is what makes genuine overlap deterministic rather than a timing-dependent
+        // hope. Proves the design's central claim for `implement`: Progress.start()/finish() are
+        // driven off real RepoState transitions (Orchestrator.transitionLocked) on the one
+        // genuinely parallel command — a RecordingProgress fed by a second, parallel callback
+        // stream could show the same two events in EITHER order without ever proving they were
+        // actually concurrent; this fixture forces it.
+        String scriptA = "touch " + ws.resolve("a-started") + "; i=0; "
+                + "while [ ! -f " + ws.resolve("b-started") + " ] && [ $i -lt 80 ]; do sleep 0.1; i=$((i+1)); done; "
+                + "[ -f " + ws.resolve("b-started") + " ]";
+        String scriptB = "touch " + ws.resolve("b-started") + "; i=0; "
+                + "while [ ! -f " + ws.resolve("a-started") + " ] && [ $i -lt 80 ]; do sleep 0.1; i=$((i+1)); done; "
+                + "[ -f " + ws.resolve("a-started") + " ]";
+        FixtureRepo alib = repoWith("alib", scriptA);
+        FixtureRepo blib = repoWith("blib", scriptB);
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("alib", step("alib", alib.path()),
+                "blib", step("blib", blib.path()));
+        ChatModel parallelSafe = req -> call("x", "done", "{\"result\":\"success\",\"summary\":\"ok\"}");
+        RecordingProgress progress = new RecordingProgress();
+
+        Orchestrator.RunResult result = orchestratorWithProgress(parallelSafe, progress)
+                .run(runDir, planTwoIndependent(alib.headSha(), blib.headSha()), steps);
+
+        assertThat(result.exitCode()).isEqualTo(0);
+        List<String> events = progress.events();
+        assertThat(events).contains("start:alib", "start:blib", "finish:alib", "finish:blib");
+        int firstFinish = events.indexOf("finish:alib") < events.indexOf("finish:blib")
+                ? events.indexOf("finish:alib") : events.indexOf("finish:blib");
+        // Both starts landed before either finish — the only way each repo's verify stub could
+        // ever have completed at all, since each one blocks until it sees the OTHER's marker,
+        // which its counterpart only writes after ITS OWN start() has already fired.
+        assertThat(events.subList(0, firstFinish)).contains("start:alib", "start:blib");
+    }
+
+    @Test
+    void progressPaintingDoesNotHappenUnderOrchestratorsOwnLock() throws Exception {
+        // Ruling P3 ("paint off-lock"): if Orchestrator ever called progress.start() while still
+        // holding its own internal `lock` — the one every repo thread contends on for every
+        // state transition — then a slow progress call for one repo would stall every OTHER
+        // repo's transitionLocked, because they all synchronize on the very same field. This
+        // Progress double makes "alib"'s start() block, then asserts "blib" (an independent,
+        // unrelated repo) still reached its OWN start() while alib's was still blocked — which is
+        // only possible if painting happens after each repo's synchronized(lock) section, not
+        // inside it.
+        FixtureRepo alib = repoWith("alib", "exit 0");
+        FixtureRepo blib = repoWith("blib", "exit 0");
+        Path runDir = new RunStore(InstantSource.fixed(Instant.EPOCH)).create(ws, "S-v1", "{}");
+        Map<String, RepoStep> steps = Map.of("alib", step("alib", alib.path()),
+                "blib", step("blib", blib.path()));
+        ChatModel parallelSafe = req -> call("x", "done", "{\"result\":\"success\",\"summary\":\"ok\"}");
+
+        CountDownLatch alibStartEntered = new CountDownLatch(1);
+        CountDownLatch releaseAlibStart = new CountDownLatch(1);
+        AtomicBoolean blibStartedWhileAlibStillBlocked = new AtomicBoolean(false);
+        Progress blocking = new Progress() {
+            @Override public void phase(String name, int total) { }
+
+            @Override public void start(String item) {
+                if ("alib".equals(item)) {
+                    alibStartEntered.countDown();
+                    try {
+                        releaseAlibStart.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                } else if ("blib".equals(item) && releaseAlibStart.getCount() > 0) {
+                    blibStartedWhileAlibStillBlocked.set(true);
+                }
+            }
+
+            @Override public void finish(String item) { }
+            @Override public void detail(String text) { }
+            @Override public void note(String text) { }
+            @Override public void stop() { }
+        };
+
+        AtomicReference<Orchestrator.RunResult> resultRef = new AtomicReference<>();
+        Thread runThread = new Thread(() -> resultRef.set(orchestratorWithProgress(parallelSafe, blocking)
+                .run(runDir, planTwoIndependent(alib.headSha(), blib.headSha()), steps)));
+        runThread.start();
+        assertThat(alibStartEntered.await(5, TimeUnit.SECONDS))
+                .as("alib's start() must have been entered").isTrue();
+        Thread.sleep(500);   // give blib's own (much faster) transition time to reach its start()
+        releaseAlibStart.countDown();
+        runThread.join(10_000);
+
+        assertThat(blibStartedWhileAlibStillBlocked.get()).isTrue();
+        assertThat(resultRef.get().exitCode()).isEqualTo(0);
     }
 
     private static PlanModel planSharedIncludeBuildProvider(String libBase, String aBase, String bBase) {

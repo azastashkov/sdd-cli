@@ -8,6 +8,7 @@ import sdd.agent.run.StepOutcome;
 import sdd.agent.run.StepResult;
 import sdd.core.llm.ChatModel;
 import sdd.core.llm.ModelException;
+import sdd.core.progress.Progress;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -56,6 +57,10 @@ public final class Orchestrator {
     private final JarBuilder jarBuilder;
     /** Where node lives, for the npm substitution; null takes it from PATH. */
     private final java.nio.file.Path nodeHome;
+    /** Never null (design's P5: a caller must never have to guard a {@link Progress} call) —
+     *  defaults to {@link Progress#noOp()} via the two narrower constructors below, the same
+     *  trailing-parameter-overload convention {@code nodeHome} already established just above. */
+    private final Progress progress;
 
     public record RunResult(int exitCode, RunState state) {
     }
@@ -71,6 +76,21 @@ public final class Orchestrator {
                         Function<String, RunnerSettings> settingsFor, RunStore store, long runTokenBudget,
                         Map<String, RepoPropagation> propagation, MavenLocalPublisher publisher,
                         JarBuilder jarBuilder, java.nio.file.Path nodeHome) {
+        this(runner, ladder, settingsFor, store, runTokenBudget, propagation, publisher, jarBuilder,
+                nodeHome, Progress.noOp());
+    }
+
+    /**
+     * The full constructor — every narrower one above delegates here with {@link Progress#noOp()},
+     * exactly the convention {@code nodeHome} already used one parameter over, so every existing
+     * {@code OrchestratorTest} call site (8-arg or 9-arg) keeps compiling without ever mentioning
+     * progress (design doc, "implement" row: "Add via a constructor overload delegating to the
+     * existing one").
+     */
+    public Orchestrator(RepoStepRunner runner, List<ModelTier> ladder,
+                        Function<String, RunnerSettings> settingsFor, RunStore store, long runTokenBudget,
+                        Map<String, RepoPropagation> propagation, MavenLocalPublisher publisher,
+                        JarBuilder jarBuilder, java.nio.file.Path nodeHome, Progress progress) {
         if (ladder.isEmpty()) {
             throw new IllegalArgumentException("escalation ladder must not be empty");
         }
@@ -83,6 +103,7 @@ public final class Orchestrator {
         this.publisher = publisher;
         this.jarBuilder = jarBuilder;
         this.nodeHome = nodeHome;
+        this.progress = progress != null ? progress : Progress.noOp();
     }
 
     public RunResult run(Path runDir, PlanModel plan, Map<String, RepoStep> steps) {
@@ -99,6 +120,16 @@ public final class Orchestrator {
     /** Resume entry: repos already SUCCEEDED or FAILED in the passed state are not re-run. */
     public RunResult run(Path runDir, PlanModel plan, Map<String, RepoStep> steps, RunState state) {
         String runId = runDir.getFileName().toString();
+        // One estate-wide declaration up front, same as sdd index's per-repo loop — so the parallel
+        // line can show "N/total done" from the first frame instead of just a bare count. On a
+        // --resume, state.repos() is the plan's full runnable set as recorded at the ORIGINAL run's
+        // creation, so total is stable across resumes; repos already SUCCEEDED/FAILED before this
+        // process started are never start()/finish()d again (runRepo's own early return, below,
+        // skips transitionLocked entirely for them), so a resume's "done" count under-reports work
+        // finished in an earlier process — a real but minor cosmetic gap, not a correctness one
+        // (state.json itself, which sdd status reads, is unaffected), left as-is rather than adding
+        // a second, transitionLocked-independent way to seed "done".
+        progress.phase("implement", state.repos().size());
         AtomicReference<RuntimeException> fatal = new AtomicReference<>();
         try {
             synchronized (lock) {
@@ -153,6 +184,8 @@ public final class Orchestrator {
     /** One repo, walking the escalation ladder. Returns false when the walk must stop (a pause landed). */
     private boolean runRepo(Path runDir, String runId, PlanModel plan, Map<String, RepoStep> steps,
                             RunState state, String repo) {
+        Runnable entryPaint;
+        boolean skippedUpstream;
         synchronized (lock) {
             if (state.pausedReason() != null) {
                 return false;
@@ -166,12 +199,15 @@ public final class Orchestrator {
                         "run token budget exhausted (" + state.tokensSpent() + " tokens)");
                 return false;
             }
-            if (Scheduler.blockedByUpstream(repo, plan.edges(), state)) {
-                transitionLocked(runDir, state, repo, RepoState.SKIPPED_UPSTREAM_FAILED, null, null,
-                        "upstream failed");
-                return true;
-            }
-            transitionLocked(runDir, state, repo, RepoState.IN_PROGRESS, null, null, "");
+            skippedUpstream = Scheduler.blockedByUpstream(repo, plan.edges(), state);
+            entryPaint = skippedUpstream
+                    ? transitionLocked(runDir, state, repo, RepoState.SKIPPED_UPSTREAM_FAILED, null,
+                            null, "upstream failed")
+                    : transitionLocked(runDir, state, repo, RepoState.IN_PROGRESS, null, null, "");
+        }
+        entryPaint.run();
+        if (skippedUpstream) {
+            return true;
         }
         RepoStep step = steps.get(repo);
         String branch = "sdd/" + runId + "/" + slug(repo);
@@ -270,11 +306,13 @@ public final class Orchestrator {
             store.writeTranscript(runDir, repo, transcript);
             store.writeEdits(runDir, repo, edits);
             if (endpointTrouble(e)) {
+                Runnable paint;
                 synchronized (lock) {
                     pauseLocked(runDir, state, "model endpoint unavailable: " + e.getMessage());
-                    transitionLocked(runDir, state, repo, RepoState.PAUSED_ENDPOINT, branch, null,
-                            e.getMessage());
+                    paint = transitionLocked(runDir, state, repo, RepoState.PAUSED_ENDPOINT, branch,
+                            null, e.getMessage());
                 }
+                paint.run();
                 return false;
             }
             throw e;   // 4xx configuration errors: captured by the unit task into fatal
@@ -316,28 +354,34 @@ public final class Orchestrator {
                 store.writeEdits(runDir, repo, edits);
                 if (!published.ok()) {
                     if (InfraClassifier.isInfra(published.log())) {
+                        Runnable paint;
                         synchronized (lock) {
                             pauseLocked(runDir, state, "infrastructure failure publishing " + repo
                                     + " — fix the environment and resume");
-                            transitionLocked(runDir, state, repo, RepoState.PAUSED_INFRA, branch, null,
-                                    attemptTag + "publish: " + summarize(published.log()));
+                            paint = transitionLocked(runDir, state, repo, RepoState.PAUSED_INFRA, branch,
+                                    null, attemptTag + "publish: " + summarize(published.log()));
                         }
+                        paint.run();
                         return false;
                     }
+                    Runnable paint;
                     synchronized (lock) {
-                        transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
+                        paint = transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
                                 attemptTag + "publish failed: " + summarize(published.log()));
                     }
+                    paint.run();
                     return true;
                 }
             }
             if (!packNpm(repo, step, events)) {
                 store.writeCompatGates(runDir, repo, List.copyOf(gates.values()));
                 store.writeAgentEvents(runDir, repo, events);
+                Runnable paint;
                 synchronized (lock) {
-                    transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
+                    paint = transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
                             attemptTag + "npm pack failed");
                 }
+                paint.run();
                 return true;
             }
             List<PlanModel.PlanContract> provided = providedContracts(plan, repo);
@@ -385,10 +429,12 @@ public final class Orchestrator {
                         store.writeAgentEvents(runDir, repo, events);
                         store.writeTranscript(runDir, repo, transcript);
                         store.writeEdits(runDir, repo, edits);
+                        Runnable paint;
                         synchronized (lock) {
-                            transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
+                            paint = transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
                                     attemptTag + "type-incompatible drift: " + summarize(verdict.report()));
                         }
+                        paint.run();
                         return true;
                     }
                 }
@@ -419,10 +465,12 @@ public final class Orchestrator {
                         store.writeAgentEvents(runDir, repo, events);
                         store.writeTranscript(runDir, repo, transcript);
                         store.writeEdits(runDir, repo, edits);
+                        Runnable paint;
                         synchronized (lock) {
-                            transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
+                            paint = transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
                                     attemptTag + "binary-incompatible drift: " + drift);
                         }
+                        paint.run();
                         return true;
                     }
                 }
@@ -431,26 +479,32 @@ public final class Orchestrator {
             store.writeAgentEvents(runDir, repo, events);
             store.writeTranscript(runDir, repo, transcript);
             store.writeEdits(runDir, repo, edits);
+            Runnable paint;
             synchronized (lock) {
-                transitionLocked(runDir, state, repo, RepoState.SUCCEEDED, branch, sha,
+                paint = transitionLocked(runDir, state, repo, RepoState.SUCCEEDED, branch, sha,
                         attemptTag + outcome.summary());
             }
+            paint.run();
         } else if (outcome.result() == StepResult.INFRA) {
+            Runnable paint;
             synchronized (lock) {
                 pauseLocked(runDir, state, "infrastructure failure in " + repo
                         + " — fix the environment and resume");
-                transitionLocked(runDir, state, repo, RepoState.PAUSED_INFRA, branch, null,
+                paint = transitionLocked(runDir, state, repo, RepoState.PAUSED_INFRA, branch, null,
                         attemptTag + outcome.summary(), outcome.result().name());
             }
+            paint.run();
             return false;
         } else {
+            Runnable paint;
             synchronized (lock) {
                 // outcome.result() is no longer folded into the detail text itself — it is now
                 // carried as failureCode, and ReviewReport renders that in its own bracket ahead of
                 // this detail. Repeating it here would print it twice on every FAILED line.
-                transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
+                paint = transitionLocked(runDir, state, repo, RepoState.FAILED, branch, null,
                         attemptTag + outcome.summary(), outcome.result().name());
             }
+            paint.run();
         }
         return true;
     }
@@ -667,20 +721,54 @@ public final class Orchestrator {
      *  leaving the field absent (design 4C amendment; see {@link RepoRun#failureCode()}) — so an
      *  absent code in {@code state.json} or in the Gate-2 report means "not attributable to a step
      *  result", never "nothing failed". */
-    private void transitionLocked(Path runDir, RunState state, String repo, RepoState to,
-                                  String branch, String sha, String detail) {
-        transitionLocked(runDir, state, repo, to, branch, sha, detail, null);
+    private Runnable transitionLocked(Path runDir, RunState state, String repo, RepoState to,
+                                      String branch, String sha, String detail) {
+        return transitionLocked(runDir, state, repo, to, branch, sha, detail, null);
     }
 
-    /** Caller must hold lock. failureCode is the {@code StepResult} name of the repo's final
-     *  attempt (design 4C amendment; see {@link RepoRun#failureCode()}), or null when there was
-     *  none to report. */
-    private void transitionLocked(Path runDir, RunState state, String repo, RepoState to,
-                                  String branch, String sha, String detail, String failureCode) {
+    /**
+     * Caller must hold lock. failureCode is the {@code StepResult} name of the repo's final
+     * attempt (design 4C amendment; see {@link RepoRun#failureCode()}), or null when there was
+     * none to report.
+     *
+     * <p><b>Ruling P3:</b> the {@code state.json}/event-log write happens here, still under {@link
+     * #lock} — unchanged from before progress existed. What IS new is the return value: which
+     * {@link Progress} call (if any) this landed transition corresponds to is decided right here,
+     * right after {@link RunStore#writeState} returns — "the event [is determined] inside {@code
+     * transitionLocked}" — but handed back as a {@link Runnable} rather than invoked. Every call
+     * site runs it only after its own {@code synchronized (lock)} block has closed — "PAINT
+     * off-lock" — so a slow terminal write (or a live renderer's own internal monitor, briefly held
+     * by the scheduled tick) can never serialize behind, or be serialized by, {@link #lock}, which
+     * is the one lock every genuinely-parallel repo thread in this class contends on. Reusing
+     * {@code lock} itself for rendering — the alternative this avoids — would couple "persist
+     * state.json" to "write to stderr" and invent a lock-ordering hazard in the one command here
+     * that is actually parallel.
+     */
+    private Runnable transitionLocked(Path runDir, RunState state, String repo, RepoState to,
+                                      String branch, String sha, String detail, String failureCode) {
         RepoState from = state.stateOf(repo);
         state.set(repo, to, branch, sha, detail, failureCode);
         store.appendEvent(runDir, repo, from, to, detail);
         store.writeState(runDir, state);
+        return paintAction(repo, to);
+    }
+
+    /**
+     * The design doc's mapping table, as code: {@code IN_PROGRESS} starts an item, every terminal
+     * outcome finishes it (advancing "done" — {@link Progress#finish} is idempotent per item, so a
+     * repo that somehow reached a terminal state twice cannot double-count), and a run-level pause
+     * stops the whole line (a paused run has nothing left to show progress on). Every {@link
+     * RepoState} is listed explicitly, {@code PENDING} included even though {@link
+     * #transitionLocked} never targets it — an exhaustive switch over a repo's own state enum is
+     * the one place a future eighth state cannot silently fall through unhandled.
+     */
+    private Runnable paintAction(String repo, RepoState to) {
+        return switch (to) {
+            case IN_PROGRESS -> () -> progress.start(repo);
+            case SUCCEEDED, FAILED, SKIPPED_UPSTREAM_FAILED -> () -> progress.finish(repo);
+            case PAUSED_INFRA, PAUSED_ENDPOINT -> progress::stop;
+            case PENDING -> () -> { };
+        };
     }
 
     /**
