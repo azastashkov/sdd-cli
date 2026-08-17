@@ -115,7 +115,7 @@ public final class ImpactAnalysis {
                 affected.add(new AffectedRepo(root, "seed", "SEED",
                         coversByRepo.getOrDefault(root, List.of()), reasons));
             }
-            expansion = Closure.expand(jdbi, roots);
+            expansion = Closure.expand(jdbi, roots, scan.anchorTypes());
             affected.addAll(expansion.added());
         }
         warnings.addAll(expansion.warnings());

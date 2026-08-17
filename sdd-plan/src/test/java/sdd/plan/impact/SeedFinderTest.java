@@ -72,6 +72,29 @@ class SeedFinderTest {
     }
 
     @Test
+    void aClassTouchpointRecordsTheResolvedTypeAsAnAnchor() {
+        // The anchor set is what lets the closure ask "does this consumer use the thing that
+        // CHANGED" instead of "does it use anything at all". It must be the resolved fqcn, not the
+        // spelling the spec used, because the spec may write a bare simple name.
+        NormalizedSpec s = spec(List.of(new Touchpoint(Touchpoint.Kind.CLASS, "LoyaltyTier")), List.of());
+
+        SeedFinder.SeedScan scan = SeedFinder.find(db.jdbi(), new FtsRetriever(db.jdbi()), s);
+
+        assertThat(scan.anchorTypes()).containsExactly("com.acme.pricing.LoyaltyTier");
+    }
+
+    @Test
+    void nonTypeTouchpointsContributeNoAnchors() {
+        // An endpoint or a repo is not a type; anchoring on one would silently narrow the
+        // annotation against a set that cannot match any api_usage row.
+        NormalizedSpec s = spec(List.of(new Touchpoint(Touchpoint.Kind.REPO, "svc-pricing")), List.of());
+
+        SeedFinder.SeedScan scan = SeedFinder.find(db.jdbi(), new FtsRetriever(db.jdbi()), s);
+
+        assertThat(scan.anchorTypes()).isEmpty();
+    }
+
+    @Test
     void verblessEndpointTouchpointMatchesAnyVerb() {
         NormalizedSpec s = spec(List.of(new Touchpoint(Touchpoint.Kind.ENDPOINT, "/price/1")),
                 List.of());

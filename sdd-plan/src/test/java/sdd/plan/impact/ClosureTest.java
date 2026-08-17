@@ -54,6 +54,38 @@ class ClosureTest {
     }
 
     @Test
+    void anAnchoredChangeAnnotatesOnlyConsumersOfTheTypesThatChanged() {
+        // The unanchored count(*) asks "does this repo use anything at all from that repo", never
+        // "does it use the thing that changed". Measured on the real estate it scored 3/5 and 1/5.
+        Closure.Expansion unrelated = Closure.expand(db.jdbi(), Set.of("lib-api"),
+                Set.of("com.acme.api.SomethingElse"));
+
+        assertThat(unrelated.added()).anySatisfy(a -> {
+            assertThat(a.repo()).isEqualTo("svc-orders");
+            assertThat(a.annotation()).isEqualTo("BUMP_REBUILD_ONLY");
+        });
+
+        Closure.Expansion related = Closure.expand(db.jdbi(), Set.of("lib-api"),
+                Set.of("com.acme.api.PriceApi"));
+
+        assertThat(related.added()).anySatisfy(a -> {
+            assertThat(a.repo()).isEqualTo("svc-orders");
+            assertThat(a.annotation()).isEqualTo("CODE_CHANGE_LIKELY");
+        });
+    }
+
+    @Test
+    void anUnanchoredChangeKeepsTheOldUnfilteredAnnotation() {
+        // No anchor means no basis for narrowing, and over-reporting is the safe direction.
+        Closure.Expansion expansion = Closure.expand(db.jdbi(), Set.of("lib-api"), Set.of());
+
+        assertThat(expansion.added()).anySatisfy(a -> {
+            assertThat(a.repo()).isEqualTo("svc-orders");
+            assertThat(a.annotation()).isEqualTo("CODE_CHANGE_LIKELY");
+        });
+    }
+
+    @Test
     void repoPulledInByAContractEdgePropagatesOverBuildEdges() {
         // Deliberately a Java-only estate: this is a pre-existing bug, not something multi-toolchain
         // support introduced. expand() drained its BFS queue and only THEN called contracts(), which

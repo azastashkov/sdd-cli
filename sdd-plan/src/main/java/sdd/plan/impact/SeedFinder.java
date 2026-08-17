@@ -25,11 +25,24 @@ import java.util.Set;
 public final class SeedFinder {
     private static final int FTS_LIMIT = 8;
 
-    public record SeedScan(List<Seed> seeds, List<Seed> candidates, List<String> problems) {
+    /**
+     * @param anchorTypes the fully-qualified types this spec is anchored on, from its type-shaped
+     *     touchpoints. Distinct from seeds, which are repos: an anchor names the thing that is
+     *     changing, which is what lets downstream stages ask "does this consumer use the thing that
+     *     changed" rather than "does it use anything at all". Always the RESOLVED fqcn, never the
+     *     spelling the spec used, because a spec may legitimately write a bare simple name.
+     */
+    public record SeedScan(List<Seed> seeds, List<Seed> candidates, List<String> problems,
+                           Set<String> anchorTypes) {
         public SeedScan {
             seeds = List.copyOf(seeds);
             candidates = List.copyOf(candidates);
             problems = List.copyOf(problems);
+            anchorTypes = Set.copyOf(anchorTypes);
+        }
+
+        public SeedScan(List<Seed> seeds, List<Seed> candidates, List<String> problems) {
+            this(seeds, candidates, problems, Set.of());
         }
     }
 
@@ -39,6 +52,7 @@ public final class SeedFinder {
     public static SeedScan find(Jdbi jdbi, Retriever retriever, NormalizedSpec spec) {
         List<Seed> seeds = new ArrayList<>();
         List<String> problems = new ArrayList<>();
+        Set<String> anchorTypes = new LinkedHashSet<>();
         for (Touchpoint touchpoint : spec.touchpoints()) {
             EntityKind kind = toEntityKind(touchpoint.kind());
             Resolution resolution = KbEntities.resolve(jdbi, kind, touchpoint.value());
@@ -48,6 +62,14 @@ public final class SeedFinder {
             } else {
                 for (String repo : resolution.repos()) {
                     seeds.add(new Seed(repo, "touchpoint", label));
+                }
+                // Only type-shaped kinds contribute anchors, and the fqcn is read off the matched
+                // row rather than off the touchpoint's text. EntityMatch.source names the table the
+                // row came from, which is what makes "is this a type" a fact rather than a guess.
+                if (kind == EntityKind.CLASS || kind == EntityKind.SYMBOL) {
+                    resolution.matches().stream()
+                            .filter(m -> "java_type".equals(m.source()))
+                            .forEach(m -> anchorTypes.add(m.detail()));
                 }
             }
         }
@@ -63,7 +85,7 @@ public final class SeedFinder {
                 candidates.add(new Seed(repo, "fts", requirement.id() + " hit: " + hit.identifier()));
             }
         }
-        return new SeedScan(seeds, candidates, problems);
+        return new SeedScan(seeds, candidates, problems, anchorTypes);
     }
 
     private static EntityKind toEntityKind(Touchpoint.Kind kind) {
