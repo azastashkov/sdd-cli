@@ -1,23 +1,23 @@
 # Atlassian Data Center integration — corporate-network runbook
 
 The three products this integration talks to — Jira, Confluence, Bitbucket Data Center — already
-exist inside the destination corporate network, with tokens already minted and already exported
-from `~/.zshrc`. **There is no local Atlassian rig, and there never will be one built by this
-project**: the live-verification run once planned here — replacing every hand-written WireMock
-fixture with a recording against a real instance, and settling every guessed API shape — is
-cancelled. What stands in for it is `api-verification-report.md` (in the requirements this branch
-was built from), which checked every invented request/response shape against Atlassian's own Data
-Center documentation instead. See [`docs/commands.md`](../../docs/commands.md)'s "Atlassian
-integration: what's verified, what's assumed" section for the full, honest breakdown; this file is
-the step-by-step version — what to configure, what `sdd doctor` should say, the sequence to run,
-and — the part that earns this document — what to check first the moment something disagrees with
-what `sdd` expects.
+exist inside the destination corporate network. **There is no local Atlassian rig, and there never
+will be one built by this project**: the live-verification run once planned here — replacing every
+hand-written WireMock fixture with a recording against a real instance, and settling every guessed
+API shape — is cancelled. What stands in for it is `api-verification-report.md` (in the
+requirements this branch was built from), which checked every invented request/response shape
+against Atlassian's own Data Center documentation instead. See [`commands.md`](commands.md)'s
+"Atlassian integration: what's verified, what's assumed" section for the full, honest breakdown;
+this file is the step-by-step version — what to configure, what `sdd doctor` should say, the
+sequence to run, and — the part that earns this document — what to check first the moment
+something disagrees with what `sdd` expects.
 
-The docker-compose rig and the `seed.sh`/`mirror.sh` scripts described at the bottom of this file
-are **not steps to run next**. They remain in the tree for anyone who later wants a local instance
-to test against; they encode working API usage (including the two corrections item 9 of
-`api-verification-report.md` names) and would save that person real time, but standing one up is
-not part of getting this feature running against the real corporate estate.
+**A note on the test fixtures.** The WireMock fixtures this repo's tests run against
+(`sdd-plan/src/test/resources/{jira,confluence}/` and `sdd-cli/src/test/resources/bitbucket/`)
+were hand-written from Atlassian's documented API shapes — none of them was ever recorded from a
+live instance. If you gain access to a real Jira/Confluence/Bitbucket Data Center instance, the
+single highest-value follow-up is re-recording these fixtures against it and settling every item
+in section 4 below.
 
 ## 1. Configure `<workspace>/sdd.yml`
 
@@ -203,30 +203,21 @@ construction; they cannot appear in the file no matter what fails.** Internal ho
 Bitbucket project / Jira / Confluence issue keys DO appear unredacted, because they are necessary
 for diagnosis — the file says so in its own header. Decide for yourself whether that satisfies
 your organization's sharing policy before pasting it anywhere; redact those manually first if it
-doesn't. See [`docs/commands.md`](../../docs/commands.md)'s "Diagnostics" section (under `sdd
-doctor`) for exactly what the file contains, line by line.
+doesn't. See [`commands.md`](commands.md)'s "Diagnostics" section (under `sdd doctor`) for exactly
+what the file contains, line by line.
 
-## 5. The local rig scripts, for anyone who later wants one
+## 5. Obtaining Personal Access Tokens
 
-`scripts/atlassian-dc/docker-compose.yml`, `issue-tokens.sh` and `seed.sh`, plus
-`scripts/bitbucket-dc/mirror.sh`, describe a local Jira/Confluence/Bitbucket Data Center rig built
-against Docker Compose evaluation licences. They are not part of the sequence above and nobody
-needs to run them to use this feature against the real corporate estate — but they encode working
-API usage (`issue-tokens.sh` mints real PATs the documented way; `mirror.sh` mirrors an estate into
-a fresh Bitbucket project the same way `sdd review`'s push path does) and are kept in the tree for
-exactly the person who later wants to test against a disposable local instance. `seed.sh` in
-particular would regenerate this repo's hand-written WireMock fixtures under
-`sdd-plan/src/test/resources/{jira,confluence}/` and `sdd-cli/src/test/resources/bitbucket/` from
-real server responses, replacing this project's own best-effort guesses with recordings — exactly
-the live-verification step this branch's brief describes as cancelled, should anyone want to do it
-later.
+`sdd` never mints a token itself — obtain one Personal Access Token per product yourself, the
+normal Atlassian Data Center way (each product's own profile menu → **Personal Access Tokens** →
+**Create token**), and export it from `~/.zshrc` under the name `sdd.yml` references:
 
-**Retained safety notes, unconditionally, whether or not you ever run these scripts:**
+```sh
+export JIRA_API_KEY=...
+export CONFLUENCE_API_KEY=...
+export BITBUCKET_API_KEY=...
+```
 
-- Never pass a Jira/Confluence/Bitbucket token as a command-line argument — it would land in shell
-  history and be visible to `ps` on a shared machine, even briefly. `sdd.yml`'s `${VAR}` reference
-  is the only supported way to hand `sdd` a credential.
-- `issue-tokens.sh` never prints a token in full — only its last 4 characters, masked.
-- `mirror.sh` rewrites real git remotes (`origin` becomes Bitbucket; the original is preserved as
-  `github`) and prints its full plan, asking for confirmation before its first write (`--yes`
-  skips the prompt) — read what it's about to do before confirming.
+**Never pass a Jira/Confluence/Bitbucket token as a command-line argument** — it would land in
+shell history and be visible to `ps` on a shared machine, even briefly. `sdd.yml`'s `${VAR}`
+reference is the only supported way to hand `sdd` a credential.

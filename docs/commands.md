@@ -46,7 +46,7 @@ Bitbucket.** No Jira/Confluence/Bitbucket Data Center instance has ever been
 reachable from this codebase — the live-verification run that was originally
 planned to replace every hand-written fixture with a recording and settle
 every guessed API shape was cancelled (see
-`scripts/atlassian-dc/README.md`). What exists instead is documentation-level
+[`atlassian-runbook.md`](atlassian-runbook.md)). What exists instead is documentation-level
 verification: every invented request/response shape was checked against
 Atlassian's official Data Center documentation and recorded in
 `api-verification-report.md` (repo root of the requirements this branch was
@@ -86,7 +86,7 @@ in this branch — see below), **2 UNVERIFIABLE** (bucket 3).
 | 6 | Jira `issuelinks[].type.name`/`inward`/`outward` field names | CORRECT |
 | 7 | Jira/Confluence PAT auth via `Authorization: Bearer <token>` | CORRECT |
 | 8 | Jira `GET /rest/api/2/myself` is the whoami endpoint | CORRECT |
-| 9 | Jira/Confluence PAT creation method | **WRONG** — was `PUT`, is `POST /rest/pat/latest/tokens`. **Fixed**: `scripts/atlassian-dc/issue-tokens.sh`'s `issue_pat()` |
+| 9 | Jira/Confluence PAT creation method | **WRONG** — was `PUT`, is `POST /rest/pat/latest/tokens`. **Fixed**: documented in [`atlassian-runbook.md`](atlassian-runbook.md) §5, for the operator minting their own token by hand |
 | 10 | Confluence `GET .../content/{id}?expand=body.storage,version,space` shape | CORRECT |
 | 11 | Confluence `GET .../content?spaceKey=X&title=Y` search shape | CORRECT |
 | 12 | Confluence URL forms (`viewpage.action`, `/display/`, `/spaces/.../pages/`, `/x/`) are genuine Data Center forms | CORRECT |
@@ -148,7 +148,6 @@ to bite first:**
 
 | Assumption | Where | Symptom if wrong |
 |---|---|---|
-| Bitbucket access-token creation accepts an `expiryDays` field | `scripts/atlassian-dc/issue-tokens.sh`'s `issue_bitbucket_token` (rig-bootstrap only, not `sdd`'s runtime) | The field is rejected by the server; drop it and mint a token good until revoked |
 | A Confluence `/x/AbCd` tiny-link redirect is single-hop and same-origin | `ConfluenceClient`'s tiny-link resolution (5-hop cap is defensive, not evidence-based) | A legitimate tiny link resolves to Open Questions as "unfollowed" instead of being read, because the real redirect chain is longer or cross-origin |
 | jsoup's `element.attr("href")` returns the literal, unresolved attribute value against Data Center's real rendered HTML | Jira/Confluence link-harvesting in `sdd-plan/src/main/java/sdd/plan/{jira,confluence}/` | A relative link that should have been followed is silently filtered out (or a link that should have been filtered is followed) |
 | A "blocking" Jira link type's `name` literally contains "block" or "depend" | Same link-harvesting code — admin-configurable per instance | A blocking dependency the estate actually has is missing from the plan's `## Sources`, with no error — it just never gets classified as blocking |
@@ -156,7 +155,6 @@ to bite first:**
 | `findOpenBySourceBranch` assuming at most one OPEN PR per source branch | `BitbucketClient.findOpenBySourceBranch` (`sdd-cli/src/main/java/sdd/cli/review/BitbucketClient.java:80-88`) | If a human manually opens a second PR from the same branch outside `sdd`, only the first result the API happens to return is ever read/updated — the other is silently ignored |
 | The PR-list pagination envelope's field names (`size`/`isLastPage`/`values`) — standard Bitbucket Server shape, never confirmed against a live response; `api-verification-report.md` item 16 verified only the `at=`/`direction=`/`state=` query parameters, not the response envelope | Same method — reads `node.path("values")` with no `isLastPage` check, and never requests a second page (`BitbucketClient.java:80-88`) | A distinct root cause from the row above, with an overlapping symptom: if a matching OPEN PR exists but sits on a later page, it is never seen at all (not merely de-prioritized) — `sdd review` then opens a duplicate PR instead of updating the existing one |
 | `atlassian.proxy` never carries proxy authentication credentials | `sdd.core.http.HttpClients` proxy wiring | Every Atlassian REST call AND the git push hang or fail with a generic 407/connect error on a corporate proxy that requires its own auth — indistinguishable at first glance from a plain network-down failure |
-| Jira Server/DC project-creation body shape (`projectTypeKey`, `projectTemplateKey`, `lead`) | `scripts/atlassian-dc/seed.sh` (rig-bootstrap only, never runs without a rig) | A 400 from Jira is the first thing to fix in `seed.sh`, should anyone build a rig later |
 
 None of the items in this bucket have ever caused a test failure — by
 construction, since nothing in this repo can exercise them against a real
