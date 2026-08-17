@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit;
  * <p><b>One model, two line shapes, chosen by how many items are in flight.</b> The design's
  * sequential format ({@code index}/{@code review}: {@code "4/11  order-service  gradle extract
  * 0:42"}) and parallel format ({@code implement}: {@code "3/11 done  running: order-service
- * 4:12, billing 1:07 (+1)   12:45"}) are driven off the exact same five {@link Progress} events
+ * 4:12, billing 1:07 (+1)  12:45"}) are driven off the exact same five {@link Progress} events
  * — the design's per-command wiring table never asks a caller to declare which shape it wants.
  * The distinguishing signal that already exists is how many items {@link #start} has opened
  * without a matching {@link #finish}: at most one (sequential callers process one item at a
@@ -260,6 +260,16 @@ public final class LiveProgress implements Progress {
 
     private void paintLocked() {
         String content = renderLineLocked();
+        if (content.isEmpty()) {
+            // An event-less renderer (phase/start never called) must never print a bare `\r` + 80
+            // spaces — the root fix for the un-wired-renderer bug class (design review): a caller
+            // that resolves a real LiveProgress but never emits an event must be visibly inert,
+            // protecting every future such caller, not just the one that exposed it. flush() still
+            // runs: every paint attempt flushes (flushesOnEveryFrameSinceACrFrameNeverTriggersAutoflush,
+            // pre-existing), and flushing an empty write buffer has no observable effect of its own.
+            writer.flush();
+            return;
+        }
         if (content.length() > WIDTH) {
             content = content.substring(0, WIDTH);
         }

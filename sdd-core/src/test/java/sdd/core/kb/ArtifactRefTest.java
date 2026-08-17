@@ -5,10 +5,10 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The {@code "grp:name"} validity rule now has one owner (it used to be spelled out twice, in
- * {@code KbEntities.resolveArtifact} and {@code ConsumerFacts.artifactConsumers}), so the shapes
- * it rejects are worth pinning directly rather than only through a resolution that returns
- * nothing for several possible reasons.
+ * The {@code "grp:name"} validity rule now has one owner ({@code KbEntities.resolveArtifact}; a
+ * second copy used to be spelled out in the machinery removed with the {@code graph}/{@code
+ * explain} commands), so the shapes it rejects are worth pinning directly rather than only
+ * through a resolution that returns nothing for several possible reasons.
  */
 class ArtifactRefTest {
     @Test

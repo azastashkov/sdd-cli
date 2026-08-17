@@ -315,6 +315,11 @@ public final class Orchestrator {
                 paint.run();
                 return false;
             }
+            // Same leak this repo would otherwise have on the PAUSED_INFRA/PAUSED_ENDPOINT path
+            // above: progress.start(repo) already ran (entryPaint, IN_PROGRESS), and without a
+            // matching finish this repo would sit in "running:" forever — oldest-first, so at the
+            // head of the line — for a run that is about to abort entirely.
+            progress.finish(repo);
             throw e;   // 4xx configuration errors: captured by the unit task into fatal
         } finally {
             restoreOverlays(overlaysApplied, events);
@@ -779,12 +784,15 @@ public final class Orchestrator {
         return switch (to) {
             case IN_PROGRESS -> () -> progress.start(repo);
             case SUCCEEDED, FAILED, SKIPPED_UPSTREAM_FAILED -> () -> progress.finish(repo);
-            case PAUSED_INFRA, PAUSED_ENDPOINT -> () -> progress.note(pauseNote(repo, detail));
+            case PAUSED_INFRA, PAUSED_ENDPOINT -> () -> {
+                progress.note(pauseNote(repo, detail));
+                progress.finish(repo);
+            };
             case PENDING -> () -> { };
         };
     }
 
-    /** Never a {@code <repo>: } prefix (standing constraint — {@code RebuildPass.java:88-89}
+    /** Never a {@code <repo>: } prefix (standing constraint — {@code RebuildPass.java:100-101}
      *  documents why that exact shape is load-bearing elsewhere, and this seam obeys the same rule
      *  even though nothing here parses it): leads with "paused:" instead. */
     private static String pauseNote(String repo, String detail) {

@@ -139,6 +139,9 @@ public final class IndexCommand implements Callable<Integer> {
                         && results.stream().allMatch(r -> r.status().equals("FAILED"));
                 return allFailed ? 1 : 0;
             } catch (RuntimeException e) {
+                // Same rule as the success path above: stop() (idempotent) erases the live line
+                // before this prints, so "error: ..." doesn't land at column 80 of the last frame.
+                progress.stop();
                 spec.commandLine().getErr().println("error: " + e.getMessage());
                 return 1;
             }

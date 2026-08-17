@@ -53,6 +53,34 @@ class LiveProgressTest {
         return out.substring(lastCr + 1).stripTrailing();
     }
 
+    /**
+     * Fix 1 (root cause): a caller can resolve a real {@link LiveProgress} — starting its
+     * once-a-second ticker thread — and then never call {@link #phase}/{@link #start} at all
+     * (the un-wired-renderer bug: {@code RebuildPass} does exactly this). Before this fix, every
+     * tick still painted a bare {@code \r} + 80 spaces, which on a live TTY could land mid-line
+     * and wipe out unrelated output the ticker knows nothing about. {@code paintLocked}'s early
+     * return on empty rendered content makes an event-less renderer genuinely inert: this waits
+     * for at least one real tick (via the same background scheduler {@code stop()} shuts down,
+     * not a fixed sleep racing wall-clock scheduling) and asserts nothing was written at all.
+     */
+    @Test
+    void anEventLessRendererWritesNothingAtAllEvenAfterATickFires() throws Exception {
+        StringWriter sw = new StringWriter();
+        LiveProgress progress = new LiveProgress(new PrintWriter(sw), InstantSource.system());
+        try {
+            // The scheduler is single-threaded and runs scheduled tasks in order: a task queued
+            // for ~1.2s is guaranteed to run strictly after the first scheduleWithFixedDelay tick
+            // (queued for 1s) has completed.
+            CountDownLatch afterFirstTick = new CountDownLatch(1);
+            progress.scheduler.schedule(afterFirstTick::countDown, 1200, TimeUnit.MILLISECONDS);
+            assertThat(afterFirstTick.await(5, TimeUnit.SECONDS)).isTrue();
+
+            assertThat(sw.toString()).isEmpty();
+        } finally {
+            progress.stop();
+        }
+    }
+
     @Test
     void framesUseCarriageReturnAndNoNewlineBeforeStop() {
         StringWriter sw = new StringWriter();

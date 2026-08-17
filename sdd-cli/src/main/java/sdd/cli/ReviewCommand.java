@@ -129,6 +129,9 @@ public final class ReviewCommand implements Callable<Integer> {
                 }
             }
         } catch (RuntimeException | IOException e) {
+            // Same rule as the success path above: stop() (idempotent) erases the live line
+            // before this prints, so "error: ..." doesn't land at column 80 of the last frame.
+            progress.stop();
             err.println("error: " + e.getMessage());
             return 4;
         } finally {

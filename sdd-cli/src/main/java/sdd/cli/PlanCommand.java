@@ -128,6 +128,10 @@ public final class PlanCommand implements Callable<Integer> {
                 }
                 return hasAtlassianRefs ? normalizeWithAtlassian(config, kinds, outWriter) : normalize(config, outWriter);
             } catch (RuntimeException e) {
+                // Same rule as IndexCommand/ImplementCommand/ReviewCommand: stop() (idempotent)
+                // erases the live line before this prints, so "error: ..." doesn't land at column
+                // 80 of the last frame — reachable here since validate() is the path that paints.
+                progress.stop();
                 errWriter.println("error: " + e.getMessage());
                 return 1;
             }

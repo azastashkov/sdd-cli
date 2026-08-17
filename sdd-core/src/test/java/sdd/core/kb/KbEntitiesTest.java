@@ -13,7 +13,8 @@ import static org.assertj.core.api.Assertions.tuple;
 /**
  * Same fixture/scenarios as sdd-plan's SeedFinderTest — this is the extracted logic those
  * touchpoint resolutions delegate to, so it must resolve every kind identically, plus expose
- * the specific matched row (explain's citation).
+ * the specific matched row (citation detail, previously consumed by the now-deleted explain
+ * command).
  */
 class KbEntitiesTest {
     @TempDir Path ws;

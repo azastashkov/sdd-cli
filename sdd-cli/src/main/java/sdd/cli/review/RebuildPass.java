@@ -101,14 +101,14 @@ public final class RebuildPass {
                 // ReviewReport and InteractiveReview.replaceForRepos parse these lines.
                 if (state.stateOf(repo) != RepoState.SUCCEEDED) {
                     unstageable(repo, "not SUCCEEDED in this run, composed from its working tree",
-                            stagingFailures, err);
+                            stagingFailures, err, safeProgress);
                     continue;
                 }
                 Path root = paths.get(repo);
                 RepoRun run = byName.get(repo);
                 if (root == null || run == null || run.branch() == null) {
                     unstageable(repo, root == null ? "no repo path on record" : "no run branch on record",
-                            stagingFailures, err);
+                            stagingFailures, err, safeProgress);
                     continue;
                 }
                 // A checkout can legitimately fail (uncommitted conflicting changes at review
@@ -194,8 +194,11 @@ public final class RebuildPass {
                     RunGit.checkout(paths.get(entry.getKey()), target);
                 } catch (RuntimeException e) {
                     restoreFailures.add(entry.getKey() + ": " + e.getMessage());
-                    err.println("warn: could not restore " + entry.getKey() + " to " + target
-                            + ": " + e.getMessage());
+                    // Same rule as the checkout/unstageable warns above: a substantive review
+                    // finding, not progress chrome — must reach err unconditionally, choreographed
+                    // around the live line via Progress.suspend rather than left to collide with it.
+                    safeProgress.suspend(() -> err.println("warn: could not restore " + entry.getKey()
+                            + " to " + target + ": " + e.getMessage()));
                 }
             }
         }
@@ -206,10 +209,12 @@ public final class RebuildPass {
      *  opposed to {@link #run}'s inline catch, which handles a checkout that was attempted and
      *  failed. Both are staging failures: the consequence for every downstream verdict is identical. */
     private static void unstageable(String repo, String reason, List<String> stagingFailures,
-                                    PrintWriter err) {
+                                    PrintWriter err, Progress progress) {
         stagingFailures.add(repo + ": " + reason);
-        err.println("warn: could not stage " + repo + " at a checkpoint: " + reason
-                + " — verdicts for its consumers do not reflect this run's upstream code");
+        // Same rule as the checkout-failure warn in run(): reaches err unconditionally, in every
+        // Progress mode, choreographed around the live line via Progress.suspend.
+        progress.suspend(() -> err.println("warn: could not stage " + repo + " at a checkpoint: "
+                + reason + " — verdicts for its consumers do not reflect this run's upstream code"));
     }
 
     /** Mirrors {@code ImplementCommand}'s settingsFor verification-task resolution exactly. */

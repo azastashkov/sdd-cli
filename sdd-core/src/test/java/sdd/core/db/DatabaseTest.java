@@ -161,7 +161,7 @@ class DatabaseTest {
         // V3 is an error (duplicate column javadoc) — and because the version stamp for V2 has already
         // committed by then, the failure leaves the database at 2 with V3's column present, which
         // every later open re-attempts and every later open fails on. Unrecoverable, on the one
-        // operation `sdd graph` and `sdd review` perform as readers.
+        // operation a read-only command like `sdd review` performs as a reader.
         seedV1Workspace(ws);
         int openers = 4;
         CyclicBarrier allReady = new CyclicBarrier(openers);

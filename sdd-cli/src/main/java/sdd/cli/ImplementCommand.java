@@ -409,6 +409,9 @@ public final class ImplementCommand implements Callable<Integer> {
                 return result.exitCode();
             }
         } catch (RuntimeException | java.io.IOException e) {
+            // Same rule as the success path above: stop() (idempotent) erases the live line
+            // before this prints, so "error: ..." doesn't land at column 80 of the last frame.
+            progress.stop();
             err.println("error: " + e.getMessage());
             return 4;
         } finally {

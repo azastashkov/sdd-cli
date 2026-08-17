@@ -344,12 +344,14 @@ diagnostics problem into a failed `sdd` command (`Diagnostics.java:16-29`).
 
 ## Progress reporting
 
-`doctor`, `index`, `implement`, `review` and `plan` report how far a slow run
-has gotten while it is still running, instead of staying silent until
-everything prints at once — `doctor` already had its own `[ OK ]`/`[FAIL]`
-per-probe stream before this feature and is unaffected (see "`sdd doctor`"
-above); the other four are described below. `clean` and `status` do nothing
-slow enough to need it and were never wired.
+`index`, `implement`, `review` and `plan` report how far a slow run has
+gotten while it is still running, instead of staying silent until everything
+prints at once — described below. `doctor` is **not** wired to this feature:
+`DoctorCommand` never calls `SddCli.resolve`, so `--quiet` and
+`SDD_PROGRESS=off` have no effect on it; it keeps the separate `[ OK ]`/
+`[FAIL]` per-probe stream it already had before this feature existed (see
+"`sdd doctor`" above), unaffected either way. `clean` and `status` do nothing
+slow enough to need it and were never wired either.
 
 **It always writes to stderr, never stdout** — the writer is captured once,
 in `SddCli.main`, as `new PrintWriter(System.err, true)`
@@ -382,10 +384,20 @@ live rendering on in CI. `--quiet` is checked before any of this, ahead of
 the whole ladder — it is a command-line choice, not an environment one
 (`ProgressArming.java:32-47`).
 
+**The terminal check is not tied to the stream progress actually writes
+to.** `ConsoleSupport.isTerminal()` reads `System.console()`, which reflects
+the JVM's own stdin/stdout attachment — it says nothing about stderr, and
+the renderer always writes to stderr (above), never the stream this rung
+inspected. So `sdd index 2>progress.log`, run interactively, still has
+`System.console()` return non-null: the ladder selects LIVE, and the raw
+`\r` + space-padding frames land byte-for-byte in `progress.log` instead of
+on a screen — nothing in the ladder asks whether stderr specifically is a
+terminal.
+
 **`--quiet`** is a root-level option with `scope = ScopeType.INHERIT`
 (`SddCli.java:23-26`), so both `sdd --quiet index` and `sdd index --quiet`
 parse and disable progress the same way, regardless of `SDD_PROGRESS` or
-whether stdout is a terminal.
+whether the console is a terminal.
 
 **Plain (piped/CI):** no thread, no timer, no state — `phase`/`start`/
 `detail` are silent by design (rendering any of them would mean remembering
@@ -393,12 +405,12 @@ something this renderer deliberately does not carry), and the only line it
 ever prints is one `println` per finished item, `"<item>  done"`
 (`PlainProgress.java:32-56`). **Never a `<repo>: ` prefix** — that exact
 shape is load-bearing for `ReviewReport`/`InteractiveReview.replaceForRepos`
-to parse (`RebuildPass.java:99-100`) — a mid-pass `note`/`suspend` message is
+to parse (`RebuildPass.java:100-101`) — a mid-pass `note`/`suspend` message is
 passed straight through unchanged instead.
 
 **Live (TTY):** a single self-updating line — `\r` + space-padding +
 `flush()`, truncated to 80 columns, no ANSI, no colour, no new dependency
-(`LiveProgress.java:54-55, 261-283`). A daemon `sdd-progress` thread repaints
+(`LiveProgress.java:54-55, 261-293`). A daemon `sdd-progress` thread repaints
 it once a second via `scheduleWithFixedDelay` (fixed-*rate* would emit a
 catch-up burst after a GC pause); `stop()` erases the line and shuts the
 thread down, so a killed process never leaves a half-drawn line on the
@@ -406,21 +418,23 @@ terminal or a non-daemon thread hanging the JVM (`LiveProgress.java:107-128,
 216-232`). Elapsed time renders as `m:ss` — `0:42`, `4:12`, `12:45`
 (`Elapsed.java:19-24`). The renderer picks its own line shape from how many
 items are simultaneously in flight, with no caller declaring which one it
-wants (`LiveProgress.java:285-322`) — three shapes share the same model:
+wants (`LiveProgress.java:295-332`) — three shapes share the same model:
 
 | Shape | Example | When |
 |---|---|---|
 | Sequential | `4/11  order-service  gradle extract  0:42` | exactly one item in flight (`index`'s per-repo loop) |
-| Parallel | `3/11 done  running: order-service 4:12, billing 1:07 (+1)   12:45` | more than one item in flight (`implement`'s scheduler) |
+| Parallel | `3/11 done  running: order-service 4:12, billing 1:07 (+1)  12:45` | more than one item in flight (`implement`'s scheduler) |
 | Idle | `impact analysis  0:15` | a `phase()` with no `start`/`finish` calls at all (`plan`) |
 
 The parallel line caps named repos at two with `(+N)` for the rest and sorts
 oldest-first — insertion order in a `LinkedHashMap` already is start order,
 so nothing has to re-sort per tick and the two shown names cannot flicker
-between adjacent repos (`LiveProgress.java:74-77, 303-322`). A phase with no
+between adjacent repos (`LiveProgress.java:74-77, 313-332`). A phase with no
 items in flight and no phase name at all (nothing has called `phase()`
-yet, or `review`'s rebuild pass below, which never does) paints an empty
-line (`LiveProgress.java:324-329`).
+yet, or `review`'s rebuild pass below, which never does) renders an empty
+string, and `paintLocked` short-circuits on it — a renderer nobody has
+emitted an event to writes nothing at all, not even a bare `\r` and 80
+spaces (`LiveProgress.java:261-271, 334-339`).
 
 **What each wired command reports:**
 
@@ -445,15 +459,18 @@ line (`LiveProgress.java:324-329`).
   after it (`Orchestrator.java:132, 778-785`).
 - **`review`** — narrower than the other three by design: `RebuildPass.run`
   never calls `phase`/`start`/`finish`/`detail` at all, so a live terminal
-  shows no advancing per-repo line while the rebuild runs. What `Progress`
-  actually does here is keep a mid-pass finding from colliding with a live
-  frame — a failed checkout's `` warn: could not stage <repo> at its
-  checkpoint... `` is routed through `Progress.suspend`, which erases the
-  line, prints the warning unconditionally (even under `Progress.noOp()`,
-  since this is a review finding, not progress chrome), and repaints — and
-  guarantees the line is erased, via `stop()`, before `report.md`'s own first
-  line prints (`RebuildPass.java:73-74, 139-141`; `ReviewCommand.java:110,
-  177, 188`).
+  shows no advancing per-repo line while the rebuild runs (and, since an
+  event-less `LiveProgress` now renders nothing at all, no stray `\r` +
+  80-space frame either). What `Progress` actually does here is keep a
+  mid-pass finding from colliding with a live frame — every `` warn: `` line
+  this pass can print (a failed checkout, a repo with no checkpoint to stage
+  at all, a failed restore back to the original branch) is routed through
+  `Progress.suspend`, which erases the line, prints the warning
+  unconditionally (even under `Progress.noOp()`, since these are review
+  findings, not progress chrome), and repaints — and guarantees the line is
+  erased, via `stop()`, before `report.md`'s own first line prints
+  (`RebuildPass.java:73-74, 139-141, 200-201, 216-217`; `ReviewCommand.java:110,
+  180, 191`).
 - **`plan`** — named phases around `PlanCommand.validate`'s four expensive
   calls: `"impact analysis"`, then `"execution order"`, `"open questions"`
   and `"draft plan"`. The `impact:` report block prints midway through this
