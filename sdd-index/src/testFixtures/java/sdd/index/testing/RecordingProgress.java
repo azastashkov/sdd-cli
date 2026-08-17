@@ -49,6 +49,18 @@ public final class RecordingProgress implements Progress {
         events.add("note:" + text);
     }
 
+    /** Recorded distinctly from {@code note} so a test can assert a caller genuinely routed
+     *  through this method (not merely that its own writer received the expected text, which
+     *  could happen even if {@code action} were invoked directly, bypassing {@link Progress}
+     *  entirely and defeating the point of the seam). {@code action} is run un-guarded,
+     *  deliberately NOT wrapped in a catch — a test double has no P5 obligation of its own, and
+     *  swallowing the action's exception would hide a real assertion failure inside it. */
+    @Override
+    public void suspend(Runnable action) {
+        events.add("suspend");
+        action.run();
+    }
+
     @Override
     public void stop() {
         events.add("stop");

@@ -52,12 +52,41 @@ public interface Progress {
      *  ignore it otherwise. */
     void detail(String text);
 
-    /** A message that must survive on its own line rather than being overwritten by the next
-     *  frame — e.g. {@code RebuildPass}'s {@code warn:} lines, which fire mid-pass. Every
-     *  implementation passes the text through unchanged: never a {@code <repo>: } prefix, which
-     *  {@code ReviewReport}/{@code InteractiveReview.replaceForRepos} parse ({@code
-     *  RebuildPass.java:88-89}) — that formatting is the caller's job, not this seam's. */
+    /** A message, OWNED by this seam (the text is this call's only argument), that must survive
+     *  on its own line rather than being overwritten by the next frame — e.g. an orchestrator-level
+     *  pause note. Every implementation passes the text through unchanged: never a {@code <repo>: }
+     *  prefix, which {@code ReviewReport}/{@code InteractiveReview.replaceForRepos} parse ({@code
+     *  RebuildPass.java:88-89}) — that formatting is the caller's job, not this seam's. Unlike
+     *  {@link #suspend}, a {@link #noOp()}/stopped renderer may legitimately drop this text
+     *  entirely: it is progress-adjacent commentary, not data the caller has anywhere else to put. */
     void note(String text);
+
+    /**
+     * Runs {@code action} with the live line suspended — erased before, repainted after — so a
+     * caller that already owns its OWN writer can print through it without a painted frame
+     * clobbering it or being clobbered. This is the seam for a substantive, caller-owned finding
+     * that must be printed UNCONDITIONALLY, in every {@link Progress} mode including {@link
+     * #noOp()} — {@code RebuildPass}'s "could not stage ... at its checkpoint" is a review
+     * finding, not progress chrome, and must never silently disappear just because progress
+     * reporting happens to be off (an earlier version of this seam routed it through {@link #note}
+     * instead, which is exactly the bug this method exists to avoid: {@code note} is this seam's
+     * own optional commentary and a stopped/no-op renderer is allowed to drop it, but a caller's
+     * own review finding is not this seam's to drop).
+     *
+     * <p>The default implementation — every renderer except one with an actual line to erase and
+     * repaint — simply runs {@code action}, so {@link #noOp()} and a plain/CI renderer reproduce
+     * this call's pre-existing behavior exactly: {@code action} runs, full stop, unconditionally.
+     * An implementation must still never throw: {@code action} is run inside the same catch-all
+     * every other method here uses, per this interface's own contract above.
+     */
+    default void suspend(Runnable action) {
+        try {
+            action.run();
+        } catch (RuntimeException e) {
+            // P5: a caller's own action is held to the same "never fails the run" contract as
+            // every other side effect this seam exposes.
+        }
+    }
 
     /** Ends this progress session. A live renderer erases its line so the next output starts
      *  clean and stops its background ticker; a plain or no-op renderer has nothing to undo.

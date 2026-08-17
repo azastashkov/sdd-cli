@@ -1,6 +1,7 @@
 package sdd.cli.progress;
 
 import org.junit.jupiter.api.Test;
+import sdd.core.progress.Progress;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -350,6 +351,9 @@ class LiveProgressTest {
             progress.detail("gradle extract");
             progress.finish("order-service");
             progress.note("warn: something");
+            progress.suspend(() -> {
+                throw new RuntimeException("the action itself can throw too");
+            });
             progress.stop();
         }).doesNotThrowAnyException();
     }
@@ -364,8 +368,58 @@ class LiveProgressTest {
             progress.finish(null);
             progress.detail(null);
             progress.note(null);
+            progress.suspend(null);   // a null Runnable NPEs on .run() — P5 must still swallow it
         }).doesNotThrowAnyException();
         progress.stop();
+    }
+
+    /**
+     * {@link Progress#suspend} is the counterpart to {@link #note} for a caller that owns its own
+     * writer and must print through it unconditionally — same erase/repaint choreography, but the
+     * caller's own action supplies the text rather than this renderer owning it (design rationale
+     * on {@code sdd.core.progress.Progress#suspend}, the fix for RebuildPass's "could not stage
+     * ... at its checkpoint" silently dropping under a no-op/stopped renderer).
+     */
+    @Test
+    void suspendErasesRunsTheActionThenRepaints() {
+        StringWriter sw = new StringWriter();
+        PrintWriter pw = new PrintWriter(sw);
+        LiveProgress progress = new LiveProgress(pw, new TestClock(T0));
+        try {
+            progress.phase("review", 3);
+            progress.start("lib");
+            int beforeSuspend = sw.toString().length();
+
+            String warnLine = "warn: could not stage lib at its checkpoint: conflict";
+            progress.suspend(() -> pw.println(warnLine));
+
+            String written = sw.toString().substring(beforeSuspend);
+            // Erase first: a \r-led blank frame, with nothing visible in it.
+            assertThat(written).startsWith("\r");
+            int warnIndex = written.indexOf(warnLine);
+            assertThat(warnIndex).as("the action's own text must appear").isPositive();
+            assertThat(written.substring(0, warnIndex).strip()).isEmpty();
+            // The action's own newline-terminated line, then a repaint (another \r-led frame).
+            String afterWarn = written.substring(warnIndex + warnLine.length());
+            assertThat(afterWarn).startsWith(System.lineSeparator() + "\r");
+        } finally {
+            progress.stop();
+        }
+    }
+
+    /** Unlike {@link #note}, {@link Progress#suspend}'s action must run even once this renderer
+     *  is stopped — the caller's own finding is not this seam's to drop (design rationale on
+     *  {@code Progress#suspend}). */
+    @Test
+    void suspendStillRunsTheActionAfterStop() {
+        StringWriter sw = new StringWriter();
+        AtomicInteger ran = new AtomicInteger();
+        LiveProgress progress = new LiveProgress(new PrintWriter(sw), new TestClock(T0));
+        progress.stop();
+
+        progress.suspend(ran::incrementAndGet);
+
+        assertThat(ran.get()).isEqualTo(1);
     }
 
     @Test

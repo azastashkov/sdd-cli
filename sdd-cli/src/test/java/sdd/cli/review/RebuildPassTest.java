@@ -12,6 +12,7 @@ import sdd.core.config.ConfigLoader;
 import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
 import sdd.core.testing.FixtureRepo;
+import sdd.index.testing.RecordingProgress;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -438,7 +439,7 @@ class RebuildPassTest {
     }
 
     @Test
-    void aMidPassCheckoutFailureIsRoutedThroughProgressNoteNotErrDirectly() throws Exception {
+    void aMidPassCheckoutFailureRoutesThroughProgressSuspendButStillReachesErr() throws Exception {
         FixtureRepo lib = FixtureRepo.in(ws, "lib");
         gradlewStub(lib);
         lib.commit("base");
@@ -454,7 +455,7 @@ class RebuildPassTest {
         // repo — unlike aProviderWithNoRunBranchOnRecordIsAlsoAStagingFailure's null-branch case
         // (caught by unstageable() before any checkout is attempted), this reaches RunGit.checkout
         // and makes IT throw: the one mid-loop warn: (RebuildPass.java's checkout try/catch)
-        // ruling P4 is about.
+        // ruling P4 (corrected) is about.
         RunState state = new RunState("SPEC-9-v1", List.of(
                 new RepoRun("lib", RepoState.SUCCEEDED, "sdd/SPEC-9-v1/never-created", "deadbeef",
                         "ok", null)), null, 0L);
@@ -462,9 +463,7 @@ class RebuildPassTest {
         RunStore store = RunStore.system();
         Path runDir = store.create(ws, "SPEC-9-v1", "{}", "");
         StringWriter errOut = new StringWriter();
-        StringWriter progressOut = new StringWriter();
-        sdd.cli.progress.PlainProgress progress =
-                new sdd.cli.progress.PlainProgress(new PrintWriter(progressOut));
+        RecordingProgress progress = new RecordingProgress();
 
         RebuildPass.Outcome outcome = RebuildPass.run(Set.of("lib"), plan, state,
                 Map.of("lib", lib.path()), config, runDir, store, false,
@@ -472,16 +471,23 @@ class RebuildPassTest {
 
         assertThat(outcome.stagingFailures()).hasSize(1);
         assertThat(outcome.stagingFailures().get(0)).startsWith("lib: ");
-        // Identical wording to the direct err.println this replaced (PlainProgress.note passes
-        // text straight through, per its own javadoc) — but on progress's writer, not on err.
-        assertThat(progressOut.toString())
+        // Genuinely routed through Progress.suspend (not merely printed to err some other way,
+        // which the next test alone could not rule out) ...
+        assertThat(progress.events()).contains("suspend");
+        // ... but the corrected ruling means the text still lands on err itself, unconditionally,
+        // exactly as it did before Progress existed — suspend's default just runs the action.
+        assertThat(errOut.toString())
                 .contains("warn: could not stage lib at its checkpoint: ")
                 .contains("verdicts for its consumers do not reflect this run's upstream code");
-        assertThat(errOut.toString()).doesNotContain("could not stage lib");
     }
 
     @Test
-    void theSameMidPassWarningIsSilentButTheFindingSurvivesWhenProgressIsOff() throws Exception {
+    void theSameMidPassWarningStillPrintsToErrVerbatimWhenProgressIsOff() throws Exception {
+        // Progress.noOp() is exactly what --quiet and SDD_PROGRESS=off resolve to
+        // (ProgressArming.factory) — this is the regression Fix 1 exists to close: an earlier
+        // revision of this line went through Progress.note, which a no-op/stopped renderer may
+        // legitimately drop, silently losing a substantive review finding whenever progress
+        // reporting happened to be off. suspend()'s default has no such escape hatch.
         FixtureRepo lib = FixtureRepo.in(ws, "lib");
         gradlewStub(lib);
         lib.commit("base");
@@ -502,15 +508,17 @@ class RebuildPassTest {
         StringWriter errOut = new StringWriter();
 
         // Old 9-arg overload — no Progress argument at all, so RebuildPass falls back to
-        // Progress.noOp() internally.
+        // Progress.noOp() internally, exactly like --quiet/SDD_PROGRESS=off in production.
         RebuildPass.Outcome outcome = RebuildPass.run(Set.of("lib"), plan, state,
                 Map.of("lib", lib.path()), config, runDir, store, false,
                 new PrintWriter(errOut));
 
-        // No live heads-up when progress is off — but the finding is not lost: stagingFailures
-        // still drives the durable report.md and this review's exit code either way.
         assertThat(outcome.stagingFailures()).hasSize(1);
-        assertThat(errOut.toString()).isEmpty();
+        // Byte-identical to this task's starting point: the warning is on err, verbatim, whether
+        // or not progress reporting happens to be on.
+        assertThat(errOut.toString())
+                .contains("warn: could not stage lib at its checkpoint: ")
+                .contains("verdicts for its consumers do not reflect this run's upstream code");
     }
 
     @Test

@@ -125,25 +125,20 @@ public final class RebuildPass {
                     // reach the report and the exit code, not just this warn line. Inside the
                     // subset it is ALSO its own failed verdict.
                     stagingFailures.add(repo + ": " + e.getMessage());
-                    // Ruling P4 (binding, scoped by the task to exactly this line): this checkout
-                    // failure is the one warn: in this pass that fires mid-loop, so it is routed
-                    // through Progress.note rather than straight to err — unlike unstageable()'s
-                    // warn (repos skipped before any checkout is attempted) and the restore-failure
-                    // warn in the finally below (after every repo's rebuild is already done), which
-                    // stay on err directly, unchanged. This pass does not itself call phase()/
-                    // start() on progress (out of scope for this task — see the task report), so in
-                    // the CURRENT wiring none of the three actually paints over a live frame yet;
-                    // this call site is where that plumbing lands regardless, so a future caller
-                    // that does drive start()/finish() around this loop gets the collision handling
-                    // for free. note()'s wording and stream are identical to the direct err.println
-                    // this replaces under PlainProgress (its own javadoc: "passed straight through
-                    // unchanged"); under a truly no-op Progress (--quiet, SDD_PROGRESS=off) this one
-                    // heads-up goes quiet along with everything else progress renders — the finding
-                    // itself is not lost, since stagingFailures (added just above) still drives the
-                    // durable report.md and this review's exit code either way.
-                    safeProgress.note("warn: could not stage " + repo + " at its checkpoint: "
-                            + e.getMessage() + " — verdicts for its consumers do not reflect "
-                            + "this run's upstream code");
+                    // Corrected ruling (P4 revised): this is a substantive review finding that
+                    // happens to be emitted mid-pass, NOT progress chrome — it must reach err
+                    // UNCONDITIONALLY, in every Progress mode including --quiet/SDD_PROGRESS=off,
+                    // exactly as it did before Progress existed. An earlier revision routed it
+                    // through Progress.note, which is silent once a renderer is no-op/stopped —
+                    // acceptable for this seam's OWN optional commentary, wrong for a caller's own
+                    // finding. Progress.suspend exists for exactly this: it runs the action
+                    // (println, straight to err, unconditionally — the default implementation used
+                    // by no-op and plain does nothing else) with the live line erased/repainted
+                    // around it under live, so the choreography problem (a painted frame colliding
+                    // with this print) is solved WITHOUT the text ever being at this seam's mercy.
+                    safeProgress.suspend(() -> err.println("warn: could not stage " + repo
+                            + " at its checkpoint: " + e.getMessage() + " — verdicts for its "
+                            + "consumers do not reflect this run's upstream code"));
                     if (repos.contains(repo)) {
                         rebuilds.put(repo, new EstateRebuild.Result(false,
                                 "checkout failed: " + e.getMessage()));

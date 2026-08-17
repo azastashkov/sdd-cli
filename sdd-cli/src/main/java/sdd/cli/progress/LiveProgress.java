@@ -186,6 +186,33 @@ public final class LiveProgress implements Progress {
         }
     }
 
+    /**
+     * The counterpart to {@link #note} for a caller that owns its own writer and must print
+     * through it UNCONDITIONALLY (design rationale on {@link Progress#suspend}) — same
+     * erase/repaint choreography as {@link #note}, all under {@link #lock} so a scheduled tick
+     * landing mid-action still sees a consistent "erased" model rather than racing a partial
+     * repaint, but {@code action} always runs, even once {@link #stopped} — unlike {@code note},
+     * which is this renderer's own optional commentary and may legitimately go silent once
+     * stopped, {@code action} is the caller's own finding, which this renderer has no authority to
+     * drop.
+     */
+    @Override
+    public void suspend(Runnable action) {
+        try {
+            synchronized (lock) {
+                if (stopped) {
+                    action.run();
+                    return;
+                }
+                eraseLocked();
+                action.run();
+                paintLocked();
+            }
+        } catch (RuntimeException e) {
+            // P5.
+        }
+    }
+
     @Override
     public void stop() {
         synchronized (lock) {
