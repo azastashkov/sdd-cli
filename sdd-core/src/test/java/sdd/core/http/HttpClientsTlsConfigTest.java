@@ -2,6 +2,8 @@ package sdd.core.http;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import sdd.core.config.AtlassianProxy;
+import sdd.core.config.AtlassianTls;
 import sdd.core.config.ConfigException;
 
 import java.net.http.HttpClient;
@@ -120,5 +122,94 @@ class HttpClientsTlsConfigTest {
                 PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
 
         assertThat(HttpClients.keyFilePermissionWarning(key)).isNull();
+    }
+
+    // Re-review Fix 1: the neutral TlsConfig loader's error text ("tls.truststore ...") must not
+    // leak, unqualified, into what an Atlassian operator sees — DoctorCommand prints
+    // HttpClients.build(AtlassianTls, AtlassianProxy)'s exception message verbatim, and
+    // "tls.truststore" alone names no key that actually exists in sdd.yml. These pin the exact
+    // prefix each of the three Atlassian-facing entry points restores, and the generic one the
+    // neutral TlsConfig-typed entry points keep instead — a distinction HttpClientsTest (pinned,
+    // unmodified) never had to assert because the prefix never varied before this generalisation.
+
+    @Test
+    void buildWithAMissingAtlassianTruststoreNamesTheAtlassianConfigKey() {
+        Path missing = dir.resolve("does-not-exist.jks");
+        AtlassianTls tls = new AtlassianTls(missing, "changeit", null);
+
+        assertThatThrownBy(() -> HttpClients.build(tls, null))
+                .isInstanceOf(ConfigException.class)
+                .hasMessage("atlassian.tls.truststore " + missing + " does not exist");
+    }
+
+    @Test
+    void buildWithAnAtlassianTruststoreAndProxyBothConfiguredStillNamesTheAtlassianConfigKey() {
+        // Same as above, through the overload that also wires a proxy — the try/catch that
+        // restores the prefix wraps the whole buildClient call, not just the TLS half.
+        Path missing = dir.resolve("does-not-exist.jks");
+        AtlassianTls tls = new AtlassianTls(missing, "changeit", null);
+        AtlassianProxy proxy = new AtlassianProxy("proxy.corp.local", 8080, List.of());
+
+        assertThatThrownBy(() -> HttpClients.build(tls, proxy))
+                .isInstanceOf(ConfigException.class)
+                .hasMessage("atlassian.tls.truststore " + missing + " does not exist");
+    }
+
+    @Test
+    void trustManagersWithAMissingAtlassianTruststoreNamesTheAtlassianConfigKey() {
+        Path missing = dir.resolve("does-not-exist.jks");
+        AtlassianTls tls = new AtlassianTls(missing, "changeit", null);
+
+        assertThatThrownBy(() -> HttpClients.trustManagers(tls))
+                .isInstanceOf(ConfigException.class)
+                .hasMessage("atlassian.tls.truststore " + missing + " does not exist");
+    }
+
+    @Test
+    void buildClientWithAMissingTlsConfigTruststoreStaysGenericAndNeverClaimsAnAtlassianConfigKey() {
+        Path missing = dir.resolve("does-not-exist.jks");
+        TlsConfig tls = new TlsConfig(missing, "changeit", null, null, null, null, null, List.of());
+
+        assertThatThrownBy(() -> HttpClients.buildClient(tls, null))
+                .isInstanceOf(ConfigException.class)
+                .hasMessage("tls.truststore " + missing + " does not exist");
+    }
+
+    @Test
+    void trustManagersWithAMissingTlsConfigTruststoreStaysGenericAndNeverClaimsAnAtlassianConfigKey() {
+        Path missing = dir.resolve("does-not-exist.jks");
+        TlsConfig tls = new TlsConfig(missing, "changeit", null, null, null, null, null, List.of());
+
+        assertThatThrownBy(() -> HttpClients.trustManagers(tls))
+                .isInstanceOf(ConfigException.class)
+                .hasMessage("tls.truststore " + missing + " does not exist");
+    }
+
+    @Test
+    void trustManagersWithACorruptAtlassianTruststoreFileNamesTheAtlassianConfigKey() throws Exception {
+        // The other error branch trustManagers(TlsConfig) can throw — a file that exists but fails
+        // to load ("cannot load tls.truststore ...") — must also come back re-labelled.
+        Path corrupt = dir.resolve("corrupt.jks");
+        Files.writeString(corrupt, "not a real keystore");
+        AtlassianTls tls = new AtlassianTls(corrupt, "changeit", null);
+
+        assertThatThrownBy(() -> HttpClients.trustManagers(tls))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageStartingWith("cannot load atlassian.tls.truststore " + corrupt);
+    }
+
+    @Test
+    void aDeferredAtlassianTruststorePasswordErrorIsNeverDoublePrefixed() {
+        // The deferred passwordError text ConfigLoader would have produced already says
+        // "atlassian.tls.truststore_password" — relabelForAtlassian must pass it through
+        // unchanged, not turn it into "atlassian.atlassian.tls...".
+        Path jks = dir.resolve("corp-ca.jks");
+        AtlassianTls tls = new AtlassianTls(jks, null,
+                "atlassian.tls.truststore_password: environment variable CORP_TRUSTSTORE_PASSWORD is not set");
+
+        assertThatThrownBy(() -> HttpClients.build(tls, null))
+                .isInstanceOf(ConfigException.class)
+                .hasMessage("atlassian.tls.truststore_password: environment variable "
+                        + "CORP_TRUSTSTORE_PASSWORD is not set");
     }
 }

@@ -91,7 +91,7 @@ final class PemKeyLoader {
         }
         String header = m.group(1).trim();
         return switch (header) {
-            case "PRIVATE KEY" -> keyFromSpec(keyPath, new PKCS8EncodedKeySpec(body(pem)));
+            case "PRIVATE KEY" -> keyFromSpec(keyPath, new PKCS8EncodedKeySpec(decodedBody(keyPath, pem)));
             case "ENCRYPTED PRIVATE KEY" -> decryptPkcs8(keyPath, pem, password);
             case "RSA PRIVATE KEY" -> throw conversionRequired(keyPath, pem, header, "PKCS#1 (RSA)");
             case "EC PRIVATE KEY" -> throw conversionRequired(keyPath, pem, header, "SEC1 (EC)");
@@ -125,7 +125,7 @@ final class PemKeyLoader {
                     + "but no tls.key_password is configured");
         }
         try {
-            EncryptedPrivateKeyInfo info = new EncryptedPrivateKeyInfo(body(pem));
+            EncryptedPrivateKeyInfo info = new EncryptedPrivateKeyInfo(decodedBody(keyPath, pem));
             Cipher cipher = Cipher.getInstance(info.getAlgName());
             SecretKeyFactory skf = SecretKeyFactory.getInstance(info.getAlgName());
             Key pbeKey = skf.generateSecret(new PBEKeySpec(password));
@@ -153,6 +153,21 @@ final class PemKeyLoader {
         }
         throw new ConfigException("client key " + keyPath + " is not a recognised RSA or EC PKCS#8 key"
                 + (last != null && last.getMessage() != null ? ": " + last.getMessage() : ""));
+    }
+
+    /** {@link #body}, wrapped so a truncated copy, a mangled paste or a corrupted transfer — the
+     *  most likely real-world way a key file actually gets broken, far more likely than an
+     *  operator hand-typing an unsupported PEM header — comes back as a {@link ConfigException}
+     *  naming {@code keyPath}, not a bare {@code IllegalArgumentException} stack trace with no
+     *  file name attached, on a closed network where nobody can attach a debugger to find out
+     *  which file it even was. */
+    private static byte[] decodedBody(Path keyPath, String pem) {
+        try {
+            return body(pem);
+        } catch (IllegalArgumentException e) {
+            throw new ConfigException("cannot decode client key " + keyPath
+                    + ": not valid base64 (" + e.getMessage() + ")", e);
+        }
     }
 
     /** Strips the {@code -----BEGIN/END-----} delimiters and any header lines (a legacy
