@@ -218,6 +218,18 @@ reference.
    - A1: A fresh checkout responds 200 from /healthz after startup.
    ```
 
+   You can also have one generated from free text, a Confluence export, or a
+   Jira issue:
+
+   ```
+   sdd plan --text "Give order-service a /healthz endpoint" --out SPEC-101.md
+   ```
+
+   That path **always stops at the file** — it normalizes the input into the
+   same canonical format and writes it, and never runs impact analysis. Read
+   what it produced before continuing, in particular its `## Open Questions`
+   (below).
+
 7. **Draft a plan (Gate 1, part 1):**
 
    ```
@@ -288,6 +300,77 @@ reference.
 
     Deletes the run branches (and the run dir) for everything that was not
     `approve`d. Without `--force` it only prints what it would delete.
+
+## Open Questions: two sections, two mechanisms
+
+`Open Questions` appears in both a spec and a plan, and they are not the same
+thing. Confusing them is easy and costs a gate.
+
+### In a spec (`.spec.md` / `SPEC-101.md`)
+
+When a spec is generated rather than hand-written — `--text`, a Confluence
+export, a Jira issue — anything the normalizer could not confidently place
+lands here:
+
+```markdown
+## Open Questions
+- Q1: Which repos own the tier mapping?
+```
+
+**Nothing blocks on these.** `SpecValidator` checks only their *shape* — ids
+match `Q<number>`, are unique, and are non-blank — so `sdd plan SPEC-101.md`
+runs happily with them unanswered and just counts them:
+
+```
+spec OK: SPEC-101 — 3 requirements, 2 acceptance, 1 constraints, 2 touchpoints, 2 open questions
+```
+
+They are not inert, though. Both model calls render the **whole** spec into
+their prompt, Open Questions included, so an unanswered question is read as
+context by the planner with nothing marking it undecided — which is exactly how
+a guess becomes a plan.
+
+**Resolve each one by folding the answer into the section it belongs to, then
+delete the `Q`.** A question is a placeholder for a requirement, constraint or
+touchpoint that could not be extracted:
+
+```markdown
+## Open Questions
+- Q1: Which repos own the tier mapping?     ← delete
+```
+
+```markdown
+## Touchpoints
+- repo: trading-core                         ← and state it as fact here
+- class: TierUpdateListener
+```
+
+Touchpoints deserve the most attention. Measured on a real estate, a spec with
+no resolvable touchpoint yields **zero seeds** and a blocking `no seeds`
+question, while the free-text fallback seeds on prose — in one run it matched
+the English word *"build"* in a requirement and seeded the wrong repo. One
+accurate `class:` or `repo:` touchpoint is the highest-value edit available
+here.
+
+There is no machine-readable way to answer a spec question. The spec gate is
+you.
+
+### In a plan (`.plan.md`)
+
+Here the mechanism is real. Questions carry a `[blocking]` marker, and a
+blocking one stops `sdd plan approve`. You answer in place, with the one
+human-only extension the plan parser accepts:
+
+```markdown
+- Q1: [blocking] Which repos own the tier mapping?
+  - resolution: trading-core owns it; product-a only reads through the SDK.
+```
+
+Then `sdd plan revise SPEC-101.plan.md` folds every question and its resolution
+back into a fresh version, and `sdd plan approve` re-checks.
+
+`  - resolution:` is recognised **only** in a plan. Writing it into a spec does
+nothing at all.
 
 ## Progress reporting
 
