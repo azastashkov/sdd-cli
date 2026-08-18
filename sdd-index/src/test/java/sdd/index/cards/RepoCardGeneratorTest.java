@@ -8,6 +8,7 @@ import sdd.core.llm.ChatMessage;
 import sdd.core.llm.ChatResponse;
 import sdd.core.llm.ModelException;
 import sdd.core.llm.Usage;
+import sdd.core.progress.Progress;
 import sdd.core.testing.ScriptedChatModel;
 
 import java.nio.file.Files;
@@ -85,9 +86,12 @@ class RepoCardGeneratorTest {
                 new ChatResponse(ChatMessage.assistant(null), "length", new Usage(1, 774))));
         RepoCardGenerator.CardResult result = RepoCardGenerator.generate(db.jdbi(), ws, model, "qwen");
         assertThat(result.failed()).isEqualTo(1);
+        // The message names BOTH levers, and the second one quotes the number actually requested:
+        // "raise max_tokens" is unactionable advice if the reader cannot see what it currently is.
         assertThat(result.failures()).containsExactly(
                 "svc-orders: finish_reason=length (thinking model? set extra_body "
-                        + "chat_template_kwargs.enable_thinking=false)");
+                        + "chat_template_kwargs.enable_thinking=false, or raise this tier's "
+                        + "max_tokens — the request asked for 1200)");
     }
 
     @Test
@@ -106,6 +110,56 @@ class RepoCardGeneratorTest {
                 "r3: model error: connection refused",
                 "r4: model error: connection refused",
                 "svc-orders: skipped after 3 consecutive model failures");
+    }
+
+    @Test
+    void aSystematicLengthFailureTripsTheSameCircuitBreakerAsAnUnreachableEndpoint() {
+        // finish_reason=length across every repo is one misconfiguration, not N independent
+        // problems: the first failure already carries the whole diagnosis. Burning a live call per
+        // repo to re-learn it cost 53 calls on the real estate.
+        db.jdbi().useHandle(h -> {
+            for (int i = 2; i <= 6; i++) {
+                h.execute("INSERT INTO repo(name, path, kind) VALUES ('r" + i + "', '/w/r" + i + "', 'LIBRARY')");
+                h.execute("INSERT INTO module(repo_id, gradle_path, kind) VALUES (" + i + ", ':', 'LIBRARY')");
+            }
+        });
+        CountingChatModel truncating = new CountingChatModel("length");
+
+        RepoCardGenerator.CardResult result = RepoCardGenerator.generate(db.jdbi(), ws, truncating, "qwen");
+
+        assertThat(result.failed()).isEqualTo(6);
+        assertThat(truncating.calls).isEqualTo(3);
+        assertThat(result.failures()).anyMatch(f -> f.contains("enable_thinking"));
+    }
+
+    @Test
+    void theCardRequestUsesTheConfiguredMaxTokens() {
+        // The cap used to be hardcoded at 1200, so raising models.coder.max_tokens — the documented
+        // lever, and the one the failure message effectively points at — changed nothing for cards.
+        CountingChatModel recorder = new CountingChatModel("stop");
+
+        RepoCardGenerator.generate(db.jdbi(), ws, recorder, "qwen", Progress.noOp(), 8192);
+
+        assertThat(recorder.lastMaxTokens).isEqualTo(8192);
+    }
+
+    private static final class CountingChatModel implements sdd.core.llm.ChatModel {
+        private final String finishReason;
+        int calls;
+        Integer lastMaxTokens;
+
+        CountingChatModel(String finishReason) {
+            this.finishReason = finishReason;
+        }
+
+        @Override
+        public sdd.core.llm.ChatResponse complete(sdd.core.llm.ChatRequest req) {
+            calls++;
+            lastMaxTokens = req.maxTokens();
+            return new sdd.core.llm.ChatResponse(
+                    sdd.core.llm.ChatMessage.assistant("{\"card_md\":\"m\",\"card_line\":\"l\"}"),
+                    finishReason, new sdd.core.llm.Usage(1, 1));
+        }
     }
 
     @Test

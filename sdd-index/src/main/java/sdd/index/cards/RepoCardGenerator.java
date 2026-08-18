@@ -39,6 +39,12 @@ public final class RepoCardGenerator {
 
     private RepoCardGenerator() {}
 
+    /**
+     * The cap the card request used before it became configurable. Kept as the default for callers
+     * that do not supply one, so behaviour is unchanged where nothing was configured.
+     */
+    public static final int DEFAULT_CARD_MAX_TOKENS = 1200;
+
     public static CardResult generate(Jdbi jdbi, Path workspace, ChatModel model, String modelName) {
         return generate(jdbi, workspace, model, modelName, Progress.noOp());
     }
@@ -55,6 +61,18 @@ public final class RepoCardGenerator {
      */
     public static CardResult generate(Jdbi jdbi, Path workspace, ChatModel model, String modelName,
             Progress progress) {
+        return generate(jdbi, workspace, model, modelName, progress, DEFAULT_CARD_MAX_TOKENS);
+    }
+
+    /**
+     * @param maxTokens the card endpoint's configured {@code max_tokens}. This used to be hardcoded
+     *     at {@value #DEFAULT_CARD_MAX_TOKENS}, which made {@code models.<tier>.max_tokens} a
+     *     dead lever for cards — and cards are exactly where a thinking model's reasoning overruns
+     *     the budget before any content is emitted, so the one knob a reader would reach for did
+     *     nothing.
+     */
+    public static CardResult generate(Jdbi jdbi, Path workspace, ChatModel model, String modelName,
+            Progress progress, int maxTokens) {
         List<Map<String, Object>> repos = jdbi.withHandle(h ->
                 h.createQuery("SELECT id, name FROM repo ORDER BY name").mapToMap().list());
         progress.phase("cards", repos.size());
@@ -90,14 +108,20 @@ public final class RepoCardGenerator {
             try {
                 ChatResponse response = model.complete(new ChatRequest(modelName,
                         List.of(ChatMessage.system(SYSTEM_PROMPT), ChatMessage.user(input)),
-                        List.of(), 1200, 0.15));
-                consecutiveModelFailures = 0;
+                        List.of(), maxTokens, 0.15));
                 if ("length".equals(response.finishReason())) {
+                    // Counted as a model failure rather than reset, so the breaker below trips.
+                    // Truncation on every repo is ONE misconfiguration, and the first failure
+                    // already carries the whole diagnosis; re-learning it once per repo cost 53
+                    // live calls on the real estate before anything said so.
+                    consecutiveModelFailures++;
                     failed++;
                     failures.add(name + ": finish_reason=length (thinking model? set extra_body "
-                            + "chat_template_kwargs.enable_thinking=false)");
+                            + "chat_template_kwargs.enable_thinking=false, or raise this tier's "
+                            + "max_tokens — the request asked for " + maxTokens + ")");
                     continue;
                 }
+                consecutiveModelFailures = 0;
                 JsonNode parsed = parseCard(response.message().content());
                 if (parsed == null) {
                     failed++;

@@ -41,6 +41,7 @@ public final class IndexService {
 
     private final BuildExtractor injectedExtractor;
     private final ChatModel cardModel;
+    private final int cardMaxTokens;
     private final String cardModelName;
 
     private ArtifactLinker.LinkReport lastLinkReport;
@@ -105,9 +106,21 @@ public final class IndexService {
      * a real {@link ChatModel} without reaching for the package-private test seam.
      */
     public IndexService(BuildExtractor extractor, ChatModel cardModel, String cardModelName) {
+        this(extractor, cardModel, cardModelName, RepoCardGenerator.DEFAULT_CARD_MAX_TOKENS);
+    }
+
+    /**
+     * @param cardMaxTokens the card endpoint's configured {@code max_tokens}. Threaded rather than
+     *     hardcoded because a thinking model spends its budget on reasoning before emitting any
+     *     content, and {@code max_tokens} is the lever a reader reaches for when told the response
+     *     was truncated — it has to actually do something.
+     */
+    public IndexService(BuildExtractor extractor, ChatModel cardModel, String cardModelName,
+                        int cardMaxTokens) {
         this.injectedExtractor = extractor;
         this.cardModel = cardModel;
         this.cardModelName = cardModelName;
+        this.cardMaxTokens = cardMaxTokens;
     }
 
     public List<RepoResult> run(SddConfig config, Database db) {
@@ -197,7 +210,8 @@ public final class IndexService {
             return null;
         }
         try {
-            return RepoCardGenerator.generate(jdbi, workspace, cardModel, cardModelName, progress);
+            return RepoCardGenerator.generate(jdbi, workspace, cardModel, cardModelName, progress,
+                    cardMaxTokens);
         } catch (RuntimeException e) {
             lastCardError = String.valueOf(e);
             return null;
