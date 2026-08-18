@@ -91,6 +91,13 @@ public final class SourcePersistence {
                 .bind("ann", annotationsJson).bind("javadoc", t.javadoc())
                 .bind("lang", language).execute();
         long typeId = h.createQuery("SELECT last_insert_rowid()").mapTo(Long.class).one();
+        for (SourceModel.SupertypeRef sup : t.supertypes()) {
+            // OR IGNORE rather than a dedupe pass: the primary key already states the rule, and a
+            // declaration naming the same supertype twice is malformed source, not a case to model.
+            h.createUpdate("INSERT OR IGNORE INTO type_supertype(type_id, supertype_fqcn, relation, resolution) VALUES (:t, :fqcn, :rel, :res)")
+                    .bind("t", typeId).bind("fqcn", sup.supertypeFqcn())
+                    .bind("rel", sup.relation()).bind("res", sup.resolution()).execute();
+        }
         String simpleName = t.fqcn().substring(t.fqcn().lastIndexOf('.') + 1);
         FtsSymbolWriter.insert(h, moduleId, simpleName, t.fqcn(), t.javadoc());
         java.util.Set<String> ftsEmitted = new java.util.HashSet<>();

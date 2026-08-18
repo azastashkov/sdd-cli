@@ -325,10 +325,24 @@ types join the anchor set. The anchor set is the common thread — it is a *sour
 `PlanDrafter.ranked()`, which is what promotes facts that were always in the KB but ranked past the
 budget.
 
-**What is not.** Case 2's `ExchangeSimulator` (rank 48) and `VenueMarketDataSimulator` (rank 65) are
-still absent. They are *subtypes* of the changed interface, and nothing names them: the KB records
-`api_usage(EXTENDS)` per MODULE and discards the subtype's own fqcn at extraction. That is the fifth
-survivor — a subtype table, whose value is precisely to supply those two names as anchors.
+**And with the fifth survivor — the subtype table (V6) — case 2 closes too.** All five
+`FixSessionListener` implementors are now named in the KB across three repos, and **5 of 5 reach the
+model** (from 2 of 5):
+
+| implementor | baseline | after |
+|---|---|---|
+| `QfjExecutionAdapter` | 1 | 6 |
+| `CandleMdRejectListener` | 1 | 2 |
+| `QfjMarketDataAdapter` | 0 | 8 |
+| `ExchangeSimulator` | **0** | **3** |
+| `VenueMarketDataSimulator` | **0** | **3** |
+
+The last two are the ones ranked 48 and 65 — no budget increase reaches them, and the spec cannot
+name them. They arrive because `type_supertype` supplies their names as anchors, which is the whole
+claim of the unified diagnosis, now demonstrated rather than argued.
+
+The `extractor_epoch` guard was verified live: a plain `sdd index` — no `--force` — re-extracted all
+six repos after the migration, which is the trap V2 and V3 both fell into.
 
 The prompt is 2.3× bigger. That is one call per plan against a 384k-context planner, and it buys
 every service repo's method signatures, which previously did not exist in the prompt at all.

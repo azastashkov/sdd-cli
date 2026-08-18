@@ -42,21 +42,23 @@ public final class IndexPersistence {
             h.createUpdate("""
                             INSERT INTO repo(name, path, kind, head_commit, branch, dirty_hash,
                                              included_builds, gradle_status, error, indexed_at,
-                                             build_system)
+                                             build_system, extractor_epoch)
                             VALUES (:name, :path, :kind, :head, :branch, :dirty, :included, :status, :error, :at,
-                                    :buildSystem)
+                                    :buildSystem, :epoch)
                             ON CONFLICT(name) DO UPDATE SET
                               path=excluded.path, kind=excluded.kind, head_commit=excluded.head_commit,
                               branch=excluded.branch, dirty_hash=excluded.dirty_hash,
                               included_builds=excluded.included_builds, gradle_status=excluded.gradle_status,
                               error=excluded.error, indexed_at=excluded.indexed_at,
-                              build_system=excluded.build_system""")
+                              build_system=excluded.build_system,
+                              extractor_epoch=excluded.extractor_epoch""")
                     .bind("name", scan.name()).bind("path", Paths2.canonicalString(scan.path()))
                     .bind("kind", repoKind).bind("head", scan.headCommit())
                     .bind("branch", scan.branch()).bind("dirty", scan.dirtyHash())
                     .bind("included", includedJson).bind("status", gradleStatus)
                     .bind("error", error).bind("at", Instant.now().toString())
                     .bind("buildSystem", java.util.Objects.requireNonNull(buildSystem, "buildSystem"))
+                    .bind("epoch", sdd.index.source.SourceExtraction.EXTRACTOR_EPOCH)
                     .execute();
             long repoId = h.createQuery("SELECT id FROM repo WHERE name=:n")
                     .bind("n", scan.name()).mapTo(Long.class).one();

@@ -19,6 +19,23 @@ import java.util.Map;
 import java.util.Optional;
 
 public final class SourceExtraction {
+
+    /**
+     * Which vintage of extractor output the knowledge base holds. <b>Bump this by hand in the same
+     * commit as any change to what the extractors EMIT.</b>
+     *
+     * <p>The index short-circuits on {@code head_commit||':'||dirty_hash}, which a migration does
+     * not change — so a schema upgrade that adds a fact is invisible to it, and a plain
+     * {@code sdd index} skips every repo and reports success. V4 bought visibility with a bespoke
+     * {@code build_system IS NOT NULL} guard; V2 and V3 bought nothing and left {@code --force} as
+     * the only remedy, which has bitten this project twice. Guarding the fingerprint on this
+     * constant instead means a NULL (pre-V6) or stale epoch never matches, so the workspace heals
+     * itself — while a future migration that only widens a reader-side table can deliberately NOT
+     * bump it rather than forcing a needless full re-extract.
+     *
+     * <p>1 = the epoch that introduced {@code type_supertype}.
+     */
+    public static final int EXTRACTOR_EPOCH = 1;
     private SourceExtraction() {}
 
     public static String extractRepo(Jdbi jdbi, long repoId, String repoName,

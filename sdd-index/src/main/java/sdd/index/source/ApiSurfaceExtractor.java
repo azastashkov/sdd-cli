@@ -48,13 +48,14 @@ public final class ApiSurfaceExtractor {
                     .filter(t -> t.isPublic() || t.hasModifier(com.github.javaparser.ast.Modifier.Keyword.PROTECTED)
                             || (!t.isPrivate() && (t.getParentNode().filter(p -> p instanceof ClassOrInterfaceDeclaration c && c.isInterface()).isPresent()
                                     || t.getParentNode().filter(p -> p instanceof AnnotationDeclaration).isPresent())))
-                    .forEach(t -> out.add(toTypeInfo(t, pkg, unit.relPath(), libraryModule)));
+                    .forEach(t -> out.add(toTypeInfo(t, pkg, unit.relPath(), libraryModule, unit.cu())));
         }
         return List.copyOf(out);
     }
 
     private static SourceModel.TypeInfo toTypeInfo(TypeDeclaration<?> t, String pkg,
-                                                   String relPath, boolean libraryModule) {
+                                                   String relPath, boolean libraryModule,
+                                                   com.github.javaparser.ast.CompilationUnit cu) {
         String fqcn = t.getFullyQualifiedName().orElse(pkg.isEmpty()
                 ? t.getNameAsString() : pkg + "." + t.getNameAsString());
         List<String> annotations = t.getAnnotations().stream()
@@ -68,9 +69,13 @@ public final class ApiSurfaceExtractor {
                 .filter(m -> !realSignatures.contains(m.signature()))
                 .forEach(members::add);
         boolean isApi = libraryModule && !fqcn.contains(".internal.");
+        List<SourceModel.SupertypeRef> supertypes =
+                t instanceof com.github.javaparser.ast.body.ClassOrInterfaceDeclaration decl
+                        ? SupertypeResolver.resolve(cu, decl)
+                        : List.of();
         return new SourceModel.TypeInfo(fqcn, kindOf(t), isApi, relPath,
                 annotations, lombok.unknownLombok() ? "PARTIAL" : "OK",
-                hash(fqcn, members), List.copyOf(members), javadocSummary(t));
+                hash(fqcn, members), List.copyOf(members), javadocSummary(t), supertypes);
     }
 
     /**
