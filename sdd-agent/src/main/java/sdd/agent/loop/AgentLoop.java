@@ -116,7 +116,13 @@ public final class AgentLoop {
                 window.addWorkOrder("Call a tool or done — do not answer in prose.");
                 events.add("turn " + turns + ": no tool call");
                 if (++strikes >= MAX_STRIKES) {
-                    return outcome(AgentResult.MALFORMED, "no tool calls", turns, tokens, events, transcript);
+                    // "no tool calls" alone names a symptom shared by two unrelated causes: an
+                    // endpoint that cannot return tool_calls at all, and a model that spent its
+                    // budget before reaching them. What it answered WITH separates them, and
+                    // without it the reader's next move is to go read the transcript to learn
+                    // what this line could have said.
+                    return outcome(AgentResult.MALFORMED, malformedDetail(response), turns, tokens,
+                            events, transcript);
                 }
                 continue;
             }
@@ -216,6 +222,25 @@ public final class AgentLoop {
     /** Builds this turn's transcript entry with everything known right after the model responds:
      *  finish reason, token usage, content, and the tool calls it made. tool_results starts empty and
      *  is filled in by {@link #addToolResult} as each call is dispatched. */
+    /** How many characters of the model's prose to quote — enough to tell a refusal from
+     *  reasoning, short enough to sit on a terminal line. */
+    private static final int DETAIL_EXCERPT = 200;
+
+    /** Why the model answered in prose, in the terms that distinguish the causes. */
+    private static String malformedDetail(ChatResponse response) {
+        String content = response.message().content();
+        String said = content == null || content.isBlank()
+                ? "(empty content)"
+                : content.strip().replace('\n', ' ');
+        if (said.length() > DETAIL_EXCERPT) {
+            said = said.substring(0, DETAIL_EXCERPT) + "…";
+        }
+        return "no tool calls after " + MAX_STRIKES + " turns"
+                + " (finish_reason=" + response.finishReason()
+                + ", last completion " + response.usage().completionTokens() + " tokens)"
+                + " — model answered: " + said;
+    }
+
     private ObjectNode newTurnEntry(int turn, ChatResponse response) {
         ObjectNode node = JSON.createObjectNode();
         node.put("turn", turn);
