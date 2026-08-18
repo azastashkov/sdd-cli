@@ -250,9 +250,16 @@ public final class DoctorCommand implements Callable<Integer> {
         }
     }
 
-    /** Reports whether the tier can return a tool call, which is all sdd implement ever asks of it. */
+    /**
+     * Reports whether the tier can return a tool call, which is all sdd implement ever asks of it.
+     *
+     * <p>Uses the default retry contract rather than a single attempt, deliberately: a probe exists
+     * to predict a real run, and a real run retries a 429 six times with backoff. Probing without
+     * retries reported a transient rate limit as a hard endpoint failure — harsher than the thing
+     * it was meant to predict, which is the one way a diagnostic can be worse than no diagnostic.
+     */
     private void probeToolCalling(String name, ModelEndpoint ep) {
-        var r = sdd.core.llm.ToolCallProbe.probe(ep, new sdd.core.llm.HttpChatModel(ep, 1));
+        var r = sdd.core.llm.ToolCallProbe.probe(ep, new sdd.core.llm.HttpChatModel(ep));
         String check = "model:" + name + ":tools";
         report(r.ok(), check, r.detail());
         if (!r.ok()) {
@@ -270,7 +277,7 @@ public final class DoctorCommand implements Callable<Integer> {
 
     /** Reports what the tier actually produced, with the numbers that explain a truncation. */
     private void probeCompletion(String name, ModelEndpoint ep) {
-        var r = sdd.core.llm.CompletionProbe.probe(ep, new sdd.core.llm.HttpChatModel(ep, 1));
+        var r = sdd.core.llm.CompletionProbe.probe(ep, new sdd.core.llm.HttpChatModel(ep));
         String check = "model:" + name + ":completion";
         report(r.ok(), check, r.detail());
         var out = spec.commandLine().getOut();
