@@ -91,7 +91,8 @@ public final class IndexCommand implements Callable<Integer> {
                     service = new IndexService();
                 } else {
                     ModelEndpoint coder = config.models().get("coder");
-                    service = new IndexService(null, new HttpChatModel(coder, CARD_MAX_ATTEMPTS), coder.model());
+                    service = new IndexService(null, new HttpChatModel(coder, CARD_MAX_ATTEMPTS), coder.model(),
+                            coder.maxTokens());
                 }
                 List<IndexService.RepoResult> results = service.run(config, db, force, progress);
                 // Stopped here, not left to the method-wide finally: a live renderer's last frame
