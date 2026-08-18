@@ -93,7 +93,7 @@ class AgentLoopTest {
                 .run("sys", "wo", "qwen", 4096);
 
         assertThat(outcome.result()).isEqualTo(AgentResult.MALFORMED);
-        assertThat(outcome.detail())
+        assertThat(outcome.summary())
                 .contains("no tool calls after 3 turns")
                 .contains("finish_reason=")
                 .contains("model answered: Here is my plan in prose");
