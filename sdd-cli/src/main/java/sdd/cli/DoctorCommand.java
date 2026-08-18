@@ -200,6 +200,17 @@ public final class DoctorCommand implements Callable<Integer> {
      * silently probing nothing and exiting {@code 0}. With no filter (every existing invocation,
      * and every pre-existing test) this iterates every entry exactly as before this flag existed.
      */
+    /**
+     * Opt-in because it costs a real completion per tier, unlike every other check here. It exists
+     * because {@code /models} reachability and "the model can produce a usable answer" are different
+     * questions, and repo-card generation fails on the second while doctor only ever asked the
+     * first — leaving a reader with {@code finish_reason=length} and no way to see why.
+     */
+    @Option(names = "--completion",
+            description = "Also ask each model tier to produce a short answer, and report "
+                    + "finish_reason, token spend and any inline reasoning (costs one call per tier)")
+    boolean completion;
+
     private boolean probeModels(SddConfig config, InstantSource clock) {
         boolean matched = false;
         for (Map.Entry<String, ModelEndpoint> entry : config.models().entrySet()) {
@@ -220,6 +231,32 @@ public final class DoctorCommand implements Callable<Integer> {
         EndpointProbe.ProbeResult result = EndpointProbe.probe(ep);
         report(result.ok(), "model:" + name, ep.baseUrl() + " → " + result.detail());
         recordModelTlsDiagnostics(name, ep.tls(), result);
+        if (completion && result.ok()) {
+            probeCompletion(name, ep);
+        }
+    }
+
+    /** Reports what the tier actually produced, with the numbers that explain a truncation. */
+    private void probeCompletion(String name, ModelEndpoint ep) {
+        var r = sdd.core.llm.CompletionProbe.probe(ep, new sdd.core.llm.HttpChatModel(ep, 1));
+        String check = "model:" + name + ":completion";
+        report(r.ok(), check, r.detail());
+        var out = spec.commandLine().getOut();
+        out.println("    max_tokens sent : " + r.maxTokensSent());
+        out.println("    tokens used     : " + r.promptTokens() + " prompt / "
+                + r.completionTokens() + " completion");
+        out.println("    reasoning chars : " + r.reasoningChars()
+                + (r.reasoningChars() > 0
+                        ? "  <- inline <think> reasoning; no request parameter disables this on "
+                                + "every provider, so max_tokens must cover it"
+                        : ""));
+        out.println("    answer chars    : " + r.answerChars());
+        out.println("    raw reply head  : " + r.rawExcerpt());
+        diagnostics.note(check + ": finish_reason=" + r.finishReason()
+                + " completion_tokens=" + r.completionTokens()
+                + " max_tokens=" + r.maxTokensSent()
+                + " reasoning_chars=" + r.reasoningChars()
+                + " answer_chars=" + r.answerChars());
     }
 
     /**
