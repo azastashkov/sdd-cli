@@ -116,9 +116,11 @@ public final class RepoCardGenerator {
                     // live calls on the real estate before anything said so.
                     consecutiveModelFailures++;
                     failed++;
-                    failures.add(name + ": finish_reason=length (thinking model? set extra_body "
-                            + "chat_template_kwargs.enable_thinking=false, or raise this tier's "
-                            + "max_tokens — the request asked for " + maxTokens + ")");
+                    failures.add(name + ": finish_reason=length — the request asked for "
+                            + maxTokens + " tokens. If this is a reasoning model, raise this tier's "
+                            + "max_tokens; some models also accept extra_body "
+                            + "chat_template_kwargs.enable_thinking=false, but others (GigaChat) "
+                            + "have no off switch and spend the budget on reasoning regardless");
                     continue;
                 }
                 consecutiveModelFailures = 0;

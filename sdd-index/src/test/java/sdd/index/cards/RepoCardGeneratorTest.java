@@ -88,10 +88,16 @@ class RepoCardGeneratorTest {
         assertThat(result.failed()).isEqualTo(1);
         // The message names BOTH levers, and the second one quotes the number actually requested:
         // "raise max_tokens" is unactionable advice if the reader cannot see what it currently is.
+        // max_tokens leads, because it is the lever that works on every provider. enable_thinking
+        // is offered second and hedged: GigaChat's whole additional-field surface is
+        // flags/function_ranker/profanity_check/repetition_penalty/storage/update_interval, so the
+        // advice is simply false there, and advice that cannot work reads as a dead end.
         assertThat(result.failures()).containsExactly(
-                "svc-orders: finish_reason=length (thinking model? set extra_body "
-                        + "chat_template_kwargs.enable_thinking=false, or raise this tier's "
-                        + "max_tokens — the request asked for 1200)");
+                "svc-orders: finish_reason=length — the request asked for 1200 tokens. If this is "
+                        + "a reasoning model, raise this tier's max_tokens; some models also accept "
+                        + "extra_body chat_template_kwargs.enable_thinking=false, but others "
+                        + "(GigaChat) have no off switch and spend the budget on reasoning "
+                        + "regardless");
     }
 
     @Test
@@ -129,7 +135,7 @@ class RepoCardGeneratorTest {
 
         assertThat(result.failed()).isEqualTo(6);
         assertThat(truncating.calls).isEqualTo(3);
-        assertThat(result.failures()).anyMatch(f -> f.contains("enable_thinking"));
+        assertThat(result.failures()).anyMatch(f -> f.contains("finish_reason=length"));
     }
 
     @Test
