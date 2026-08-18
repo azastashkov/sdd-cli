@@ -290,8 +290,11 @@ public final class IndexService {
                         SELECT head_commit || ':' || dirty_hash FROM repo
                         WHERE name=:n AND gradle_status='OK'
                           AND parse_status IS NOT NULL AND parse_status != 'FAILED'
-                          AND build_system IS NOT NULL""")
-                .bind("n", scan.name()).mapTo(String.class).findOne());
+                          AND build_system IS NOT NULL
+                          AND extractor_epoch = :epoch""")
+                .bind("n", scan.name())
+                .bind("epoch", sdd.index.source.SourceExtraction.EXTRACTOR_EPOCH)
+                .mapTo(String.class).findOne());
         if (!force && stored.isPresent() && stored.get().equals(scan.fingerprint())) {
             return new RepoResult(scan.name(), "OK", null, 0, 0, true, null);
         }

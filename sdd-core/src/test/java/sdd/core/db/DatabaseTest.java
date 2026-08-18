@@ -27,7 +27,7 @@ class DatabaseTest {
      * once so adding a migration is a one-line change here rather than a hunt through a dozen
      * literals — which is exactly how the number silently drifts out of agreement with production.
      */
-    private static final int CURRENT = 5;
+    private static final int CURRENT = 6;
 
     @TempDir Path ws;
 

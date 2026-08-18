@@ -75,6 +75,14 @@ public final class ImpactAnalysis {
             addSeed(seeds, seedKeys, new Seed(modelSeed.repo(), "model", detail));
         }
 
+        // Subtypes of whatever the change is anchored on become anchors themselves. This is the
+        // fix for the case the whole diagnosis started from: when an interface changes, its
+        // implementors are what must change with it, and their names are exactly what nobody has
+        // yet — the spec cannot name them, because finding them is the point. Measured: three of
+        // five implementors sat at ranks 26, 48 and 65 against an evidence budget of 40, with
+        // nothing able to promote them.
+        anchorTypes.addAll(sdd.core.kb.KbHierarchy.subtypeClosure(jdbi, Set.copyOf(anchorTypes)));
+
         Set<String> touchpointRepos = new LinkedHashSet<>();
         for (Seed seed : scan.seeds()) {
             touchpointRepos.add(seed.repo());
