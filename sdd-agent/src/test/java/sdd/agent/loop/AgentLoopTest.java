@@ -80,6 +80,26 @@ class AgentLoopTest {
     }
 
     @Test
+    void aProseOnlyRunReportsWhatTheModelSaidInsteadOfJustThatItSaidSomething() {
+        // "no tool calls" is a symptom shared by two unrelated causes — an endpoint that cannot
+        // return tool_calls at all, and a model that spent its budget before reaching them. The
+        // content is what separates them, and it belongs in the failure a reader actually sees.
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                text("I will now analyse the repository."),
+                text("Let me think about this more carefully."),
+                text("Here is my plan in prose, as requested.")));
+
+        AgentOutcome outcome = loop(model, AgentBudget.defaults(), InstantSource.system())
+                .run("sys", "wo", "qwen", 4096);
+
+        assertThat(outcome.result()).isEqualTo(AgentResult.MALFORMED);
+        assertThat(outcome.detail())
+                .contains("no tool calls after 3 turns")
+                .contains("finish_reason=")
+                .contains("model answered: Here is my plan in prose");
+    }
+
+    @Test
     void identicalActionRepeatedThreeTimesIsWedged() {
         ScriptedChatModel model = new ScriptedChatModel(List.of(
                 call("1", "read_file", "{\"path\":\"A.java\"}"),
