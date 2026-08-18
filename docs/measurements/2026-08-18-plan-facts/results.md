@@ -346,3 +346,46 @@ six repos after the migration, which is the trap V2 and V3 both fell into.
 
 The prompt is 2.3× bigger. That is one call per plan against a 384k-context planner, and it buys
 every service repo's method signatures, which previously did not exist in the prompt at all.
+
+---
+
+# Prompt scaling with estate size (measured 2026-08-18)
+
+The fixes above were all verified on a six-repo estate. Every budget in `PlanDrafter` is *per repo*,
+so the prompt is O(affected repos) with no ceiling of its own — invisible at six, not invisible at
+the "40+ repos" the design exists for.
+
+`PromptScalingTest` builds N synthetic repos (50 types × 3 members, 5 endpoints each) and measures
+the composed prompt. Growth is cleanly linear at **~11,130 chars per affected repo**:
+
+| affected repos | prompt | ≈ tokens |
+|---|---|---|
+| 6 | 66,220 | 16.6k |
+| 11 | 121,543 | 30.4k |
+| **53** | **590,011** | **147.5k** |
+
+**Most of that was spent on repos that will not be edited.** In the measured scenario 49 of the 53
+were `BUMP_REBUILD_ONLY` — a version bump and a rebuild — and each still received a full ~11k
+evidence block of types, members and endpoints for work that is not happening.
+
+**The fix allocates by role.** A rebuild-only repo now gets `REBUILD_ONLY_CAP` (900 chars of types;
+members and endpoints omitted with an explicit marker, since an empty block cannot be told apart
+from "this repo has no members"). Everything else is unchanged.
+
+| affected repos | before | after | |
+|---|---|---|---|
+| 6 | 66,220 | 46,322 | −30% |
+| 53 | 590,011 | **96,834** | **−84%** (147.5k → 24.2k tokens) |
+
+**Why this is safe in the direction the annotation errs.** Anchored, the annotation measured 5/5 on
+two real changes; unanchored it falls back to the unfiltered count, which *over*-reports
+`CODE_CHANGE_LIKELY`. So a repo whose status is uncertain keeps the full share, and only a repo
+confidently marked rebuild-only is trimmed. It also means this trimming got safer as a direct result
+of the anchoring fix — before it, four of five rebuild-only repos were mislabelled.
+
+Re-verified on the real estate: case 2 still 5/5 implementors, case 3a still 3/3 changed types,
+byte counts unchanged for every repo that matters.
+
+**Caveat: this is a measurement of the code, not of any real 53-repo estate.** The synthetic repos
+are uniform; a real estate's spread of repo sizes will differ, and a repo far larger than 50 types
+will sit at the per-repo ceiling of 18,750 chars rather than the 11,130 measured here.
