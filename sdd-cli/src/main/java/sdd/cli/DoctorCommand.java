@@ -206,6 +206,17 @@ public final class DoctorCommand implements Callable<Integer> {
      * questions, and repo-card generation fails on the second while doctor only ever asked the
      * first — leaving a reader with {@code finish_reason=length} and no way to see why.
      */
+    /**
+     * Separate from {@code --completion} because it answers a different question and costs its own
+     * call: a tier can complete perfectly well and still never emit a tool call, and only the
+     * coding tiers need to. When every tier of the ladder fails an implement run with
+     * "no tool calls", this is what says whether the endpoint can return them at all.
+     */
+    @Option(names = "--tools",
+            description = "Also ask each model tier to call a tool, and report whether it could "
+                    + "(costs one call per tier; sdd implement is entirely tool-driven)")
+    boolean tools;
+
     @Option(names = "--completion",
             description = "Also ask each model tier to produce a short answer, and report "
                     + "finish_reason, token spend and any inline reasoning (costs one call per tier)")
@@ -234,6 +245,27 @@ public final class DoctorCommand implements Callable<Integer> {
         if (completion && result.ok()) {
             probeCompletion(name, ep);
         }
+        if (tools && result.ok()) {
+            probeToolCalling(name, ep);
+        }
+    }
+
+    /** Reports whether the tier can return a tool call, which is all sdd implement ever asks of it. */
+    private void probeToolCalling(String name, ModelEndpoint ep) {
+        var r = sdd.core.llm.ToolCallProbe.probe(ep, new sdd.core.llm.HttpChatModel(ep, 1));
+        String check = "model:" + name + ":tools";
+        report(r.ok(), check, r.detail());
+        if (!r.ok()) {
+            var out = spec.commandLine().getOut();
+            out.println("    finish_reason   : " + r.finishReason());
+            out.println("    tokens used     : " + r.completionTokens() + " of " + r.maxTokensSent());
+            out.println("    answered instead: " + r.contentExcerpt());
+        }
+        diagnostics.note(check + ": called_tool=" + r.calledTool()
+                + " tool=" + r.toolName()
+                + " finish_reason=" + r.finishReason()
+                + " completion_tokens=" + r.completionTokens()
+                + " max_tokens=" + r.maxTokensSent());
     }
 
     /** Reports what the tier actually produced, with the numbers that explain a truncation. */
