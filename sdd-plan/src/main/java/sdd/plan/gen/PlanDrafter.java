@@ -59,6 +59,22 @@ public final class PlanDrafter {
     static final int ENDPOINT_CAP = ENDPOINT_BUDGET * MAX_LINE;
     /** The per-repo ceiling, kept as one name for tests and for reasoning about prompt size. */
     static final int EVIDENCE_CAP = TYPE_CAP + MEMBER_CAP + ENDPOINT_CAP;
+
+    /**
+     * What a repo gets when the closure says it only needs rebuilding.
+     *
+     * <p>Every budget here is per-repo, so the prompt is O(affected repos) with no ceiling of its
+     * own — measured at ~11k chars per repo, which is 16k tokens on a six-repo estate and 147k on a
+     * fifty-three-repo one. Most of that is spent on repos that will not be edited: a
+     * BUMP_REBUILD_ONLY repo's step is a version bump and a rebuild, so shipping its full API
+     * surface is evidence for work that is not happening.
+     *
+     * <p>This is safe in exactly the direction the annotation errs. Anchored, the annotation
+     * measured 5/5 on real changes; unanchored it falls back to the unfiltered count, which
+     * OVER-reports CODE_CHANGE_LIKELY — so a repo whose status is uncertain gets the full share,
+     * and only a repo confidently marked rebuild-only is trimmed.
+     */
+    static final int REBUILD_ONLY_CAP = 900;
     private static final Set<String> VERSION_ACTIONS = Set.of("none", "patch", "minor", "major");
     /** Whatever DeclaredContract can parse — the drafter must never be able to propose a kind the
      *  checker cannot re-derive, and the two lists drifting apart is exactly how that happens. */
@@ -366,7 +382,8 @@ public final class PlanDrafter {
             Set<String> terms = new HashSet<>(specTerms);
             terms.addAll(tokens(String.join(" ", repo.reasons())));
             input.append("\n## ").append(repo.repo()).append('\n');
-            input.append(evidence(jdbi, repo.repo(), terms));
+            input.append(evidence(jdbi, repo.repo(), terms,
+                    "BUMP_REBUILD_ONLY".equals(repo.annotation())));
         }
         if (!priorQa.isBlank()) {
             input.append("\n# Prior questions and human resolutions\n\n").append(priorQa);
@@ -391,7 +408,10 @@ public final class PlanDrafter {
      * {@link #EVIDENCE_CAP} now truncates the least relevant lines rather than the last ones
      * alphabetically.
      */
-    private static String evidence(Jdbi jdbi, String repo, Set<String> terms) {
+    private static String evidence(Jdbi jdbi, String repo, Set<String> terms, boolean rebuildOnly) {
+        int typeCap = rebuildOnly ? REBUILD_ONLY_CAP : TYPE_CAP;
+        int memberCap = rebuildOnly ? 0 : MEMBER_CAP;
+        int endpointCap = rebuildOnly ? 0 : ENDPOINT_CAP;
         StringBuilder evidence = new StringBuilder();
         jdbi.useHandle(h -> {
             StringBuilder types = new StringBuilder();
@@ -410,7 +430,7 @@ public final class PlanDrafter {
                         .append(" (").append(row.get("kind"))
                         .append(") @ ").append(row.get("path")).append('\n');
             }
-            appendCapped(evidence, types, TYPE_CAP, "types");
+            appendCapped(evidence, types, typeCap, "types");
 
             StringBuilder members = new StringBuilder();
             List<Map<String, Object>> memberRows = h.createQuery("""
@@ -435,7 +455,7 @@ public final class PlanDrafter {
                         : fqcn + "#" + sig;
                 members.append("- ").append(left).append(": ").append(row.get("ret")).append('\n');
             }
-            appendCapped(evidence, members, MEMBER_CAP, "members");
+            appendCapped(evidence, members, memberCap, "members");
 
             StringBuilder endpoints = new StringBuilder();
             for (Map<String, Object> row : h.createQuery("""
@@ -450,7 +470,7 @@ public final class PlanDrafter {
                         .append(" req=").append(row.get("req")).append(" res=").append(row.get("res"))
                         .append('\n');
             }
-            appendCapped(evidence, endpoints, ENDPOINT_CAP, "endpoints");
+            appendCapped(evidence, endpoints, endpointCap, "endpoints");
         });
         return evidence.toString();
     }
@@ -466,6 +486,14 @@ public final class PlanDrafter {
      * the same to the reader, human or model.
      */
     private static void appendCapped(StringBuilder out, StringBuilder section, int cap, String label) {
+        if (cap <= 0) {
+            // A rebuild-only repo omits this section entirely. Saying so beats an empty block,
+            // which a reader cannot distinguish from "this repo has no members".
+            if (section.length() > 0) {
+                out.append("…(").append(label).append(" omitted — rebuild only)\n");
+            }
+            return;
+        }
         if (section.length() <= cap) {
             out.append(section);
             return;
