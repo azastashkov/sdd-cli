@@ -303,6 +303,78 @@ either before or after the subcommand) or `SDD_PROGRESS=off`; see
 full decision ladder (`SDD_PROGRESS` → `TERM` → `CI` → console) and what each
 command reports.
 
+## Inspecting the knowledge base
+
+Everything `sdd index` learns lives in one SQLite file, `<workspace>/.sdd/index.db`.
+Nothing is written as loose files, so `sqlite3` is how you look at it.
+
+Open it **read-only**. `sdd` applies pending schema migrations on every open,
+including read-only commands, so pointing the binary at a database is never a
+neutral act:
+
+```
+sqlite3 'file:<workspace>/.sdd/index.db?mode=ro' "select * from meta;"
+```
+
+**Repo cards.** One row per repo, upserted — no history is kept. `card_md` is
+the full markdown, `card_line` the one-line summary, and `input_hash` the cache
+key that decides whether the next `sdd index` regenerates or reports `cached`:
+
+```
+sqlite3 -header -column <workspace>/.sdd/index.db \
+  "select r.name, length(c.card_md) chars, c.model, c.created_at
+   from repo_card c join repo r on r.id = c.repo_id order by r.name;"
+```
+
+```
+sqlite3 <workspace>/.sdd/index.db \
+  "select c.card_md from repo_card c join repo r on r.id = c.repo_id
+   where r.name = 'my-repo';"
+```
+
+An empty `repo_card` is worth fixing before planning rather than pressing on:
+`ModelSeeder` feeds every card to the planner when choosing affected repos, and
+`WorkOrder` hands one to each coding agent. With none, impact analysis reasons
+over an empty inventory and agents start from a `(no repo card)` fallback.
+
+**What was indexed, and whether anything degraded:**
+
+```
+sqlite3 -header -column <workspace>/.sdd/index.db \
+  "select name, build_system, gradle_status, parse_status, substr(head_commit,1,8) head
+   from repo order by name;"
+```
+
+**Estate shape** — sizes per repo, which is what governs how much evidence a
+repo contributes to the planning prompt:
+
+```
+sqlite3 -header -column <workspace>/.sdd/index.db \
+  "select r.name, count(t.id) types, sum(t.is_api) api_types
+   from repo r
+   left join module m on m.repo_id = r.id
+   left join java_type t on t.module_id = m.id
+   group by r.name order by types desc;"
+```
+
+**Who implements what, across repos** — the question `api_usage` cannot answer,
+since it records the module a reference came from and not the referring type:
+
+```
+sqlite3 -header -column <workspace>/.sdd/index.db \
+  "select r.name repo, t.fqcn, s.relation, s.resolution
+   from type_supertype s
+   join java_type t on t.id = s.type_id
+   join module m on m.id = t.module_id
+   join repo r on r.id = m.repo_id
+   where s.supertype_fqcn = 'com.example.SomeInterface'
+   order by r.name, t.fqcn;"
+```
+
+`resolution` records how the supertype was resolved (`IMPORT`, `SAME_PACKAGE`,
+`WRITTEN`, `UNRESOLVED`) — an unresolved row is still a row, because "no
+subtypes" and "subtypes we could not place" are different answers.
+
 ## Reference
 
 [`docs/commands.md`](docs/commands.md) documents every command's flags, exit
