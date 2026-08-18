@@ -207,6 +207,11 @@ public final class HttpChatModel implements ChatModel {
             }
             JsonNode contentNode = message.path("content");
             String content = (contentNode.isMissingNode() || contentNode.isNull()) ? null : contentNode.asText();
+            // A reasoning model with no request-side off switch returns its thinking inline. Every
+            // consumer of a response parses it as JSON, so a reply that opens with a think block is
+            // not truncated but "unparseable" — stripping at this boundary fixes all of them at
+            // once, and is a no-op for a model that never emits the tags. See ReasoningContent.
+            content = ReasoningContent.strip(content);
             ChatMessage msg = new ChatMessage("assistant", content, List.copyOf(toolCalls), null);
             Usage usage = new Usage(
                     root.path("usage").path("prompt_tokens").asInt(),
