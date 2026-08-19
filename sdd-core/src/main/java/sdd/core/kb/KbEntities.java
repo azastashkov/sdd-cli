@@ -28,6 +28,7 @@ public final class KbEntities {
             case CLASS -> resolveClass(jdbi, value);
             case SYMBOL -> resolveSymbol(jdbi, value);
             case ARTIFACT -> resolveArtifact(jdbi, value);
+            case CONFIG -> resolveConfig(jdbi, value);
         };
         return new Resolution(kind, value, matches);
     }
@@ -42,6 +43,7 @@ public final class KbEntities {
                     + " (a symbol is named by the specifier a consumer imports,"
                     + " e.g. @acme/web-sdk.Tick)";
             case ARTIFACT -> "not linked to any indexed module";
+            case CONFIG -> "no indexed config property with that key or key prefix";
         };
     }
 
@@ -204,6 +206,36 @@ public final class KbEntities {
      * non-deterministic resolution branch. This extraction adds {@code ORDER BY r.name}: an
      * intentional determinism fix, not an accidental behavior change.
      */
+    /**
+     * A config property by exact key, or by key prefix anchored at a dot.
+     *
+     * <p>The prefix arm is {@code key LIKE :v || '.%'} rather than {@code LIKE :v || '%'} on
+     * purpose: the second would let {@code pricing.tie} match {@code pricing.tier.ttl}, so a
+     * mistyped key would resolve to a real repo and seed the closure from it. A miss is a
+     * {@code problem} the author can see and fix; a wrong hit is one they cannot.
+     *
+     * <p>{@code detail} carries the value and the file that sets it, so a citation reads
+     * {@code "pricing.tier.ttl = 5m @ src/main/resources/application-prod.yml"} — the same
+     * "name the matched row" contract every other resolver here follows.
+     */
+    private static List<EntityMatch> resolveConfig(Jdbi jdbi, String value) {
+        List<Map<String, Object>> rows = jdbi.withHandle(h -> h.createQuery("""
+                        SELECT r.name AS repo, c.key AS key, c.value AS value,
+                               c.source_file AS source_file
+                        FROM config_property c
+                        JOIN module m ON m.id = c.module_id
+                        JOIN repo r ON r.id = m.repo_id
+                        WHERE c.key = :v OR c.key LIKE :v || '.%'
+                        ORDER BY r.name, c.key""")
+                .bind("v", value).mapToMap().list());
+        return rows.stream()
+                .map(row -> new EntityMatch(String.valueOf(row.get("repo")),
+                        row.get("key") + " = " + row.get("value")
+                                + " @ " + row.get("source_file"),
+                        "config_property"))
+                .toList();
+    }
+
     private static List<EntityMatch> resolveArtifact(Jdbi jdbi, String value) {
         Optional<ArtifactRef> ref = ArtifactRef.parse(value);
         if (ref.isEmpty()) {

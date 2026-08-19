@@ -37,11 +37,58 @@ class KbEntitiesTest {
             h.execute("INSERT INTO kafka_role(module_id, topic_id, role) VALUES (1,1,'CONSUMER')");
             h.execute("INSERT INTO java_type(module_id, fqcn, kind) VALUES (3,'com.acme.pricing.LoyaltyTier','CLASS')");
             h.execute("INSERT INTO artifact(grp, name, module_id) VALUES ('com.acme','lib-core',3)");
+            // Config properties: written by sdd index on every Spring module, and until now read by
+            // nothing at all in the planning pipeline.
+            h.execute("INSERT INTO config_property(module_id, key, value, profile, source_file) "
+                    + "VALUES (1,'pricing.tier.refresh-interval','30s',NULL,'src/main/resources/application.yml')");
+            h.execute("INSERT INTO config_property(module_id, key, value, profile, source_file) "
+                    + "VALUES (1,'pricing.tier.ttl','5m','prod','src/main/resources/application-prod.yml')");
+            h.execute("INSERT INTO config_property(module_id, key, value, profile, source_file) "
+                    + "VALUES (2,'pricing.tier.refresh-interval','60s',NULL,'src/main/resources/application.yml')");
             // A TypeScript export whose SIMPLE name is the same as the Java type's — the exact
             // collision the two kinds exist to keep apart.
             h.execute("INSERT INTO java_type(module_id, fqcn, kind, language) "
                     + "VALUES (3,'@acme/web-sdk.LoyaltyTier','INTERFACE','TYPESCRIPT')");
         });
+    }
+
+    @Test
+    void aConfigKeyResolvesToEveryRepoThatDeclaresIt() {
+        Resolution resolution = KbEntities.resolve(db.jdbi(), EntityKind.CONFIG,
+                "pricing.tier.refresh-interval");
+
+        assertThat(resolution.repos()).containsExactly("svc-orders", "svc-pricing");
+        // The detail is the citation: what the key is set to and which file says so.
+        assertThat(resolution.matches())
+                .extracting(EntityMatch::repo, EntityMatch::detail, EntityMatch::source)
+                .contains(tuple("svc-pricing",
+                        "pricing.tier.refresh-interval = 30s @ src/main/resources/application.yml",
+                        "config_property"));
+    }
+
+    @Test
+    void aKeyPrefixResolvesTheSubtreeBeneathIt() {
+        // A human writes the prefix they care about; requiring the leaf would make the kind
+        // useless for exactly the "which repos own this config area" question it exists for.
+        Resolution resolution = KbEntities.resolve(db.jdbi(), EntityKind.CONFIG, "pricing.tier");
+
+        assertThat(resolution.repos()).containsExactly("svc-orders", "svc-pricing");
+        assertThat(resolution.matches()).hasSize(3);
+    }
+
+    @Test
+    void aPrefixMatchIsAnchoredAtASegmentBoundary() {
+        // 'pricing.tie' must not match 'pricing.tier.ttl' — a substring match would let a typo
+        // resolve to something real, which is worse than missing.
+        assertThat(KbEntities.resolve(db.jdbi(), EntityKind.CONFIG, "pricing.tie").isEmpty()).isTrue();
+    }
+
+    @Test
+    void anUnknownConfigKeyMissesWithAnActionableReason() {
+        Resolution resolution = KbEntities.resolve(db.jdbi(), EntityKind.CONFIG, "nope.not.here");
+
+        assertThat(resolution.isEmpty()).isTrue();
+        assertThat(KbEntities.missReason(EntityKind.CONFIG)).contains("config");
     }
 
     @Test

@@ -37,6 +37,8 @@ class SeedFinderTest {
             h.execute("INSERT INTO kafka_role(module_id, topic_id, role) VALUES (1,1,'CONSUMER')");
             h.execute("INSERT INTO java_type(module_id, fqcn, kind) VALUES (3,'com.acme.pricing.LoyaltyTier','CLASS')");
             h.execute("INSERT INTO artifact(grp, name, module_id) VALUES ('com.acme','lib-core',3)");
+            h.execute("INSERT INTO config_property(module_id, key, value, profile, source_file) "
+                    + "VALUES (1,'pricing.tier.refresh-interval','30s',NULL,'src/main/resources/application.yml')");
             FtsSymbolWriter.insert(h, 3L, "LoyaltyTier", "com.acme.pricing.LoyaltyTier", "");
         });
     }
@@ -92,6 +94,34 @@ class SeedFinderTest {
         SeedFinder.SeedScan scan = SeedFinder.find(db.jdbi(), new FtsRetriever(db.jdbi()), s);
 
         assertThat(scan.anchorTypes()).isEmpty();
+    }
+
+    @Test
+    void aConfigTouchpointSeedsTheRepoDeclaringTheProperty() {
+        // config_property has been written by sdd index since V1 and read by nothing. A human task
+        // naming a property key could not reach the affected set at all before this kind existed.
+        NormalizedSpec s = spec(List.of(
+                new Touchpoint(Touchpoint.Kind.CONFIG, "pricing.tier.refresh-interval")), List.of());
+
+        SeedFinder.SeedScan scan = SeedFinder.find(db.jdbi(), new FtsRetriever(db.jdbi()), s);
+
+        assertThat(scan.seeds()).extracting(Seed::repo, Seed::source)
+                .containsExactly(tuple("svc-pricing", "touchpoint"));
+        assertThat(scan.problems()).isEmpty();
+        // A config key is not a type, so it contributes no anchor — anchors come off java_type rows.
+        assertThat(scan.anchorTypes()).isEmpty();
+    }
+
+    @Test
+    void anUnknownConfigKeyBecomesABlockingProblemRatherThanAGuess() {
+        NormalizedSpec s = spec(List.of(
+                new Touchpoint(Touchpoint.Kind.CONFIG, "no.such.key")), List.of());
+
+        SeedFinder.SeedScan scan = SeedFinder.find(db.jdbi(), new FtsRetriever(db.jdbi()), s);
+
+        assertThat(scan.seeds()).isEmpty();
+        assertThat(scan.problems()).singleElement().asString()
+                .contains("config:no.such.key").contains("no indexed config property");
     }
 
     @Test

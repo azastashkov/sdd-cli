@@ -343,7 +343,14 @@ touchpoint that could not be extracted:
 ## Touchpoints
 - repo: trading-core                         ← and state it as fact here
 - class: TierUpdateListener
+- config: pricing.tier.refresh-interval
 ```
+
+The kinds are `repo:`, `endpoint:`, `topic:`, `class:`, `artifact:` and `config:`. Each is resolved
+against the knowledge base — a hint verified, never trusted — and a miss becomes a blocking
+question rather than a guess. `config:` takes a Spring property key, or a prefix of one anchored at
+a dot: `pricing.tier` resolves every repo declaring anything beneath it, while `pricing.tie`
+resolves nothing, so a typo misses loudly instead of matching something real.
 
 Touchpoints deserve the most attention. Measured on a real estate, a spec with
 no resolvable touchpoint yields **zero seeds** and a blocking `no seeds`

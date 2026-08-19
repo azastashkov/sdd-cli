@@ -39,7 +39,7 @@ public final class ConfluenceNormalizer {
             {"title": string, "owner": string, "status": string, "goal": string,
              "background": string, "requirements": [string, ...], "acceptance": [string, ...],
              "constraints": [string, ...],
-             "touchpoints": [{"kind": "repo"|"endpoint"|"topic"|"class"|"artifact", "value": string}, ...],
+             "touchpoints": [{"kind": "repo"|"endpoint"|"topic"|"class"|"artifact"|"config", "value": string}, ...],
              "out_of_scope": [string, ...], "open_questions": [string, ...], "unmapped": [string, ...]}
             Rules:
             - Use only information present in the document. Never invent requirements.

@@ -95,6 +95,7 @@ public final class SeedFinder {
             case TOPIC -> EntityKind.TOPIC;
             case CLASS -> EntityKind.CLASS;
             case ARTIFACT -> EntityKind.ARTIFACT;
+            case CONFIG -> EntityKind.CONFIG;
         };
     }
 }
