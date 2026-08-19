@@ -125,16 +125,17 @@ public final class ExploreCommand implements Callable<Integer> {
     private Path writeDiagnostics(Explorer.Exploration exploration, String specId,
                                   PrintWriter errWriter) {
         Path dir = workspace.resolve(".sdd/explore").resolve(sanitize(specId));
+        List<String> events = exploration.outcome() == null
+                ? List.of() : exploration.outcome().events();
         try {
             Files.createDirectories(dir);
             StringBuilder turns = new StringBuilder();
-            for (String line : exploration.outcome().transcript()) {
+            for (String line : exploration.transcript()) {
                 turns.append(line).append('\n');
             }
             Files.writeString(dir.resolve("transcript.jsonl"), turns.toString());
             Files.writeString(dir.resolve("events.txt"),
-                    String.join("\n", exploration.outcome().events())
-                            + (exploration.outcome().events().isEmpty() ? "" : "\n"));
+                    String.join("\n", events) + (events.isEmpty() ? "" : "\n"));
             return dir;
         } catch (java.io.IOException e) {
             // Losing the transcript must not lose the survey: the notebook is the deliverable.
@@ -152,12 +153,20 @@ public final class ExploreCommand implements Callable<Integer> {
     private Integer report(Explorer.Exploration exploration, NormalizedSpec parsed,
                            PrintWriter outWriter, PrintWriter errWriter) {
         Notebook notebook = exploration.notebook();
-        AgentResult result = exploration.outcome().result();
-        outWriter.println("explored: " + result + " after " + exploration.outcome().turns()
-                + " turns, " + exploration.outcome().tokens() + " tokens");
-        outWriter.println(exploration.outcome().summary());
-        for (String event : exploration.outcome().events()) {
-            outWriter.println("  event: " + event);
+        AgentResult result = exploration.failed() ? null : exploration.outcome().result();
+        if (exploration.failed()) {
+            // The endpoint failed, which is a different thing from the survey ending — say so in
+            // those terms, and still hand over everything the run had reached.
+            outWriter.println("explored: ENDPOINT FAILED after "
+                    + exploration.transcript().size() + " completed turns");
+            outWriter.println("  " + exploration.transportError());
+        } else {
+            outWriter.println("explored: " + result + " after " + exploration.outcome().turns()
+                    + " turns, " + exploration.outcome().tokens() + " tokens");
+            outWriter.println(exploration.outcome().summary());
+            for (String event : exploration.outcome().events()) {
+                outWriter.println("  event: " + event);
+            }
         }
         Path diagnostics = writeDiagnostics(exploration, parsed.id(), errWriter);
         if (diagnostics != null) {
@@ -172,7 +181,9 @@ public final class ExploreCommand implements Callable<Integer> {
         for (Notebook.Finding finding : notebook.findings()) {
             outWriter.println("  " + finding.citation() + " reads: " + finding.citedLine());
         }
-        NormalizedSpec enriched = merge(parsed, notebook, result);
+        NormalizedSpec enriched = merge(parsed, notebook,
+                exploration.failed() ? "ENDPOINT FAILED" : result.name(),
+                result == AgentResult.DONE);
         Path target = out != null ? out : specPath;
         String rendered = SpecRenderer.render(enriched);
         // Self-check before the human ever sees it: never hand over a gate file that cannot
@@ -198,7 +209,8 @@ public final class ExploreCommand implements Callable<Integer> {
      * {@code sdd explore} twice does not multiply the spec. Everything the human wrote survives:
      * this is a proposal appended to their document, not a rewrite of it.
      */
-    static NormalizedSpec merge(NormalizedSpec spec, Notebook notebook, AgentResult result) {
+    static NormalizedSpec merge(NormalizedSpec spec, Notebook notebook, String ending,
+                                boolean complete) {
         List<Touchpoint> touchpoints = new ArrayList<>(spec.touchpoints());
         for (Notebook.Proposal proposal : notebook.proposals()) {
             Touchpoint.Kind kind = Touchpoint.Kind.fromKey(proposal.kind());
@@ -218,12 +230,12 @@ public final class ExploreCommand implements Callable<Integer> {
             }
         }
         List<SpecItem> questions = new ArrayList<>(spec.openQuestions());
-        if (result != AgentResult.DONE) {
+        if (!complete) {
             // A partial survey must say so IN the spec. Findings from a run that hit its turn
-            // budget look exactly like findings from a complete one, and the reviewer is the only
-            // one who can decide whether the gap matters.
+            // budget — or whose endpoint died — look exactly like findings from a complete one,
+            // and the reviewer is the only one who can decide whether the gap matters.
             questions.add(new SpecItem("Q" + (questions.size() + 1),
-                    "Exploration ended early (" + result + ") — the estate survey may be incomplete."));
+                    "Exploration ended early (" + ending + ") — the estate survey may be incomplete."));
         }
         return new NormalizedSpec(spec.id(), spec.title(), spec.owner(), spec.status(), spec.goal(),
                 spec.background(), spec.requirements(), spec.acceptance(), spec.constraints(),

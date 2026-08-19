@@ -10,9 +10,13 @@ import sdd.agent.tool.ExploreTools;
 import sdd.agent.tool.Notebook;
 import sdd.core.llm.ChatModel;
 
+import sdd.core.llm.ModelException;
+
 import java.nio.file.Path;
 import java.time.InstantSource;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -28,7 +32,21 @@ public final class Explorer {
      * @param outcome  why the loop stopped — reported, never used to discard the notebook
      * @param notebook what was established, however the run ended
      */
-    public record Exploration(AgentOutcome outcome, Notebook notebook) {
+    public record Exploration(AgentOutcome outcome, Notebook notebook, List<String> transcript,
+                              String transportError) {
+        public Exploration {
+            transcript = List.copyOf(transcript);
+        }
+
+        /** A run that ended normally: the outcome carries its own transcript. */
+        public Exploration(AgentOutcome outcome, Notebook notebook) {
+            this(outcome, notebook, outcome.transcript(), null);
+        }
+
+        /** True when the endpoint failed rather than the survey finishing. */
+        public boolean failed() {
+            return transportError != null;
+        }
     }
 
     public static final String SYSTEM_PROMPT = """
@@ -95,11 +113,20 @@ public final class Explorer {
                                int maxTokensPerCall, InstantSource clock, boolean singleTool,
                                java.util.function.Consumer<String> trace) {
         ExploreTools tools = new ExploreTools(jdbi, new EstateJail(repoRoots), singleTool, trace);
+        List<String> turns = new ArrayList<>();
         AgentLoop loop = new AgentLoop(model, tools, budget, contextSoftCap, clock,
-                ContextWindow.Retention.EXPLORE);
-        // No try/catch around run(): a ModelException is a transport failure, not a survey result,
-        // and swallowing it would hand back a half-empty notebook that reads like a finished one.
-        AgentOutcome outcome = loop.run(SYSTEM_PROMPT, task, modelName, maxTokensPerCall);
-        return new Exploration(outcome, tools.notebook());
+                ContextWindow.Retention.EXPLORE, turns::add);
+        try {
+            return new Exploration(loop.run(SYSTEM_PROMPT, task, modelName, maxTokensPerCall),
+                    tools.notebook());
+        } catch (ModelException e) {
+            // A transport failure is NOT a survey result, and the caller must be able to tell the
+            // difference — hence transportError rather than a synthesized outcome that would read
+            // like the run simply stopped. But it must not destroy the run either: everything found
+            // so far, and the turns that led up to the failure, are exactly what a reader needs to
+            // understand it. Letting the exception through discarded all of it.
+            return new Exploration(null, tools.notebook(), turns,
+                    e.getMessage() == null ? e.toString() : e.getMessage());
+        }
     }
 }
