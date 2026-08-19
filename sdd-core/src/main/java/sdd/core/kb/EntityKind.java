@@ -18,7 +18,24 @@ public enum EntityKind {
      * absolutely. {@code SYMBOL} is exact-match only, so a name either is the published one or
      * does not resolve.
      */
-    SYMBOL;
+    SYMBOL,
+
+    /**
+     * A Spring configuration property, addressed by its key — {@code pricing.tier.refresh-interval},
+     * or a prefix of one.
+     *
+     * <p>{@code config_property} has been written by {@code sdd index} for every Spring module since
+     * V1 and, until this kind existed, was read by nothing in the planning pipeline. That made
+     * config keys a category of thing a human task routinely names and the planner could not see —
+     * not because the fact was missing, but because nothing asked for it.
+     *
+     * <p>Unlike the other kinds this one resolves a PREFIX as well as an exact key, anchored at a
+     * segment boundary: a reader who writes {@code pricing.tier} means the sub-tree, and requiring
+     * the leaf would make the kind useless for the "which repos own this config area" question it
+     * exists to answer. The boundary anchor is what stops a typo ({@code pricing.tie}) resolving to
+     * something real, which would be worse than missing.
+     */
+    CONFIG;
 
     /**
      * This kind's lower-case name, for prose that reads about the entity rather than about the

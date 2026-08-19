@@ -11,7 +11,7 @@ public record Touchpoint(Kind kind, String value) {
     }
 
     public enum Kind {
-        REPO, ENDPOINT, TOPIC, CLASS, ARTIFACT;
+        REPO, ENDPOINT, TOPIC, CLASS, ARTIFACT, CONFIG;
 
         public String key() {
             return name().toLowerCase(Locale.ROOT);
