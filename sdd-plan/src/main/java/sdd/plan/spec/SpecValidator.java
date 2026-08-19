@@ -8,6 +8,10 @@ import java.util.regex.Pattern;
 
 /** Semantic completeness checks. Structural grammar is SpecParser's job — this judges a parsed spec. */
 public final class SpecValidator {
+    /** {@code <repo>/<path>:<line>} — at least one slash before the colon, so a bare
+     *  {@code Foo.java:42} with no repo does not pass as a citation. */
+    private static final Pattern CITATION = Pattern.compile("[\\w.-]+/[\\w./-]+:\\d+");
+
     private SpecValidator() {
     }
 
@@ -30,7 +34,26 @@ public final class SpecValidator {
         checkItems(problems, "Acceptance Criteria", "A", spec.acceptance());
         checkItems(problems, "Constraints", "C", spec.constraints());
         checkItems(problems, "Open Questions", "Q", spec.openQuestions());
+        checkEvidence(problems, spec.evidence());
         return problems;
+    }
+
+    /**
+     * Every Evidence bullet must carry a {@code <repo>/<path>:<line>} citation.
+     *
+     * <p>This is a gate PROBLEM, not a parse error, deliberately: a human hand-editing a bullet
+     * must still be able to round-trip the file, and the reviewer is the one who decides whether
+     * an uncited claim stays. But it must be flagged, because Evidence exists precisely so a
+     * reader can check it — an uncited bullet is an unverifiable claim wearing the same clothes
+     * as a checkable one, which is the failure this section is meant to prevent rather than cause.
+     */
+    private static void checkEvidence(List<String> problems, List<String> evidence) {
+        for (int i = 0; i < evidence.size(); i++) {
+            if (!CITATION.matcher(evidence.get(i)).find()) {
+                problems.add("Evidence: E" + (i + 1)
+                        + " has no <repo>/<path>:<line> citation — '" + evidence.get(i) + "'");
+            }
+        }
     }
 
     private static void requireNonBlank(List<String> problems, String field, String value) {

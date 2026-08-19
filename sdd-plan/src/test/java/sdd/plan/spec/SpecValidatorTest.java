@@ -17,6 +17,30 @@ class SpecValidatorTest {
     }
 
     @Test
+    void anEvidenceBulletWithoutACitationIsAGateProblem() {
+        // Evidence is the one section whose whole value is that a human can check it. A bullet
+        // with no file:line is an unverifiable model claim wearing the same clothes as a cited one.
+        NormalizedSpec spec = new NormalizedSpec("S-1", "T", "o", "draft", "G.", "",
+                List.of(new SpecItem("R1", "r")), List.of(new SpecItem("A1", "a")),
+                List.of(), List.of(), List.of("the tier cache is refreshed on startup"),
+                List.of(), List.of(), List.of(), List.of());
+
+        assertThat(SpecValidator.problems(spec))
+                .anyMatch(p -> p.startsWith("Evidence:") && p.contains("citation"));
+    }
+
+    @Test
+    void anEvidenceBulletWithARepoPathLineCitationPasses() {
+        NormalizedSpec spec = new NormalizedSpec("S-1", "T", "o", "draft", "G.", "",
+                List.of(new SpecItem("R1", "r")), List.of(new SpecItem("A1", "a")),
+                List.of(), List.of(), List.of("tier cache primed here "
+                        + "— trading-core/src/main/java/com/acme/TierCache.java:42"),
+                List.of(), List.of(), List.of(), List.of());
+
+        assertThat(SpecValidator.problems(spec)).noneMatch(p -> p.startsWith("Evidence:"));
+    }
+
+    @Test
     void validSpecHasNoProblems() {
         assertThat(SpecValidator.problems(valid())).isEmpty();
     }

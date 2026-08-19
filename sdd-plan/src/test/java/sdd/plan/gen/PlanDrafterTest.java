@@ -371,6 +371,32 @@ class PlanDrafterTest {
     }
 
     @Test
+    void anEvidenceCitationPromotesItsTypePastTheRowBudget() {
+        // The point of the Evidence section: a human (or later an explorer) cites a type the
+        // requirement prose never names, and that citation is what pulls it into the window.
+        db.jdbi().useHandle(h -> {
+            for (int i = 0; i < 80; i++) {
+                h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path) VALUES "
+                        + "(1,'com.acme.aaa" + String.format("%03d", i) + ".Filler','CLASS',0,'src/F"
+                        + i + ".java')");
+            }
+            h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path) "
+                    + "VALUES (1,'com.acme.zzz.SpreadPublisher','CLASS',0,'src/SpreadPublisher.java')");
+        });
+        NormalizedSpec cited = new NormalizedSpec("S-1", "T", "o", "draft", "G.", "",
+                List.of(new SpecItem("R1", "tier pricing")), List.of(new SpecItem("A1", "acc")),
+                List.of(), List.of(),
+                List.of("channel published by SpreadPublisher — lib-core/src/SpreadPublisher.java:88"),
+                List.of(), List.of(), List.of(), List.of());
+
+        String without = PlanDrafter.composeInput(db.jdbi(), spec(), impact(), order(), "");
+        String with = PlanDrafter.composeInput(db.jdbi(), cited, impact(), order(), "");
+
+        assertThat(without).doesNotContain("SpreadPublisher");
+        assertThat(with).contains("SpreadPublisher");
+    }
+
+    @Test
     void priorQaSectionIsAppendedWhenPresent() {
         ScriptedChatModel planner = new ScriptedChatModel(List.of(response(
                 "{\"summary\": \"S.\", \"questions\": [], \"contracts\": [], \"repo_steps\": []}", "stop")));

@@ -54,6 +54,34 @@ class SpecRendererTest {
     }
 
     @Test
+    void parseOfRenderIsIdentityWithEvidence() {
+        // Evidence is where a concept the touchpoint grammar cannot express lands — a Redis
+        // channel, a table, a dashboard — carried as prose plus the file:line it was read from.
+        NormalizedSpec spec = new NormalizedSpec("S-5", "T", "o", "draft", "G.", "",
+                List.of(new SpecItem("R1", "req")), List.of(new SpecItem("A1", "acc")),
+                List.of(), List.of(), List.of("redis channel `quotes.v1.spread` published here "
+                        + "— trading-pricing/src/main/java/com/acme/QuotePublisher.java:88"),
+                List.of(), List.of(), List.of(), List.of());
+
+        String rendered = SpecRenderer.render(spec);
+
+        assertThat(rendered).contains("## Evidence\n- redis channel `quotes.v1.spread` published "
+                + "here — trading-pricing/src/main/java/com/acme/QuotePublisher.java:88\n");
+        assertThat(SpecParser.parse(rendered)).isEqualTo(spec);
+    }
+
+    @Test
+    void aSpecWithoutEvidenceRendersNoEvidenceSection() {
+        // The section must be invisible when unused, or every spec written before it existed
+        // would re-render differently and plan.md's hash would move for no reason.
+        NormalizedSpec spec = new NormalizedSpec("S-6", "T", "o", "draft", "G.", "",
+                List.of(new SpecItem("R1", "req")), List.of(new SpecItem("A1", "acc")),
+                List.of(), List.of(), List.of(), List.of(), List.of());
+
+        assertThat(SpecRenderer.render(spec)).doesNotContain("## Evidence");
+    }
+
+    @Test
     void yamlTrapScalarsAreQuotedAndRoundTrip() {
         // bare 'no'/'123'/'2026-08-11' would be resolved by SnakeYAML to Boolean/Integer/Date —
         // the renderer must quote anything that does not read back as the identical string

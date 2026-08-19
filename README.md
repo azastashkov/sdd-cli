@@ -346,6 +346,29 @@ touchpoint that could not be extracted:
 - config: pricing.tier.refresh-interval
 ```
 
+### When the task names something with no touchpoint kind
+
+A Redis channel, a database table, a dashboard panel, a business term — the knowledge base has no
+concept of these, so no touchpoint can resolve one. Put them in `## Evidence` instead, as prose plus
+the file that proves it:
+
+```markdown
+## Evidence
+- redis channel `quotes.v1.spread` published here — trading-pricing/src/main/java/com/acme/QuotePublisher.java:88
+- table TIER_SPREAD created by — trading-core/src/main/resources/db/migration/V12__tier_spread.sql:1
+```
+
+Evidence never seeds a repo — only touchpoints do that. What it does is carry **the code's
+vocabulary into the planner's ranking**: the cited type or file is promoted past the evidence row
+budget instead of losing on alphabetical order, which is the same mechanism anchors use. That is the
+lever for "the plan named the right repos but the steps were vague".
+
+Each bullet should end with a `<repo>/<path>:<line>` citation. A bullet without one still parses —
+you can hand-edit freely — but `sdd plan` reports it as a gate problem, because a claim nobody can
+check is the thing this section exists to avoid.
+
+### Touchpoint kinds
+
 The kinds are `repo:`, `endpoint:`, `topic:`, `class:`, `artifact:` and `config:`. Each is resolved
 against the knowledge base — a hint verified, never trusted — and a miss becomes a blocking
 question rather than a guess. `config:` takes a Spring property key, or a prefix of one anchored at
