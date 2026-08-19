@@ -716,6 +716,64 @@ context for the `planner` model. (`ReviseCommand.java:35-111`)
 `SafeWrite.writeWithBackup` — the previous version is backed up first
 (`ReviseCommand.java:98-101`).
 
+## `sdd explore <spec>.md`
+
+**What it does:** runs a read-only agent over every indexed repo to work out what the spec's free
+text actually refers to, then writes the answer back into the spec as proposed `## Touchpoints` and
+cited `## Evidence` bullets (`ExploreCommand.java`).
+
+**Why it is not part of `sdd plan`.** `sdd plan approve` SHA-hashes `plan.md`, so the drafter's
+evidence must be a deterministic function of the knowledge base and the spec. A model roaming the
+estate is not. So exploration runs *before* the gate and materialises its findings into a file a
+human reviews — the same discipline `PlanCommand.writeNormalized` applies to a normalized Confluence
+spec, and the reason `Closure.expand` still takes no model.
+
+**Tools the agent has** (`ExploreTools.java`): `list_repos`, `list_files`, `read_file`,
+`search_code` (regex over every repo's real text, with an optional repo filter and path glob),
+`search_symbols` (the indexed FTS corpus), `kb_resolve`, `propose_touchpoint`, `record_finding`,
+`done`. There is **no** edit tool and **no** build tool — omitting `apply_edit` alone would not be
+read-only, since a Gradle or npm task writes to disk freely.
+
+**Two gates enforced in code, not in the prompt:**
+
+- `propose_touchpoint` resolves through `KbEntities` before it is accepted, and a miss is refused
+  with the reason. The explorer proposes hints; the knowledge base verifies them.
+- `record_finding` refuses a citation whose `<repo>/<path>` this run never opened via `read_file` or
+  surfaced through `search_code`, then **re-reads the cited file itself** and copies the line
+  verbatim. The model never supplies the quoted text.
+
+**Paths are estate-wide.** Every path argument is `<repo>/<path-in-repo>`; the prefix is required,
+because resolving a bare `src/Foo.java` against whichever root happened to match first would make
+the same argument mean different files across a large estate (`EstateJail.java`). Containment, the
+`.git` ban and the symlink `toRealPath` check apply per repo root.
+
+**Search quotas are per repo** (`EstateSearch.java`). A single global hit budget spent in path order
+is exhausted inside the alphabetically-first repo, leaving every other one looking empty; here each
+repo has its own allowance, a repo that exceeds it is named with its true match count, and an empty
+result names the repos it searched.
+
+| Option | Meaning |
+|---|---|
+| `--workspace <dir>` | workspace directory (default: current dir) |
+| `--model <key>` | which `models:` entry to explore with (default: `planner`) |
+| `--out <path>` | write the enriched spec here instead of in place |
+
+**Budgets** come from `sdd.yml`'s `explore:` block — `turns` (default 200), `tokens` (8000000),
+`wall_seconds` (7200), `context_soft_cap` (200000). They bound termination and reproducibility, not
+cost. `wall_seconds` is also the first thing to make `AgentBudget.maxWall` configurable at all.
+
+| Exit | Meaning |
+|---|---|
+| `0` | the survey finished on `done(success)` |
+| `2` | the survey ended some other way — budget, wedge, `done(blocked)` — everything found so far is still written, plus an Open Question saying the survey may be incomplete |
+| `1` | unreadable spec, empty knowledge base, unknown `--model` key, or an unhandled exception |
+
+**Writes:** the spec at `<spec>.md` (or `--out`), via `SafeWrite.writeWithBackup` — the previous
+version is backed up first, and the rendered result is re-parsed as a self-check before it is
+written. Existing touchpoints, evidence and every other section the human wrote are preserved, and
+duplicates are dropped, so running it twice does not multiply the spec. A run that records nothing
+leaves the spec untouched.
+
 ## `sdd implement <spec>.plan.json`
 
 **What it does:** executes an approved `plan.json` across the estate,

@@ -14,7 +14,8 @@ import java.io.PrintWriter;
         mixinStandardHelpOptions = true,
         version = "sdd 0.1.0",
         subcommands = {DoctorCommand.class, IndexCommand.class, PlanCommand.class,
-                ImplementCommand.class, ReviewCommand.class, CleanCommand.class, StatusCommand.class})
+                ExploreCommand.class, ImplementCommand.class, ReviewCommand.class, CleanCommand.class,
+                StatusCommand.class})
 public final class SddCli {
     // scope = INHERIT because picocli does NOT inherit parent options: without it, only
     // "sdd --quiet index" would parse, and "sdd index --quiet" — the form a user actually

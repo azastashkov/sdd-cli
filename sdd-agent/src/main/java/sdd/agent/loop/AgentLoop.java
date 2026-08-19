@@ -164,6 +164,12 @@ public final class AgentLoop {
                 try {
                     String result = toolbox.dispatch(call.name(), call.argumentsJson());
                     addToolResult(window, turnEntry, call.id(), call.name(), result);
+                    // Re-pinned after every call so the digest reflects the latest state; the pin
+                    // replaces rather than accumulates, and survives eviction and evictAll.
+                    String digest = toolbox.digest();
+                    if (digest != null) {
+                        window.setPinned(digest);
+                    }
                     strikes = 0;
                     if (call.name().equals(toolbox.buildToolName())) {
                         // Live-smoke false positive: a PASSING build's compacted output is

@@ -32,4 +32,17 @@ public interface Tools {
     default String buildToolName() {
         return null;
     }
+
+    /**
+     * A running summary of what this tool set has established, pinned into the context window after
+     * every call, or null when there is nothing to say.
+     *
+     * <p>Eviction — and especially the full eviction an HTTP 400 forces — otherwise erases an
+     * explorer's entire memory of a survey, since unlike a coding agent it has no on-disk artifact
+     * to recover from. The digest is the one thing that survives, so it is the thing that has to
+     * carry the answers rather than the transcript.
+     */
+    default String digest() {
+        return null;
+    }
 }
