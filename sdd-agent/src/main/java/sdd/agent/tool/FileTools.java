@@ -51,7 +51,13 @@ public final class FileTools {
     }
 
     public String readFile(String path) {
-        Path file = jail.resolveExisting(path);
+        return readCapped(jail.resolveExisting(path), path);
+    }
+
+    /** The read caps, shared with the estate-wide explorer so both agents see a file the same way.
+     *  {@code display} is the path as the model wrote it, so an error names what it asked for. */
+    static String readCapped(Path file, String display) {
+        String path = display;
         if (Files.isDirectory(file)) {
             throw new ToolException(path + " is a directory");
         }
@@ -82,7 +88,11 @@ public final class FileTools {
     }
 
     public String listFiles(String dir) {
-        Path target = jail.resolveExisting(dir);
+        return listEntries(jail.resolveExisting(dir), dir);
+    }
+
+    /** @see #readCapped */
+    static String listEntries(Path target, String dir) {
         if (!Files.isDirectory(target)) {
             throw new ToolException(dir + " is not a directory");
         }

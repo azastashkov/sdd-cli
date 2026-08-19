@@ -47,7 +47,13 @@ public final class EstateJail {
         int slash = path.indexOf('/');
         String repo = slash < 0 ? path : path.substring(0, slash);
         String relative = slash < 0 ? "." : path.substring(slash + 1);
-        return jailFor(repo).resolveExisting(relative.isEmpty() ? "." : relative);
+        try {
+            return jailFor(repo).resolveExisting(relative.isEmpty() ? "." : relative);
+        } catch (ToolException e) {
+            // The delegate speaks in repo-relative terms, but the model wrote an estate path — an
+            // unqualified "no such file: src/Foo.java" across 53 repos names nothing.
+            throw new ToolException(e.getMessage() + "  (in repo " + repo + ")");
+        }
     }
 
     private PathJail jailFor(String repo) {

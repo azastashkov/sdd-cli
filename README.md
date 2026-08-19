@@ -350,7 +350,8 @@ touchpoint that could not be extracted:
 
 A Redis channel, a database table, a dashboard panel, a business term — the knowledge base has no
 concept of these, so no touchpoint can resolve one. Put them in `## Evidence` instead, as prose plus
-the file that proves it:
+the file that proves it — or let [`sdd explore`](#sdd-explore-let-the-estate-answer-first) find them
+for you:
 
 ```markdown
 ## Evidence
@@ -366,6 +367,46 @@ lever for "the plan named the right repos but the steps were vague".
 Each bullet should end with a `<repo>/<path>:<line>` citation. A bullet without one still parses —
 you can hand-edit freely — but `sdd plan` reports it as a gate problem, because a claim nobody can
 check is the thing this section exists to avoid.
+
+### `sdd explore`: let the estate answer first
+
+Filling in touchpoints and evidence by hand means already knowing which repo owns a config key, or
+which classes subscribe to a channel. That is the archaeology the tool should do, and it is exactly
+what fails when the task is somebody else's subsystem.
+
+```
+sdd explore SPEC-101.md          # reads every indexed repo, writes findings into the spec
+$EDITOR SPEC-101.md              # review what it proposes — this is a gate, not a handoff
+sdd plan SPEC-101.md             # unchanged, deterministic, as always
+```
+
+It runs a read-only agent over the whole estate — it can grep and read files, and it has no edit
+tool and no build tool at all — and writes back two things: resolvable `## Touchpoints`, and
+`## Evidence` bullets for everything the touchpoint grammar cannot express. The spec is rewritten
+through the same safe-write-plus-backup path a normalized Confluence spec uses, and re-parsed as a
+self-check before you ever see it. `--out` writes to a different file instead of in place.
+
+**Why it is a separate command and not part of `sdd plan`.** `sdd plan approve` SHA-hashes
+`plan.md`, so the planner's evidence has to be a deterministic function of the knowledge base and
+the spec. A model roaming the estate is not deterministic. Running it before the gate, into a file a
+human approves, keeps the deterministic half deterministic — `Closure.expand` still takes no model.
+
+**Two things it cannot do,** both enforced in code rather than asked for in a prompt:
+
+- It cannot propose a touchpoint the knowledge base does not resolve. The proposal is checked at the
+  moment it is made, and a miss is refused with the reason.
+- It cannot cite a file it did not open. Every finding's citation is re-read from disk and the quoted
+  line is copied from the file, never supplied by the model.
+
+Ceilings live under `explore:` in `sdd.yml` (`turns`, `tokens`, `wall_seconds`, `context_soft_cap`).
+They exist so the survey terminates and is reproducible, not to save tokens. A run that ends early
+still writes everything it found, plus an Open Question saying the survey may be incomplete.
+
+Measured on a six-repo estate (`docs/measurements/2026-08-19-explore/results.md`): a spec naming a
+Redis channel produced **zero seeds and a blocking question**, and even a hypothetically perfect
+impact analysis never once named the classes that subscribe to it. With explorer output in the spec,
+the same case reached every expected repo with no blocking questions, and the subscribing classes
+appeared in the planner's prompt for the first time.
 
 ### Touchpoint kinds
 

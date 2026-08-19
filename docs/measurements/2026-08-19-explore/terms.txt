@@ -1,0 +1,10 @@
+# <term>|<repos that mention it under src/main>
+#
+# Ground truth established 2026-08-19 by grep over the six probe repos, src/main only — the same
+# rule the 2026-08-18 corpus used, because tests are not indexed and doc trees are not code.
+tier.update|trading-candles,trading-core,trading-platform-libs
+tier.lvc.map|trading-core,trading-platform-libs
+sweep-interval|trading-core
+refdata.clients|trading-core,trading-platform-libs
+# Control: a real Java type name, the thing fts_symbol exists to find.
+TierCacheSweeper|trading-core

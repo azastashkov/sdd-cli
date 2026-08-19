@@ -49,11 +49,29 @@ public final class EstateSearch {
     }
 
     /**
+     * What a search returned: the text the model sees, and the estate paths it names.
+     *
+     * <p>{@code paths} exists so a caller can record what the model was actually shown. An
+     * explorer's citation gate needs to know a file was surfaced this run, and re-parsing the
+     * rendered text to find out would make a display format load-bearing.
+     */
+    public record Result(String rendered, List<String> paths) {
+        public Result {
+            paths = List.copyOf(paths);
+        }
+    }
+
+    /**
      * @param regex   Java regex, matched per line
      * @param repo    optional single repo to restrict to; null or blank searches the whole estate
      * @param glob    optional glob over the repo-relative path, e.g. {@code **}{@code /*.sql}
      */
     public String search(String regex, String repo, String glob) {
+        return find(regex, repo, glob).rendered();
+    }
+
+    /** @see #search(String, String, String) */
+    public Result find(String regex, String repo, String glob) {
         Pattern pattern;
         try {
             pattern = Pattern.compile(regex);
@@ -77,6 +95,8 @@ public final class EstateSearch {
             repos = List.of(repo);
         }
 
+        // Insertion-ordered so a caller reading `paths` sees them in the order the model did.
+        Set<String> shown = new java.util.LinkedHashSet<>();
         Map<String, List<String>> hitsByRepo = new LinkedHashMap<>();
         Map<String, Integer> capped = new LinkedHashMap<>();
         int total = 0;
@@ -87,7 +107,7 @@ public final class EstateSearch {
                 continue;
             }
             List<String> hits = new ArrayList<>();
-            int found = scanRepo(name, pattern, matcher, hits);
+            int found = scanRepo(name, pattern, matcher, hits, shown);
             if (found > hits.size()) {
                 capped.put(name, found);
             }
@@ -96,11 +116,12 @@ public final class EstateSearch {
                 total += hits.size();
             }
         }
-        return render(repos, hitsByRepo, capped, stoppedAt);
+        return new Result(render(repos, hitsByRepo, capped, stoppedAt), List.copyOf(shown));
     }
 
     /** @return how many lines matched in this repo, which may exceed what was collected */
-    private int scanRepo(String repo, Pattern pattern, PathMatcher glob, List<String> hits) {
+    private int scanRepo(String repo, Pattern pattern, PathMatcher glob, List<String> hits,
+                         Set<String> shown) {
         Path root = jail.root(repo);
         int found = 0;
         try (Stream<Path> walk = Files.walk(root)) {
@@ -113,7 +134,7 @@ public final class EstateSearch {
                 if (glob != null && !glob.matches(rel)) {
                     continue;
                 }
-                found += scanFile(repo, rel, file, pattern, hits);
+                found += scanFile(repo, rel, file, pattern, hits, shown);
             }
         } catch (IOException | UncheckedIOException e) {
             throw new ToolException("search failed in " + repo + ": " + e.getMessage());
@@ -121,7 +142,8 @@ public final class EstateSearch {
         return found;
     }
 
-    private static int scanFile(String repo, Path rel, Path file, Pattern pattern, List<String> hits) {
+    private static int scanFile(String repo, Path rel, Path file, Pattern pattern, List<String> hits,
+                                Set<String> shown) {
         try {
             if (Files.size(file) > MAX_SEARCHED_FILE_BYTES) {
                 return 0;
@@ -142,6 +164,7 @@ public final class EstateSearch {
                 String line = lines.get(i);
                 hits.add(path + ":" + (i + 1) + ": "
                         + (line.length() > MAX_HIT_CHARS ? line.substring(0, MAX_HIT_CHARS) + "…" : line));
+                shown.add(path);
             }
             return found;
         } catch (IOException e) {
