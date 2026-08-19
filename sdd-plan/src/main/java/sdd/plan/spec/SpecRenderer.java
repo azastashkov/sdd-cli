@@ -32,6 +32,7 @@ public final class SpecRenderer {
         items(md, "Acceptance Criteria", spec.acceptance(), true);
         items(md, "Constraints", spec.constraints(), false);
         touchpoints(md, spec.touchpoints());
+        plain(md, "Evidence", spec.evidence());
         plain(md, "Out of Scope", spec.outOfScope());
         items(md, "Open Questions", spec.openQuestions(), false);
         plain(md, "Attachments", spec.attachments());

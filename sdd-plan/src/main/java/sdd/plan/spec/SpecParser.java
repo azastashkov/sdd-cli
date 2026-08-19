@@ -21,7 +21,7 @@ import java.util.regex.Pattern;
  */
 public final class SpecParser {
     static final List<String> ORDER = List.of("Goal", "Background", "Requirements",
-            "Acceptance Criteria", "Constraints", "Touchpoints", "Out of Scope",
+            "Acceptance Criteria", "Constraints", "Touchpoints", "Evidence", "Out of Scope",
             "Open Questions", "Attachments", "Sources");
     private static final List<String> REQUIRED = List.of("Goal", "Requirements", "Acceptance Criteria");
     private static final List<String> FRONT_KEYS = List.of("id", "title", "owner", "status");
@@ -81,8 +81,8 @@ public final class SpecParser {
         }
         return new NormalizedSpec(front.get("id"), front.get("title"), front.get("owner"),
                 front.get("status"), b.goal, b.background, b.requirements, b.acceptance,
-                b.constraints, b.touchpoints, b.outOfScope, b.openQuestions, b.attachments,
-                b.sources);
+                b.constraints, b.touchpoints, b.evidence, b.outOfScope, b.openQuestions,
+                b.attachments, b.sources);
     }
 
     private static Map<String, String> frontMatter(List<String> yamlLines, int closingLine) {
@@ -148,7 +148,7 @@ public final class SpecParser {
             Touchpoint.Kind kind = m.matches() ? Touchpoint.Kind.fromKey(m.group(1)) : null;
             if (kind == null) {
                 throw new SpecParseException(lineNo, "Touchpoints items must look like "
-                        + "'- repo: <value>' (kinds: repo, endpoint, topic, class, artifact)");
+                        + "'- repo: <value>' (kinds: repo, endpoint, topic, class, artifact, config)");
             }
             b.touchpoints.add(new Touchpoint(kind, m.group(2)));
             return;
@@ -157,7 +157,8 @@ public final class SpecParser {
         if (!m.matches()) {
             throw new SpecParseException(lineNo, section + " items must look like '- <text>'");
         }
-        List<String> target = section.equals("Out of Scope") ? b.outOfScope
+        List<String> target = section.equals("Evidence") ? b.evidence
+                : section.equals("Out of Scope") ? b.outOfScope
                 : section.equals("Attachments") ? b.attachments : b.sources;
         target.add(m.group(1));
     }
@@ -178,6 +179,7 @@ public final class SpecParser {
         final List<SpecItem> acceptance = new ArrayList<>();
         final List<SpecItem> constraints = new ArrayList<>();
         final List<Touchpoint> touchpoints = new ArrayList<>();
+        final List<String> evidence = new ArrayList<>();
         final List<String> outOfScope = new ArrayList<>();
         final List<SpecItem> openQuestions = new ArrayList<>();
         final List<String> attachments = new ArrayList<>();

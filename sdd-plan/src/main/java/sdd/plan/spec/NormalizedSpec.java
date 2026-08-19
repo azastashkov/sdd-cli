@@ -11,6 +11,7 @@ public record NormalizedSpec(String id, String title, String owner, String statu
                              String goal, String background,
                              List<SpecItem> requirements, List<SpecItem> acceptance,
                              List<SpecItem> constraints, List<Touchpoint> touchpoints,
+                             List<String> evidence,
                              List<String> outOfScope, List<SpecItem> openQuestions,
                              List<String> attachments, List<String> sources) {
     public NormalizedSpec {
@@ -24,10 +25,27 @@ public record NormalizedSpec(String id, String title, String owner, String statu
         acceptance = List.copyOf(acceptance);
         constraints = List.copyOf(constraints);
         touchpoints = List.copyOf(touchpoints);
+        evidence = List.copyOf(evidence);
         outOfScope = List.copyOf(outOfScope);
         openQuestions = List.copyOf(openQuestions);
         attachments = List.copyOf(attachments);
         sources = List.copyOf(sources);
+    }
+
+    /**
+     * Pre-{@code evidence} 14-argument shape. {@code evidence} defaults to empty, so every spec
+     * written before the section existed renders byte-identically — {@code SpecRenderer.plain}
+     * omits an empty section, and a spec whose rendering moved would move {@code plan.md}'s hash
+     * for no reason.
+     */
+    public NormalizedSpec(String id, String title, String owner, String status,
+                          String goal, String background,
+                          List<SpecItem> requirements, List<SpecItem> acceptance,
+                          List<SpecItem> constraints, List<Touchpoint> touchpoints,
+                          List<String> outOfScope, List<SpecItem> openQuestions,
+                          List<String> attachments, List<String> sources) {
+        this(id, title, owner, status, goal, background, requirements, acceptance, constraints,
+                touchpoints, List.of(), outOfScope, openQuestions, attachments, sources);
     }
 
     /** Pre-{@code sources} 13-argument shape, kept so every existing construction site (main and
@@ -42,6 +60,6 @@ public record NormalizedSpec(String id, String title, String owner, String statu
                           List<String> outOfScope, List<SpecItem> openQuestions,
                           List<String> attachments) {
         this(id, title, owner, status, goal, background, requirements, acceptance, constraints,
-                touchpoints, outOfScope, openQuestions, attachments, List.of());
+                touchpoints, List.of(), outOfScope, openQuestions, attachments, List.of());
     }
 }

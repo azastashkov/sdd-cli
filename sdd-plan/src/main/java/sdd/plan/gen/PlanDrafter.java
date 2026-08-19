@@ -551,6 +551,14 @@ public final class PlanDrafter {
         for (Touchpoint touchpoint : spec.touchpoints()) {
             text.append(' ').append(touchpoint.value());
         }
+        // Evidence bullets carry the code's vocabulary, not the human's: a cited class, file or
+        // key that the requirement prose never names. Ranking already promotes rows the spec names
+        // (see `ranked`), so including them here is what lets a citation pull its own type past the
+        // row budget instead of losing on alphabetical order — the same mechanism anchors use, fed
+        // by the one section written specifically to bridge the two vocabularies.
+        for (String bullet : spec.evidence()) {
+            text.append(' ').append(bullet);
+        }
         return tokens(text.toString());
     }
 
