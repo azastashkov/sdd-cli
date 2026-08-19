@@ -71,45 +71,43 @@ public final class ExploreTools implements Tools {
         return notebook.isEmpty() ? null : notebook.digest();
     }
 
+    /**
+     * The declarations, deliberately terse.
+     *
+     * <p>Everything these used to explain — that search_code reaches what the index has no
+     * concept of, that a citation must be a file this run opened, that a proposal is verified
+     * rather than trusted — is stated in {@link sdd.agent.run.Explorer#SYSTEM_PROMPT}, which the
+     * model reads first. Repeating it here bought nothing and cost bytes on the wire, and at
+     * least one gateway's function-calling path degrades measurably as that payload grows:
+     * measured on GigaChat, identifier-shaped text in the message failed 3 of 3 attempts with
+     * these descriptions at full length and 2 of 3 with them shortened, at the same tool count.
+     */
     @Override
     public List<ToolSpec> specs() {
         return List.of(
-                new ToolSpec("list_repos",
-                        "List every indexed repository. Paths elsewhere are <repo>/<path-in-repo>.",
+                new ToolSpec("list_repos", "List the indexed repositories.",
                         "{\"type\":\"object\",\"properties\":{}}"),
                 new ToolSpec("list_files", "List the entries of a directory.",
-                        one("path", "Estate path: <repo>/<dir>, or just <repo> for its root")),
+                        one("path", "<repo>/<dir>")),
                 new ToolSpec("read_file", "Read a file (capped).",
-                        one("path", "Estate path: <repo>/<path-in-repo>")),
-                new ToolSpec("search_code",
-                        "Regex-search the text of every repo. Hits are quota'd per repo so no repo "
-                                + "can starve the others; narrow with repo or glob to see more.",
+                        one("path", "<repo>/<path>")),
+                new ToolSpec("search_code", "Regex-search every repo's text.",
                         """
                         {"type":"object","properties":{\
-                        "regex":{"type":"string","description":"A Java regular expression"},\
-                        "repo":{"type":"string","description":"Optional: restrict to one repo"},\
-                        "glob":{"type":"string","description":"Optional path glob, e.g. **/*.sql"}},\
+                        "regex":{"type":"string","description":"Java regex"},\
+                        "repo":{"type":"string","description":"Optional repo filter"},\
+                        "glob":{"type":"string","description":"Optional path glob"}},\
                         "required":["regex"]}"""),
-                new ToolSpec("search_symbols",
-                        "Search indexed Java/TypeScript type and member names. Good for a name you "
-                                + "expect to be a type; useless for config keys, tables or channels — "
-                                + "use search_code for those.",
+                new ToolSpec("search_symbols", "Search indexed type and member names.",
                         one("query", "Words or an identifier")),
-                new ToolSpec("kb_resolve",
-                        "Ask the knowledge base what a value resolves to, without proposing it.",
+                new ToolSpec("kb_resolve", "Resolve a value against the knowledge base.",
                         kindValueSchema("Value to resolve")),
-                new ToolSpec("propose_touchpoint",
-                        "Propose a touchpoint for the spec. Rejected unless the knowledge base "
-                                + "resolves it.",
-                        kindValueSchema("The repo name, class fqcn, endpoint, topic, artifact or "
-                                + "config key")),
-                new ToolSpec("record_finding",
-                        "Record one claim with the file:line you read to support it. The cited file "
-                                + "must have been read or searched this run; the quoted line is taken "
-                                + "from the file, not from you.",
+                new ToolSpec("propose_touchpoint", "Propose a touchpoint. Refused if unresolvable.",
+                        kindValueSchema("The value")),
+                new ToolSpec("record_finding", "Record one claim plus the file:line you read.",
                         """
                         {"type":"object","properties":{\
-                        "claim":{"type":"string","description":"One sentence a reviewer can check"},\
+                        "claim":{"type":"string","description":"One checkable sentence"},\
                         "citation":{"type":"string","description":"<repo>/<path>:<line>"}},\
                         "required":["claim","citation"]}"""),
                 new ToolSpec("done", "Finish: result is 'success' or 'blocked'.",
