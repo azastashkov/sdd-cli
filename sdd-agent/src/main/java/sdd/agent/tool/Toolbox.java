@@ -12,7 +12,7 @@ import java.util.List;
  * `done` is advertised so the model can call it, but the AgentLoop intercepts it — dispatching
  * `done` here is a programming error and surfaces as a malformed call.
  */
-public final class Toolbox {
+public final class Toolbox implements Tools {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final FileTools files;
@@ -29,6 +29,12 @@ public final class Toolbox {
         this.compactor = compactor;
     }
 
+    @Override
+    public String buildToolName() {
+        return build.toolName();
+    }
+
+    @Override
     public List<ToolSpec> specs() {
         return List.of(
                 new ToolSpec("read_file", "Read a file's contents (capped).",
@@ -51,6 +57,7 @@ public final class Toolbox {
                 + ("run_npm".equals(build.toolName()) ? "npm script." : "Gradle task.");
     }
 
+    @Override
     public String dispatch(String name, String argsJson) {
         JsonNode args = parse(name, argsJson);
         // Checked before the switch because the build tool's name varies by toolchain and a switch

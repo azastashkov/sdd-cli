@@ -47,7 +47,24 @@ public record SddConfig(
          * control) — null when {@code sdd.yml} has no {@code atlassian:} key. See
          * {@link AtlassianConfig}'s javadoc for why it is opt-in rather than defaulted.
          */
-        AtlassianConfig atlassian) {
+        AtlassianConfig atlassian,
+        /** Ceilings for {@code sdd explore}'s estate walk; never null — see {@link ExploreSettings}. */
+        ExploreSettings explore) {
+
+    public SddConfig {
+        explore = explore == null ? ExploreSettings.defaults() : explore;
+    }
+
+    /** Pre-{@code explore} shape, kept so every existing construction site compiles untouched. */
+    public SddConfig(Path workspace, Map<String, ModelEndpoint> models, Map<Integer, Path> jdkHomes,
+            Path nodeHome, Path gradleHome, List<String> excludes,
+            Map<String, String> artifactOverrides, List<ManualEdge> manualEdges,
+            List<RuntimeEdge> runtimeEdges, RunSettings run,
+            Map<String, List<String>> verificationExclusions, AtlassianConfig atlassian) {
+        this(workspace, models, jdkHomes, nodeHome, gradleHome, excludes, artifactOverrides,
+                manualEdges, runtimeEdges, run, verificationExclusions, atlassian,
+                ExploreSettings.defaults());
+    }
 
     /** Pre-{@code atlassian} 10-argument shape, kept so every existing construction site (main and
      *  test) keeps compiling untouched: {@code atlassian} defaults to null, i.e. no
