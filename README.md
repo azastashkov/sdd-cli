@@ -386,6 +386,12 @@ tool and no build tool at all — and writes back two things: resolvable `## Tou
 through the same safe-write-plus-backup path a normalized Confluence spec uses, and re-parsed as a
 self-check before you ever see it. `--out` writes to a different file instead of in place.
 
+**Watching it work.** Each tool call prints as it happens — `search_code tier\.lvc\.map  → 27
+lines` — and the full per-turn record lands in `.sdd/explore/<specId>/transcript.jsonl`, with the
+finish reason, token counts, what the model said when it did not call a tool, and every call and
+result. `events.txt` beside it carries the loop's own notes. A run that ends after one request is
+supposed to be able to tell you why.
+
 **Why it is a separate command and not part of `sdd plan`.** `sdd plan approve` SHA-hashes
 `plan.md`, so the planner's evidence has to be a deterministic function of the knowledge base and
 the spec. A model roaming the estate is not deterministic. Running it before the gate, into a file a

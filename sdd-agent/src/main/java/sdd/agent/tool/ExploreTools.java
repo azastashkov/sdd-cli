@@ -68,6 +68,15 @@ public final class ExploreTools implements Tools {
     private final Jdbi jdbi;
     private final EstateJail jail;
     private final boolean singleTool;
+    /**
+     * One line per tool call, as it happens, or null for silence.
+     *
+     * <p>It lives here rather than in {@link sdd.agent.loop.AgentLoop} because this is the only
+     * place that knows what a call MEANT — "search_code found 12 files in 4 repos" instead of a
+     * tool name and an opaque blob. A survey that roams 53 repos for two hundred turns with no
+     * output is indistinguishable from one that is wedged.
+     */
+    private final java.util.function.Consumer<String> trace;
     private final EstateSearch search;
     private final FtsRetriever fts;
     private final Notebook notebook = new Notebook();
@@ -81,9 +90,15 @@ public final class ExploreTools implements Tools {
     /** @param singleTool advertise one multiplexed declaration instead of nine — see
      *                    {@link #MULTIPLEXED} for what that buys and what it costs */
     public ExploreTools(Jdbi jdbi, EstateJail jail, boolean singleTool) {
+        this(jdbi, jail, singleTool, null);
+    }
+
+    public ExploreTools(Jdbi jdbi, EstateJail jail, boolean singleTool,
+                        java.util.function.Consumer<String> trace) {
         this.jdbi = jdbi;
         this.jail = jail;
         this.singleTool = singleTool;
+        this.trace = trace;
         this.search = new EstateSearch(jail);
         this.fts = new FtsRetriever(jdbi);
     }
@@ -195,6 +210,38 @@ public final class ExploreTools implements Tools {
 
     @Override
     public String dispatch(String name, String argsJson) {
+        String result = run(name, argsJson);
+        if (trace != null) {
+            trace.accept(name + summarize(name, argsJson, result));
+        }
+        return result;
+    }
+
+    /** A call rendered as what it did, not as what it was called. */
+    private String summarize(String name, String argsJson, String result) {
+        JsonNode args;
+        try {
+            args = parse(name, argsJson);
+        } catch (MalformedCallException e) {
+            return "";
+        }
+        String subject = switch (name) {
+            case "list_files", "read_file" -> args.path("path").asText("");
+            case "search_code" -> args.path("regex").asText("")
+                    + (args.hasNonNull("repo") ? " in " + args.get("repo").asText() : "")
+                    + (args.hasNonNull("glob") ? " glob " + args.get("glob").asText() : "");
+            case "search_symbols" -> args.path("query").asText("");
+            case "kb_resolve", "propose_touchpoint" ->
+                    args.path("kind").asText("") + ":" + args.path("value").asText("");
+            case "record_finding" -> args.path("citation").asText("");
+            default -> "";
+        };
+        int lines = (int) result.lines().count();
+        return (subject.isBlank() ? "" : " " + subject) + "  → " + lines
+                + (lines == 1 ? " line" : " lines");
+    }
+
+    private String run(String name, String argsJson) {
         JsonNode args = parse(name, argsJson);
         return switch (name) {
             case "list_repos" -> listRepos();
