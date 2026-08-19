@@ -776,6 +776,22 @@ workaround, not a default.
 | `2` | the survey ended some other way — budget, wedge, `done(blocked)` — everything found so far is still written, plus an Open Question saying the survey may be incomplete |
 | `1` | unreadable spec, empty knowledge base, unknown `--model` key, or an unhandled exception |
 
+**Seeing what it did.** Every tool call is printed as it happens, rendered as what it did rather
+than as a tool name — `search_code tier\.lvc\.map  → 27 lines`, `read_file payments-api/src/...  →
+118 lines`. After the run, the per-turn record `AgentLoop` builds is written to
+`<workspace>/.sdd/explore/<specId>/transcript.jsonl`, one JSON object per model call:
+
+| field | what it answers |
+|---|---|
+| `finish` | did the endpoint stop for length, a tool call, or a refusal |
+| `prompt_tokens` / `completion_tokens` | is the window growing, is the reply being truncated |
+| `content` | what the model said when it did NOT call a tool — the only thing that separates a refusal from an endpoint that cannot emit tool calls at all |
+| `tool_calls` / `tool_results` | what it asked for, and what it got back |
+
+`events.txt` alongside it holds the loop's own notes — `no tool call`, `malformed <tool>`,
+`endpoint rejected oversized request — evicted and retried` — and they are printed too. Together
+these are what turn "the proxy shows one request" into a reason.
+
 **Writes:** the spec at `<spec>.md` (or `--out`), via `SafeWrite.writeWithBackup` — the previous
 version is backed up first, and the rendered result is re-parsed as a self-check before it is
 written. Existing touchpoints, evidence and every other section the human wrote are preserved, and

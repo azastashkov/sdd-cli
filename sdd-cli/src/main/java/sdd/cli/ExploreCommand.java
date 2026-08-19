@@ -102,8 +102,9 @@ public final class ExploreCommand implements Callable<Integer> {
                         roots, SpecRenderer.render(parsed), model, modelName,
                         new AgentBudget(settings.turns(), settings.wall(), settings.tokens()),
                         settings.contextSoftCap(), endpoint != null ? endpoint.maxTokens() : 4096,
-                        InstantSource.system(), settings.singleTool());
-                return report(exploration, parsed, outWriter);
+                        InstantSource.system(), settings.singleTool(),
+                        line -> outWriter.println("  " + line));
+                return report(exploration, parsed, outWriter, errWriter);
             }
         } catch (java.io.IOException e) {
             errWriter.println("error: cannot read " + specPath + ": " + e.getMessage());
@@ -114,13 +115,54 @@ public final class ExploreCommand implements Callable<Integer> {
         }
     }
 
+    /**
+     * Writes the per-turn transcript and the event log, and returns where they went.
+     *
+     * <p>{@code AgentLoop} builds this for every run and, until now, {@code explore} discarded
+     * it — so a run that stopped after one request left nothing to say why. {@code implement}
+     * has persisted the same thing since it shipped; this is the same file in the same shape.
+     */
+    private Path writeDiagnostics(Explorer.Exploration exploration, String specId,
+                                  PrintWriter errWriter) {
+        Path dir = workspace.resolve(".sdd/explore").resolve(sanitize(specId));
+        try {
+            Files.createDirectories(dir);
+            StringBuilder turns = new StringBuilder();
+            for (String line : exploration.outcome().transcript()) {
+                turns.append(line).append('\n');
+            }
+            Files.writeString(dir.resolve("transcript.jsonl"), turns.toString());
+            Files.writeString(dir.resolve("events.txt"),
+                    String.join("\n", exploration.outcome().events())
+                            + (exploration.outcome().events().isEmpty() ? "" : "\n"));
+            return dir;
+        } catch (java.io.IOException e) {
+            // Losing the transcript must not lose the survey: the notebook is the deliverable.
+            errWriter.println("warn: could not write diagnostics to " + dir + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** Filesystem-safe spec id, same shape {@code ImplementCommand} uses for a run dir. */
+    private static String sanitize(String id) {
+        String cleaned = id.replaceAll("[^A-Za-z0-9._-]", "-");
+        return cleaned.isBlank() ? "spec" : cleaned;
+    }
+
     private Integer report(Explorer.Exploration exploration, NormalizedSpec parsed,
-                           PrintWriter outWriter) {
+                           PrintWriter outWriter, PrintWriter errWriter) {
         Notebook notebook = exploration.notebook();
         AgentResult result = exploration.outcome().result();
         outWriter.println("explored: " + result + " after " + exploration.outcome().turns()
                 + " turns, " + exploration.outcome().tokens() + " tokens");
         outWriter.println(exploration.outcome().summary());
+        for (String event : exploration.outcome().events()) {
+            outWriter.println("  event: " + event);
+        }
+        Path diagnostics = writeDiagnostics(exploration, parsed.id(), errWriter);
+        if (diagnostics != null) {
+            outWriter.println("transcript: " + diagnostics.resolve("transcript.jsonl"));
+        }
         if (notebook.isEmpty()) {
             // Not an error: an honest "nothing found" is a real answer, and rewriting the spec to
             // say so would be worse than leaving it alone.

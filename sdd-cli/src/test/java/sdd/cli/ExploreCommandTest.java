@@ -225,6 +225,54 @@ class ExploreCommandTest {
     }
 
     @Test
+    void everyRunLeavesATranscriptAndALiveTraceOfWhatItDid() throws Exception {
+        Path spec = setUpEstate();
+        ExploreCommand cmd = new ExploreCommand();
+        cmd.explorerForTest = new ScriptedChatModel(List.of(
+                call("1", "search_code", "{\"regex\":\"tier\\\\.lvc\\\\.map\"}"),
+                call("2", "read_file",
+                        "{\"path\":\"payments-api/src/main/java/com/acme/Publisher.java\"}"),
+                call("3", "done", "{\"result\":\"success\",\"summary\":\"done\"}")));
+
+        Run run = explore(cmd, "--workspace", ws.toString(), spec.toString());
+
+        // Live: each call is reported as what it DID, not as an opaque tool name.
+        assertThat(run.out()).contains("search_code tier").contains("read_file payments-api/");
+        // Persisted: the per-turn record AgentLoop already builds, which explore used to discard.
+        Path transcript = ws.resolve(".sdd/explore/SPEC-9/transcript.jsonl");
+        assertThat(transcript).exists();
+        List<String> turns = Files.readAllLines(transcript);
+        assertThat(turns).hasSize(3);
+        assertThat(turns.get(0)).contains("\"turn\":1").contains("search_code")
+                .contains("prompt_tokens").contains("tool_results");
+        assertThat(run.out()).contains("transcript: ");
+    }
+
+    @Test
+    void aRunThatStopsImmediatelyStillExplainsItselfInTheTranscript() throws Exception {
+        Path spec = setUpEstate();
+        ExploreCommand cmd = new ExploreCommand();
+        // One request, no tool call, then the endpoint stops answering usefully — the case where
+        // the proxy log shows a single request and the console previously said almost nothing.
+        cmd.explorerForTest = new ScriptedChatModel(List.of(
+                new ChatResponse(ChatMessage.assistant("I cannot help with that."), "stop",
+                        new Usage(10, 5)),
+                new ChatResponse(ChatMessage.assistant("Still cannot."), "stop", new Usage(10, 5)),
+                new ChatResponse(ChatMessage.assistant("No."), "stop", new Usage(10, 5))));
+
+        Run run = explore(cmd, "--workspace", ws.toString(), spec.toString());
+
+        assertThat(run.out()).contains("MALFORMED").contains("no tool call");
+        List<String> turns = Files.readAllLines(ws.resolve(".sdd/explore/SPEC-9/transcript.jsonl"));
+        assertThat(turns).hasSize(3);
+        // What the model actually said is the thing that distinguishes a refusal from a
+        // capability gap, and it is in the file.
+        assertThat(turns.get(0)).contains("I cannot help with that.").contains("\"finish\":\"stop\"");
+        assertThat(Files.readString(ws.resolve(".sdd/explore/SPEC-9/events.txt")))
+                .contains("no tool call");
+    }
+
+    @Test
     void anUnknownModelKeyIsRefusedBeforeAnythingIsRead() throws Exception {
         Path spec = setUpEstate();
         ExploreCommand cmd = new ExploreCommand();
