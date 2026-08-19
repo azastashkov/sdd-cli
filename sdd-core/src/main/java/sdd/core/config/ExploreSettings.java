@@ -15,7 +15,22 @@ import java.time.Duration;
  * already carries a wall clock, and until now nothing could configure it, so a wedged endpoint
  * could hold the ceiling for the full 45 minutes with no way to say otherwise.
  */
-public record ExploreSettings(int turns, long tokens, long wallSeconds, int contextSoftCap) {
+public record ExploreSettings(int turns, long tokens, long wallSeconds, int contextSoftCap,
+                              /**
+                               * Advertise the explorer's operations as ONE multiplexed tool
+                               * declaration instead of nine. A workaround for an endpoint whose
+                               * function-calling path degrades as the declaration set grows —
+                               * measured on one gateway, identifier-shaped text in the message
+                               * failed 3 of 3 attempts at five declarations and 0 of 3 at one.
+                               * Off by default: nine declarations with their own schemas is the
+                               * better interface everywhere it works.
+                               */
+                              boolean singleTool) {
+
+    /** Pre-{@code singleTool} shape, kept so existing construction sites compile untouched. */
+    public ExploreSettings(int turns, long tokens, long wallSeconds, int contextSoftCap) {
+        this(turns, tokens, wallSeconds, contextSoftCap, false);
+    }
 
     public ExploreSettings {
         if (turns < 1) {
@@ -34,7 +49,7 @@ public record ExploreSettings(int turns, long tokens, long wallSeconds, int cont
     }
 
     public static ExploreSettings defaults() {
-        return new ExploreSettings(200, 8_000_000L, Duration.ofHours(2).toSeconds(), 200_000);
+        return new ExploreSettings(200, 8_000_000L, Duration.ofHours(2).toSeconds(), 200_000, false);
     }
 
     public Duration wall() {

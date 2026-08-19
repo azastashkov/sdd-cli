@@ -96,12 +96,13 @@ public final class ExploreCommand implements Callable<Integer> {
                 }
                 ExploreSettings settings = config.explore();
                 outWriter.println("exploring " + roots.size() + " repos with " + modelKey
-                        + " (up to " + settings.turns() + " turns)");
+                        + " (up to " + settings.turns() + " turns"
+                        + (settings.singleTool() ? ", single-tool mode" : "") + ")");
                 Explorer.Exploration exploration = new Explorer(db.jdbi()).explore(
                         roots, SpecRenderer.render(parsed), model, modelName,
                         new AgentBudget(settings.turns(), settings.wall(), settings.tokens()),
                         settings.contextSoftCap(), endpoint != null ? endpoint.maxTokens() : 4096,
-                        InstantSource.system());
+                        InstantSource.system(), settings.singleTool());
                 return report(exploration, parsed, outWriter);
             }
         } catch (java.io.IOException e) {

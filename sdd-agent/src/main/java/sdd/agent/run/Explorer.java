@@ -77,7 +77,15 @@ public final class Explorer {
     public Exploration explore(Map<String, Path> repoRoots, String task, ChatModel model,
                                String modelName, AgentBudget budget, int contextSoftCap,
                                int maxTokensPerCall, InstantSource clock) {
-        ExploreTools tools = new ExploreTools(jdbi, new EstateJail(repoRoots));
+        return explore(repoRoots, task, model, modelName, budget, contextSoftCap, maxTokensPerCall,
+                clock, false);
+    }
+
+    /** @param singleTool advertise one multiplexed tool instead of nine — see {@code ExploreTools} */
+    public Exploration explore(Map<String, Path> repoRoots, String task, ChatModel model,
+                               String modelName, AgentBudget budget, int contextSoftCap,
+                               int maxTokensPerCall, InstantSource clock, boolean singleTool) {
+        ExploreTools tools = new ExploreTools(jdbi, new EstateJail(repoRoots), singleTool);
         AgentLoop loop = new AgentLoop(model, tools, budget, contextSoftCap, clock,
                 ContextWindow.Retention.EXPLORE);
         // No try/catch around run(): a ModelException is a transport failure, not a survey result,
