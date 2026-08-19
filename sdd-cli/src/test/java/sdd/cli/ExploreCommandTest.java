@@ -7,6 +7,7 @@ import sdd.core.llm.ChatMessage;
 import sdd.core.llm.ChatResponse;
 import sdd.core.llm.ToolCall;
 import sdd.core.llm.Usage;
+import sdd.core.llm.ChatModel;
 import sdd.core.testing.ScriptedChatModel;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecParser;
@@ -270,6 +271,62 @@ class ExploreCommandTest {
         assertThat(turns.get(0)).contains("I cannot help with that.").contains("\"finish\":\"stop\"");
         assertThat(Files.readString(ws.resolve(".sdd/explore/SPEC-9/events.txt")))
                 .contains("no tool call");
+    }
+
+    @Test
+    void anEndpointThatDiesMidRunStillHandsBackWhatWasFoundAndWhyItStopped() throws Exception {
+        Path spec = setUpEstate();
+        ExploreCommand cmd = new ExploreCommand();
+        // One good turn, then the endpoint fails for good. This is the shape that previously
+        // threw everything away: no notebook, no transcript, one line of error on stderr.
+        cmd.explorerForTest = new ChatModel() {
+            private int calls;
+
+            @Override
+            public sdd.core.llm.ChatResponse complete(sdd.core.llm.ChatRequest request) {
+                if (++calls == 1) {
+                    return call("1", "search_code", "{\"regex\":\"tier\\\\.lvc\\\\.map\"}");
+                }
+                throw new sdd.core.llm.ModelException("HTTP 500: {\"status\":500}", 500);
+            }
+        };
+
+        Run run = explore(cmd, "--workspace", ws.toString(), spec.toString());
+
+        assertThat(run.exitCode()).isEqualTo(2);
+        assertThat(run.out()).contains("ENDPOINT FAILED after 1 completed turns")
+                .contains("HTTP 500");
+        // The turn that DID happen is on disk, which is the whole point.
+        List<String> turns = Files.readAllLines(ws.resolve(".sdd/explore/SPEC-9/transcript.jsonl"));
+        assertThat(turns).hasSize(1);
+        assertThat(turns.get(0)).contains("search_code");
+    }
+
+    @Test
+    void findingsSurviveAnEndpointFailureAndTheSpecSaysTheSurveyIsIncomplete() throws Exception {
+        Path spec = setUpEstate();
+        ExploreCommand cmd = new ExploreCommand();
+        cmd.explorerForTest = new ChatModel() {
+            private int calls;
+
+            @Override
+            public sdd.core.llm.ChatResponse complete(sdd.core.llm.ChatRequest request) {
+                return switch (++calls) {
+                    case 1 -> call("1", "search_code", "{\"regex\":\"tier\\\\.lvc\\\\.map\"}");
+                    case 2 -> call("2", "record_finding", """
+                            {"claim":"tier.lvc.map is written by Publisher",\
+                            "citation":"payments-api/src/main/java/com/acme/Publisher.java:3"}""");
+                    default -> throw new sdd.core.llm.ModelException("transport error: reset", 0);
+                };
+            }
+        };
+
+        explore(cmd, "--workspace", ws.toString(), spec.toString());
+
+        NormalizedSpec updated = SpecParser.parse(Files.readString(spec));
+        assertThat(updated.evidence()).hasSize(1);
+        assertThat(updated.openQuestions()).anySatisfy(q ->
+                assertThat(q.text()).contains("ENDPOINT FAILED").contains("may be incomplete"));
     }
 
     @Test

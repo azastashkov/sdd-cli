@@ -36,6 +36,15 @@ public final class AgentLoop {
     private final int contextSoftCap;
     private final InstantSource clock;
     private final ContextWindow.Retention retention;
+    /**
+     * Receives each turn's transcript line as that turn completes, or null.
+     *
+     * <p>{@link AgentOutcome} carries the whole transcript, but only on a RETURN. A transport
+     * failure leaves {@code run} by exception, and everything the run had learned by then —
+     * including the turns that would explain the failure — goes with it. This is how a caller
+     * keeps what happened when there is no outcome to read it from.
+     */
+    private final java.util.function.Consumer<String> onTurn;
 
     public AgentLoop(ChatModel model, Tools toolbox, AgentBudget budget, int contextSoftCap,
                      InstantSource clock) {
@@ -48,12 +57,20 @@ public final class AgentLoop {
      */
     public AgentLoop(ChatModel model, Tools toolbox, AgentBudget budget, int contextSoftCap,
                      InstantSource clock, ContextWindow.Retention retention) {
+        this(model, toolbox, budget, contextSoftCap, clock, retention, null);
+    }
+
+    /** @param onTurn each turn's transcript line as it completes — see the field javadoc */
+    public AgentLoop(ChatModel model, Tools toolbox, AgentBudget budget, int contextSoftCap,
+                     InstantSource clock, ContextWindow.Retention retention,
+                     java.util.function.Consumer<String> onTurn) {
         this.model = model;
         this.toolbox = toolbox;
         this.budget = budget;
         this.contextSoftCap = contextSoftCap;
         this.clock = clock;
         this.retention = retention;
+        this.onTurn = onTurn;
     }
 
     public AgentOutcome run(String systemPrompt, String workOrder, String modelName, int maxTokensPerCall) {
@@ -84,6 +101,9 @@ public final class AgentLoop {
                 return outcome(AgentResult.BUDGET_TOKENS, "token budget reached", turns, tokens, events, transcript);
             }
 
+            // Flush the previous turn BEFORE the call that may never return: a line emitted
+            // after the failure is a line the caller never sees.
+            emitLastTurn(transcript);
             ChatResponse response;
             try {
                 response = model.complete(new ChatRequest(modelName, window.messages(),
@@ -109,6 +129,7 @@ public final class AgentLoop {
                             "context exhausted (endpoint rejected oversized request)", turns, tokens, events,
                             transcript);
                 }
+                emitLastTurn(transcript);
                 throw e.withTokens(tokens);
             }
             turns++;
@@ -299,22 +320,39 @@ public final class AgentLoop {
         return text.substring(0, MAX_TRANSCRIPT_FIELD_CHARS) + "…(truncated)";
     }
 
-    private static AgentOutcome outcome(AgentResult result, String summary, int turns, long tokens,
-                                        List<String> events, List<ObjectNode> transcript) {
+    private int emitted;
+
+    /** Emits every completed-but-unemitted turn line. Idempotent: each line goes out once. */
+    private void emitLastTurn(List<ObjectNode> transcript) {
+        if (onTurn == null) {
+            return;
+        }
+        while (emitted < transcript.size()) {
+            onTurn.accept(writeLine(transcript.get(emitted++)));
+        }
+    }
+
+    private AgentOutcome outcome(AgentResult result, String summary, int turns, long tokens,
+                                 List<String> events, List<ObjectNode> transcript) {
+        emitLastTurn(transcript);
         return new AgentOutcome(result, summary, turns, tokens, events, writeLines(transcript));
     }
 
     private static List<String> writeLines(List<ObjectNode> transcript) {
         List<String> lines = new ArrayList<>(transcript.size());
         for (ObjectNode node : transcript) {
-            try {
-                lines.add(JSON.writeValueAsString(node));
-            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
-                // A tree already built from primitives/strings via ObjectMapper never actually fails to
-                // serialize; this is defense-in-depth so a transcript line is never silently dropped.
-                lines.add("{}");
-            }
+            lines.add(writeLine(node));
         }
         return lines;
+    }
+
+    private static String writeLine(ObjectNode node) {
+        try {
+            return JSON.writeValueAsString(node);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            // A tree already built from primitives/strings via ObjectMapper never actually fails to
+            // serialize; this is defense-in-depth so a transcript line is never silently dropped.
+            return "{}";
+        }
     }
 }

@@ -788,6 +788,12 @@ than as a tool name — `search_code tier\.lvc\.map  → 27 lines`, `read_file p
 | `content` | what the model said when it did NOT call a tool — the only thing that separates a refusal from an endpoint that cannot emit tool calls at all |
 | `tool_calls` / `tool_results` | what it asked for, and what it got back |
 
+**An endpoint that dies mid-run is reported as that, not as a finished survey.** The console says
+`explored: ENDPOINT FAILED after N completed turns` with the transport error, the turns that did
+happen are still written to `transcript.jsonl`, everything the notebook had reached is still merged
+into the spec, and the spec gains an Open Question naming the failure. Exit is `2`. Previously the
+exception propagated out of `Explorer.explore` and all of that was discarded.
+
 `events.txt` alongside it holds the loop's own notes — `no tool call`, `malformed <tool>`,
 `endpoint rejected oversized request — evicted and retried` — and they are printed too. Together
 these are what turn "the proxy shows one request" into a reason.
