@@ -182,6 +182,28 @@ public final class ConfigLoader {
             throw new ConfigException("run must be a mapping, got: " + runNode);
         }
 
+        ExploreSettings explore = ExploreSettings.defaults();
+        Object exploreNode = root.get("explore");
+        if (exploreNode instanceof Map<?, ?> em) {
+            // The record's compact constructor owns the range checks, so a bad value reads the same
+            // whether it came from sdd.yml or from code.
+            explore = new ExploreSettings(
+                    em.get("turns") != null
+                            ? parseInt("explore.turns", String.valueOf(em.get("turns")))
+                            : explore.turns(),
+                    em.get("tokens") != null
+                            ? parseLong("explore.tokens", String.valueOf(em.get("tokens")))
+                            : explore.tokens(),
+                    em.get("wall_seconds") != null
+                            ? parseLong("explore.wall_seconds", String.valueOf(em.get("wall_seconds")))
+                            : explore.wallSeconds(),
+                    em.get("context_soft_cap") != null
+                            ? parseInt("explore.context_soft_cap", String.valueOf(em.get("context_soft_cap")))
+                            : explore.contextSoftCap());
+        } else if (exploreNode != null) {
+            throw new ConfigException("explore must be a mapping, got: " + exploreNode);
+        }
+
         Map<String, List<String>> verificationExclusions = new LinkedHashMap<>();
         Object exclusionsNode = root.get("verification_exclusions");
         if (exclusionsNode instanceof Map<?, ?> em) {
@@ -205,7 +227,8 @@ public final class ConfigLoader {
 
         return new SddConfig(workspace, Map.copyOf(models), Map.copyOf(jdkHomes), nodeHome, gradleHome,
                 excludes, Map.copyOf(artifactOverrides), List.copyOf(manualEdges),
-                List.copyOf(runtimeEdges), run, Map.copyOf(verificationExclusions), atlassian);
+                List.copyOf(runtimeEdges), run, Map.copyOf(verificationExclusions), atlassian,
+                explore);
     }
 
     // --- atlassian: block ------------------------------------------------------------------

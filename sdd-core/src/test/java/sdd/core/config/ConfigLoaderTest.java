@@ -549,6 +549,45 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void exploreSectionDefaultsWhenAbsentAndOverridesPerKey() throws Exception {
+        Path absent = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                """);
+        // Never null: every caller can read a ceiling without a null check, the same contract run:
+        // already has.
+        assertThat(ConfigLoader.load(absent).explore()).isEqualTo(ExploreSettings.defaults());
+
+        Path partial = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                explore:
+                  turns: 500
+                  wall_seconds: 60
+                """);
+        ExploreSettings explore = ConfigLoader.load(partial).explore();
+        assertThat(explore.turns()).isEqualTo(500);
+        assertThat(explore.wall()).isEqualTo(java.time.Duration.ofSeconds(60));
+        assertThat(explore.tokens()).isEqualTo(ExploreSettings.defaults().tokens());
+    }
+
+    @Test
+    void anOutOfRangeExploreCeilingIsRejectedRatherThanClamped() throws Exception {
+        Path ws = write("""
+                models:
+                  planner: { base_url: http://x/v1, model: p }
+                  coder: { base_url: http://y/v1, model: c }
+                explore:
+                  turns: 0
+                """);
+        assertThatThrownBy(() -> ConfigLoader.load(ws))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("explore.turns must be at least 1");
+    }
+
+    @Test
     void parsesTheEscalationLadder() throws Exception {
         Path ws = write("""
                 models:

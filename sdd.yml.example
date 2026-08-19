@@ -135,6 +135,14 @@ run:
                           # being protected is the machine, so one pool covers both
   model_concurrency: 2    # concurrent model calls
 
+# sdd explore's ceilings. These exist so the read-only estate walk TERMINATES and is
+# reproducible, not to save tokens — omit the block entirely to take the defaults.
+# explore:
+#   turns: 200            # per-run turn cap (default 200; the coding agent's 40 cannot roam 53 repos)
+#   tokens: 8000000       # per-run token cap (default 8000000)
+#   wall_seconds: 7200    # per-run wall clock (default 7200)
+#   context_soft_cap: 200000   # prompt tokens before the window starts evicting (default 200000)
+
 # Verification tasks to skip per repo — the report marks these "not locally verified"
 # rather than pretending they passed:
 # verification_exclusions:

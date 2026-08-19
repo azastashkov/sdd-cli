@@ -55,6 +55,92 @@ class ContextWindowTest {
     }
 
     @Test
+    void exploreRetentionEvictsOldestFirstAndStopsOnceUnderCap() {
+        // The implement policy stubs everything non-preserved in one pass. That is survivable for a
+        // coding agent because its edits persist on disk; an explorer has no artifact to recover
+        // from, so one overflow must not erase the whole survey.
+        ContextWindow cw = new ContextWindow(1_000, ContextWindow.Retention.EXPLORE);
+        cw.addSystem("sys");
+        cw.addWorkOrder("wo");
+        for (int i = 1; i <= 6; i++) {
+            cw.addAssistant(assistantCall("s" + i, "search_code"));
+            cw.addToolResult("s" + i, "search_code", "X".repeat(4_000));   // ~1000 tokens each
+        }
+
+        // 1200 tokens over cap -> ~4800 chars -> two entries, not six.
+        int evicted = cw.evictIfOverCap(2_200);
+
+        assertThat(evicted).isEqualTo(2);
+        List<String> tools = cw.messages().stream()
+                .filter(m -> m.role().equals("tool")).map(ChatMessage::content).toList();
+        assertThat(tools.get(0)).isEqualTo("[evicted: search_code result]");
+        assertThat(tools.get(1)).isEqualTo("[evicted: search_code result]");
+        assertThat(tools.get(2)).startsWith("XXXX");
+    }
+
+    @Test
+    void exploreRetentionNeverEvictsARecordedFinding() {
+        // Findings are the explorer's entire product. Losing one to eviction loses work that no
+        // later turn can reconstruct, because nothing was written to disk.
+        ContextWindow cw = new ContextWindow(10, ContextWindow.Retention.EXPLORE);
+        cw.addSystem("sys");
+        cw.addAssistant(assistantCall("f1", "record_finding"));
+        cw.addToolResult("f1", "record_finding", "FINDING1");
+        cw.addAssistant(assistantCall("s1", "search_code"));
+        cw.addToolResult("s1", "search_code", "S".repeat(8_000));
+
+        cw.evictIfOverCap(100_000);
+
+        assertThat(cw.messages().stream().map(ChatMessage::content).toList()).contains("FINDING1");
+    }
+
+    @Test
+    void exploreRetentionKeepsTheLatestReadsAndSearches() {
+        ContextWindow cw = new ContextWindow(10, ContextWindow.Retention.EXPLORE);
+        cw.addSystem("sys");
+        for (int i = 1; i <= 3; i++) {
+            cw.addAssistant(assistantCall("r" + i, "read_file"));
+            cw.addToolResult("r" + i, "read_file", "READ" + i);
+        }
+
+        cw.evictIfOverCap(100_000);
+
+        List<String> tools = cw.messages().stream()
+                .filter(m -> m.role().equals("tool")).map(ChatMessage::content).toList();
+        assertThat(tools).contains("READ2", "READ3").doesNotContain("READ1");
+    }
+
+    @Test
+    void aPinnedDigestSurvivesEvenEvictAll() {
+        // After an HTTP 400 forces evictAll, the agent must still see what it has established --
+        // it re-reads its own notes instead of re-doing its own work.
+        ContextWindow cw = new ContextWindow(80_000, ContextWindow.Retention.EXPLORE);
+        cw.addSystem("sys");
+        cw.addAssistant(assistantCall("s1", "search_code"));
+        cw.addToolResult("s1", "search_code", "SEARCH1");
+        cw.setPinned("## Findings so far (1)\n- redis channel — repo/File.java:1");
+
+        cw.evictAll();
+
+        List<ChatMessage> messages = cw.messages();
+        assertThat(messages.get(messages.size() - 1).content()).contains("Findings so far (1)");
+        assertThat(messages.stream().map(ChatMessage::content).toList())
+                .doesNotContain("SEARCH1");
+    }
+
+    @Test
+    void aReplacedPinDoesNotAccumulate() {
+        ContextWindow cw = new ContextWindow(80_000, ContextWindow.Retention.EXPLORE);
+        cw.addSystem("sys");
+        cw.setPinned("first");
+        cw.setPinned("second");
+
+        List<String> contents = cw.messages().stream().map(ChatMessage::content).toList();
+        assertThat(contents).contains("second").doesNotContain("first");
+        assertThat(cw.messages()).hasSize(2);
+    }
+
+    @Test
     void evictAllStubsEveryToolResultUnconditionallyIgnoringThePreserveRules() {
         ContextWindow cw = new ContextWindow(80_000);
         cw.addSystem("sys");

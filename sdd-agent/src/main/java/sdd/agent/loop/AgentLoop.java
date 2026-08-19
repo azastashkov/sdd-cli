@@ -6,7 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import sdd.agent.tool.MalformedCallException;
 import sdd.agent.tool.ToolException;
-import sdd.agent.tool.Toolbox;
+import sdd.agent.tool.Tools;
 import sdd.core.llm.ChatModel;
 import sdd.core.llm.ChatMessage;
 import sdd.core.llm.ChatRequest;
@@ -31,22 +31,33 @@ public final class AgentLoop {
     private static final int WEDGE_REPEAT = 3;
 
     private final ChatModel model;
-    private final Toolbox toolbox;
+    private final Tools toolbox;
     private final AgentBudget budget;
     private final int contextSoftCap;
     private final InstantSource clock;
+    private final ContextWindow.Retention retention;
 
-    public AgentLoop(ChatModel model, Toolbox toolbox, AgentBudget budget, int contextSoftCap,
+    public AgentLoop(ChatModel model, Tools toolbox, AgentBudget budget, int contextSoftCap,
                      InstantSource clock) {
+        this(model, toolbox, budget, contextSoftCap, clock, ContextWindow.Retention.IMPLEMENT);
+    }
+
+    /**
+     * @param retention which tool results survive eviction — see {@link ContextWindow.Retention}.
+     *                  A coding agent's evidence is on disk; an explorer's is only in the window.
+     */
+    public AgentLoop(ChatModel model, Tools toolbox, AgentBudget budget, int contextSoftCap,
+                     InstantSource clock, ContextWindow.Retention retention) {
         this.model = model;
         this.toolbox = toolbox;
         this.budget = budget;
         this.contextSoftCap = contextSoftCap;
         this.clock = clock;
+        this.retention = retention;
     }
 
     public AgentOutcome run(String systemPrompt, String workOrder, String modelName, int maxTokensPerCall) {
-        ContextWindow window = new ContextWindow(contextSoftCap);
+        ContextWindow window = new ContextWindow(contextSoftCap, retention);
         window.addSystem(systemPrompt);
         window.addWorkOrder(workOrder);
         List<String> events = new ArrayList<>();
@@ -59,7 +70,7 @@ public final class AgentLoop {
         int strikes = 0;
         String lastSignature = null;
         int sameSignature = 0;
-        String lastGradleOutput = null;
+        String lastBuildOutput = null;
         boolean evictedOnFourHundred = false;
 
         while (true) {
@@ -154,20 +165,20 @@ public final class AgentLoop {
                     String result = toolbox.dispatch(call.name(), call.argumentsJson());
                     addToolResult(window, turnEntry, call.id(), call.name(), result);
                     strikes = 0;
-                    if (call.name().equals("run_gradle")) {
+                    if (call.name().equals(toolbox.buildToolName())) {
                         // Live-smoke false positive: a PASSING build's compacted output is
                         // inherently low-entropy ("exit 0 (task)") and identical on every
                         // successful verification, so an agent that verifies twice in a row was
                         // being wedged for doing the right thing. Only compare-and-wedge when the
                         // CURRENT result represents a build FAILURE — design line 59's actual
                         // intent is catching a re-run of the same broken build with no changes.
-                        // lastGradleOutput still updates unconditionally so a later failure is
+                        // lastBuildOutput still updates unconditionally so a later failure is
                         // compared against the right baseline.
-                        if (!isPassingGradleResult(result) && result.equals(lastGradleOutput)) {
+                        if (!isPassingBuildResult(result) && result.equals(lastBuildOutput)) {
                             return outcome(AgentResult.WEDGED, "identical build output", turns, tokens, events,
                                     transcript);
                         }
-                        lastGradleOutput = result;
+                        lastBuildOutput = result;
                     }
                 } catch (MalformedCallException e) {
                     addToolResult(window, turnEntry, call.id(), call.name(), "malformed call: " + e.getMessage());
@@ -189,10 +200,10 @@ public final class AgentLoop {
         }
     }
 
-    /** The compacted gradle result's header line is "exit N ..." (OutputCompactor) or, uncompacted,
-     *  "exit N\n..." (GradleTool.run/runFull) — either way "exit 0" as the first line means the
+    /** The compacted build result's header line is "exit N ..." (OutputCompactor) or, uncompacted,
+     *  "exit N\n..." (GradleTool/NpmTool.run) — either way "exit 0" as the first line means the
      *  build passed. */
-    private static boolean isPassingGradleResult(String result) {
+    private static boolean isPassingBuildResult(String result) {
         int newline = result.indexOf('\n');
         String firstLine = newline >= 0 ? result.substring(0, newline) : result;
         return firstLine.startsWith("exit 0");
