@@ -457,6 +457,23 @@ either before or after the subcommand) or `SDD_PROGRESS=off`; see
 full decision ladder (`SDD_PROGRESS` → `TERM` → `CI` → console) and what each
 command reports.
 
+## Why the index is not thinner
+
+An obvious next step, once `sdd explore` can find things by reading files, is to stop extracting the
+source-derived tables — `java_type`, `api_member`, `file_ref`, `fts_symbol`, `api_usage`,
+`type_supertype` — and keep only the Gradle Tooling API graph. It was measured and rejected
+(`docs/measurements/2026-08-19-index-thinning/results.md`):
+
+- **The cost is not there.** Source parsing is **5–8%** of indexing time; the Gradle Tooling API is
+  the other 95%, and that is the part nothing else can produce. Removing every source table saves
+  about two seconds on six repos, against a re-run that already short-circuits on a commit
+  fingerprint.
+- **`java_type` is the verification substrate.** It is what makes a `class:` touchpoint resolvable,
+  which is what lets the explorer *propose* and the knowledge base *verify*. Without it the
+  explorer's output is unchecked model claims — a different architecture, not a thinner one.
+- **Less evidence is the wrong direction.** Measured, the planner's problem was too few facts in the
+  prompt, not too many.
+
 ## Inspecting the knowledge base
 
 Everything `sdd index` learns lives in one SQLite file, `<workspace>/.sdd/index.db`.
