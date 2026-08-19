@@ -15,7 +15,20 @@ public record RunnerSettings(AgentBudget budget, int contextSoftCap, InstantSour
                              Semaphore gradlePermits, sdd.core.toolchain.Toolchain toolchain,
                              Path nodeHome,
                              /** Fallback Gradle for a repo with no wrapper; null = $SDD_GRADLE then PATH. */
-                             Path gradleHome) {
+                             Path gradleHome,
+                             /** One multiplexed tool declaration instead of six — see {@code Toolbox}. */
+                             boolean singleTool) {
+
+    /** Pre-{@code singleTool} shape, kept so existing construction sites compile untouched. */
+    public RunnerSettings(AgentBudget budget, int contextSoftCap, InstantSource clock,
+                          Path javaHome, Duration gradleTimeout, List<String> verificationTasks,
+                          int maxTokensPerCall, String systemPrompt, List<String> gradleExtraArgs,
+                          Semaphore gradlePermits, sdd.core.toolchain.Toolchain toolchain,
+                          Path nodeHome, Path gradleHome) {
+        this(budget, contextSoftCap, clock, javaHome, gradleTimeout, verificationTasks,
+                maxTokensPerCall, systemPrompt, gradleExtraArgs, gradlePermits, toolchain,
+                nodeHome, gradleHome, false);
+    }
     /** Pre-{@code gradleHome} shape, so existing construction sites compile untouched. */
     public RunnerSettings(AgentBudget budget, int contextSoftCap, InstantSource clock,
                           Path javaHome, Duration gradleTimeout, List<String> verificationTasks,
@@ -66,16 +79,28 @@ public record RunnerSettings(AgentBudget budget, int contextSoftCap, InstantSour
     public static RunnerSettings custom(Path javaHome, List<String> gradleExtraArgs,
                                         List<String> verificationTasks, Semaphore gradlePermits,
                                         AgentBudget budget) {
+        return custom(javaHome, gradleExtraArgs, verificationTasks, gradlePermits, budget, false);
+    }
+
+    public static RunnerSettings custom(Path javaHome, List<String> gradleExtraArgs,
+                                        List<String> verificationTasks, Semaphore gradlePermits,
+                                        AgentBudget budget, boolean singleTool) {
         return new RunnerSettings(budget, 80_000, InstantSource.system(), javaHome,
                 Duration.ofMinutes(15), verificationTasks, 4096, DEFAULT_SYSTEM_PROMPT,
-                gradleExtraArgs, gradlePermits, sdd.core.toolchain.Toolchain.GRADLE, null);
+                gradleExtraArgs, gradlePermits, sdd.core.toolchain.Toolchain.GRADLE, null, null,
+                singleTool);
     }
 
     /** The npm counterpart: no JDK, a node home instead, and the npm prompt. */
     public static RunnerSettings npm(Path nodeHome, List<String> verificationTasks,
                                      Semaphore permits, AgentBudget budget) {
+        return npm(nodeHome, verificationTasks, permits, budget, false);
+    }
+
+    public static RunnerSettings npm(Path nodeHome, List<String> verificationTasks,
+                                     Semaphore permits, AgentBudget budget, boolean singleTool) {
         return new RunnerSettings(budget, 80_000, InstantSource.system(), null,
                 Duration.ofMinutes(15), verificationTasks, 4096, NPM_SYSTEM_PROMPT,
-                List.of(), permits, sdd.core.toolchain.Toolchain.NPM, nodeHome);
+                List.of(), permits, sdd.core.toolchain.Toolchain.NPM, nodeHome, null, singleTool);
     }
 }

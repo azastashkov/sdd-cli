@@ -134,6 +134,13 @@ run:
   gradle_workers: 2       # concurrent build subprocesses, gradle and npm alike — the resource
                           # being protected is the machine, so one pool covers both
   model_concurrency: 2    # concurrent model calls
+  # single_tool: false    # Advertise the coding agent's six operations as ONE tool declaration
+                          # carrying an `action` argument. The implement-side twin of
+                          # explore.single_tool, for the same endpoint defect and with the same
+                          # cost. Measured on one gateway with an identical request repeated
+                          # twenty times: 20/20 succeeded with one declaration, 13/20 with six,
+                          # 0/20 with nine. Leave it off unless `sdd implement` is returning
+                          # HTTP 500 or stalling on retries.
 
 # sdd explore's ceilings. These exist so the read-only estate walk TERMINATES and is
 # reproducible, not to save tokens — omit the block entirely to take the defaults.

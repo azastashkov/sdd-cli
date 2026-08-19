@@ -177,7 +177,10 @@ public final class ConfigLoader {
                 }
             }
             run = new RunSettings(gradleWorkers, modelConcurrency, tokenBudget, agentTurns, agentTokens,
-                    escalationLadder);
+                    escalationLadder,
+                    rm.get("single_tool") != null
+                            ? Boolean.parseBoolean(String.valueOf(rm.get("single_tool")))
+                            : run.singleTool());
         } else if (runNode != null) {
             throw new ConfigException("run must be a mapping, got: " + runNode);
         }

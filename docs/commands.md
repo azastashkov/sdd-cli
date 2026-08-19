@@ -859,6 +859,15 @@ transitions; `RunStore.java:207-226`), `propagation.json`
 `mavenLocal` fallback, also writes the Maven-local init script under the run
 dir (`MavenLocalInit`, referenced at `ImplementCommand.java:324-332`).
 
+**`run.single_tool`** (default false) is the implement-side twin of `explore.single_tool`: the six
+declarations become one carrying an `action` argument, translated back by `Tools.route` before
+`done` interception, the wedge detector or the transcript see it. The build tool is named by
+toolchain inside the schema, so an npm repo advertises `run_npm` and not `run_gradle`. Measured on
+one gateway with an identical request repeated twenty times: **20/20 succeeded with one declaration,
+13/20 with six, 0/20 with nine** — and the threshold moved within a single day, so the safe number
+is the smallest, not the largest that happens to work. It costs the per-operation schemas, so it is
+a workaround rather than a default.
+
 ## `sdd review <spec>.plan.json` — Gate 2 (read-only half)
 
 **What it does:** the review half of Gate 2 (design line 66-67): checks the

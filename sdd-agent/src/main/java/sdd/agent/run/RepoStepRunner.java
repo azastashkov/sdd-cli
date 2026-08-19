@@ -63,7 +63,7 @@ public final class RepoStepRunner {
                 toolchain == sdd.core.toolchain.Toolchain.NPM
                         ? sdd.core.ts.TsSidecar.create(settings.nodeHome(), java.time.Duration.ofSeconds(30))
                         : java.util.Optional.empty());
-        Toolbox toolbox = new Toolbox(fileTools, build, compactor);
+        Toolbox toolbox = new Toolbox(fileTools, build, compactor, settings.singleTool());
         VerificationRunner verifier = new VerificationRunner(build, compactor, toolchain);
         AgentLoop loop = new AgentLoop(model, toolbox, settings.budget(), settings.contextSoftCap(),
                 settings.clock());

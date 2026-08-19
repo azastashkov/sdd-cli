@@ -3,6 +3,7 @@ package sdd.agent.tool;
 import com.fasterxml.jackson.core.JacksonException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import sdd.core.llm.ToolCall;
 import sdd.core.llm.ToolSpec;
 
 import java.util.List;
@@ -15,18 +16,73 @@ import java.util.List;
 public final class Toolbox implements Tools {
     private static final ObjectMapper JSON = new ObjectMapper();
 
+    /**
+     * Every operation behind one declaration, for an endpoint that cannot carry six.
+     *
+     * <p>Measured against a GigaChat gateway: with an identical request repeated twenty times,
+     * no declarations and one declaration both succeeded 20/20, six succeeded 13/20, and nine
+     * failed 20/20. The threshold also MOVED during a single day — nine had been working that
+     * morning — so the safe number is the smallest one, not the largest one that happens to
+     * work today.
+     *
+     * <p>Off by default. Six declarations with their own schemas is the better interface: the
+     * model is told what each operation takes, and a wrong argument is a schema error rather
+     * than a runtime one.
+     */
+    private static final String MULTIPLEXED = "sdd";
+
     private final FileTools files;
     private final BuildTool build;
     private final sdd.agent.run.OutputCompactor compactor;   // null = raw (no compaction), 4A path
+    private final boolean singleTool;
 
     public Toolbox(FileTools files, BuildTool build) {
         this(files, build, null);
     }
 
     public Toolbox(FileTools files, BuildTool build, sdd.agent.run.OutputCompactor compactor) {
+        this(files, build, compactor, false);
+    }
+
+    public Toolbox(FileTools files, BuildTool build, sdd.agent.run.OutputCompactor compactor,
+                   boolean singleTool) {
         this.files = files;
         this.build = build;
         this.compactor = compactor;
+        this.singleTool = singleTool;
+    }
+
+    /** @see ExploreTools#route — same contract, same reason, and the id is preserved. */
+    @Override
+    public ToolCall route(ToolCall call) {
+        if (!singleTool || !MULTIPLEXED.equals(call.name())) {
+            return call;
+        }
+        JsonNode args = parse(call.name(), call.argumentsJson());
+        JsonNode action = args.get("action");
+        if (action == null || !action.isTextual()) {
+            throw new MalformedCallException("missing required string argument: action");
+        }
+        com.fasterxml.jackson.databind.node.ObjectNode rest =
+                ((com.fasterxml.jackson.databind.node.ObjectNode) args).deepCopy();
+        rest.remove("action");
+        return new ToolCall(call.id(), action.asText(), rest.toString());
+    }
+
+    private ToolSpec multiplexed() {
+        return new ToolSpec(MULTIPLEXED,
+                "Make one change to this repository. One action per call: read_file(path) | "
+                        + "list_files(dir) | search(regex) | "
+                        + "apply_edit(path,search,replace) | " + build.toolName() + "(task) | "
+                        + "done(result,summary)",
+                """
+                {"type":"object","properties":{\
+                "action":{"type":"string","enum":["read_file","list_files","search","apply_edit",\
+                "%s","done"]},\
+                "path":{"type":"string"},"dir":{"type":"string"},"regex":{"type":"string"},\
+                "search":{"type":"string"},"replace":{"type":"string"},"task":{"type":"string"},\
+                "result":{"type":"string"},"summary":{"type":"string"}},"required":["action"]}"""
+                        .formatted(build.toolName()));
     }
 
     @Override
@@ -36,7 +92,7 @@ public final class Toolbox implements Tools {
 
     @Override
     public List<ToolSpec> specs() {
-        return List.of(
+        return singleTool ? List.of(multiplexed()) : List.of(
                 new ToolSpec("read_file", "Read a file's contents (capped).",
                         obj("path", "string", "Repo-relative file path")),
                 new ToolSpec("list_files", "List the entries of a directory.",
