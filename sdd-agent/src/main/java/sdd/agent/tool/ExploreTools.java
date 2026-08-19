@@ -210,35 +210,41 @@ public final class ExploreTools implements Tools {
 
     @Override
     public String dispatch(String name, String argsJson) {
+        // Announced BEFORE it runs, not after. A search over a large repo makes no model call
+        // while it works, so a trace written only on return is silent for exactly as long as the
+        // slow thing takes — which is indistinguishable from a hang, and was.
+        if (trace != null) {
+            trace.accept(name + subject(name, argsJson) + " ...");
+        }
+        long started = System.nanoTime();
         String result = run(name, argsJson);
         if (trace != null) {
-            trace.accept(name + summarize(name, argsJson, result));
+            long ms = (System.nanoTime() - started) / 1_000_000;
+            int lines = (int) result.lines().count();
+            trace.accept("  → " + lines + (lines == 1 ? " line" : " lines") + ", " + ms + "ms");
         }
         return result;
     }
 
-    /** A call rendered as what it did, not as what it was called. */
-    private String summarize(String name, String argsJson, String result) {
+    /** A call rendered as what it is about, not as what it was called. */
+    private String subject(String name, String argsJson) {
         JsonNode args;
         try {
             args = parse(name, argsJson);
         } catch (MalformedCallException e) {
             return "";
         }
-        String subject = switch (name) {
-            case "list_files", "read_file" -> args.path("path").asText("");
-            case "search_code" -> args.path("regex").asText("")
+        return switch (name) {
+            case "list_files", "read_file" -> " " + args.path("path").asText("");
+            case "search_code" -> " " + args.path("regex").asText("")
                     + (args.hasNonNull("repo") ? " in " + args.get("repo").asText() : "")
                     + (args.hasNonNull("glob") ? " glob " + args.get("glob").asText() : "");
-            case "search_symbols" -> args.path("query").asText("");
+            case "search_symbols" -> " " + args.path("query").asText("");
             case "kb_resolve", "propose_touchpoint" ->
-                    args.path("kind").asText("") + ":" + args.path("value").asText("");
-            case "record_finding" -> args.path("citation").asText("");
+                    " " + args.path("kind").asText("") + ":" + args.path("value").asText("");
+            case "record_finding" -> " " + args.path("citation").asText("");
             default -> "";
         };
-        int lines = (int) result.lines().count();
-        return (subject.isBlank() ? "" : " " + subject) + "  → " + lines
-                + (lines == 1 ? " line" : " lines");
     }
 
     private String run(String name, String argsJson) {

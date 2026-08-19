@@ -7,6 +7,7 @@ import sdd.core.db.Database;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -154,6 +155,22 @@ class ExploreToolsTest {
         assertThat(tools.buildToolName()).isNull();
         assertThatThrownBy(() -> call("apply_edit", "{}"))
                 .isInstanceOf(MalformedCallException.class);
+    }
+
+    @Test
+    void aCallIsAnnouncedBeforeItRunsAndTimedAfterwards() {
+        List<String> traced = new java.util.ArrayList<>();
+        Map<String, Path> roots = new LinkedHashMap<>();
+        roots.put("payments-api", ws.resolve("payments-api"));
+        ExploreTools tools = new ExploreTools(db.jdbi(), new EstateJail(roots), false, traced::add);
+
+        tools.dispatch("search_code", "{\"regex\":\"tier\"}");
+
+        // Two lines, in this order: a slow call has to be visible WHILE it is slow, not once it
+        // finishes — that silence is what a hang looks like.
+        assertThat(traced).hasSize(2);
+        assertThat(traced.get(0)).isEqualTo("search_code tier ...");
+        assertThat(traced.get(1)).startsWith("  → ").contains("ms");
     }
 
     // ---- single-tool mode: one declaration, nine operations ---------------------------
