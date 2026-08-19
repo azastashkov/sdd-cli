@@ -747,6 +747,13 @@ because resolving a bare `src/Foo.java` against whichever root happened to match
 the same argument mean different files across a large estate (`EstateJail.java`). Containment, the
 `.git` ban and the symlink `toRealPath` check apply per repo root.
 
+**Search is time-bounded.** One `search_code` may run for 45 seconds before it returns what it
+has, saying so: `(search stopped after 45s — results are partial; narrow the regex, pass repo=, or
+pass a glob)`. Unbounded, a search over a large repo is not slow but *invisible* — it makes no model
+call while it works, so the proxy log stops, the console stops, and it cannot be told apart from a
+hang. A partial result that admits it is partial is strictly better, and the agent can narrow and
+retry.
+
 **Search quotas are per repo** (`EstateSearch.java`). A single global hit budget spent in path order
 is exhausted inside the alphabetically-first repo, leaving every other one looking empty; here each
 repo has its own allowance, a repo that exceeds it is named with its true match count, and an empty
@@ -776,9 +783,18 @@ workaround, not a default.
 | `2` | the survey ended some other way — budget, wedge, `done(blocked)` — everything found so far is still written, plus an Open Question saying the survey may be incomplete |
 | `1` | unreadable spec, empty knowledge base, unknown `--model` key, or an unhandled exception |
 
-**Seeing what it did.** Every tool call is printed as it happens, rendered as what it did rather
-than as a tool name — `search_code tier\.lvc\.map  → 27 lines`, `read_file payments-api/src/...  →
-118 lines`. After the run, the per-turn record `AgentLoop` builds is written to
+**Seeing what it did.** Every tool call is printed twice: once when it STARTS, naming what it is
+about, and once when it returns, with the size of the result and how long it took —
+
+```
+  search_code tier\.lvc\.map ...
+    → 27 lines, 4210ms
+  read_file payments-api/src/main/java/com/acme/Publisher.java ...
+    → 118 lines, 3ms
+```
+
+Announcing before rather than after is the point: a call that takes a minute is silent for that
+minute otherwise, with no model call in flight either, which is exactly what a hang looks like. After the run, the per-turn record `AgentLoop` builds is written to
 `<workspace>/.sdd/explore/<specId>/transcript.jsonl`, one JSON object per model call:
 
 | field | what it answers |

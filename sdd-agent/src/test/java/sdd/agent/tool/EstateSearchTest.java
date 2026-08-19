@@ -95,6 +95,22 @@ class EstateSearchTest {
     }
 
     @Test
+    void aSearchThatRunsOutOfTimeSaysSoRatherThanRunningForever() throws Exception {
+        // A zero deadline expires before the first file, which is the same code path a real
+        // long search takes. The point is that the caller is TOLD the answer is partial: a
+        // silent partial result is a wrong answer, and an unbounded one is a hang.
+        Map<String, Path> roots = new LinkedHashMap<>();
+        roots.put("aaa-noisy", tmp.resolve("aaa-noisy"));
+        roots.put("zzz-quiet", tmp.resolve("zzz-quiet"));
+        EstateSearch bounded = new EstateSearch(new EstateJail(roots), java.time.Duration.ZERO);
+
+        String out = bounded.search("tier\\.lvc\\.map", null, null);
+
+        assertThat(out).contains("search stopped after 0s").contains("results are partial")
+                .contains("narrow the regex");
+    }
+
+    @Test
     void aBadRegexSaysSoInsteadOfReturningNothing() {
         assertThatThrownBy(() -> search.search("[unclosed", null, null))
                 .isInstanceOf(ToolException.class)

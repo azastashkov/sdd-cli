@@ -7,6 +7,7 @@ import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -40,12 +41,29 @@ public final class EstateSearch {
     static final int MAX_HIT_CHARS = 300;
     static final int MAX_OUTPUT_BYTES = 32768;
     private static final Set<String> SKIP_DIRS = Set.of(".git", "build", ".gradle", ".sdd", ".idea",
-            "node_modules", "dist", "target", "out", ".venv");
+            "node_modules", "dist", "target", "out", ".venv", "venv", "__pycache__", ".m2",
+            ".cache", ".next", "vendor", "coverage", ".terraform", ".mvn", "bin", "obj");
+
+    /**
+     * How long one search may run before it reports what it has.
+     *
+     * <p>Without it a search over a large repo is not slow, it is INVISIBLE: no output, no model
+     * call, no way to tell it apart from a hang. A partial result that says it is partial is
+     * strictly better than an unbounded wait, and the agent can narrow and retry — which is
+     * exactly what the message tells it to do.
+     */
+    static final Duration DEFAULT_DEADLINE = Duration.ofSeconds(45);
 
     private final EstateJail jail;
+    private final Duration deadline;
 
     public EstateSearch(EstateJail jail) {
+        this(jail, DEFAULT_DEADLINE);
+    }
+
+    public EstateSearch(EstateJail jail, Duration deadline) {
         this.jail = jail;
+        this.deadline = deadline;
     }
 
     /**
@@ -101,13 +119,18 @@ public final class EstateSearch {
         Map<String, Integer> capped = new LinkedHashMap<>();
         int total = 0;
         List<String> stoppedAt = new ArrayList<>();
+        long expiry = System.nanoTime() + deadline.toNanos();
+        boolean timedOut = false;
         for (String name : repos) {
-            if (total >= MAX_TOTAL_HITS) {
+            if (total >= MAX_TOTAL_HITS || timedOut) {
                 stoppedAt.add(name);
                 continue;
             }
             List<String> hits = new ArrayList<>();
-            int found = scanRepo(name, pattern, matcher, hits, shown);
+            int found = scanRepo(name, pattern, matcher, hits, shown, expiry);
+            if (System.nanoTime() > expiry) {
+                timedOut = true;
+            }
             if (found > hits.size()) {
                 capped.put(name, found);
             }
@@ -116,12 +139,13 @@ public final class EstateSearch {
                 total += hits.size();
             }
         }
-        return new Result(render(repos, hitsByRepo, capped, stoppedAt), List.copyOf(shown));
+        return new Result(render(repos, hitsByRepo, capped, stoppedAt, timedOut, deadline),
+                List.copyOf(shown));
     }
 
     /** @return how many lines matched in this repo, which may exceed what was collected */
     private int scanRepo(String repo, Pattern pattern, PathMatcher glob, List<String> hits,
-                         Set<String> shown) {
+                         Set<String> shown, long expiry) {
         Path root = jail.root(repo);
         int found = 0;
         try (Stream<Path> walk = Files.walk(root)) {
@@ -130,6 +154,9 @@ public final class EstateSearch {
                     .sorted()
                     .toList();
             for (Path file : files) {
+                if (System.nanoTime() > expiry) {
+                    return found;
+                }
                 Path rel = root.relativize(file);
                 if (glob != null && !glob.matches(rel)) {
                     continue;
@@ -183,7 +210,8 @@ public final class EstateSearch {
     }
 
     private static String render(List<String> searched, Map<String, List<String>> hitsByRepo,
-                                 Map<String, Integer> capped, List<String> stoppedAt) {
+                                 Map<String, Integer> capped, List<String> stoppedAt,
+                                 boolean timedOut, Duration deadline) {
         StringBuilder out = new StringBuilder();
         for (var entry : hitsByRepo.entrySet()) {
             for (String hit : entry.getValue()) {
@@ -204,8 +232,12 @@ public final class EstateSearch {
                 .append(MAX_HITS_PER_REPO).append(" of ").append(found)
                 .append(" matches — pass repo=").append(repo).append(" to see more)\n"));
         if (!stoppedAt.isEmpty()) {
-            out.append("(not searched, total hit cap reached: ")
-                    .append(String.join(", ", stoppedAt)).append(")\n");
+            out.append("(not searched, ").append(timedOut ? "time limit reached" : "total hit cap reached")
+                    .append(": ").append(String.join(", ", stoppedAt)).append(")\n");
+        }
+        if (timedOut) {
+            out.append("(search stopped after ").append(deadline.toSeconds())
+                    .append("s — results are partial; narrow the regex, pass repo=, or pass a glob)\n");
         }
         return out.toString();
     }
