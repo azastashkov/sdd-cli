@@ -360,7 +360,8 @@ public final class ImplementCommand implements Callable<Integer> {
                         // the end of the whole script string, where they would land on the wrong
                         // command. Provider substitution for npm is done by overlaying
                         // node_modules, not by flags.
-                        return RunnerSettings.npm(config.nodeHome(), tasks, gradlePermits, budget);
+                        return RunnerSettings.npm(config.nodeHome(), tasks, gradlePermits, budget,
+                                config.run().singleTool());
                     }
                     Path javaHome = config.jdkHomes()
                             .get(GradleExtractor.jdkMajorFor(GradleExtractor.wrapperVersion(root)));
@@ -368,7 +369,8 @@ public final class ImplementCommand implements Callable<Integer> {
                             repo, activePlan.edges(), paths));
                     extraArgs.addAll(Propagation.mavenLocalArgs(
                             activePlan.edges(), MavenLocalInit.scriptPath(activeRunDir)));
-                    return RunnerSettings.custom(javaHome, extraArgs, tasks, gradlePermits, budget);
+                    return RunnerSettings.custom(javaHome, extraArgs, tasks, gradlePermits, budget,
+                            config.run().singleTool());
                 };
 
                 Orchestrator orchestrator = new Orchestrator(new RepoStepRunner(jdbi), ladder,
