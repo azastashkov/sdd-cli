@@ -179,6 +179,52 @@ class ExploreCommandTest {
     }
 
     @Test
+    void singleToolModeDrivesTheWholeRunThroughOneDeclaration() throws Exception {
+        Path spec = setUpEstate();
+        Files.writeString(ws.resolve("sdd.yml"), Files.readString(ws.resolve("sdd.yml"))
+                + "explore:\n  single_tool: true\n");
+        ExploreCommand cmd = new ExploreCommand();
+        // Every call arrives as the multiplexed `sdd` tool — including done, which AgentLoop
+        // intercepts by NAME. If routing were not wired into the loop this run would never
+        // finish: done would be dispatched, which is a programming error, not a completion.
+        cmd.explorerForTest = new ScriptedChatModel(List.of(
+                call("1", "sdd", "{\"action\":\"search_code\",\"regex\":\"tier\\\\.lvc\\\\.map\"}"),
+                call("2", "sdd", """
+                        {"action":"record_finding",\
+                        "claim":"tier.lvc.map is a Redis key written by Publisher",\
+                        "citation":"payments-api/src/main/java/com/acme/Publisher.java:3"}"""),
+                call("3", "sdd", "{\"action\":\"propose_touchpoint\",\"kind\":\"repo\",\"value\":\"payments-api\"}"),
+                call("4", "sdd", "{\"action\":\"done\",\"result\":\"success\",\"summary\":\"one key\"}")));
+
+        Run run = explore(cmd, "--workspace", ws.toString(), spec.toString());
+
+        assertThat(run.exitCode()).isZero();
+        assertThat(run.out()).contains("single-tool mode");
+        NormalizedSpec updated = SpecParser.parse(Files.readString(spec));
+        assertThat(updated.evidence()).hasSize(1);
+        assertThat(updated.touchpoints())
+                .containsExactly(new Touchpoint(Touchpoint.Kind.REPO, "payments-api"));
+    }
+
+    @Test
+    void singleToolModeAdvertisesOneDeclarationToTheEndpoint() throws Exception {
+        Path spec = setUpEstate();
+        Files.writeString(ws.resolve("sdd.yml"), Files.readString(ws.resolve("sdd.yml"))
+                + "explore:\n  single_tool: true\n");
+        ExploreCommand cmd = new ExploreCommand();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "sdd", "{\"action\":\"done\",\"result\":\"blocked\",\"summary\":\"no\"}")));
+        cmd.explorerForTest = model;
+
+        explore(cmd, "--workspace", ws.toString(), spec.toString());
+
+        // The whole point: what actually went on the wire is one declaration, not nine.
+        assertThat(model.requests()).first().satisfies(req ->
+                assertThat(req.tools()).singleElement().satisfies(t ->
+                        assertThat(t.name()).isEqualTo("sdd")));
+    }
+
+    @Test
     void anUnknownModelKeyIsRefusedBeforeAnythingIsRead() throws Exception {
         Path spec = setUpEstate();
         ExploreCommand cmd = new ExploreCommand();

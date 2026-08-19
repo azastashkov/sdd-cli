@@ -8,6 +8,7 @@ import sdd.core.kb.EntityKind;
 import sdd.core.kb.EntityMatch;
 import sdd.core.kb.KbEntities;
 import sdd.core.kb.Resolution;
+import sdd.core.llm.ToolCall;
 import sdd.core.llm.ToolSpec;
 import sdd.core.retrieve.FtsRetriever;
 import sdd.core.retrieve.Hit;
@@ -47,8 +48,26 @@ public final class ExploreTools implements Tools {
     private static final int FTS_LIMIT = 30;
     private static final int MAX_CITED_LINE_CHARS = 300;
 
+    /**
+     * The nine operations behind one declaration.
+     *
+     * <p>Measured against a GigaChat gateway, its function-calling path fails probabilistically
+     * as the declaration set grows: identifier-shaped text in the message failed 0 of 3 attempts
+     * with one declaration, 2 of 3 with four, and 3 of 3 with five or more, regardless of the
+     * text. One declaration is the only size that cleared it outright, and
+     * {@code HttpChatModel}'s 5xx retries cannot rescue a failure that is certain.
+     *
+     * <p>It is off by default and always should be. Nine declarations with their own schemas is
+     * the better interface — the model is told what each operation takes, and a wrong argument
+     * is a schema error rather than a runtime one. This trades that away to survive an endpoint
+     * that cannot carry it, so it belongs behind {@code explore.single_tool} rather than in the
+     * default path.
+     */
+    private static final String MULTIPLEXED = "sdd";
+
     private final Jdbi jdbi;
     private final EstateJail jail;
+    private final boolean singleTool;
     private final EstateSearch search;
     private final FtsRetriever fts;
     private final Notebook notebook = new Notebook();
@@ -56,8 +75,15 @@ public final class ExploreTools implements Tools {
     private final Set<String> seen = new LinkedHashSet<>();
 
     public ExploreTools(Jdbi jdbi, EstateJail jail) {
+        this(jdbi, jail, false);
+    }
+
+    /** @param singleTool advertise one multiplexed declaration instead of nine — see
+     *                    {@link #MULTIPLEXED} for what that buys and what it costs */
+    public ExploreTools(Jdbi jdbi, EstateJail jail, boolean singleTool) {
         this.jdbi = jdbi;
         this.jail = jail;
+        this.singleTool = singleTool;
         this.search = new EstateSearch(jail);
         this.fts = new FtsRetriever(jdbi);
     }
@@ -82,9 +108,32 @@ public final class ExploreTools implements Tools {
      * measured on GigaChat, identifier-shaped text in the message failed 3 of 3 attempts with
      * these descriptions at full length and 2 of 3 with them shortened, at the same tool count.
      */
+    /**
+     * Unwraps a multiplexed call into the operation it names.
+     *
+     * <p>A call that already names an operation passes through untouched, so a model that
+     * remembers the nine-tool shape from an earlier turn — or an endpoint that ignores the
+     * single declaration — still works. Failing closed here would turn a cosmetic difference
+     * into a dead turn.
+     */
+    @Override
+    public ToolCall route(ToolCall call) {
+        if (!singleTool || !MULTIPLEXED.equals(call.name())) {
+            return call;
+        }
+        JsonNode args = parse(call.name(), call.argumentsJson());
+        JsonNode action = args.get("action");
+        if (action == null || !action.isTextual()) {
+            throw new MalformedCallException("missing required string argument: action");
+        }
+        com.fasterxml.jackson.databind.node.ObjectNode rest = ((com.fasterxml.jackson.databind.node.ObjectNode) args).deepCopy();
+        rest.remove("action");
+        return new ToolCall(call.id(), action.asText(), rest.toString());
+    }
+
     @Override
     public List<ToolSpec> specs() {
-        return List.of(
+        return singleTool ? List.of(multiplexed()) : List.of(
                 new ToolSpec("list_repos", "List the indexed repositories.",
                         "{\"type\":\"object\",\"properties\":{}}"),
                 new ToolSpec("list_files", "List the entries of a directory.",
@@ -115,6 +164,33 @@ public final class ExploreTools implements Tools {
                         {"type":"object","properties":{\
                         "result":{"type":"string","enum":["success","blocked"]},\
                         "summary":{"type":"string"}},"required":["result","summary"]}"""));
+    }
+
+    /**
+     * One declaration carrying every operation, with the union of their arguments.
+     *
+     * <p>The per-operation argument lists live in the description rather than in the schema,
+     * because a JSON Schema cannot express "path is required when action is read_file" in a
+     * form these endpoints act on. The runtime checks that {@code dispatch} already performs
+     * are unchanged, so a missing argument is still a {@code MalformedCallException} the model
+     * is told about and can retry — the same recovery it has today.
+     */
+    private static ToolSpec multiplexed() {
+        return new ToolSpec(MULTIPLEXED,
+                "Explore the estate. One action per call: list_repos | list_files(path) | "
+                        + "read_file(path) | search_code(regex[,repo][,glob]) | "
+                        + "search_symbols(query) | kb_resolve(kind,value) | "
+                        + "propose_touchpoint(kind,value) | record_finding(claim,citation) | "
+                        + "done(result,summary)",
+                """
+                {"type":"object","properties":{\
+                "action":{"type":"string","enum":["list_repos","list_files","read_file",\
+                "search_code","search_symbols","kb_resolve","propose_touchpoint",\
+                "record_finding","done"]},\
+                "path":{"type":"string"},"regex":{"type":"string"},"repo":{"type":"string"},\
+                "glob":{"type":"string"},"query":{"type":"string"},"kind":{"type":"string"},\
+                "value":{"type":"string"},"claim":{"type":"string"},"citation":{"type":"string"},\
+                "result":{"type":"string"},"summary":{"type":"string"}},"required":["action"]}""");
     }
 
     @Override

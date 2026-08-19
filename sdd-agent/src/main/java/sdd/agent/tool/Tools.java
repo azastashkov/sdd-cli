@@ -1,5 +1,6 @@
 package sdd.agent.tool;
 
+import sdd.core.llm.ToolCall;
 import sdd.core.llm.ToolSpec;
 
 import java.util.List;
@@ -44,5 +45,21 @@ public interface Tools {
      */
     default String digest() {
         return null;
+    }
+
+    /**
+     * Maps a call as the model made it onto the logical call the loop reasons about.
+     *
+     * <p>The identity by default. It exists because a tool set may not advertise one
+     * declaration per operation: a set that multiplexes every operation through a single
+     * declaration still has to reach {@code done} interception, wedge detection and the
+     * transcript under the operation's own name, and translating here keeps all of that — and
+     * every other caller — unaware that the wire shape differs at all.
+     *
+     * <p>The returned call MUST keep {@code id}: the tool-result pairing the endpoint expects
+     * is keyed on it, and losing it breaks the conversation rather than one call.
+     */
+    default ToolCall route(ToolCall call) {
+        return call;
     }
 }

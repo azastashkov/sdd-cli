@@ -402,6 +402,15 @@ Ceilings live under `explore:` in `sdd.yml` (`turns`, `tokens`, `wall_seconds`, 
 They exist so the survey terminates and is reproducible, not to save tokens. A run that ends early
 still writes everything it found, plus an Open Question saying the survey may be incomplete.
 
+**`explore.single_tool`** is there for one specific failure. Some gateways have a
+function-calling path that degrades as the number of tool declarations grows — measured on one,
+ordinary identifier-shaped text in the prompt (`snake_case`, `CamelCaseIdentifier`, a metric name)
+returned HTTP 500 on every attempt with five declarations and on none with one, whatever the words
+were. Setting it advertises the explorer's nine operations as a **single** declaration taking an
+`action` argument. Turn it on only when `sdd explore` is returning 500 from the endpoint: nine
+declarations with their own schemas is the better interface, because the model is told what each
+operation takes and a wrong argument is a schema error instead of a runtime one.
+
 Measured on a six-repo estate (`docs/measurements/2026-08-19-explore/results.md`): a spec naming a
 Redis channel produced **zero seeds and a blocking question**, and even a hypothetically perfect
 impact analysis never once named the classes that subscribe to it. With explorer output in the spec,

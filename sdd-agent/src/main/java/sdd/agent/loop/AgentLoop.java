@@ -139,7 +139,11 @@ public final class AgentLoop {
             }
 
             window.addAssistant(message);
-            for (ToolCall call : message.toolCalls()) {
+            for (ToolCall raw : message.toolCalls()) {
+                // The tool set gets to say what this call means before anything else looks at
+                // it, so a multiplexed declaration is invisible to done interception, the wedge
+                // detector and the transcript alike.
+                ToolCall call = toolbox.route(raw);
                 if (call.name().equals("done")) {
                     AgentOutcome done = tryDone(call, turns, tokens, events, transcript);
                     if (done != null) {

@@ -156,6 +156,82 @@ class ExploreToolsTest {
                 .isInstanceOf(MalformedCallException.class);
     }
 
+    // ---- single-tool mode: one declaration, nine operations ---------------------------
+
+    private ExploreTools single() {
+        Map<String, Path> roots = new LinkedHashMap<>();
+        roots.put("payments-api", ws.resolve("payments-api"));
+        roots.put("ops-tools", ws.resolve("ops-tools"));
+        return new ExploreTools(db.jdbi(), new EstateJail(roots), true);
+    }
+
+    @Test
+    void singleToolModeAdvertisesExactlyOneDeclaration() {
+        assertThat(single().specs()).singleElement().satisfies(spec -> {
+            assertThat(spec.name()).isEqualTo("sdd");
+            // Every operation must still be reachable, or the mode silently removes capability.
+            assertThat(spec.parametersSchemaJson())
+                    .contains("list_repos").contains("read_file").contains("search_code")
+                    .contains("propose_touchpoint").contains("record_finding").contains("done");
+        });
+    }
+
+    @Test
+    void aMultiplexedCallIsRoutedToItsOperationKeepingTheCallId() {
+        sdd.core.llm.ToolCall routed = single().route(new sdd.core.llm.ToolCall(
+                "call-7", "sdd", "{\"action\":\"read_file\",\"path\":\"ops-tools/README.md\"}"));
+
+        assertThat(routed.name()).isEqualTo("read_file");
+        // The id is what pairs the tool_result back; losing it breaks the conversation, not
+        // just the call.
+        assertThat(routed.id()).isEqualTo("call-7");
+        assertThat(routed.argumentsJson()).contains("ops-tools/README.md").doesNotContain("action");
+    }
+
+    @Test
+    void doneStillReachesTheLoopThroughTheMultiplexer() {
+        // AgentLoop intercepts `done` by NAME. If the multiplexer did not translate it, the
+        // agent could never finish — it would dispatch done, which is a programming error.
+        sdd.core.llm.ToolCall routed = single().route(new sdd.core.llm.ToolCall(
+                "c1", "sdd", "{\"action\":\"done\",\"result\":\"success\",\"summary\":\"ok\"}"));
+
+        assertThat(routed.name()).isEqualTo("done");
+        assertThat(routed.argumentsJson()).contains("success").contains("ok");
+    }
+
+    @Test
+    void anOperationCalledDirectlyStillWorksInSingleToolMode() {
+        // Failing closed here would turn a cosmetic difference — a model recalling the
+        // nine-tool shape from an earlier turn — into a dead turn.
+        ExploreTools tools = single();
+        sdd.core.llm.ToolCall direct =
+                new sdd.core.llm.ToolCall("c2", "list_repos", "{}");
+
+        assertThat(tools.route(direct)).isEqualTo(direct);
+        assertThat(tools.dispatch("list_repos", "{}")).contains("payments-api");
+    }
+
+    @Test
+    void aMultiplexedCallWithNoActionIsMalformedRatherThanSilentlyIgnored() {
+        assertThatThrownBy(() -> single().route(new sdd.core.llm.ToolCall("c3", "sdd", "{}")))
+                .isInstanceOf(MalformedCallException.class)
+                .hasMessageContaining("action");
+    }
+
+    @Test
+    void bothGatesStillApplyThroughTheMultiplexer() {
+        ExploreTools tools = single();
+        var call = new sdd.core.llm.ToolCall("c4", "sdd",
+                "{\"action\":\"record_finding\",\"claim\":\"x\","
+                        + "\"citation\":\"payments-api/src/main/java/com/acme/Publisher.java:3\"}");
+        var routed = tools.route(call);
+
+        // The citation gate is not weakened by the wire shape: the file was never read.
+        assertThatThrownBy(() -> tools.dispatch(routed.name(), routed.argumentsJson()))
+                .isInstanceOf(ToolException.class)
+                .hasMessageContaining("this run has not read it");
+    }
+
     @org.junit.jupiter.api.AfterEach
     void tearDown() {
         db.close();

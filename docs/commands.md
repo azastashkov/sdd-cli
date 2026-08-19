@@ -762,6 +762,14 @@ result names the repos it searched.
 `wall_seconds` (7200), `context_soft_cap` (200000). They bound termination and reproducibility, not
 cost. `wall_seconds` is also the first thing to make `AgentBudget.maxWall` configurable at all.
 
+**`explore.single_tool`** (default false) advertises the nine operations as one declaration carrying
+an `action` argument, for a gateway whose function-calling path breaks as the declaration set grows.
+`Tools.route` translates the call back to its operation before anything else sees it, so `done`
+interception, the wedge detector and the transcript are unaffected, and a call that names an
+operation directly still passes through. Both gates are unchanged. It costs real quality — the
+per-operation schemas are what tell the model which arguments an operation takes — so it is a
+workaround, not a default.
+
 | Exit | Meaning |
 |---|---|
 | `0` | the survey finished on `done(success)` |

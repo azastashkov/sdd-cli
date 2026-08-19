@@ -199,7 +199,10 @@ public final class ConfigLoader {
                             : explore.wallSeconds(),
                     em.get("context_soft_cap") != null
                             ? parseInt("explore.context_soft_cap", String.valueOf(em.get("context_soft_cap")))
-                            : explore.contextSoftCap());
+                            : explore.contextSoftCap(),
+                    em.get("single_tool") != null
+                            ? Boolean.parseBoolean(String.valueOf(em.get("single_tool")))
+                            : explore.singleTool());
         } else if (exploreNode != null) {
             throw new ConfigException("explore must be a mapping, got: " + exploreNode);
         }
