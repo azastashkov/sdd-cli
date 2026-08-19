@@ -408,6 +408,11 @@ impact analysis never once named the classes that subscribe to it. With explorer
 the same case reached every expected repo with no blocking questions, and the subscribing classes
 appeared in the planner's prompt for the first time.
 
+That measurement is an upper bound: it shows what *correct* explorer output is worth, using findings
+written by hand. Whether a live model produces correct output on a real estate is a separate
+question, and the only honest way to answer it is to run it on yours — see
+[Measuring the explorer on your own estate](#measuring-the-explorer-on-your-own-estate).
+
 ### Touchpoint kinds
 
 The kinds are `repo:`, `endpoint:`, `topic:`, `class:`, `artifact:` and `config:`. Each is resolved
@@ -456,6 +461,118 @@ either before or after the subcommand) or `SDD_PROGRESS=off`; see
 [`docs/commands.md`](docs/commands.md)'s "Progress reporting" section for the
 full decision ladder (`SDD_PROGRESS` → `TERM` → `CI` → console) and what each
 command reports.
+
+## Measuring the explorer on your own estate
+
+`sdd explore` has one claim to earn: that its proposed touchpoints beat what `ModelSeeder` already
+picks from repo cards. If they do not, the problem was never retrieval. This is how to find out on
+your estate, in a way that leaves the baseline intact and ends with two `plan.md` files you can diff.
+
+### 0. Build and configure
+
+```sh
+gradle :sdd-cli:installDist
+export PATH="$PWD/sdd-cli/build/install/sdd/bin:$PATH"
+```
+
+Add an `explore:` block to the estate's `sdd.yml`. All four keys are optional, but
+**`context_soft_cap` is the one that will bite you**:
+
+```yaml
+explore:
+  turns: 300              # a large estate needs more than the default 200; not a cost knob
+  tokens: 20000000
+  wall_seconds: 10800
+  context_soft_cap: 90000 # set BELOW the endpoint's real context window
+```
+
+`context_soft_cap` is the prompt-token level at which the window starts evicting. The default,
+200000, is larger than many endpoints' actual context. Set it above your model's real window and
+eviction never fires — the endpoint rejects the request instead, which costs a full-eviction retry
+and then `CONTEXT_EXHAUSTED`. Roughly 70% of the model's window is a safe setting.
+
+### 1. Check the endpoint can tool-call, before a three-hour run
+
+The explorer is nothing but tool calls, so verify first
+(see [`sdd doctor`](docs/commands.md#sdd-doctor)):
+
+```sh
+sdd doctor --endpoint planner --tools --completion
+```
+
+You want a returned tool call and a low reasoning-character count. If `planner` fails, use whichever
+endpoint passes via `--model <key>` in step 3.
+
+### 2. Index, then take a baseline plan
+
+```sh
+sdd index --force
+cp SPEC-XX.md SPEC-XX-baseline.md
+sdd plan SPEC-XX-baseline.md          # → SPEC-XX-baseline.plan.md
+```
+
+`--force` because `extractor_epoch` moves whenever the extractors' output changes, and a plain
+`sdd index` is entitled to skip a repo whose commit has not.
+
+### 3. Explore into a separate file
+
+```sh
+sdd explore SPEC-XX.md --model planner --out SPEC-XX-explored.md
+```
+
+`--out` keeps the original pristine, which is what makes this a measurement rather than a migration.
+Exit `0` means it finished on `done(success)`; exit `2` means it ended some other way — budget,
+wedge, or `done(blocked)` — and **still wrote everything it found**, plus an Open Question saying so;
+exit `1` is a real failure (unreadable spec, empty knowledge base, unknown `--model` key).
+
+The console prints every finding with the line re-read from disk. That output is where you check
+honesty: each quoted line came from the file, not from the model.
+
+### 4. Review the diff — this is the gate
+
+```sh
+diff SPEC-XX.md SPEC-XX-explored.md
+sdd plan SPEC-XX-explored.md          # → SPEC-XX-explored.plan.md
+```
+
+### 5. What to record
+
+| | baseline | explored |
+|---|---|---|
+| repos in `affected` — which are right, which are wrong | | |
+| `[blocking]` questions in `plan.md` | | |
+| do the per-repo steps name real classes and files, or stay vague | | |
+| touchpoints proposed vs. refused by the knowledge base | | |
+
+The third row is the one that decided it on the six-repo estate. Repo-level accuracy was already
+reachable there; naming the classes the task is actually about was not.
+
+Worth capturing alongside it: pick three or four distinctive non-Java terms from the task — a config
+key, a table, a channel — and check what the planner's only free-text route can see of them. That
+route is `fts_symbol`, and this is the query it runs (terms split on non-alphanumerics and OR'd,
+ranked by the same bm25 weights as `FtsRetriever`):
+
+```sh
+sqlite3 -readonly <workspace>/.sdd/index.db \
+  "select identifier, fqcn from fts_symbol
+   where fts_symbol match '\"tier\" OR \"update\"'
+   order by bm25(fts_symbol, 10.0, 3.0, 8.0, 2.0, 0.0) limit 10;"
+```
+
+If the top hits are the classes the task is about, FTS is doing its job on your estate and the
+explorer has less to add. If they are token collisions — a different subsystem that happens to share
+a word — that is the gap `sdd explore` exists to close, and the margin should be *larger* than the
+recorded numbers. The six probe repos carry unusually dense javadoc, which is the single most likely
+reason those numbers would not transfer.
+
+### When it goes wrong
+
+- **`WEDGED` early** — an identical call repeated three times, usually `search_code` returning the
+  same capped output. Narrow the spec's Goal, or pass a repo filter in the task text.
+- **`MALFORMED — no tool calls`** — the endpoint is not returning `tool_calls` in the shape sdd
+  reads. Step 1 catches this; a proxy that emits `function_call` instead is the usual cause.
+- **Touchpoints refused in the console** — that is the knowledge-base gate working, not a bug. The
+  model guessed a name that does not exist and was told so, early enough to correct itself.
 
 ## Why the index is not thinner
 
