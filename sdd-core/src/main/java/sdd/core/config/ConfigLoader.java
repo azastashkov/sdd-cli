@@ -4,6 +4,7 @@ import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
 import sdd.core.http.TlsConfig;
+import sdd.core.llm.WireFormat;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -462,8 +463,14 @@ public final class ConfigLoader {
         Map<String, Object> extraBody = extraBody(m, name);
         Object rawTls = m.get("tls");
         TlsConfig tls = rawTls == null ? null : parseModelTls("models." + name + ".tls", rawTls, env);
+        // Structural, like base_url/model, so a typo fails config load rather than silently
+        // sending the wrong dialect and surfacing as a gateway 500 several layers away.
+        Object rawWire = m.get("wire");
+        WireFormat wire = rawWire == null
+                ? WireFormat.OPENAI
+                : WireFormat.parse("models." + name + ".wire", String.valueOf(rawWire));
         return new ModelEndpoint(baseUrl, model, apiKey, maxTokens, temperature, timeout, extraBody,
-                apiKeyError, tls);
+                apiKeyError, tls, wire);
     }
 
     // --- models.<name>.tls: ------------------------------------------------------------------

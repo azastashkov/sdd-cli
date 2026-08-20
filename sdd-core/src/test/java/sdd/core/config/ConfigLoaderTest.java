@@ -3,6 +3,7 @@ package sdd.core.config;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import sdd.core.http.TlsConfig;
+import sdd.core.llm.WireFormat;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -50,6 +51,44 @@ class ConfigLoaderTest {
         assertThat(coder.timeout()).isEqualTo(Duration.ofSeconds(600));
         assertThat(c.excludes()).isEmpty();
         assertThat(c.jdkHomes()).isEmpty();
+    }
+
+    @Test
+    void anEndpointWithNoWireKeySpeaksTheShapeSddAlwaysSent() throws Exception {
+        SddConfig c = ConfigLoader.load(write(MINIMAL), ENV);
+        assertThat(c.models().get("planner").wire()).isEqualTo(WireFormat.OPENAI);
+    }
+
+    @Test
+    void wireSelectsTheGatewayDialectPerEndpointAndLeavesTheOthersAlone() throws Exception {
+        SddConfig c = ConfigLoader.load(write("""
+                models:
+                  planner:
+                    base_url: https://gateway.example/v1
+                    model: Qwen3.6-35B
+                    wire: gigachat
+                  coder:
+                    base_url: http://127.0.0.1:8080/v1
+                    model: local
+                """), ENV);
+        assertThat(c.models().get("planner").wire()).isEqualTo(WireFormat.GIGACHAT);
+        assertThat(c.models().get("coder").wire()).isEqualTo(WireFormat.OPENAI);
+    }
+
+    // A mistyped dialect must not reach the network. Sending the wrong message shape produces a
+    // gateway 500 with no mention of sdd.yml in it — the failure this whole change exists to end.
+    @Test
+    void anUnknownWireFailsConfigLoadNamingTheKeyAndTheAcceptedValues() {
+        assertThatThrownBy(() -> ConfigLoader.load(write("""
+                models:
+                  planner:
+                    base_url: https://gateway.example/v1
+                    model: Qwen3.6-35B
+                    wire: giga
+                """), ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("models.planner.wire")
+                .hasMessageContaining("openai, gigachat");
     }
 
     @Test

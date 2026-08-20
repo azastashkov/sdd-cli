@@ -408,14 +408,19 @@ Ceilings live under `explore:` in `sdd.yml` (`turns`, `tokens`, `wall_seconds`, 
 They exist so the survey terminates and is reproducible, not to save tokens. A run that ends early
 still writes everything it found, plus an Open Question saying the survey may be incomplete.
 
-**`explore.single_tool`** is there for one specific failure. Some gateways have a
-function-calling path that degrades as the number of tool declarations grows — measured on one,
-ordinary identifier-shaped text in the prompt (`snake_case`, `CamelCaseIdentifier`, a metric name)
-returned HTTP 500 on every attempt with five declarations and on none with one, whatever the words
-were. Setting it advertises the explorer's nine operations as a **single** declaration taking an
-`action` argument. Turn it on only when `sdd explore` is returning 500 from the endpoint: nine
+**`explore.single_tool`** is there for one specific failure, and it is **off by default** —
+turn it on only after the alternative below has failed you. Some gateways have a function-calling
+path that degrades as the number of tool declarations grows: measured against one, an identical
+request succeeded 20 times out of 20 with a single declaration, 13 of 20 with six, and 0 of 20 with
+nine, always with a fast, uniform HTTP 500 — a rejection, not a timeout. Setting it advertises the
+explorer's nine operations as a **single** declaration taking an `action` argument. Nine
 declarations with their own schemas is the better interface, because the model is told what each
-operation takes and a wrong argument is a schema error instead of a runtime one.
+operation takes and a wrong argument is a schema error rather than a runtime one, so this is a
+workaround to be removed, not a mode to settle into.
+
+**That ceiling belongs to the translation layer, not to the gateway** — see
+[Talking to a GigaChat gateway directly](#talking-to-a-gigachat-gateway-directly). If the fix there
+applies to your estate, prefer it and leave `single_tool` off.
 
 Measured on a six-repo estate (`docs/measurements/2026-08-19-explore/results.md`): a spec naming a
 Redis channel produced **zero seeds and a blocking question**, and even a hypothetically perfect
@@ -476,6 +481,65 @@ either before or after the subcommand) or `SDD_PROGRESS=off`; see
 [`docs/commands.md`](docs/commands.md)'s "Progress reporting" section for the
 full decision ladder (`SDD_PROGRESS` → `TERM` → `CI` → console) and what each
 command reports.
+
+## Talking to a GigaChat gateway directly
+
+`sdd` speaks OpenAI `/chat/completions`. The usual way to reach a GigaChat gateway from an
+OpenAI-shaped client is the `gpt2giga` proxy, which rewrites `tools` into GigaChat's native
+`functions`. **That rewrite has a ceiling, and it is measurable:** repeating one identical request
+twenty times per row against a live gateway gave 20/20 with no tools, 20/20 with one declaration,
+13/20 with six, and 0/20 with nine — always a fast, uniform HTTP 500, never a timeout. Six
+declarations is what `sdd implement` advertises and nine is what `sdd explore` does, which is
+exactly why explore failed there while doctor did not. The threshold also moved within a single
+day, so it is not a fixed number to design around.
+
+Captured requests from a client that reaches the same gateway **without** the proxy show it
+accepting OpenAI `tools` unchanged and answering with several parallel `tool_calls` in one assistant
+turn. So the proxy is removable. Point `base_url` at the gateway and set the endpoint's wire:
+
+```yaml
+models:
+  planner:
+    base_url: ${MODEL_URL}     # the gateway itself, MINUS /chat/completions
+    model: Qwen3.6-35B
+    wire: gigachat
+    tls:                       # if the gateway authenticates with a client certificate
+      cert: ${MODEL_CERT_PATH}
+      key: ${MODEL_KEY_PATH}
+```
+
+`wire` is per endpoint and defaults to `openai`, which is byte-for-byte the request shape `sdd` has
+always sent — an endpoint without the key is unaffected. A value other than `openai` or `gigachat`
+fails config load naming the key, rather than reaching the network and coming back as a 500 that
+mentions nothing about `sdd.yml`.
+
+`wire: gigachat` sends the captured shape, which differs from plain OpenAI in three ways
+(`WireFormat.java`, asserted field by field in `GigaChatWireTest`):
+
+| | `openai` | `gigachat` |
+|---|---|---|
+| `user` and `tool` `content` | a string | `[{"type":"text","text":…}]` |
+| `system` and `assistant` `content` | a string | a string (unchanged — the asymmetry is real) |
+| assistant turn that is only `tool_calls` | `content` omitted | `content` present, empty if there is none |
+| a reply's thinking | `<think>…</think>` inline in `content`, stripped on arrival | a `reasoning_content` field, read off the reply and sent back with the turn it belongs to |
+
+`tools` and `tool_calls` themselves are untouched: `{"type":"function","function":{…}}` with
+`arguments` as a JSON string, which is what the gateway receives from its own clients.
+
+**Auth is a separate question from the wire.** `wire` selects a message shape and nothing else — it
+picks no host, no header and no credential. If the gateway wants a bearer token, that is `api_key`;
+if it wants a client certificate, that is `tls:`; it can want both or neither. Whatever `curl`
+needs against the same URL is what belongs in `sdd.yml`.
+
+Verify before committing to a long run:
+
+```sh
+sdd doctor --endpoint planner --tools --completion
+```
+
+A returned tool call means the wire and the credentials are both right. If that passes, leave
+`explore.single_tool` and `run.single_tool` **off** — they exist to work around the proxy's
+declaration ceiling, and nine declarations with their own schemas is the better interface.
 
 ## Measuring the explorer on your own estate
 

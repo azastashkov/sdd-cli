@@ -1,6 +1,7 @@
 package sdd.core.config;
 
 import sdd.core.http.TlsConfig;
+import sdd.core.llm.WireFormat;
 
 import java.time.Duration;
 import java.util.Map;
@@ -23,6 +24,14 @@ import java.util.Map;
  * {@code TlsConfig} already carries its own deferred-credential field ({@code keyPasswordError})
  * for an unset {@code tls.key_password} {@code ${VAR}}, following exactly the {@code apiKeyError}
  * idiom above — see {@code TlsConfig}'s javadoc.
+ *
+ * <p>{@code wire}: which JSON dialect this endpoint's {@code /chat/completions} speaks, from
+ * {@code models.<name>.wire}. Never null — {@link WireFormat#OPENAI} is the default and is the
+ * shape sdd has always sent, so an endpoint that predates this setting is byte-identical on the
+ * wire. {@code gigachat} selects the shape the corp GigaChat gateway is observed to receive from
+ * clients that reach it without the {@code gpt2giga} proxy; see {@link WireFormat} for what
+ * differs and why. Independent of {@code apiKey} and {@code tls}: how an endpoint is authenticated
+ * says nothing about how it wants its messages spelled.
  */
 public record ModelEndpoint(
         String baseUrl,
@@ -33,9 +42,20 @@ public record ModelEndpoint(
         Duration timeout,
         Map<String, Object> extraBody,
         String apiKeyError,
-        TlsConfig tls) {
+        TlsConfig tls,
+        WireFormat wire) {
     public ModelEndpoint {
         extraBody = extraBody == null ? Map.of() : Map.copyOf(extraBody);
+        wire = wire == null ? WireFormat.OPENAI : wire;
+    }
+
+    /** Pre-{@code wire} 9-argument shape, kept so every existing construction site (main and test)
+     *  keeps compiling untouched: {@code wire} defaults to {@link WireFormat#OPENAI}, i.e. the
+     *  request shape sdd sent before this setting existed. */
+    public ModelEndpoint(String baseUrl, String model, String apiKey, int maxTokens, double temperature,
+            Duration timeout, Map<String, Object> extraBody, String apiKeyError, TlsConfig tls) {
+        this(baseUrl, model, apiKey, maxTokens, temperature, timeout, extraBody, apiKeyError, tls,
+                WireFormat.OPENAI);
     }
 
     /** Pre-{@code tls} 8-argument shape, kept so every existing construction site (main and test)

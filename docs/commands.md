@@ -187,6 +187,27 @@ would otherwise fail opaquely at the TLS layer
 | `tls.cert`/`tls.key` exist and are readable, and the key actually parses | Names the path (never file contents); a PKCS#1/SEC1/legacy-encrypted key names the header found and the exact `openssl pkcs8 -topk8 -nocrypt` conversion command | `DoctorCommand.java:255-264`, `HttpClients.java:228-266` |
 | The client certificate is not expired | `client certificate expired <notAfter> (subject=<subject>)` | `DoctorCommand.java:269-275` |
 
+**Model endpoints that speak a different request dialect
+(`models.<name>.wire`).** `wire` selects the JSON shape sdd sends to that
+endpoint's `/chat/completions`. It defaults to `openai` — byte-for-byte what
+sdd has always sent — and an endpoint with no `wire:` key is unaffected by
+this setting entirely. `gigachat` sends the shape a GigaChat gateway
+is observed to receive from clients that reach it directly, without the
+`gpt2giga` proxy: `user` and `tool` `content` as `[{"type":"text","text":…}]`
+parts (`system` and `assistant` stay plain strings), an assistant turn that is
+purely `tool_calls` still carrying a `content` string, and `reasoning_content`
+as a real message field read off the reply and sent back with the turn it
+belongs to. `tools`/`tool_calls` are untouched OpenAI
+(`WireFormat.java`, `HttpChatModel.java`). Any other value fails config load
+naming `models.<name>.wire` and the accepted values, because a mistyped
+dialect that reached the network would come back as a gateway 500 with no
+mention of `sdd.yml` in it.
+
+`wire` says nothing about authentication — an endpoint on any wire may carry
+`api_key`, `tls:`, both or neither. `sdd doctor --endpoint <name> --tools`
+is the check that the dialect and the credentials are both right, since a
+returned tool call requires the whole path to work.
+
 Two more things happen alongside that check, printed as `  warn: ` lines —
 same convention as every other `sdd` sub-diagnostic — rather than as a
 pass/fail check, since neither one is itself a reason to distrust the
@@ -775,7 +796,8 @@ an `action` argument, for a gateway whose function-calling path breaks as the de
 interception, the wedge detector and the transcript are unaffected, and a call that names an
 operation directly still passes through. Both gates are unchanged. It costs real quality — the
 per-operation schemas are what tell the model which arguments an operation takes — so it is a
-workaround, not a default.
+workaround, not a default. Before reaching for it, check whether the ceiling belongs to a
+translating proxy rather than to the gateway: see `models.<name>.wire` under `sdd doctor`.
 
 | Exit | Meaning |
 |---|---|
@@ -866,7 +888,8 @@ toolchain inside the schema, so an npm repo advertises `run_npm` and not `run_gr
 one gateway with an identical request repeated twenty times: **20/20 succeeded with one declaration,
 13/20 with six, 0/20 with nine** — and the threshold moved within a single day, so the safe number
 is the smallest, not the largest that happens to work. It costs the per-operation schemas, so it is
-a workaround rather than a default.
+a workaround rather than a default. Those numbers were measured through the `gpt2giga` proxy; the
+same gateway reached directly accepts OpenAI `tools` unchanged, so try `models.<name>.wire` first.
 
 ## `sdd review <spec>.plan.json` — Gate 2 (read-only half)
 

@@ -65,6 +65,17 @@ models:
   # rejected with the exact `openssl pkcs8 -topk8 -nocrypt` command to convert
   # it.
   #
+  # If the gateway is the GigaChat one, add `wire: gigachat` to each
+  # tier and point base_url straight at it — no gpt2giga proxy in between. The
+  # proxy translates OpenAI `tools` into GigaChat's native `functions`, and that
+  # translation is where function calling failed by DECLARATION COUNT: measured
+  # against one gateway, one declaration succeeded 20/20, six 13/20 and nine
+  # 0/20, all with fast uniform HTTP 500s. Captured traffic from a client that
+  # reaches the same gateway directly shows it accepting OpenAI `tools` as-is
+  # and answering with several parallel tool_calls per turn. `wire: gigachat`
+  # sends that captured shape; see README, "Talking to a GigaChat gateway
+  # directly".
+  #
   # Run `sdd doctor` first — or `sdd doctor --endpoint coder` to iterate on
   # one tier. It validates cert/key existence, whether the key parses, and the
   # certificate's expiry BEFORE probing, because an expired client cert is the
@@ -78,6 +89,10 @@ models:
   #                                      # /chat/completions/chat/completions
   #   model: qwen/qwen3.5-397b-a17b
   #   max_tokens: 8192
+  #   # wire: gigachat                   # ONLY for a GigaChat gateway
+  #                                      # reached directly; omit (or `openai`)
+  #                                      # for every other endpoint, including
+  #                                      # one behind gpt2giga
   #   tls: &corp_tls
   #     cert: ${MODEL_CERT_PATH}
   #     key: ${MODEL_KEY_PATH}
@@ -111,6 +126,7 @@ models:
   #   base_url: ${MODEL_URL}
   #   model: deepseek-v4-flash
   #   max_tokens: 32768
+  #   # wire: gigachat
   #   tls: *corp_tls                     # same cert, key and CA for every tier
   #   extra_body:
   #     repetition_penalty: 1
@@ -118,6 +134,7 @@ models:
   #   base_url: ${MODEL_URL}
   #   model: deepseek-v4-pro
   #   max_tokens: 32768
+  #   # wire: gigachat
   #   tls: *corp_tls
   #   extra_body:
   #     repetition_penalty: 1

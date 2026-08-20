@@ -141,15 +141,17 @@ public final class HttpChatModel implements ChatModel {
     private String toJson(ChatRequest req) {
         ObjectNode root = JSON.createObjectNode();
         root.put("model", req.model());
+        WireFormat wire = endpoint.wire();
         ArrayNode messages = root.putArray("messages");
         for (ChatMessage m : req.messages()) {
             ObjectNode msg = messages.addObject();
             msg.put("role", m.role());
-            if (m.content() != null) {
-                msg.put("content", m.content());
-            }
+            putContent(msg, m, wire);
             if (m.toolCallId() != null) {
                 msg.put("tool_call_id", m.toolCallId());
+            }
+            if (wire.carriesReasoning() && m.reasoningContent() != null) {
+                msg.put("reasoning_content", m.reasoningContent());
             }
             if (!m.toolCalls().isEmpty()) {
                 ArrayNode calls = msg.putArray("tool_calls");
@@ -193,6 +195,32 @@ public final class HttpChatModel implements ChatModel {
         return root.toString();
     }
 
+    /**
+     * Writes one message's {@code content} in the dialect this endpoint speaks.
+     *
+     * <p>On {@link WireFormat#OPENAI} this is what it always was: a string, and the key is absent
+     * when there is nothing to say (an assistant turn that is purely {@code tool_calls}).
+     *
+     * <p>On {@link WireFormat#GIGACHAT} it follows the gateway's observed traffic — {@code user}
+     * and {@code tool} messages carry an array of {@code {"type":"text","text":…}} parts,
+     * {@code system} and {@code assistant} carry a string, and an assistant turn always carries
+     * one even when empty. A null content becomes {@code ""} rather than a fabricated placeholder:
+     * the model said nothing, and saying so is the honest encoding of that.
+     */
+    private static void putContent(ObjectNode msg, ChatMessage m, WireFormat wire) {
+        if (wire.partsFor(m.role())) {
+            ObjectNode part = msg.putArray("content").addObject();
+            part.put("type", "text");
+            part.put("text", m.content() == null ? "" : m.content());
+            return;
+        }
+        if (m.content() != null) {
+            msg.put("content", m.content());
+        } else if (wire.assistantContentAlwaysPresent() && "assistant".equals(m.role())) {
+            msg.put("content", "");
+        }
+    }
+
     private ChatResponse parse(String body) {
         try {
             JsonNode root = JSON.readTree(body);
@@ -206,13 +234,19 @@ public final class HttpChatModel implements ChatModel {
                         call.path("function").path("arguments").asText()));
             }
             JsonNode contentNode = message.path("content");
-            String content = (contentNode.isMissingNode() || contentNode.isNull()) ? null : contentNode.asText();
+            String content = readContent(contentNode);
             // A reasoning model with no request-side off switch returns its thinking inline. Every
             // consumer of a response parses it as JSON, so a reply that opens with a think block is
             // not truncated but "unparseable" — stripping at this boundary fixes all of them at
             // once, and is a no-op for a model that never emits the tags. See ReasoningContent.
             content = ReasoningContent.strip(content);
-            ChatMessage msg = new ChatMessage("assistant", content, List.copyOf(toolCalls), null);
+            // Carried, never authored: a reply that separates its thinking from its answer gets
+            // that thinking handed back with the turn it belongs to on the next request, which is
+            // what the gateway's own clients do. Absent on every other wire, so this is null there.
+            JsonNode reasoningNode = message.path("reasoning_content");
+            String reasoning = endpoint.wire().carriesReasoning() ? readContent(reasoningNode) : null;
+            ChatMessage msg = new ChatMessage("assistant", content, List.copyOf(toolCalls), null,
+                    reasoning);
             Usage usage = new Usage(
                     root.path("usage").path("prompt_tokens").asInt(),
                     root.path("usage").path("completion_tokens").asInt());
@@ -220,5 +254,33 @@ public final class HttpChatModel implements ChatModel {
         } catch (IOException e) {
             throw new ModelException("unparseable model response: " + body, e);
         }
+    }
+
+    /**
+     * Reads a content field that may be a string or an array of typed parts.
+     *
+     * <p>A gateway that ACCEPTS parts may also return them, and a reply whose content arrived as
+     * {@code [{"type":"text","text":"…"}]} must not reach a caller as the literal text of a JSON
+     * array — every consumer of a response parses it as JSON, so that failure would surface as
+     * "unparseable" far from its cause. Non-text parts are skipped rather than rendered: sdd has
+     * no use for an image part and inventing a placeholder for one would be a fabricated fact.
+     *
+     * <p>Extraction only — {@code <think>}-tag stripping stays at the one call site that wants it,
+     * since reasoning is the POINT of the field this also reads.
+     */
+    private static String readContent(JsonNode node) {
+        if (node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        if (node.isArray()) {
+            StringBuilder text = new StringBuilder();
+            for (JsonNode part : node) {
+                if ("text".equals(part.path("type").asText())) {
+                    text.append(part.path("text").asText());
+                }
+            }
+            return text.toString();
+        }
+        return node.asText();
     }
 }
