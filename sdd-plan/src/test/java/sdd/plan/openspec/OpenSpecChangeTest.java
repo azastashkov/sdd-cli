@@ -287,4 +287,69 @@ class OpenSpecChangeTest {
             }
         });
     }
+
+    @Test
+    void aRequirementNameIsNotCutAtADotInsideAnIdentifier() {
+        // Found by READING a real committed export, not by a test. A requirement reading
+        // "The `tier.update` payload must carry enough to identify which client changed."
+        // became the heading `### Requirement: The `tier` — cut at the first '.', which here sits
+        // inside an identifier, and inside a code span, leaving an unbalanced backtick in a
+        // markdown heading. The name must run to a real sentence end.
+        String delta = deltaOf(OpenSpecChange.render(input(
+                new OpenSpecPlan("tier-resolution", Map.of("R1", List.of("A1")), List.of()),
+                List.of("./gradlew test"),
+                List.of(item("R1", "The `tier.update` payload must identify the client. "
+                        + "A second sentence that must not appear in the name.")))));
+
+        List<OpenSpecRules.Requirement> requirements = OpenSpecRules.requirements(delta);
+        assertThat(requirements).hasSize(1);
+        String name = requirements.get(0).name();
+        assertThat(name).as("cut at the identifier's dot").isNotEqualTo("The `tier");
+        assertThat(name).contains("tier.update");
+        assertThat(name).as("the following sentence is not part of the name")
+                .doesNotContain("A second sentence");
+        assertThat(name.chars().filter(c -> c == '`').count() % 2)
+                .as("balanced backticks in '%s'", name).isZero();
+    }
+
+    @Test
+    void aTruncatedNameNeverEndsInsideACodeSpan() {
+        // The other way a name gets cut: the 80-char cap. It cuts at a word boundary, so an
+        // unbroken identifier is safe by luck — the case that actually bites is a code span
+        // CONTAINING SPACES that straddles the cap, where the word boundary sits inside it.
+        String delta = deltaOf(OpenSpecChange.render(input(
+                new OpenSpecPlan("tier-resolution", Map.of("R1", List.of("A1")), List.of()),
+                List.of("./gradlew test"),
+                List.of(item("R1", "Every listener must invalidate exactly one client "
+                        + "`the tier update channel payload contract` and nothing else")))));
+
+        String name = OpenSpecRules.requirements(delta).get(0).name();
+        assertThat(name.chars().filter(c -> c == '`').count() % 2)
+                .as("balanced backticks in '%s'", name).isZero();
+    }
+
+    @Test
+    void anExplicitNoneAllocationIsHonouredRatherThanGuessedAround() {
+        // "R1 -> none" is a statement by whoever reviewed Gate 1: no acceptance criterion covers
+        // this requirement. Term overlap would contradict them with a guess that reads as if it
+        // had been allocated. An ABSENT allocation still guesses (rung 2) — only an explicit
+        // empty one skips to verification.
+        OpenSpecInput explicitNone = input(
+                new OpenSpecPlan("tier-resolution", Map.of("R1", List.of()), List.of()),
+                List.of("./gradlew test"),
+                // wording chosen to overlap A1 strongly, so rung 2 would certainly fire
+                List.of(item("R1", "A tier update makes the next resolution return the new tier.")));
+
+        String delta = deltaOf(OpenSpecChange.render(explicitNone));
+        assertThat(delta).as("must not present a guess as the allocation")
+                .doesNotContain("Derived by term overlap");
+        assertThat(OpenSpecRules.requirements(delta))
+                .allSatisfy(r -> assertThat(r.scenarios()).isNotEmpty());
+
+        // the converse: absent, not empty, still reaches the overlap rung
+        String guessed = deltaOf(OpenSpecChange.render(input(OpenSpecPlan.absent(),
+                List.of("./gradlew test"),
+                List.of(item("R1", "A tier update makes the next resolution return the new tier.")))));
+        assertThat(guessed).contains("Derived by term overlap");
+    }
 }

@@ -511,20 +511,45 @@ public final class OpenSpecChange {
     }
 
     private static String requirementName(OpenSpecInput.Item requirement) {
-        String text = inline(requirement.text());
-        int stop = text.indexOf('.');
-        String name = truncate(stop > 0 ? text.substring(0, stop) : text);
+        String name = truncate(firstSentence(inline(requirement.text())));
         return name.isBlank() ? requirement.id() : name;
+    }
+
+    /**
+     * Up to the first sentence end — a {@code .} followed by whitespace or the end of the text.
+     *
+     * <p>NOT simply the first {@code .}: an estate's requirements are full of dotted identifiers,
+     * and cutting at the first one produced headings like {@code ### Requirement: The `tier} from
+     * "The `tier.update` payload must carry…". That is wrong twice over — the name is meaningless,
+     * and the cut lands inside a code span, leaving an unbalanced backtick in a markdown heading.
+     * Found by reading a real committed export, not by a test.
+     */
+    private static String firstSentence(String text) {
+        java.util.regex.Matcher end = java.util.regex.Pattern.compile("\\.(\\s|$)").matcher(text);
+        return end.find() ? text.substring(0, end.start()) : text;
+    }
+
+    /** Drops a trailing unterminated code span, so a cut can never leave a heading mid-backtick. */
+    private static String balanceTicks(String text) {
+        if (text.chars().filter(c -> c == '`').count() % 2 == 0) {
+            return text;
+        }
+        int last = text.lastIndexOf('`');
+        return text.substring(0, last).strip();
     }
 
     /** Which rung of the ladder produced this requirement's scenarios. */
     private enum Source { ALLOCATED, OVERLAP, VERIFICATION, BACKSTOP }
 
     private static Source scenarioSource(OpenSpecInput in, OpenSpecInput.Item requirement) {
-        if (!in.plan().acceptanceFor().getOrDefault(requirement.id(), List.of()).isEmpty()) {
+        List<String> allocated = in.plan().acceptanceFor().get(requirement.id());
+        if (allocated != null && !allocated.isEmpty()) {
             return Source.ALLOCATED;
         }
-        if (!overlapping(in, requirement).isEmpty()) {
+        // An EXPLICIT "R1 -> none" is a statement, not a gap: somebody looked and said no
+        // acceptance criterion covers this requirement. Falling through to term overlap would
+        // contradict them with a guess. Only an ABSENT allocation reaches the guessing rung.
+        if (allocated == null && !overlapping(in, requirement).isEmpty()) {
             return Source.OVERLAP;
         }
         return in.verification().isEmpty() ? Source.BACKSTOP : Source.VERIFICATION;
@@ -585,23 +610,19 @@ public final class OpenSpecChange {
     }
 
     private static String shortName(String text) {
-        String name = inline(text);
-        int stop = name.indexOf('.');
-        if (stop > 0) {
-            name = name.substring(0, stop);
-        }
-        return truncate(name);
+        return truncate(firstSentence(inline(text)));
     }
 
     /** Cuts at the last word boundary inside the limit — a heading ending mid-word reads as damage
      *  rather than as a summary. */
     private static String truncate(String text) {
         if (text.length() <= MAX_NAME_CHARS) {
-            return text.strip();
+            return balanceTicks(text.strip());
         }
         String cut = text.substring(0, MAX_NAME_CHARS);
         int space = cut.lastIndexOf(' ');
-        return (space > MAX_NAME_CHARS / 2 ? cut.substring(0, space) : cut).strip() + "…";
+        return balanceTicks((space > MAX_NAME_CHARS / 2 ? cut.substring(0, space) : cut).strip())
+                + "…";
     }
 
     private static java.util.Optional<String> textOf(OpenSpecInput in, String id) {
