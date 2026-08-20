@@ -56,6 +56,61 @@ public final class FileTools {
 
     /** The read caps, shared with the estate-wide explorer so both agents see a file the same way.
      *  {@code display} is the path as the model wrote it, so an error names what it asked for. */
+    /**
+     * A numbered window into a file — the explorer's read, as opposed to the coding agent's.
+     *
+     * <p>{@link #readCapped} always starts at line 1 and stops at {@link #MAX_READ_LINES}. That is
+     * right for {@code sdd implement}, which reads files it is about to edit whole. It is a dead
+     * end for an explorer: measured on a real run, {@code search_code} located a method at line 363
+     * of a file whose import block alone exhausts the cap, so every read returned the same package
+     * declaration. The model re-searched to confirm the line, read again, got imports again, and
+     * was killed by the wedge detector after doing exactly the right thing three times.
+     *
+     * <p>Lines are numbered, unlike {@code readCapped}'s output, and deliberately only here: a
+     * finding's citation is {@code <repo>/<path>:<line>} and is re-read from disk before it is
+     * accepted, so an explorer that cannot see line numbers has to infer them. The coding agent
+     * must NOT get them — it copies read text into {@code apply_edit}'s {@code search} argument,
+     * and a line number carried along would never match the file.
+     *
+     * @param offset 1-based first line; clamped to the file
+     * @param limit how many lines to return, itself capped at {@link #MAX_READ_LINES}
+     */
+    static String readWindow(Path file, String display, int offset, int limit) {
+        if (Files.isDirectory(file)) {
+            throw new ToolException(display + " is a directory");
+        }
+        List<String> lines;
+        try {
+            lines = Files.readString(file, StandardCharsets.UTF_8).lines().toList();
+        } catch (IOException e) {
+            throw new ToolException("cannot read " + display + ": " + e.getMessage());
+        }
+        int total = lines.size();
+        if (total == 0) {
+            return display + " is empty\n";
+        }
+        // Out of range is reported, never silently clamped to the top of the file: "there is no
+        // line 900" and "here is line 1 instead" are different answers, and the second is what
+        // sent a real run into a loop.
+        if (offset > total) {
+            return display + " has " + total + " lines; there is no line " + offset + "\n";
+        }
+        int from = Math.max(1, offset);
+        int to = Math.min(total, from + Math.min(limit, MAX_READ_LINES) - 1);
+        StringBuilder out = new StringBuilder(display + ":" + from + "-" + to
+                + " of " + total + " lines\n");
+        for (int i = from; i <= to; i++) {
+            String line = lines.get(i - 1);
+            if (out.length() + line.length() + 12 > MAX_READ_BYTES) {
+                out.append("... (truncated at line ").append(i - 1)
+                        .append("; read again from there)\n");
+                return out.toString();
+            }
+            out.append(i).append(": ").append(line).append('\n');
+        }
+        return out.toString();
+    }
+
     static String readCapped(Path file, String display) {
         String path = display;
         if (Files.isDirectory(file)) {

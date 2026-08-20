@@ -851,6 +851,17 @@ result names the repos it searched.
 | `--model <key>` | which `models:` entry to explore with (default: `planner`) |
 | `--out <path>` | write the enriched spec here instead of in place |
 
+**`read_file` takes `offset` and `limit`**, and numbers the lines it
+returns. Without them a read always started at line 1 and stopped at 400 lines
+or 16 KB, which on a large file is a dead end: measured on a live run,
+`search_code` located a method at line 363 of a file whose import block alone
+exhausts the cap, so every read came back as the same package declaration and
+the run was killed by the wedge detector after doing the right thing three
+times. An offset past the end says so rather than returning the top — those are
+different answers, and returning the second is what caused the loop. Numbering
+is explore-only: `sdd implement` copies read text into `apply_edit`'s `search`
+argument, where a line number would never match the file.
+
 **Budgets** come from `sdd.yml`'s `explore:` block — `turns` (default 200), `tokens` (8000000),
 `wall_seconds` (7200), `context_soft_cap` (200000). They bound termination and reproducibility, not
 cost. `wall_seconds` is also the first thing to make `AgentBudget.maxWall` configurable at all.

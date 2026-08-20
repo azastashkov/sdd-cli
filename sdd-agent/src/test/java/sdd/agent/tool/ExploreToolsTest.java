@@ -253,4 +253,72 @@ class ExploreToolsTest {
     void tearDown() {
         db.close();
     }
+
+    // Measured on a real run: search_code located a method at line 363 of a file whose import
+    // block alone exhausts the 400-line cap, so every read returned the same package declaration.
+    // The model re-searched to confirm the line, read again, got imports again, and the wedge
+    // detector killed it after it had done exactly the right thing three times.
+    @Test
+    void readFileReturnsTheWindowAroundALineDeepInABigFile() throws Exception {
+        StringBuilder big = new StringBuilder("package com.acme;\n");
+        for (int i = 2; i <= 500; i++) {
+            big.append("// filler line ").append(i).append('\n');
+        }
+        big.append("public void toApp(Message message) {}\n");   // line 501
+        Files.writeString(ws.resolve("payments-api/Big.java"), big.toString());
+
+        String out = tools.dispatch("read_file",
+                "{\"path\":\"payments-api/Big.java\",\"offset\":501,\"limit\":3}");
+
+        assertThat(out).contains("501: public void toApp(Message message) {}");
+        // Says which window it returned, so the model can tell a short read from a wrong one.
+        assertThat(out).contains("payments-api/Big.java:501-501 of 501 lines");
+        assertThat(out).doesNotContain("package com.acme;");
+    }
+
+    // A gateway that cannot structure tool calls returns them as markup where every value is text,
+    // so offset arrives as "501" there and as 501 elsewhere. Both must work, or read_file works on
+    // some endpoints and not others.
+    @Test
+    void aNumericArgumentIsAcceptedAsAStringOrANumber() throws Exception {
+        Files.writeString(ws.resolve("payments-api/Small.java"), "a\nb\nc\nd\n");
+
+        String asString = tools.dispatch("read_file",
+                "{\"path\":\"payments-api/Small.java\",\"offset\":\"3\",\"limit\":\"1\"}");
+        String asNumber = tools.dispatch("read_file",
+                "{\"path\":\"payments-api/Small.java\",\"offset\":3,\"limit\":1}");
+
+        assertThat(asString).isEqualTo(asNumber).contains("3: c");
+    }
+
+    @Test
+    void anOmittedOffsetReadsFromTheTop() throws Exception {
+        Files.writeString(ws.resolve("payments-api/Small.java"), "a\nb\n");
+
+        assertThat(tools.dispatch("read_file", "{\"path\":\"payments-api/Small.java\"}"))
+                .contains("1: a").contains("2: b");
+    }
+
+    // "There is no line 900" and "here is line 1 instead" are different answers, and returning the
+    // second is what sent a real run into a loop.
+    @Test
+    void anOffsetPastTheEndSaysSoInsteadOfReturningTheTop() throws Exception {
+        Files.writeString(ws.resolve("payments-api/Small.java"), "a\nb\n");
+
+        assertThat(tools.dispatch("read_file",
+                "{\"path\":\"payments-api/Small.java\",\"offset\":900}"))
+                .contains("has 2 lines; there is no line 900")
+                .doesNotContain("1: a");
+    }
+
+    // The model asked to read a file; the useful answer is the file, not a lecture about the
+    // argument it fumbled.
+    @Test
+    void anUnparseableOffsetFallsBackToTheTopRatherThanFailing() throws Exception {
+        Files.writeString(ws.resolve("payments-api/Small.java"), "a\nb\n");
+
+        assertThat(tools.dispatch("read_file",
+                "{\"path\":\"payments-api/Small.java\",\"offset\":\"line 363\"}"))
+                .contains("1: a");
+    }
 }

@@ -153,8 +153,15 @@ public final class ExploreTools implements Tools {
                         "{\"type\":\"object\",\"properties\":{}}"),
                 new ToolSpec("list_files", "List the entries of a directory.",
                         one("path", "<repo>/<dir>")),
-                new ToolSpec("read_file", "Read a file (capped).",
-                        one("path", "<repo>/<path>")),
+                new ToolSpec("read_file",
+                        "Read a file, numbered. offset is the first line (default 1), limit how "
+                                + "many (default 400). Read around a search hit's line number.",
+                        """
+                        {"type":"object","properties":{\
+                        "path":{"type":"string","description":"<repo>/<path>"},\
+                        "offset":{"type":"integer","description":"First line, 1-based"},\
+                        "limit":{"type":"integer","description":"How many lines"}},\
+                        "required":["path"]}"""),
                 new ToolSpec("search_code", "Regex-search every repo's text.",
                         """
                         {"type":"object","properties":{\
@@ -193,7 +200,7 @@ public final class ExploreTools implements Tools {
     private static ToolSpec multiplexed() {
         return new ToolSpec(MULTIPLEXED,
                 "Explore the estate. One action per call: list_repos | list_files(path) | "
-                        + "read_file(path) | search_code(regex[,repo][,glob]) | "
+                        + "read_file(path[,offset][,limit]) | search_code(regex[,repo][,glob]) | "
                         + "search_symbols(query) | kb_resolve(kind,value) | "
                         + "propose_touchpoint(kind,value) | record_finding(claim,citation) | "
                         + "done(result,summary)",
@@ -202,7 +209,8 @@ public final class ExploreTools implements Tools {
                 "action":{"type":"string","enum":["list_repos","list_files","read_file",\
                 "search_code","search_symbols","kb_resolve","propose_touchpoint",\
                 "record_finding","done"]},\
-                "path":{"type":"string"},"regex":{"type":"string"},"repo":{"type":"string"},\
+                "path":{"type":"string"},"offset":{"type":"string"},"limit":{"type":"string"},\
+                "regex":{"type":"string"},"repo":{"type":"string"},\
                 "glob":{"type":"string"},"query":{"type":"string"},"kind":{"type":"string"},\
                 "value":{"type":"string"},"claim":{"type":"string"},"citation":{"type":"string"},\
                 "result":{"type":"string"},"summary":{"type":"string"}},"required":["action"]}""");
@@ -235,7 +243,9 @@ public final class ExploreTools implements Tools {
             return "";
         }
         return switch (name) {
-            case "list_files", "read_file" -> " " + args.path("path").asText("");
+            case "list_files" -> " " + args.path("path").asText("");
+            case "read_file" -> " " + args.path("path").asText("")
+                    + (args.hasNonNull("offset") ? "@" + args.get("offset").asText() : "");
             case "search_code" -> " " + args.path("regex").asText("")
                     + (args.hasNonNull("repo") ? " in " + args.get("repo").asText() : "")
                     + (args.hasNonNull("glob") ? " glob " + args.get("glob").asText() : "");
@@ -252,7 +262,8 @@ public final class ExploreTools implements Tools {
         return switch (name) {
             case "list_repos" -> listRepos();
             case "list_files" -> listFiles(str(args, "path"));
-            case "read_file" -> readFile(str(args, "path"));
+            case "read_file" -> readFile(str(args, "path"),
+                    number(args, "offset", 1), number(args, "limit", FileTools.MAX_READ_LINES));
             case "search_code" -> searchCode(str(args, "regex"), optional(args, "repo"),
                     optional(args, "glob"));
             case "search_symbols" -> searchSymbols(str(args, "query"));
@@ -276,10 +287,10 @@ public final class ExploreTools implements Tools {
         return FileTools.listEntries(jail.resolveExisting(path), path);
     }
 
-    private String readFile(String path) {
+    private String readFile(String path, int offset, int limit) {
         Path file = jail.resolveExisting(path);
         seen.add(normalize(path));
-        return FileTools.readCapped(file, path);
+        return FileTools.readWindow(file, path, offset, limit);
     }
 
     private String searchCode(String regex, String repo, String glob) {
@@ -440,6 +451,34 @@ public final class ExploreTools implements Tools {
             throw new MalformedCallException("missing required string argument: " + field);
         }
         return value.asText();
+    }
+
+    /**
+     * A numeric argument, however the endpoint spelled it.
+     *
+     * <p>Accepts a JSON number and a numeric string alike, because that is not the model's choice:
+     * a gateway that cannot structure tool calls returns them as tag markup where every value is
+     * text, so {@code offset} arrives as {@code "363"} there and as {@code 363} elsewhere.
+     * Rejecting one spelling would make {@code read_file} work on some endpoints and not others.
+     *
+     * <p>A non-numeric or non-positive value falls back to the default rather than failing the
+     * call: the model asked to read a file and the useful answer is the file, not a lecture about
+     * the argument it fumbled.
+     */
+    private static int number(JsonNode args, String field, int fallback) {
+        JsonNode value = args.get(field);
+        if (value == null || value.isNull()) {
+            return fallback;
+        }
+        if (value.isInt() || value.isLong()) {
+            return value.asInt() > 0 ? value.asInt() : fallback;
+        }
+        try {
+            int parsed = Integer.parseInt(value.asText().trim());
+            return parsed > 0 ? parsed : fallback;
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     private static String optional(JsonNode args, String field) {
