@@ -336,4 +336,75 @@ class AgentLoopTest {
 
         assertThat(outcome.result()).isEqualTo(AgentResult.BUDGET_TIME);
     }
+
+    /**
+     * A {@link Tools} that opts one operation into repeatability and reports a fixed wait, so the
+     * two narrowings can be exercised without a terminal or a real tool set.
+     */
+    private final class AskingTools implements sdd.agent.tool.Tools {
+        private final java.time.Duration waited;
+
+        AskingTools(java.time.Duration waited) {
+            this.waited = waited;
+        }
+
+        @Override public List<sdd.core.llm.ToolSpec> specs() {
+            return toolbox.specs();
+        }
+
+        @Override public String dispatch(String name, String argsJson) {
+            return name.equals("ask_user_question") ? "answered — x → y\n"
+                    : toolbox.dispatch(name, argsJson);
+        }
+
+        @Override public boolean repeatable(String name) {
+            return name.equals("ask_user_question");
+        }
+
+        @Override public java.time.Duration blockedOnHuman() {
+            return waited;
+        }
+    }
+
+    @Test
+    void aRepeatableToolIsNotWedgedByThreeIdenticalCalls() {
+        // Paired with identicalActionRepeatedThreeTimesIsWedged, which is UNCHANGED: together they
+        // show the detector was narrowed to one named operation rather than weakened.
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "ask_user_question", "{\"question\":\"Which tenant?\"}"),
+                call("2", "ask_user_question", "{\"question\":\"Which tenant?\"}"),
+                call("3", "ask_user_question", "{\"question\":\"Which tenant?\"}"),
+                call("4", "done", "{\"result\":\"success\",\"summary\":\"ok\"}")));
+
+        AgentOutcome outcome = new AgentLoop(model, new AskingTools(java.time.Duration.ZERO),
+                AgentBudget.defaults(), 80_000, InstantSource.system())
+                .run("sys", "wo", "qwen", 4096);
+
+        assertThat(outcome.result()).isEqualTo(AgentResult.DONE);
+    }
+
+    @Test
+    void timeSpentWaitingForAHumanDoesNotSpendTheWallBudget() {
+        // Same clock as wallClockBudgetTerminates, which is UNCHANGED and remains the guard that a
+        // tool set reporting no wait is still bounded. A wall budget bounds a machine that is
+        // working, and this one was waiting for a person. The reported wait is deliberately far
+        // larger than the clock can advance here: the clock ticks on every READING, including the
+        // one each transcript entry takes, so a margin fitted exactly to the model calls would be
+        // asserting arithmetic about the transcript rather than about the budget.
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "list_files", "{\"dir\":\".\"}"),
+                call("2", "list_files", "{\"dir\":\".\"}"),
+                call("3", "done", "{\"result\":\"success\",\"summary\":\"ok\"}")));
+        Instant t0 = Instant.parse("2026-08-12T00:00:00Z");
+        InstantSource clock = new InstantSource() {
+            private int calls = 0;
+            @Override public Instant instant() { return t0.plusSeconds(40L * 60 * calls++); }
+        };
+
+        AgentOutcome outcome = new AgentLoop(model,
+                new AskingTools(java.time.Duration.ofHours(10)), AgentBudget.defaults(), 80_000,
+                clock).run("sys", "wo", "qwen", 4096);
+
+        assertThat(outcome.result()).isEqualTo(AgentResult.DONE);
+    }
 }

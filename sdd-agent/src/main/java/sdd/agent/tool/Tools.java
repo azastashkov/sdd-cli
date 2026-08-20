@@ -23,6 +23,34 @@ public interface Tools {
     String dispatch(String name, String argsJson);
 
     /**
+     * Whether repeating this tool with identical arguments is evidence of progress rather than a
+     * wedge.
+     *
+     * <p>{@code AgentLoop}'s wedge detector rests on "identical action + identical world ⇒ no
+     * progress". Exactly one action breaks that premise: asking a human, whose answer changes the
+     * world between the two calls. Everything else returns false, so {@code Toolbox} — and
+     * therefore {@code sdd implement} — is byte-identical.
+     *
+     * <p>Narrowing the detector is only safe because the tool set that opts in replaces the lost
+     * protection with a stronger one of its own; see {@code ExploreTools}, which serves a repeated
+     * question from its notebook instead of asking again.
+     */
+    default boolean repeatable(String name) {
+        return false;
+    }
+
+    /**
+     * How long this tool set has spent blocked on a human, excluded from the wall budget.
+     *
+     * <p>A wall budget bounds a machine that is working, and this one was not. Turns and tokens are
+     * deliberately NOT adjusted: an ask costs exactly one tool result, so those two ceilings
+     * already bound how many questions a run can ask, and the tool set's own cap bounds it further.
+     */
+    default java.time.Duration blockedOnHuman() {
+        return java.time.Duration.ZERO;
+    }
+
+    /**
      * The name of the tool whose output the loop should wedge-check for a repeated failure, or null
      * when there is none.
      *

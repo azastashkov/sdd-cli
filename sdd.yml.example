@@ -190,6 +190,12 @@ run:
 #                         # declarations and none at one. It costs real quality — nine schemas
 #                         # tell the model what each operation takes — so leave it off unless
 #                         # `sdd explore` is returning HTTP 500 from the endpoint.
+#   max_questions: 10     # How many questions `sdd explore --interactive` may put to you in one
+#                         # run (default 10). The only ceiling on human minutes: waiting spends
+#                         # no turns, no tokens, and is deliberately excluded from wall_seconds,
+#                         # so without this a model could turn a survey into an interrogation.
+#                         # Ignored entirely without --interactive, where the tool is not even
+#                         # advertised to the model.
 
 # Verification tasks to skip per repo — the report marks these "not locally verified"
 # rather than pretending they passed:

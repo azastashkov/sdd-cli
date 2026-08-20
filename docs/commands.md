@@ -872,6 +872,46 @@ result names the repos it searched.
 | `--workspace <dir>` | workspace directory (default: current dir) |
 | `--model <key>` | which `models:` entry to explore with (default: `planner`) |
 | `--out <path>` | write the enriched spec here instead of in place |
+| `--interactive` | let the explorer ask you a question when the answer changes what it would do |
+
+**`--interactive` and `ask_user_question`.** Without the flag the tool is **not
+advertised to the model at all**, so an unattended run keeps exactly the
+declaration count — and the measured tool-call reliability — it has today. With
+it, the explorer may ask one question at a time on stdout and read one line
+back.
+
+Three properties make it safe to leave in a pipeline:
+
+- **It never blocks a run with nobody to answer.** No terminal, closed stdin, or
+  a blank line are one signal — the tool refuses with a `ToolException`, which
+  *resets* the strike counter rather than costing one, and tells the model to
+  record the gap as a finding or call `done(blocked)`. Once stdin is exhausted
+  the asker latches, so the rest of the run never touches it again.
+- **It is not gated on a TTY.** Piped input is a supported path, exactly as it is
+  for `sdd review --interactive`, which is how both are tested without a
+  terminal.
+- **Nobody is asked the same thing twice.** A repeated question — including a
+  reworded one, compared after normalising — is answered from the run's notebook
+  without troubling the human, and a model looping on an answer it already has
+  is eventually refused with that answer quoted back.
+
+Answers are written into the spec's `## Open Questions` as
+`<question> — resolved: <answer>`, and `sdd plan` feeds them to the drafter
+through the same `# Prior questions and human resolutions` channel
+`sdd plan revise` uses — so a question answered during the survey is not raised
+again at Gate 1. The resolution lives *inside* the question text because
+`SpecParser` requires every Open Questions line to match
+`- (Q[1-9][0-9]*): (.+)`; plan.md's indented `  - resolution:` idiom is a
+different grammar and would not parse here.
+
+**`ask_user_question` is deliberately absent from `sdd implement`.** That
+command runs repos on unbounded virtual threads against one `System.in`, its
+budgets are checked above the tool-dispatch loop so a blocking tool is bounded
+by nothing, nothing about an in-flight turn survives `--resume`, and the run
+lock makes `sdd review` and `sdd status` refuse while it is held. The existing
+route is better on every one of those counts: `done(result="blocked")` becomes a
+`FAILED` repo whose summary carries the question to Gate 2, where a human
+answers it with the diff in front of them via `sdd review redo <repo> <reason>`.
 
 **`read_file` takes `offset` and `limit`** (also spelled
 `startLine`/`endLine`), and numbers the lines it returns. An argument name it

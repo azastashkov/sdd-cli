@@ -207,7 +207,10 @@ public final class ConfigLoader {
                             : explore.contextSoftCap(),
                     em.get("single_tool") != null
                             ? Boolean.parseBoolean(String.valueOf(em.get("single_tool")))
-                            : explore.singleTool());
+                            : explore.singleTool(),
+                    em.get("max_questions") != null
+                            ? parseInt("explore.max_questions", String.valueOf(em.get("max_questions")))
+                            : explore.maxQuestions());
         } else if (exploreNode != null) {
             throw new ConfigException("explore must be a mapping, got: " + exploreNode);
         }

@@ -96,7 +96,12 @@ public final class AgentLoop {
             if (turns >= budget.maxTurns()) {
                 return outcome(AgentResult.BUDGET_TURNS, "turn budget reached", turns, tokens, events, transcript);
             }
-            if (!clock.instant().isBefore(start.plus(budget.maxWall()))) {
+            // The wall budget bounds a machine that is WORKING. Time a tool set spent blocked on
+            // a human is added to the deadline rather than counted against it — waiting is not
+            // work, and a person taking five minutes must not cost the survey its remaining turns.
+            // Toolbox reports ZERO, so sdd implement is unaffected.
+            if (!clock.instant().isBefore(start.plus(budget.maxWall())
+                    .plus(toolbox.blockedOnHuman()))) {
                 return outcome(AgentResult.BUDGET_TIME, "time budget reached", turns, tokens, events, transcript);
             }
             if (tokens >= budget.maxTokens()) {
@@ -196,12 +201,24 @@ public final class AgentLoop {
                     continue;
                 }
 
-                String signature = call.name() + "\n" + call.argumentsJson();
-                sameSignature = signature.equals(lastSignature) ? sameSignature + 1 : 1;
-                lastSignature = signature;
-                if (sameSignature >= WEDGE_REPEAT) {
-                    return outcome(AgentResult.WEDGED, "identical action repeated", turns, tokens, events,
-                            transcript);
+                // The wedge detector rests on "identical action + identical world ⇒ no progress".
+                // Exactly one action breaks that premise: asking a human, whose answer changes the
+                // world between two identical calls. For those the run of signatures is reset
+                // rather than counted — and the protection is not simply dropped, because a tool
+                // set that opts in replaces it with a stronger rule keyed on the question text,
+                // which also catches a cosmetically reworded repeat. Toolbox opts nothing in, so
+                // sdd implement is unchanged.
+                if (toolbox.repeatable(call.name())) {
+                    lastSignature = null;
+                    sameSignature = 0;
+                } else {
+                    String signature = call.name() + "\n" + call.argumentsJson();
+                    sameSignature = signature.equals(lastSignature) ? sameSignature + 1 : 1;
+                    lastSignature = signature;
+                    if (sameSignature >= WEDGE_REPEAT) {
+                        return outcome(AgentResult.WEDGED, "identical action repeated", turns, tokens,
+                                events, transcript);
+                    }
                 }
 
                 try {

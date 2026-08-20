@@ -43,6 +43,7 @@ import sdd.plan.source.SourceBundle;
 import sdd.plan.source.SourceDoc;
 import sdd.plan.spec.MarkdownSpecSource;
 import sdd.plan.spec.NormalizedSpec;
+import sdd.plan.spec.SpecItem;
 import sdd.plan.spec.SpecParseException;
 import sdd.plan.spec.SpecParser;
 import sdd.plan.spec.SpecRefKind;
@@ -459,6 +460,35 @@ public final class PlanCommand implements Callable<Integer> {
         return 0;
     }
 
+    /**
+     * The spec's already-answered questions, in the channel {@code sdd plan revise} already uses.
+     *
+     * <p>{@code sdd explore --interactive} writes a human's answer into the spec's Open Questions
+     * as {@code <question> — resolved: <answer>}. Without this the drafter would see that text only
+     * incidentally, as part of the rendered spec, and could well re-raise the same question as
+     * blocking — making somebody answer at Gate 1 what they already answered during the survey,
+     * which is the specific waste this feature exists to remove.
+     *
+     * <p>Reuses {@code PlanDrafter}'s existing {@code # Prior questions and human resolutions}
+     * heading rather than inventing a second format, so the explore loop and the revise loop feed
+     * the model through one channel.
+     */
+    private static String answeredQuestions(NormalizedSpec spec) {
+        StringBuilder out = new StringBuilder();
+        for (SpecItem question : spec.openQuestions()) {
+            int marker = question.text().indexOf(" — resolved: ");
+            if (marker < 0) {
+                continue;
+            }
+            out.append("- ").append(question.id()).append(": ")
+                    .append(question.text(), 0, marker).append('\n');
+            out.append("  resolved: ")
+                    .append(question.text().substring(marker + " — resolved: ".length()))
+                    .append('\n');
+        }
+        return out.toString();
+    }
+
     /** {@code ["plan", ...the exact tokens this invocation was called with]} — mirrors {@code
      *  DoctorCommand}'s identically-shaped helper; see that class for why {@code originalArgs()}
      *  rather than reconstructing the argv from individual option fields. */
@@ -563,7 +593,7 @@ public final class PlanCommand implements Callable<Integer> {
             List<Question> questions = OpenQuestions.detect(db.jdbi(), result);
             progress.phase("draft plan");
             PlanDrafter.Draft draft = PlanDrafter.draft(db.jdbi(), parsed, result, order,
-                    model, planner.model(), planner.maxTokens());
+                    answeredQuestions(parsed), model, planner.model(), planner.maxTokens());
             // Stopped here, not left to call()'s finally: same "erase before the report starts"
             // reasoning as IndexCommand/ReviewCommand — the "plan written" block below must not
             // collide with a live, un-erased frame. stop() is idempotent, so call()'s later

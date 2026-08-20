@@ -25,11 +25,26 @@ public record ExploreSettings(int turns, long tokens, long wallSeconds, int cont
                                * Off by default: nine declarations with their own schemas is the
                                * better interface everywhere it works.
                                */
-                              boolean singleTool) {
+                              boolean singleTool,
+                              /**
+                               * How many questions one interactive run may put to a human.
+                               *
+                               * <p>The only ceiling that bounds human minutes. Turns and tokens do
+                               * not: waiting costs neither, and the wall budget deliberately
+                               * excludes time spent blocked. Without this a model could turn a
+                               * survey into an interrogation.
+                               */
+                              int maxQuestions) {
+
+    /** Pre-{@code maxQuestions} shape. */
+    public ExploreSettings(int turns, long tokens, long wallSeconds, int contextSoftCap,
+                           boolean singleTool) {
+        this(turns, tokens, wallSeconds, contextSoftCap, singleTool, 10);
+    }
 
     /** Pre-{@code singleTool} shape, kept so existing construction sites compile untouched. */
     public ExploreSettings(int turns, long tokens, long wallSeconds, int contextSoftCap) {
-        this(turns, tokens, wallSeconds, contextSoftCap, false);
+        this(turns, tokens, wallSeconds, contextSoftCap, false, 10);
     }
 
     public ExploreSettings {
@@ -46,10 +61,15 @@ public record ExploreSettings(int turns, long tokens, long wallSeconds, int cont
             throw new ConfigException("explore.context_soft_cap must be at least 1, got '"
                     + contextSoftCap + "'");
         }
+        if (maxQuestions < 0) {
+            throw new ConfigException("explore.max_questions must not be negative, got '"
+                    + maxQuestions + "'");
+        }
     }
 
     public static ExploreSettings defaults() {
-        return new ExploreSettings(200, 8_000_000L, Duration.ofHours(2).toSeconds(), 200_000, false);
+        return new ExploreSettings(200, 8_000_000L, Duration.ofHours(2).toSeconds(), 200_000,
+                false, 10);
     }
 
     public Duration wall() {

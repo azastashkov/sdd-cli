@@ -112,7 +112,24 @@ public final class Explorer {
                                String modelName, AgentBudget budget, int contextSoftCap,
                                int maxTokensPerCall, InstantSource clock, boolean singleTool,
                                java.util.function.Consumer<String> trace) {
-        ExploreTools tools = new ExploreTools(jdbi, new EstateJail(repoRoots), singleTool, trace);
+        return explore(repoRoots, task, model, modelName, budget, contextSoftCap, maxTokensPerCall,
+                clock, singleTool, trace, null, ExploreTools.MAX_QUESTIONS);
+    }
+
+    /**
+     * @param asker        where a question reaches a human, or null when nobody is attached — in
+     *                     which case the tool is not advertised at all. Threaded exactly like
+     *                     {@code trace}, and for the same reason: this module must never see a
+     *                     writer, a {@code Progress} or {@code System.in}
+     * @param maxQuestions how many questions this run may ask
+     */
+    public Exploration explore(Map<String, Path> repoRoots, String task, ChatModel model,
+                               String modelName, AgentBudget budget, int contextSoftCap,
+                               int maxTokensPerCall, InstantSource clock, boolean singleTool,
+                               java.util.function.Consumer<String> trace,
+                               sdd.agent.tool.HumanAsk asker, int maxQuestions) {
+        ExploreTools tools = new ExploreTools(jdbi, new EstateJail(repoRoots), singleTool, trace,
+                asker, maxQuestions);
         List<String> turns = new ArrayList<>();
         AgentLoop loop = new AgentLoop(model, tools, budget, contextSoftCap, clock,
                 ContextWindow.Retention.EXPLORE, turns::add);

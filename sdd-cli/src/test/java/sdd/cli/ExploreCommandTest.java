@@ -339,4 +339,58 @@ class ExploreCommandTest {
         assertThat(run.exitCode()).isEqualTo(1);
         assertThat(run.out()).contains("no models entry named 'nope'");
     }
+
+    @Test
+    void aClarificationLandsInTheSpecAndTheSpecStillRoundTrips() throws Exception {
+        Path spec = setUpEstate();
+        ExploreCommand cmd = new ExploreCommand();
+        cmd.in = new java.io.BufferedReader(new java.io.StringReader("only the EU tenant\n"));
+        cmd.explorerForTest = new ScriptedChatModel(List.of(
+                call("1", "ask_user_question", "{\"question\":\"Which tenant is affected?\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"asked\"}")));
+
+        Run run = explore(cmd, "--workspace", ws.toString(), "--interactive", spec.toString());
+
+        assertThat(run.exitCode()).isZero();
+        assertThat(run.out()).contains("? Which tenant is affected?");
+        String written = Files.readString(spec);
+        assertThat(written).contains("Which tenant is affected? — resolved: only the EU tenant");
+        // The round-trip law: a spec sdd wrote must parse back to what it rendered, or the next
+        // command in the chain fails on a file the human never touched.
+        NormalizedSpec updated = SpecParser.parse(written);
+        assertThat(SpecParser.parse(sdd.plan.spec.SpecRenderer.render(updated))).isEqualTo(updated);
+    }
+
+    @Test
+    void withoutInteractiveTheToolIsNotOfferedAndTheSurveyStillFinishes() throws Exception {
+        Path spec = setUpEstate();
+        ExploreCommand cmd = new ExploreCommand();
+        cmd.explorerForTest = new ScriptedChatModel(List.of(
+                call("1", "ask_user_question", "{\"question\":\"Which tenant?\"}"),
+                call("2", "done", "{\"result\":\"success\",\"summary\":\"no human\"}")));
+
+        Run run = explore(cmd, "--workspace", ws.toString(), spec.toString());
+
+        // Refused, not fatal: the run completes and the model is told what to do instead.
+        assertThat(run.exitCode()).isZero();
+        assertThat(Files.readString(spec)).doesNotContain("resolved:");
+    }
+
+    @Test
+    void aClosedStdinEndsTheQuestioningWithoutHangingOrFailingTheRun() throws Exception {
+        // The CI shape: --interactive was passed but nothing is there to answer. It must degrade,
+        // never block, and never refuse to start.
+        Path spec = setUpEstate();
+        ExploreCommand cmd = new ExploreCommand();
+        cmd.in = new java.io.BufferedReader(new java.io.StringReader(""));
+        cmd.explorerForTest = new ScriptedChatModel(List.of(
+                call("1", "ask_user_question", "{\"question\":\"First?\"}"),
+                call("2", "ask_user_question", "{\"question\":\"Second?\"}"),
+                call("3", "done", "{\"result\":\"success\",\"summary\":\"nobody home\"}")));
+
+        Run run = explore(cmd, "--workspace", ws.toString(), "--interactive", spec.toString());
+
+        assertThat(run.exitCode()).isZero();
+        assertThat(Files.readString(spec)).doesNotContain("resolved:");
+    }
 }

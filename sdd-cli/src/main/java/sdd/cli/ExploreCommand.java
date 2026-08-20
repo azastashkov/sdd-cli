@@ -8,6 +8,7 @@ import picocli.CommandLine.Spec;
 import sdd.agent.loop.AgentBudget;
 import sdd.agent.loop.AgentResult;
 import sdd.agent.run.Explorer;
+import sdd.agent.tool.HumanAsk;
 import sdd.agent.tool.Notebook;
 import sdd.core.config.ConfigLoader;
 import sdd.core.config.ExploreSettings;
@@ -65,6 +66,17 @@ public final class ExploreCommand implements Callable<Integer> {
     @Option(names = "--out", description = "Write the enriched spec here instead of in place")
     Path out;
 
+    @Option(names = "--interactive",
+            description = "Let the explorer ask you a question when the answer changes what it "
+                    + "would do. Without this the tool is not offered at all.")
+    boolean interactive;
+
+    /** Test-only injection point: null in real use, where the asker falls back to {@code System.in}.
+     *  Copied from {@code ReviewCommand}, and for the same reason — the interactive path must be
+     *  fully testable without a terminal, which is how every other interactive case in this tree is
+     *  tested. */
+    java.io.BufferedReader in;
+
     @Spec CommandSpec spec;
 
     ChatModel explorerForTest;   // test seam — mirrors PlanCommand.plannerForTest
@@ -103,7 +115,8 @@ public final class ExploreCommand implements Callable<Integer> {
                         new AgentBudget(settings.turns(), settings.wall(), settings.tokens()),
                         settings.contextSoftCap(), endpoint != null ? endpoint.maxTokens() : 4096,
                         InstantSource.system(), settings.singleTool(),
-                        line -> outWriter.println("  " + line));
+                        line -> outWriter.println("  " + line),
+                        interactive ? asker(outWriter) : null, settings.maxQuestions());
                 return report(exploration, parsed, outWriter, errWriter);
             }
         } catch (java.io.IOException e) {
@@ -148,6 +161,53 @@ public final class ExploreCommand implements Callable<Integer> {
     private static String sanitize(String id) {
         String cleaned = id.replaceAll("[^A-Za-z0-9._-]", "-");
         return cleaned.isBlank() ? "spec" : cleaned;
+    }
+
+    /**
+     * Prompts on stdout and reads one line.
+     *
+     * <p>Deliberately NOT gated on a TTY. {@code ConsoleSupport.isTerminal()} exists and is
+     * correct, but gating on it would make this the only interactive thing in the tree that cannot
+     * be driven by a {@code StringReader} — which is how {@code InteractiveReviewTest} drives the
+     * one interactive command sdd already has. Piped input is a supported path, not an accident.
+     *
+     * <p>Once stdin is exhausted the asker LATCHES: every later question returns null immediately
+     * without touching the stream. A run that has lost its human must not spend the rest of its
+     * turns rediscovering that one question at a time.
+     *
+     * <p>{@code sdd explore} does not arm {@code Progress}, so there is no live line to fight. If
+     * it ever does, call {@code progress.stop()} before the first prompt — never
+     * {@code Progress.suspend}, which runs its action inside the renderer's monitor and would hold
+     * that lock for as long as the person takes to type.
+     */
+    private HumanAsk asker(PrintWriter outWriter) {
+        java.io.BufferedReader reader = in != null ? in
+                : new java.io.BufferedReader(new java.io.InputStreamReader(System.in,
+                        java.nio.charset.StandardCharsets.UTF_8));
+        boolean[] noHuman = {false};
+        return (question, options) -> {
+            if (noHuman[0]) {
+                return null;
+            }
+            outWriter.println();
+            outWriter.println("  ? " + question);
+            for (String option : options) {
+                outWriter.println("      - " + option);
+            }
+            outWriter.print("  your answer (blank to decline): ");
+            outWriter.flush();
+            try {
+                String line = reader.readLine();
+                if (line == null || line.isBlank()) {
+                    noHuman[0] = true;
+                    return null;
+                }
+                return line;
+            } catch (java.io.IOException e) {
+                noHuman[0] = true;
+                return null;
+            }
+        };
     }
 
     private Integer report(Explorer.Exploration exploration, NormalizedSpec parsed,
@@ -230,6 +290,18 @@ public final class ExploreCommand implements Callable<Integer> {
             }
         }
         List<SpecItem> questions = new ArrayList<>(spec.openQuestions());
+        // Answers a human gave during the survey, so nobody is asked the same thing twice at
+        // Gate 1. The resolution goes INSIDE the Q text on purpose: SpecParser requires every Open
+        // Questions line to match "- (Q[1-9][0-9]*): (.+)", so plan.md's indented
+        // "  - resolution:" idiom would throw here — and widening the spec grammar to accept it
+        // would move every existing spec's rendering, and with it plan.md's hash, for no reason.
+        for (Notebook.Clarification clarification : notebook.clarifications()) {
+            String bullet = clarification.question() + " — resolved: " + clarification.answer();
+            boolean already = questions.stream().anyMatch(q -> q.text().equals(bullet));
+            if (!already) {
+                questions.add(new SpecItem("Q" + (questions.size() + 1), bullet));
+            }
+        }
         if (!complete) {
             // A partial survey must say so IN the spec. Findings from a run that hit its turn
             // budget — or whose endpoint died — look exactly like findings from a complete one,

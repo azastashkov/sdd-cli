@@ -334,6 +334,136 @@ class ExploreToolsTest {
                 .hasMessageContaining("bad path glob");
     }
 
+    private ExploreTools withAsker(java.util.List<String> answers, int[] calls) {
+        java.util.Iterator<String> it = answers.iterator();
+        sdd.agent.tool.HumanAsk asker = (question, options) -> {
+            calls[0]++;
+            return it.hasNext() ? it.next() : null;
+        };
+        Map<String, Path> roots = new LinkedHashMap<>();
+        roots.put("payments-api", ws.resolve("payments-api"));
+        return new ExploreTools(db.jdbi(), new EstateJail(roots), false, null, asker, 10);
+    }
+
+    @Test
+    void withNoHumanAttachedTheToolIsRefusedRatherThanCountedAsAStrike() {
+        // THE CI assertion. ToolException RESETS the strike counter, so a run with nobody to ask
+        // is not pushed toward MALFORMED by trying; and the message points the model at what it
+        // should do instead.
+        assertThatThrownBy(() -> call("ask_user_question", """
+                {"question":"Which tenant?"}"""))
+                .isInstanceOf(ToolException.class)
+                .hasMessageContaining("no human is attached")
+                .hasMessageContaining("done(blocked)");
+        assertThat(tools.notebook().clarifications()).isEmpty();
+    }
+
+    @Test
+    void theToolIsAdvertisedOnlyWhenAHumanIsAttached() {
+        // The default non-interactive path keeps exactly the declarations it has today, and with
+        // them the measured tool-call reliability on gateways that degrade as the count grows.
+        assertThat(tools.specs()).extracting(sdd.core.llm.ToolSpec::name)
+                .doesNotContain("ask_user_question");
+
+        int[] calls = {0};
+        assertThat(withAsker(List.of("yes"), calls).specs())
+                .extracting(sdd.core.llm.ToolSpec::name).contains("ask_user_question");
+    }
+
+    @Test
+    void singleToolModeCarriesItAtZeroDeclarationCost() {
+        assertThat(single().specs()).singleElement().satisfies(spec ->
+                assertThat(spec.parametersSchemaJson()).contains("ask_user_question"));
+    }
+
+    @Test
+    void anAnswerSurvivesEvictionByLivingInTheNotebook() {
+        // A tool result is evictable — the EXPLORE policy protects record_finding by name, and
+        // evictAll stubs everything. An answer that lived only there would be re-asked.
+        int[] calls = {0};
+        ExploreTools t = withAsker(List.of("the EU tenant"), calls);
+
+        t.dispatch("ask_user_question", "{\"question\":\"Which tenant?\"}");
+
+        assertThat(t.digest()).contains("Which tenant?").contains("the EU tenant")
+                .contains("do not ask these again");
+    }
+
+    @Test
+    void aRepeatedQuestionIsServedFromTheNotebookWithoutTroublingTheHumanAgain() {
+        int[] calls = {0};
+        ExploreTools t = withAsker(List.of("the EU tenant"), calls);
+
+        String first = t.dispatch("ask_user_question", "{\"question\":\"Which tenant?\"}");
+        String second = t.dispatch("ask_user_question", "{\"question\":\"  WHICH   Tenant? \"}");
+
+        assertThat(calls[0]).as("the human is asked once, not twice").isEqualTo(1);
+        assertThat(first).startsWith("answered —");
+        // Normalized comparison, so a cosmetically reworded repeat is caught too — which is what
+        // replaces the wedge protection this tool opts out of.
+        assertThat(second).startsWith("already answered —").contains("the EU tenant");
+    }
+
+    @Test
+    void loopingOnAnAnsweredQuestionIsEventuallyRefusedWithTheAnswer() {
+        int[] calls = {0};
+        ExploreTools t = withAsker(List.of("the EU tenant"), calls);
+        for (int i = 0; i < 3; i++) {
+            t.dispatch("ask_user_question", "{\"question\":\"Which tenant?\"}");
+        }
+
+        assertThatThrownBy(() -> t.dispatch("ask_user_question",
+                "{\"question\":\"Which tenant?\"}"))
+                .isInstanceOf(ToolException.class)
+                .hasMessageContaining("already asked this")
+                .hasMessageContaining("the EU tenant");
+    }
+
+    @Test
+    void anUnansweredQuestionLatchesSoNoLaterAskTouchesStdin() {
+        int[] calls = {0};
+        ExploreTools t = withAsker(List.of(), calls);   // asker always returns null
+
+        assertThatThrownBy(() -> t.dispatch("ask_user_question", "{\"question\":\"A?\"}"))
+                .isInstanceOf(ToolException.class).hasMessageContaining("nobody answered");
+        assertThat(t.notebook().clarifications()).isEmpty();
+    }
+
+    @Test
+    void theQuestionCapRefusesAnInterrogation() {
+        Map<String, Path> roots = new LinkedHashMap<>();
+        roots.put("payments-api", ws.resolve("payments-api"));
+        ExploreTools t = new ExploreTools(db.jdbi(), new EstateJail(roots), false, null,
+                (q, o) -> "yes", 1);
+
+        t.dispatch("ask_user_question", "{\"question\":\"First?\"}");
+
+        assertThatThrownBy(() -> t.dispatch("ask_user_question", "{\"question\":\"Second?\"}"))
+                .isInstanceOf(ToolException.class).hasMessageContaining("question limit (1)");
+    }
+
+    @Test
+    void askingIsRepeatableAndReportsTheTimeItWaited() {
+        int[] calls = {0};
+        ExploreTools t = withAsker(List.of("yes"), calls);
+
+        assertThat(t.repeatable("ask_user_question")).isTrue();
+        assertThat(t.repeatable("read_file")).isFalse();
+        t.dispatch("ask_user_question", "{\"question\":\"A?\"}");
+        assertThat(t.blockedOnHuman()).isGreaterThanOrEqualTo(java.time.Duration.ZERO);
+    }
+
+    @Test
+    void askingWritesNothingToTheEstate() {
+        int[] calls = {0};
+        ExploreTools t = withAsker(List.of("yes"), calls);
+        t.dispatch("ask_user_question", "{\"question\":\"A?\"}");
+
+        assertThat(t.specs()).extracting(sdd.core.llm.ToolSpec::name)
+                .doesNotContain("apply_edit", "run_gradle", "run_npm");
+        assertThat(t.buildToolName()).isNull();
+    }
+
     @Test
     void singleToolModeAdvertisesExactlyOneDeclaration() {
         assertThat(single().specs()).singleElement().satisfies(spec -> {

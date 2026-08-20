@@ -52,6 +52,10 @@ public final class ExploreTools implements Tools {
     private static final int MAX_CITED_LINE_CHARS = 300;
     /** Reference lists are long for a hub type; truncation is always named. */
     private static final int MAX_REFERENCES = 30;
+    /** Default question ceiling; overridable through {@code explore.max_questions}. */
+    public static final int MAX_QUESTIONS = 10;
+    /** How many times one question may be repeated before the tool refuses instead of answering. */
+    private static final int MAX_REPEATS = 3;
 
     /**
      * The nine operations behind one declaration.
@@ -82,6 +86,11 @@ public final class ExploreTools implements Tools {
      * output is indistinguishable from one that is wedged.
      */
     private final java.util.function.Consumer<String> trace;
+    private final HumanAsk asker;
+    private final int maxQuestions;
+    /** Normalized question -> how many times it has been asked, for the repeat rule. */
+    private final java.util.Map<String, Integer> asked = new java.util.LinkedHashMap<>();
+    private long blockedNanos;
     private final EstateSearch search;
     private final FtsRetriever fts;
     private final Notebook notebook = new Notebook();
@@ -100,10 +109,28 @@ public final class ExploreTools implements Tools {
 
     public ExploreTools(Jdbi jdbi, EstateJail jail, boolean singleTool,
                         java.util.function.Consumer<String> trace) {
+        this(jdbi, jail, singleTool, trace, null, MAX_QUESTIONS);
+    }
+
+    /**
+     * @param asker        where a question reaches a human, or null when nobody is attached — in
+     *                     which case {@code ask_user_question} is not advertised at all, so the
+     *                     default non-interactive run keeps exactly the declaration count it has
+     *                     today, and with it the measured tool-call reliability on gateways that
+     *                     degrade as that count grows
+     * @param maxQuestions how many questions one run may ask. The only ceiling on how many
+     *                     human-minutes a survey can consume; turns and tokens do not bound it,
+     *                     because waiting costs neither
+     */
+    public ExploreTools(Jdbi jdbi, EstateJail jail, boolean singleTool,
+                        java.util.function.Consumer<String> trace, HumanAsk asker,
+                        int maxQuestions) {
         this.jdbi = jdbi;
         this.jail = jail;
         this.singleTool = singleTool;
         this.trace = trace;
+        this.asker = asker;
+        this.maxQuestions = maxQuestions;
         this.search = new EstateSearch(jail);
         this.fts = new FtsRetriever(jdbi);
     }
@@ -153,7 +180,15 @@ public final class ExploreTools implements Tools {
 
     @Override
     public List<ToolSpec> specs() {
-        return singleTool ? List.of(multiplexed()) : List.of(
+        // Filtered, not conditionally built: keeping one list means the multiplexed schema and
+        // the per-tool declarations can never disagree about which operations exist.
+        return singleTool ? List.of(multiplexed()) : declarations().stream()
+                .filter(spec -> asker != null || !spec.name().equals("ask_user_question"))
+                .toList();
+    }
+
+    private List<ToolSpec> declarations() {
+        return List.of(
                 new ToolSpec("list_repos", "List the indexed repositories.",
                         "{\"type\":\"object\",\"properties\":{}}"),
                 new ToolSpec("list_files", "List the entries of a directory.",
@@ -180,6 +215,18 @@ public final class ExploreTools implements Tools {
                         path, e.g. **/*.sql or src/**/*.ts"}}}"""),
                 new ToolSpec("search_symbols", "Search indexed type and member names.",
                         one("query", "Words or an identifier")),
+                new ToolSpec("ask_user_question",
+                        "Ask the human one blocking question. Only when their answer changes what "
+                                + "you would do next.",
+                        """
+                        {"type":"object","properties":{\
+                        "question":{"type":"string","description":"One question, answerable in a \
+                        sentence"},\
+                        "why":{"type":"string","description":"What you would do differently per \
+                        answer"},\
+                        "options":{"type":"array","items":{"type":"string"},\
+                        "description":"Suggested answers, optional"}},\
+                        "required":["question"]}"""),
                 new ToolSpec("who_references",
                         "Types that reference a fully-qualified type (direction=in, the default), "
                                 + "or that it references (direction=out). Use it to tell a real "
@@ -221,13 +268,15 @@ public final class ExploreTools implements Tools {
                 "Explore the estate. One action per call: list_repos | list_files(path) | "
                         + "read_file(path[,offset][,limit]) | search_code([regex][,repo][,glob]) | "
                         + "search_symbols(query) | who_references(fqcn[,direction]) | "
+                        + "ask_user_question(question[,why][,options]) | "
                         + "kb_resolve(kind,value) | "
                         + "propose_touchpoint(kind,value) | record_finding(claim,citation) | "
                         + "done(result,summary)",
                 """
                 {"type":"object","properties":{\
                 "action":{"type":"string","enum":["list_repos","list_files","read_file",\
-                "search_code","search_symbols","who_references","kb_resolve","propose_touchpoint",\
+                "search_code","search_symbols","who_references","ask_user_question","kb_resolve",\
+                "propose_touchpoint",\
                 "record_finding","done"]},\
                 "path":{"type":"string"},"offset":{"type":"string"},"limit":{"type":"string"},\
                 "regex":{"type":"string"},"repo":{"type":"string"},\
@@ -270,6 +319,7 @@ public final class ExploreTools implements Tools {
                     + (args.hasNonNull("repo") ? " in " + args.get("repo").asText() : "")
                     + (args.hasNonNull("glob") ? " glob " + args.get("glob").asText() : "");
             case "search_symbols" -> " " + args.path("query").asText("");
+            case "ask_user_question" -> " " + args.path("question").asText("");
             case "who_references" -> " " + args.path("fqcn").asText("")
                     + ("out".equals(args.path("direction").asText("")) ? " (out)" : "");
             case "kb_resolve", "propose_touchpoint" ->
@@ -289,6 +339,10 @@ public final class ExploreTools implements Tools {
                     optional(args, "glob"));
             case "search_symbols" -> searchSymbols(str(args, "query"));
             case "who_references" -> whoReferences(str(args, "fqcn"), optional(args, "direction"));
+            // Handled explicitly rather than falling to default's "unknown tool", which would cost
+            // a strike: a model calling it from memory in single-tool mode, or after seeing it in
+            // an earlier run, deserves the real explanation.
+            case "ask_user_question" -> ask(str(args, "question"), strings(args, "options"));
             case "kb_resolve" -> describe(resolve(str(args, "kind"), str(args, "value")));
             case "propose_touchpoint" -> propose(str(args, "kind"), str(args, "value"));
             case "record_finding" -> recordFinding(str(args, "claim"), str(args, "citation"));
@@ -399,6 +453,93 @@ public final class ExploreTools implements Tools {
                     .append('\n');
         }
         return out.toString();
+    }
+
+    /**
+     * Puts one question to a human, or explains why it cannot.
+     *
+     * <p><b>Never blocks a run that has nobody to ask.</b> With no asker attached, or once stdin
+     * has closed, this is a {@link ToolException} — a well-formed call that failed legitimately,
+     * which {@code AgentLoop} treats as free (it resets the strike counter) and which points the
+     * model at what it should do instead. The alternative, refusing to start the command, would
+     * make an unattended survey impossible; degrading the tool and finishing the survey is strictly
+     * better.
+     *
+     * <p><b>A repeat is answered from the notebook, not from the human.</b> That is what replaces
+     * the wedge protection this tool opts out of: it compares the question's normalized text, so it
+     * also catches a reworded repeat, and it stops the one thing a person actually resents — being
+     * asked the same thing twice. Past {@link #MAX_REPEATS} it refuses and quotes the answer back,
+     * because a model looping on a question it has already had answered is not making progress.
+     *
+     * <p>Writes nothing. Read-only-ness is structural here, and asking does not change that; the
+     * answer reaches disk only through the caller's spec rewrite.
+     */
+    private String ask(String question, List<String> options) {
+        String normalized = normalizeQuestion(question);
+        if (normalized.isEmpty()) {
+            throw new MalformedCallException("question must not be blank");
+        }
+        String previous = notebook.answerTo(normalized);
+        int seen = asked.merge(normalized, 1, Integer::sum);
+        if (previous != null) {
+            if (seen > MAX_REPEATS) {
+                throw new ToolException("you have already asked this " + (seen - 1) + " times and "
+                        + "been told: " + previous + " — act on it, or record what is still "
+                        + "unclear as a finding");
+            }
+            return "already answered — " + question + " → " + previous + "\n";
+        }
+        if (asker == null) {
+            throw new ToolException("no human is attached to this run — record what you would have "
+                    + "asked as a finding, with the searches you tried, or call done(blocked) "
+                    + "naming it");
+        }
+        if (notebook.clarifications().size() >= maxQuestions) {
+            throw new ToolException("this run's question limit (" + maxQuestions + ") is used up — "
+                    + "record what is still unclear as a finding, or call done(blocked)");
+        }
+        long start = System.nanoTime();
+        String answer;
+        try {
+            answer = asker.ask(question, options);
+        } finally {
+            blockedNanos += System.nanoTime() - start;
+        }
+        if (answer == null || answer.isBlank()) {
+            // One signal for "no terminal", "stdin closed" and "they pressed enter on nothing" —
+            // the same collapse InteractiveReview makes on a null readLine.
+            throw new ToolException("nobody answered — record what you would have asked as a "
+                    + "finding, with the searches you tried, or call done(blocked) naming it");
+        }
+        notebook.addClarification(new Notebook.Clarification(normalized, question.strip(),
+                answer.strip()));
+        return "answered — " + question + " → " + answer.strip() + "\n";
+    }
+
+    /** Case- and whitespace-insensitive, so a reworded repeat is still recognised as one. */
+    private static String normalizeQuestion(String question) {
+        return question == null ? ""
+                : question.replaceAll("(?U)\\s+", " ").strip().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    private static List<String> strings(com.fasterxml.jackson.databind.JsonNode args, String field) {
+        List<String> out = new java.util.ArrayList<>();
+        for (com.fasterxml.jackson.databind.JsonNode value : args.path(field)) {
+            if (!value.asText("").isBlank()) {
+                out.add(value.asText());
+            }
+        }
+        return out;
+    }
+
+    @Override
+    public boolean repeatable(String name) {
+        return name.equals("ask_user_question");
+    }
+
+    @Override
+    public java.time.Duration blockedOnHuman() {
+        return java.time.Duration.ofNanos(blockedNanos);
     }
 
     /**

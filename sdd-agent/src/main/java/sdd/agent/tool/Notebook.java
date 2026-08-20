@@ -30,9 +30,28 @@ public final class Notebook {
     public record Proposal(String kind, String value, String resolvedAs) {
     }
 
+    /**
+     * A question the explorer asked a human, and what they said.
+     *
+     * <p>{@code key} is the normalized form used to recognise a repeat; {@code question} is what
+     * the person was actually shown. They are separate because the digest is pinned back into the
+     * model's context, and echoing a lowercased, whitespace-collapsed key there would degrade the
+     * one record of the exchange that survives eviction.
+     *
+     * <p>Lives here rather than only in the tool result because a tool result is evictable: the
+     * EXPLORE retention policy protects {@code record_finding} by name and nothing else, and
+     * {@code evictAll()} — the HTTP-400 recovery path — stubs every result there is. An answer that
+     * lived only in a tool result would be one the run loses and then asks a human for a second
+     * time, which is the specific annoyance this feature exists to remove. The notebook is pinned
+     * after every call and survives both.
+     */
+    public record Clarification(String key, String question, String answer) {
+    }
+
     private final List<Finding> findings = new ArrayList<>();
     private final Set<String> proposalKeys = new LinkedHashSet<>();
     private final List<Proposal> proposals = new ArrayList<>();
+    private final List<Clarification> clarifications = new ArrayList<>();
 
     /** @return false when this exact claim+citation was already recorded */
     boolean addFinding(Finding finding) {
@@ -55,6 +74,32 @@ public final class Notebook {
         return true;
     }
 
+    /** @return false when this question was already answered — the key is the caller's normalized
+     *  form, so a cosmetically reworded repeat is caught too */
+    boolean addClarification(Clarification clarification) {
+        for (Clarification existing : clarifications) {
+            if (existing.key().equals(clarification.key())) {
+                return false;
+            }
+        }
+        clarifications.add(clarification);
+        return true;
+    }
+
+    /** The recorded answer to a question already asked, or null. */
+    String answerTo(String key) {
+        for (Clarification existing : clarifications) {
+            if (existing.key().equals(key)) {
+                return existing.answer();
+            }
+        }
+        return null;
+    }
+
+    public List<Clarification> clarifications() {
+        return List.copyOf(clarifications);
+    }
+
     public List<Finding> findings() {
         return List.copyOf(findings);
     }
@@ -64,7 +109,7 @@ public final class Notebook {
     }
 
     public boolean isEmpty() {
-        return findings.isEmpty() && proposals.isEmpty();
+        return findings.isEmpty() && proposals.isEmpty() && clarifications.isEmpty();
     }
 
     /**
@@ -87,6 +132,12 @@ public final class Notebook {
             out.append("\nFindings recorded:\n");
             for (Finding f : findings) {
                 out.append("- ").append(f.claim()).append(" — ").append(f.citation()).append('\n');
+            }
+        }
+        if (!clarifications.isEmpty()) {
+            out.append("\nAnswers from the human (do not ask these again):\n");
+            for (Clarification c : clarifications) {
+                out.append("- ").append(c.question()).append(" → ").append(c.answer()).append('\n');
             }
         }
         return out.toString();
