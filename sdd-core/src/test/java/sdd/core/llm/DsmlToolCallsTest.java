@@ -117,6 +117,47 @@ class DsmlToolCallsTest {
                 .satisfies(c -> assertThat(c.argumentsJson()).isEqualTo("{\"regex\":\"a\uFF5Cb\"}"));
     }
 
+    // Measured: the SAME three-turn run wrote a bare <invoke> on turn 1 and <｜DSML｜invoke> on
+    // turns 2 and 3. A parser that demanded the prefix would read two turns and silently skip the
+    // third — worse than reading none, because the run would look intermittently broken.
+    private static final String TURN_1_NO_SENTINEL =
+            "<\uFF5CDSML\uFF5Ctool_calls>\n<invoke name=\"list_repos\">\n"
+            + "<parameter name=\"pattern\" string=\"true\"></parameter>\n"
+            + "</invoke>\n</\uFF5CDSML\uFF5Ctool_calls>";
+
+    @Test
+    void aBareInvokeTagWithNoSentinelPrefixIsRead() {
+        assertThat(TextToolCalls.read(TURN_1_NO_SENTINEL, DECLARED)).singleElement()
+                .satisfies(c -> {
+                    assertThat(c.name()).isEqualTo("list_repos");
+                    assertThat(c.argumentsJson()).isEqualTo("{\"pattern\":\"\"}");
+                });
+    }
+
+    @Test
+    void bothFormsAreReadWithinOneReply() {
+        List<ToolCall> calls = TextToolCalls.read(
+                "<invoke name=\"read_file\">"
+                + "<parameter name=\"path\">a/A.java</parameter></invoke>\n"
+                + fullwidth("<|DSML|invoke name=\"read_file\">"
+                        + "<|DSML|parameter name=\"path\">a/B.java</|DSML|parameter></|DSML|invoke>"),
+                DECLARED);
+
+        assertThat(calls).hasSize(2);
+        assertThat(calls.get(0).argumentsJson()).isEqualTo("{\"path\":\"a/A.java\"}");
+        assertThat(calls.get(1).argumentsJson()).isEqualTo("{\"path\":\"a/B.java\"}");
+    }
+
+    // The sentinel pattern is bounded — no '|' and no '>' inside — so it can only ever consume a
+    // sentinel, never run past a tag's end and swallow content as if it were a name.
+    @Test
+    void aTagNameThatMerelyEndsInInvokeIsNotAnInvokeTag() {
+        assertThat(TextToolCalls.read(
+                "<notaninvoke name=\"list_repos\"></notaninvoke>", DECLARED)).isEmpty();
+        assertThat(TextToolCalls.read(
+                "<invoked name=\"list_repos\"></invoked>", DECLARED)).isEmpty();
+    }
+
     @Test
     void aNameTheRequestNeverDeclaredIsNotACall() {
         assertThat(TextToolCalls.read(

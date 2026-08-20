@@ -35,16 +35,32 @@ import java.util.regex.Pattern;
  * closing refuses the whole content rather than returning what survived, because a truncated reply
  * may have been cut mid-way through a second call.
  *
- * <p>The {@code <|DSML|tool_calls>} envelope is not required. The {@code invoke} tag plus the
+ * <p>The sentinel prefix is OPTIONAL, and that is not defensive generality — the same model emits
+ * both forms in one run. Measured over three turns: turn 1 wrote {@code <invoke name="list_repos">}
+ * and turns 2 and 3 wrote {@code <｜DSML｜invoke …>}. The bars are also U+FF5C, not ASCII; see
+ * {@link #FULLWIDTH_BAR}.
+ *
+ * <p>The {@code tool_calls} envelope is not required either. The {@code invoke} tag plus the
  * declared-name check is what makes this exact; demanding a wrapper as well would fail a reply that
  * is otherwise unambiguous, which is strictness that buys nothing.
  */
 final class DsmlToolCalls {
 
-    private static final String INVOKE_OPEN = "<|DSML|invoke";
-    private static final String INVOKE_CLOSE = "</|DSML|invoke>";
-    private static final String PARAM_OPEN = "<|DSML|parameter";
-    private static final String PARAM_CLOSE = "</|DSML|parameter>";
+    /**
+     * An optional sentinel between {@code <} and the tag name — {@code |DSML|} in what has been
+     * observed, matched generically because the model uses BOTH forms in a single run: measured on
+     * one three-turn run, turn 1 wrote {@code <invoke name="list_repos">} while turns 2 and 3 wrote
+     * {@code <｜DSML｜invoke …>}. A parser that demanded the prefix would have read two turns and
+     * silently skipped the third, which is worse than reading none.
+     *
+     * <p>Bounded on purpose: no {@code |} and no {@code >} inside, so this can only ever consume a
+     * sentinel, never run past the end of a tag and swallow content.
+     */
+    private static final String SENTINEL = "(?:\\|[^|>]*\\|)?";
+    private static final Pattern INVOKE_OPEN = Pattern.compile("<" + SENTINEL + "invoke\\b[^>]*>");
+    private static final Pattern INVOKE_CLOSE = Pattern.compile("</" + SENTINEL + "invoke>");
+    private static final Pattern PARAM_OPEN = Pattern.compile("<" + SENTINEL + "parameter\\b[^>]*>");
+    private static final Pattern PARAM_CLOSE = Pattern.compile("</" + SENTINEL + "parameter>");
     private static final Pattern NAME = Pattern.compile("name=\"([^\"]*)\"");
     private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -63,7 +79,7 @@ final class DsmlToolCalls {
 
     /** Whether this content is worth handing to {@link #read} at all. */
     static boolean present(String content) {
-        return content != null && scannable(content).contains(INVOKE_OPEN);
+        return content != null && INVOKE_OPEN.matcher(scannable(content)).find();
     }
 
     /**
@@ -82,28 +98,23 @@ final class DsmlToolCalls {
     /** Every call in the content, or empty when any part of it does not hold up. */
     static List<ToolCall> read(String raw, Set<String> declared) {
         String content = scannable(raw);
+        Matcher open = INVOKE_OPEN.matcher(content);
+        Matcher close = INVOKE_CLOSE.matcher(content);
         List<ToolCall> out = new ArrayList<>();
         int from = 0;
-        while (true) {
-            int open = content.indexOf(INVOKE_OPEN, from);
-            if (open < 0) {
-                return List.copyOf(out);
-            }
-            int tagEnd = content.indexOf('>', open);
-            if (tagEnd < 0) {
+        while (open.find(from)) {
+            if (!close.find(open.end())) {
+                // An unterminated block is a truncated reply. What was cut off may have been
+                // another call, so returning what survived would under-report the model's ask.
                 return List.of();
             }
-            int close = content.indexOf(INVOKE_CLOSE, tagEnd);
-            if (close < 0) {
-                return List.of();
-            }
-            String name = attribute(content.substring(open, tagEnd));
+            String name = attribute(open.group());
             if (name == null || !declared.contains(name)) {
                 return List.of();
             }
             // Located on the folded copy, cut from the original: same indices, untouched bytes.
-            ObjectNode args = arguments(content.substring(tagEnd + 1, close),
-                    raw.substring(tagEnd + 1, close));
+            ObjectNode args = arguments(content.substring(open.end(), close.start()),
+                    raw.substring(open.end(), close.start()));
             if (args == null) {
                 return List.of();
             }
@@ -111,36 +122,31 @@ final class DsmlToolCalls {
             // results sharing a tool_call_id would pair against the wrong call.
             out.add(new ToolCall(HttpChatModel.SYNTHETIC_CALL_ID_PREFIX + out.size() + "-" + name,
                     name, args.toString()));
-            from = close + INVOKE_CLOSE.length();
+            from = close.end();
         }
+        return List.copyOf(out);
     }
 
     /** Every parameter in one invoke body, or null if a parameter tag does not close.
      *  {@code body} is the folded copy used to find tags; {@code rawBody} is the original the
      *  values themselves are cut from. */
     private static ObjectNode arguments(String body, String rawBody) {
+        Matcher open = PARAM_OPEN.matcher(body);
+        Matcher close = PARAM_CLOSE.matcher(body);
         ObjectNode args = JSON.createObjectNode();
         int from = 0;
-        while (true) {
-            int open = body.indexOf(PARAM_OPEN, from);
-            if (open < 0) {
-                return args;
-            }
-            int tagEnd = body.indexOf('>', open);
-            if (tagEnd < 0) {
+        while (open.find(from)) {
+            if (!close.find(open.end())) {
                 return null;
             }
-            int close = body.indexOf(PARAM_CLOSE, tagEnd);
-            if (close < 0) {
-                return null;
-            }
-            String name = attribute(body.substring(open, tagEnd));
+            String name = attribute(open.group());
             if (name == null) {
                 return null;
             }
-            args.put(name, value(rawBody.substring(tagEnd + 1, close)));
-            from = close + PARAM_CLOSE.length();
+            args.put(name, value(rawBody.substring(open.end(), close.start())));
+            from = close.end();
         }
+        return args;
     }
 
     /**

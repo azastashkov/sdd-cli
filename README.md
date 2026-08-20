@@ -602,11 +602,14 @@ What it will read, and nothing else — four dialects, all exactly delimited:
 | bare JSON | `{"name": "read_file", "arguments": {"path": "A.java"}}` |
 | a single ```-fenced block | the same, fenced |
 | `<tool_call>…</tool_call>` blocks | what Qwen models emit |
-| DeepSeek tags | `<\|DSML\|invoke name="read_file"><\|DSML\|parameter name="path">A.java</\|DSML\|parameter>…` |
+| DeepSeek tags | `<invoke name="read_file"><parameter name="path">A.java</parameter></invoke>`, with or without a `｜DSML｜` sentinel |
 
 The last one is not JSON at all: an argument's value is the text between its parameter tags, and
 `string="true"` is a type annotation that is ignored, because every tool argument in this codebase
-is declared `"type":"string"` (`DsmlToolCalls.java`). Exactly one leading and one trailing newline
+is declared `"type":"string"` (`DsmlToolCalls.java`). Two details there are measured, not guessed,
+and both were invisible in a terminal: the sentinel bars are `U+FF5C FULLWIDTH VERTICAL LINE`, not
+ASCII `|`, and the sentinel is **optional** — one three-turn run wrote a bare `<invoke>` on turn 1
+and `<｜DSML｜invoke>` on turns 2 and 3. Exactly one leading and one trailing newline
 is removed from a value — the template renders one tag per line — and the interior is untouched,
 since `apply_edit`'s `search` has to match a file byte for byte.
 

@@ -239,10 +239,12 @@ own switch via `extra_body` (`tool_choice: auto`, `function_call: auto`,
 
 `text` reads four dialects — a bare JSON object or array, one ```-fenced
 block, `<tool_call>…</tool_call>` blocks (Qwen), and the DeepSeek tag form
-`<|DSML|invoke name="…"><|DSML|parameter name="…">value</|DSML|parameter>`
+`<invoke name="…"><parameter name="…">value</parameter></invoke>`
 (`DsmlToolCalls.java`), where the value is the text between the tags and the
 `string="true"` type annotation is ignored because every tool argument here is
-declared `"type":"string"`. It refuses everything else: the name must
+declared `"type":"string"`. That last form carries an optional `｜DSML｜`
+sentinel whose bars are `U+FF5C`, not ASCII `|` — both measured off a live run,
+which emitted the bare and prefixed forms in the same three turns. It refuses everything else: the name must
 be one the request declared, the whole content must be the call, and one bad
 entry rejects the whole batch (`TextToolCalls.java`). The tool-call id is
 invented, so nothing has verified the gateway accepts the `tool_call_id` sent
