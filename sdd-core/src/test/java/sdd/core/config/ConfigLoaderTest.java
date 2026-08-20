@@ -3,6 +3,7 @@ package sdd.core.config;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import sdd.core.http.TlsConfig;
+import sdd.core.llm.ToolCallStyle;
 import sdd.core.llm.WireFormat;
 
 import java.nio.file.Files;
@@ -89,6 +90,57 @@ class ConfigLoaderTest {
                 .isInstanceOf(ConfigException.class)
                 .hasMessageContaining("models.planner.wire")
                 .hasMessageContaining("openai, gigachat");
+    }
+
+    @Test
+    void toolCallsDefaultsToNativeAndIsSetPerEndpoint() throws Exception {
+        SddConfig c = ConfigLoader.load(write("""
+                models:
+                  planner:
+                    base_url: https://gateway.example/v1
+                    model: deepseek-v4-flash
+                    tool_calls: text
+                  coder:
+                    base_url: http://127.0.0.1:8080/v1
+                    model: local
+                """), ENV);
+        assertThat(c.models().get("planner").toolCallStyle()).isEqualTo(ToolCallStyle.TEXT);
+        assertThat(c.models().get("coder").toolCallStyle()).isEqualTo(ToolCallStyle.NATIVE);
+    }
+
+    // Independent axes: the gateway that needed `text` is on `wire: openai`, which is the proof.
+    @Test
+    void wireAndToolCallsAreSetIndependently() throws Exception {
+        SddConfig c = ConfigLoader.load(write("""
+                models:
+                  planner:
+                    base_url: https://gateway.example/v1
+                    model: deepseek-v4-flash
+                    tool_calls: text
+                  coder:
+                    base_url: http://127.0.0.1:8080/v1
+                    model: local
+                """), ENV);
+        ModelEndpoint planner = c.models().get("planner");
+        assertThat(planner.toolCallStyle()).isEqualTo(ToolCallStyle.TEXT);
+        assertThat(planner.wire()).isEqualTo(WireFormat.OPENAI);
+    }
+
+    @Test
+    void anUnknownToolCallsValueFailsConfigLoadNamingTheKeyAndTheAcceptedValues() {
+        assertThatThrownBy(() -> ConfigLoader.load(write("""
+                models:
+                  planner:
+                    base_url: https://gateway.example/v1
+                    model: deepseek-v4-flash
+                    tool_calls: prose
+                  coder:
+                    base_url: http://127.0.0.1:8080/v1
+                    model: local
+                """), ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("models.planner.tool_calls")
+                .hasMessageContaining("native, text");
     }
 
     @Test

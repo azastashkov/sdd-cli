@@ -162,14 +162,15 @@ public final class AgentLoop {
             }
 
             window.addAssistant(message);
-            // The endpoint answered in the pre-tools `function_call` shape, so HttpChatModel had to
-            // invent the id this loop pairs the result by. It works here, but nothing has verified
-            // that the gateway accepts an id it never issued — say so once, in the record a reader
-            // actually opens, rather than leaving it to be inferred from the transcript.
+            // The endpoint did not return structured tool_calls — the call arrived in the older
+            // `function_call` field, or as plain content — so HttpChatModel had to invent the id
+            // this loop pairs results by. It works here, but nothing has verified the gateway
+            // accepts an id it never issued. Say so once, in the record a reader actually opens,
+            // rather than leaving it to be inferred from the transcript.
             if (!warnedSynthesizedIds && message.toolCalls().stream()
                     .anyMatch(c -> c.id().startsWith(HttpChatModel.SYNTHETIC_CALL_ID_PREFIX))) {
                 warnedSynthesizedIds = true;
-                events.add("turn " + turns + ": endpoint returned function_call, not tool_calls — "
+                events.add("turn " + turns + ": endpoint did not return structured tool_calls — "
                         + "tool-call ids are synthesized and unverified against this gateway");
             }
             for (ToolCall raw : message.toolCalls()) {

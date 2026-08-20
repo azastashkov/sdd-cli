@@ -318,6 +318,73 @@ class HttpChatModelTest {
         assertThat(resp.finishReason()).isEqualTo("stop");
     }
 
+    // The reply a corp GigaChat gateway actually sent to sdd doctor --tools: the model complied,
+    // the gateway never structured it, and finish_reason was stop. Verbatim, minus the endpoint's
+    // own identifying fields.
+    private static final String TOOL_CALL_AS_TEXT = """
+            {"choices":[{"message":{"role":"assistant",
+              "content":"{\\"name\\": \\"report_status\\", \\"arguments\\": {\\"status\\": \\"ok\\"}}",
+              "reasoning_content":"We need to call the report_status tool with status set to ok."},
+              "index":0,"finish_reason":"stop"}],
+             "usage":{"prompt_tokens":32,"completion_tokens":84}}
+            """;
+
+    private static ChatRequest requestDeclaring(String tool) {
+        return new ChatRequest("test-model", List.of(ChatMessage.user("go")),
+                List.of(new ToolSpec(tool, "d", "{\"type\":\"object\"}")), 256, 0.0);
+    }
+
+    private static HttpChatModel modelWithStyle(ToolCallStyle style) {
+        ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "test-model", "sk-key", 256, 0.0,
+                Duration.ofSeconds(5), Map.of(), null, null, WireFormat.OPENAI, style);
+        return new HttpChatModel(ep, HttpClient.newHttpClient(), millis -> { });
+    }
+
+    @Test
+    void textStyleReadsAToolCallLeftInContent() {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(TOOL_CALL_AS_TEXT)));
+
+        ChatResponse resp = modelWithStyle(ToolCallStyle.TEXT)
+                .complete(requestDeclaring("report_status"));
+
+        assertThat(resp.message().toolCalls()).singleElement().satisfies(c -> {
+            assertThat(c.name()).isEqualTo("report_status");
+            assertThat(c.argumentsJson()).isEqualTo("{\"status\":\"ok\"}");
+        });
+        // Cleared: otherwise the next turn shows the model its own call twice, once as text and
+        // once as a tool_call.
+        assertThat(resp.message().content()).isNull();
+        // The gateway said "stop" because it did not know it had made a call. One name for one
+        // outcome, so no caller has to learn three.
+        assertThat(resp.finishReason()).isEqualTo("tool_calls");
+    }
+
+    // The default must be untouched by all of this: on every existing endpoint that reply is prose,
+    // which is exactly what it looks like there.
+    @Test
+    void nativeStyleLeavesAToolCallInContentAsProse() {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(TOOL_CALL_AS_TEXT)));
+
+        ChatResponse resp = modelWithStyle(ToolCallStyle.NATIVE)
+                .complete(requestDeclaring("report_status"));
+
+        assertThat(resp.message().toolCalls()).isEmpty();
+        assertThat(resp.message().content()).contains("report_status");
+        assertThat(resp.finishReason()).isEqualTo("stop");
+    }
+
+    // Even in text style, a name this request never offered is not a call.
+    @Test
+    void textStyleStillRefusesAnUndeclaredTool() {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(TOOL_CALL_AS_TEXT)));
+
+        ChatResponse resp = modelWithStyle(ToolCallStyle.TEXT)
+                .complete(requestDeclaring("something_else"));
+
+        assertThat(resp.message().toolCalls()).isEmpty();
+        assertThat(resp.finishReason()).isEqualTo("stop");
+    }
+
     @Test
     void attemptCapBoundsRetries() {
         wm.stubFor(post("/v1/chat/completions").willReturn(serverError()));

@@ -4,6 +4,7 @@ import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
 import sdd.core.http.TlsConfig;
+import sdd.core.llm.ToolCallStyle;
 import sdd.core.llm.WireFormat;
 
 import java.io.IOException;
@@ -469,8 +470,12 @@ public final class ConfigLoader {
         WireFormat wire = rawWire == null
                 ? WireFormat.OPENAI
                 : WireFormat.parse("models." + name + ".wire", String.valueOf(rawWire));
+        Object rawStyle = m.get("tool_calls");
+        ToolCallStyle toolCallStyle = rawStyle == null
+                ? ToolCallStyle.NATIVE
+                : ToolCallStyle.parse("models." + name + ".tool_calls", String.valueOf(rawStyle));
         return new ModelEndpoint(baseUrl, model, apiKey, maxTokens, temperature, timeout, extraBody,
-                apiKeyError, tls, wire);
+                apiKeyError, tls, wire, toolCallStyle);
     }
 
     // --- models.<name>.tls: ------------------------------------------------------------------

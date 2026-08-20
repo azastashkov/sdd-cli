@@ -1,6 +1,7 @@
 package sdd.core.config;
 
 import sdd.core.http.TlsConfig;
+import sdd.core.llm.ToolCallStyle;
 import sdd.core.llm.WireFormat;
 
 import java.time.Duration;
@@ -32,6 +33,13 @@ import java.util.Map;
  * clients that reach it without the {@code gpt2giga} proxy; see {@link WireFormat} for what
  * differs and why. Independent of {@code apiKey} and {@code tls}: how an endpoint is authenticated
  * says nothing about how it wants its messages spelled.
+ *
+ * <p>{@code toolCallStyle}: how this endpoint hands back a tool call, from
+ * {@code models.<name>.tool_calls}. Never null — {@link ToolCallStyle#NATIVE} is the default and
+ * is what every OpenAI-compatible endpoint claims. {@code text} is for a gateway that accepts
+ * {@code tools} and then returns the call as ordinary content; see {@link ToolCallStyle} for the
+ * measurement that forced it. Independent of {@code wire} — the gateway that needed this is on
+ * {@code wire: openai}, which is the proof the two axes move separately.
  */
 public record ModelEndpoint(
         String baseUrl,
@@ -43,10 +51,22 @@ public record ModelEndpoint(
         Map<String, Object> extraBody,
         String apiKeyError,
         TlsConfig tls,
-        WireFormat wire) {
+        WireFormat wire,
+        ToolCallStyle toolCallStyle) {
     public ModelEndpoint {
         extraBody = extraBody == null ? Map.of() : Map.copyOf(extraBody);
         wire = wire == null ? WireFormat.OPENAI : wire;
+        toolCallStyle = toolCallStyle == null ? ToolCallStyle.NATIVE : toolCallStyle;
+    }
+
+    /** Pre-{@code toolCallStyle} 10-argument shape, kept so every existing construction site (main
+     *  and test) keeps compiling untouched: it defaults to {@link ToolCallStyle#NATIVE}, i.e. the
+     *  only behaviour that existed before this setting. */
+    public ModelEndpoint(String baseUrl, String model, String apiKey, int maxTokens, double temperature,
+            Duration timeout, Map<String, Object> extraBody, String apiKeyError, TlsConfig tls,
+            WireFormat wire) {
+        this(baseUrl, model, apiKey, maxTokens, temperature, timeout, extraBody, apiKeyError, tls,
+                wire, ToolCallStyle.NATIVE);
     }
 
     /** Pre-{@code wire} 9-argument shape, kept so every existing construction site (main and test)

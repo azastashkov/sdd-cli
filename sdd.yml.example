@@ -89,6 +89,13 @@ models:
   #                                      # /chat/completions/chat/completions
   #   model: qwen/qwen3.5-397b-a17b
   #   max_tokens: 8192
+  #   # tool_calls: text                 # ONLY for a gateway that accepts `tools`
+  #                                      # but returns the call as plain content
+  #                                      # instead of in tool_calls. Check with
+  #                                      # `sdd doctor --endpoint <name> --tools`,
+  #                                      # and try extra_body tool_choice: auto /
+  #                                      # function_call: auto FIRST — an endpoint
+  #                                      # doing its own parsing beats this
   #   # wire: gigachat                   # ONLY for a GigaChat gateway
   #                                      # reached directly; omit (or `openai`)
   #                                      # for every other endpoint, including

@@ -95,7 +95,7 @@ public final class HttpChatModel implements ChatModel {
                     dump.record(completionsUrl(), body, status, resp.body());
                 }
                 if (status >= 200 && status < 300) {
-                    return parse(resp.body());
+                    return parse(resp.body(), req);
                 }
                 if (status == 429) {
                     last = new ModelException("HTTP 429: " + resp.body(), status);
@@ -239,7 +239,7 @@ public final class HttpChatModel implements ChatModel {
         }
     }
 
-    private ChatResponse parse(String body) {
+    private ChatResponse parse(String body, ChatRequest req) {
         try {
             JsonNode root = JSON.readTree(body);
             JsonNode choice = root.path("choices").path(0);
@@ -266,17 +266,40 @@ public final class HttpChatModel implements ChatModel {
             // what the gateway's own clients do. Absent on every other wire, so this is null there.
             JsonNode reasoningNode = message.path("reasoning_content");
             String reasoning = endpoint.wire().carriesReasoning() ? readContent(reasoningNode) : null;
+            // Last resort, and only where an operator has said this endpoint needs it: the call
+            // arrived as ordinary content because the gateway never structured it. content is
+            // cleared when it IS the call — otherwise the model would be shown its own call twice,
+            // once as text and once as a tool_call, on the next turn.
+            if (toolCalls.isEmpty() && endpoint.toolCallStyle() == ToolCallStyle.TEXT) {
+                List<ToolCall> fromText = TextToolCalls.read(content, declaredToolNames(req));
+                if (!fromText.isEmpty()) {
+                    toolCalls.addAll(fromText);
+                    content = null;
+                }
+            }
             ChatMessage msg = new ChatMessage("assistant", content, List.copyOf(toolCalls), null,
                     reasoning);
             Usage usage = new Usage(
                     root.path("usage").path("prompt_tokens").asInt(),
                     root.path("usage").path("completion_tokens").asInt());
+            // A gateway that does not structure a tool call also does not say it made one — the
+            // reply that carried it reported finish_reason=stop. Normalized so no caller has to
+            // know two names, or three, for the same outcome.
             String finishReason = choice.path("finish_reason").asText();
-            return new ChatResponse(msg,
-                    "function_call".equals(finishReason) ? "tool_calls" : finishReason, usage);
+            if (!toolCalls.isEmpty() && !"tool_calls".equals(finishReason)) {
+                finishReason = "tool_calls";
+            }
+            return new ChatResponse(msg, finishReason, usage);
         } catch (IOException e) {
             throw new ModelException("unparseable model response: " + body, e);
         }
+    }
+
+    /** The tool names THIS request offered — the check that keeps {@link TextToolCalls} from
+     *  reading a JSON answer as a call to something that was never on the table. */
+    private static java.util.Set<String> declaredToolNames(ChatRequest req) {
+        return req.tools().stream().map(ToolSpec::name)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
     /**

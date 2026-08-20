@@ -227,6 +227,25 @@ run whenever a response came back at all, whatever its status
 matters. A 401 is likewise `connected`, and the tool probe run against it
 reports the auth failure with more detail, not less.
 
+**Model endpoints that will not return structured tool calls
+(`models.<name>.tool_calls`).** Default `native`: the call arrives in
+`message.tool_calls`, with an id the endpoint issued. `text` is for a gateway
+that accepts `tools`, lets the model decide to call one, and hands the call
+back as ordinary content with `finish_reason: stop` — `doctor --tools` reports
+that as `NO TOOL CALL: the endpoint answered in prose`, with the call itself
+visible on the `answered instead:` line. Before setting it, try the endpoint's
+own switch via `extra_body` (`tool_choice: auto`, `function_call: auto`,
+`tool_choice: required`); an endpoint doing its own parsing is strictly better.
+
+`text` reads a bare JSON object or array, one ```-fenced block, or
+`<tool_call>…</tool_call>` blocks, and refuses everything else: the name must
+be one the request declared, the whole content must be the call, and one bad
+entry rejects the whole batch (`TextToolCalls.java`). The tool-call id is
+invented, so nothing has verified the gateway accepts the `tool_call_id` sent
+back with a result — an agent run whose calls came back this way records that
+in its events. Independent of `wire`; the gateway that forced this is on
+`wire: openai`.
+
 **Model endpoints that speak a different request dialect
 (`models.<name>.wire`).** `wire` selects the JSON shape sdd sends to that
 endpoint's `/chat/completions`. It defaults to `openai` — byte-for-byte what

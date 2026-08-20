@@ -560,6 +560,54 @@ A gateway like this often serves no `/models` listing, so the headline `model:<n
 the tool-call probe is the check that predicts a real run. The same 404 can also mean `base_url` has
 `/chat/completions` left on the end, which is why the message names both.
 
+## When a gateway will not return structured tool calls
+
+Some gateways accept `tools`, let the model decide to call one, and then hand the call back as
+ordinary content instead of in `tool_calls`. Measured on one, with `sdd doctor --endpoint X --tools`:
+
+```jsonc
+"message": {
+  "content": "{\"name\": \"report_status\", \"arguments\": {\"status\": \"ok\"}}",
+  "reasoning_content": "We need to call the report_status tool with status set to ok."
+},
+"finish_reason": "stop"
+```
+
+The model complied. Only the structuring step was missing — so sdd read it as prose, and three
+prose turns end an agent run `MALFORMED`.
+
+**Try the endpoint's own switch first.** `extra_body` merges as top-level request fields, so
+`tool_choice: auto`, `function_call: auto` and `tool_choice: required` each cost one line and no
+rebuild. If any of them flips the gateway to real `tool_calls`, stop there — nothing below is as
+good as an endpoint doing its own parsing.
+
+If none does:
+
+```yaml
+models:
+  planner:
+    tool_calls: text     # default: native
+```
+
+sdd then reads the call out of `content`. **This is strictly worse than native and is not a mode to
+prefer** — the tool-call id has to be invented, so nothing has verified the gateway accepts the
+`tool_call_id` sent back with the result, and a schema violation stops being something the endpoint
+reports. An agent run whose calls came back this way says so in its events. It exists because the
+alternative on such a gateway is that `sdd implement` and `sdd explore` do not run at all.
+
+What it will read, and nothing else: a bare JSON object or array, one ```-fenced block, or
+`<tool_call>…</tool_call>` blocks. Three rules keep it from inventing calls out of prose
+(`TextToolCalls.java`, each pinned by a test):
+
+- **The name must be one this request declared.** The load-bearing rule: without it any JSON answer
+  — which is most of what sdd asks for — could be misread as a call.
+- **The whole content must be the call.** Prose wrapped around a JSON blob is a model talking about
+  a call, not making one.
+- **All or nothing.** One bad entry in a batch rejects the batch, because a partially-read batch
+  silently drops a call the model made — a wrong answer rather than a failure.
+
+`tool_calls` is independent of `wire`: the gateway that needed this is on `wire: openai`.
+
 ## Measuring the explorer on your own estate
 
 `sdd explore` has one claim to earn: that its proposed touchpoints beat what `ModelSeeder` already
