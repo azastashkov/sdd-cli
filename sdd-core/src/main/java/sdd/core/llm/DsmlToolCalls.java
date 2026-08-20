@@ -103,18 +103,29 @@ final class DsmlToolCalls {
         List<ToolCall> out = new ArrayList<>();
         int from = 0;
         while (open.find(from)) {
-            if (!close.find(open.end())) {
-                // An unterminated block is a truncated reply. What was cut off may have been
-                // another call, so returning what survived would under-report the model's ask.
-                return List.of();
-            }
             String name = attribute(open.group());
             if (name == null || !declared.contains(name)) {
                 return List.of();
             }
-            // Located on the folded copy, cut from the original: same indices, untouched bytes.
-            ObjectNode args = arguments(content.substring(open.end(), close.start()),
-                    raw.substring(open.end(), close.start()));
+            ObjectNode args;
+            int next;
+            if (selfClosing(open.group())) {
+                // <invoke name="list_repos"/> — a call with no arguments, and no closing tag to
+                // look for. Measured: the same model writes this AND the paired form, so a parser
+                // that demands a close tag reads some turns and silently skips others.
+                args = JSON.createObjectNode();
+                next = open.end();
+            } else {
+                if (!close.find(open.end())) {
+                    // An unterminated block is a truncated reply. What was cut off may have been
+                    // another call, so returning what survived would under-report the model's ask.
+                    return List.of();
+                }
+                // Located on the folded copy, cut from the original: same indices, untouched bytes.
+                args = arguments(content.substring(open.end(), close.start()),
+                        raw.substring(open.end(), close.start()));
+                next = close.end();
+            }
             if (args == null) {
                 return List.of();
             }
@@ -122,7 +133,7 @@ final class DsmlToolCalls {
             // results sharing a tool_call_id would pair against the wrong call.
             out.add(new ToolCall(HttpChatModel.SYNTHETIC_CALL_ID_PREFIX + out.size() + "-" + name,
                     name, args.toString()));
-            from = close.end();
+            from = next;
         }
         return List.copyOf(out);
     }
@@ -136,17 +147,27 @@ final class DsmlToolCalls {
         ObjectNode args = JSON.createObjectNode();
         int from = 0;
         while (open.find(from)) {
-            if (!close.find(open.end())) {
-                return null;
-            }
             String name = attribute(open.group());
             if (name == null) {
+                return null;
+            }
+            if (selfClosing(open.group())) {
+                args.put(name, "");
+                from = open.end();
+                continue;
+            }
+            if (!close.find(open.end())) {
                 return null;
             }
             args.put(name, value(rawBody.substring(open.end(), close.start())));
             from = close.end();
         }
         return args;
+    }
+
+    /** {@code <invoke …/>} rather than {@code <invoke …></invoke>}. */
+    private static boolean selfClosing(String tag) {
+        return tag.endsWith("/>");
     }
 
     /**

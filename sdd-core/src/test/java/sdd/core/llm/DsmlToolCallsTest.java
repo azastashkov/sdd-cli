@@ -158,6 +158,40 @@ class DsmlToolCallsTest {
                 "<invoked name=\"list_repos\"></invoked>", DECLARED)).isEmpty();
     }
 
+    // Verbatim from a live turn the parser skipped: self-closing, no separate </invoke>. The same
+    // model writes both this and the paired form, so demanding a close tag reads some turns and
+    // silently drops others — which reads as an intermittently broken endpoint.
+    @Test
+    void aSelfClosingInvokeTagIsACallWithNoArguments() {
+        assertThat(TextToolCalls.read(fullwidth(
+                "<|DSML|tool_calls>\n<|DSML|invoke name=\"list_repos\"/>\n</|DSML|tool_calls>"),
+                DECLARED))
+                .singleElement().satisfies(c -> {
+                    assertThat(c.name()).isEqualTo("list_repos");
+                    assertThat(c.argumentsJson()).isEqualTo("{}");
+                });
+    }
+
+    @Test
+    void selfClosingAndPairedInvokesMixInOneReply() {
+        List<ToolCall> calls = TextToolCalls.read(
+                "<invoke name=\"list_repos\"/>\n"
+                + "<invoke name=\"read_file\">"
+                + "<parameter name=\"path\">a/A.java</parameter></invoke>", DECLARED);
+
+        assertThat(calls).hasSize(2);
+        assertThat(calls.get(0).argumentsJson()).isEqualTo("{}");
+        assertThat(calls.get(1).argumentsJson()).isEqualTo("{\"path\":\"a/A.java\"}");
+    }
+
+    @Test
+    void aSelfClosingParameterIsAnEmptyValue() {
+        assertThat(TextToolCalls.read(
+                "<invoke name=\"search_code\"><parameter name=\"repo\"/></invoke>", DECLARED))
+                .singleElement()
+                .satisfies(c -> assertThat(c.argumentsJson()).isEqualTo("{\"repo\":\"\"}"));
+    }
+
     @Test
     void aNameTheRequestNeverDeclaredIsNotACall() {
         assertThat(TextToolCalls.read(
