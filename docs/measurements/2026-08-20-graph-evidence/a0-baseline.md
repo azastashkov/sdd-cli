@@ -255,3 +255,34 @@ anchored on.
 `TIERS` was first sized `MAX_DEPTH + 2`, which left the outermost graph distance sharing a tier with
 the types no anchor reaches at all — so the last hop bought nothing. `PlanDrafterTest`'s
 promote-a-type-at-exactly-MAX_DEPTH case failed on it. Now `MAX_DEPTH + 3`, and that test pins it.
+
+---
+
+# A5 — HierarchyLinker: not built, deliberately
+
+The plan's task A5 was to build a `HierarchyLinker` filling `type_supertype.supertype_module_id`,
+on two arguments: it would bound the graph traversal, and it would make
+`SupertypeResolver.java:64`'s comment — which describes a `HierarchyLinker` that has never
+existed — true.
+
+Both arguments failed on inspection.
+
+**It would not bound anything.** `type_ref` carries `EXTENDS` edges, so an undirected walk already
+traverses the hierarchy; `KbRefGraph` needs no separate hierarchy hop and does not have one.
+
+**It would add a second unread column rather than remove the first.** `supertype_module_id` appears
+exactly once in the entire tree — its own `CREATE TABLE` in `V6__type_hierarchy.sql`. It is written
+by nobody and read by nobody. Filling it with no consumer is precisely the failure this codebase
+names repeatedly (`api_usage.ref_kind`, written by one site and read by none since V1) and that this
+same session corrected in V7's comment.
+
+So the other half of the plan's own instruction was taken: **the false sentence was removed.** The
+comment now records what actually happens — the `SAME_PACKAGE` guess is unchecked, which is safe in
+the direction that matters, because `KbHierarchy` joins `supertype_fqcn` by name and a wrong guess
+names a type that exists nowhere. It costs a missed subtype, never an invented one. Re-resolving the
+guess and rewriting `supertype_fqcn` is what would risk asserting a hierarchy edge the source does
+not have, and would make `resolution` a lie about how the row was arrived at.
+
+**Carried, with its trigger:** `supertype_module_id` remains dead schema. Remove it, or give it a
+reader, the next time `type_supertype` is touched — the trigger is any change that needs to know
+whether a supertype is inside the estate.

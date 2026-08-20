@@ -61,8 +61,20 @@ final class SupertypeResolver {
         }
 
         // No import names it, so within Java's rules it is either package-local or came in on a
-        // wildcard. Package-local is by far the commoner, and HierarchyLinker re-checks the guess
-        // against real types estate-wide rather than trusting it.
+        // wildcard. Package-local is by far the commoner, so that is the guess -- and it is
+        // recorded AS a guess, which is what the SAME_PACKAGE resolution value is for.
+        //
+        // Nothing re-checks it. An earlier version of this comment claimed a HierarchyLinker did;
+        // no such class has ever existed, and V6's supertype_module_id column it would have filled
+        // is still written by nobody and read by nobody. Building one now would add a second
+        // unread column rather than remove the first.
+        //
+        // Leaving the guess unchecked is safe in the direction that matters. The only consumer,
+        // KbHierarchy, joins supertype_fqcn by name, so a wrong guess names a type that exists
+        // nowhere and simply matches nothing: it costs a missed subtype, never an invented one.
+        // Reversing that -- resolving the guess against real types and rewriting supertype_fqcn --
+        // is what would risk asserting a hierarchy edge the source does not have, and would also
+        // make `resolution` a lie about how the row was arrived at.
         String pkg = cu.getPackageDeclaration().map(p -> p.getNameAsString()).orElse("");
         return pkg.isEmpty()
                 ? new SourceModel.SupertypeRef(simple, relation, "UNRESOLVED")
