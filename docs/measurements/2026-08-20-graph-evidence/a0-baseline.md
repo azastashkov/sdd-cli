@@ -178,3 +178,80 @@ Two conclusions, and they point in opposite directions:
 Note the remaining hard limit, unchanged by this work: the **bare** case-6 still has
 `anchorTypes: []`, because its spec declares no touchpoints. A graph cannot help a spec that
 anchors nothing — for those, seeding, not selection, is the constraint.
+
+---
+
+# A4/A6 — the reference graph, and the traversal rule the measurement corrected
+
+## The approved traversal rule was wrong
+
+The plan specified: hop 1 = inbound ∪ outbound ∪ hierarchy, hops 2..N = **inbound only**, on the
+reasoning that outbound-from-outbound leads into the JDK-adjacent world. Measured against the real
+estate, that rule provably misses the case the graph exists for. The path is:
+
+```
+Channels  <--inbound--  AuthWebConfig  --outbound-->  TierInvalidationListener
+```
+
+Neither listener references `Channels` at all — a configuration class wires the two together
+(`AuthWebConfig` and `CandlesConfig` each import `Channels` and instantiate their listener). An
+inbound-only walk past hop 1 sees the wiring and never the components, which in a Spring estate is
+the normal shape rather than an exception.
+
+The concern that motivated inbound-only is answered by a **different filter than direction**:
+expansion only crosses an edge whose far end is itself an indexed type. On the probe estate that is
+1566 of 3155 edges, and the two most-referenced things in the entire corpus —
+`org.slf4j.Logger` (36 inbound) and `io.micrometer.core.instrument.Counter` (19) — have no
+`java_type` row, so they are leaves that no amount of outbound walking can traverse.
+
+## Depth: 2, not 3
+
+Bidirectional expansion from the two real anchors, restricted to indexed types:
+
+| depth | new | cumulative | % of the 308 indexed types |
+|---|---|---|---|
+| 1 | 12 | 14 | 4% |
+| 2 | 112 | 126 | 40% |
+| 3 | 133 | 259 | **84%** |
+| 4 | 18 | 277 | 89% |
+
+A signal that selects 84% of the estate is not a signal, so `MAX_DEPTH = 2`. Both
+`TierInvalidationListener`s **and** `com.trading.orders.OrdersConfig` — the class documenting the
+service the spec says must be left alone — sit at distance exactly 2. Two is where useful reach and
+the last useful discrimination coincide.
+
+`MAX_FRONTIER = 200` is not exercised here: the estate's highest inbound degree is 53
+(`com.trading.model.SecurityType`). It exists for the 53-repo case and names every truncation.
+
+## Graph shape on the probe estate
+
+3155 rows; 1566 between two indexed types; 558 distinct targets.
+By kind: TYPE 1176, IMPORT 1087, CALL 853, EXTENDS 39.
+
+## Effect on the composed prompt
+
+Every spec that anchors nothing composes **byte-identically** — case-6 bare, case-7 and case-8, in
+both modes, all `cmp`-identical to the pre-graph run. Only the two anchored prompts moved.
+
+Row counts held exactly (platform-libs 40→40, core 40→40, candles 24→24, ops 8→8), so this is pure
+re-selection rather than budget drift. What was re-selected, for a spec about tier-update fan-out:
+
+| repo | dropped | admitted |
+|---|---|---|
+| trading-platform-libs | the whole FIX surface — `FixTags`, `ExecutionFixListener`, `QfjExecutionAdapter`, `SessionSettingsFactory`, `ExecutionReportParser`, … | `TierResolver`, `TierUpdateListener`, `TierCacheMeta`, `JdbcTierResolver`, `SubscriptionReconciler`, `PricingCoreAutoConfiguration` |
+| trading-core | admin/auth CRUD — `LoginRequest`, `LoginResponse`, `GroupsResponse`, `RemotesResponse`, `UserRepository`, `MfeView`, … | `TiersConfig`, `TiersProperties`, `TierMappingStore`, `TierProviderProperties`, `TierFeedServer`, `GatewayConfig`, `MappingStore` |
+
+Prompt size 30710 → 32302 bytes (+5%), from longer names and paths in the newly selected rows;
+per-section caps unchanged and still enforced.
+
+**This is the honest statement of the win.** The probe classes were already fixed by the indexing
+change and sit at tier 0 (position 1 in trading-core and trading-candles either way). What the graph
+buys is *the other 39 slots*: before it, the swap at the `TYPE_BUDGET = 40` ceiling was decided by
+`is_api DESC, fqcn` — alphabetical accident. Now it is decided by distance from what the task is
+anchored on.
+
+## A bug the tests caught
+
+`TIERS` was first sized `MAX_DEPTH + 2`, which left the outermost graph distance sharing a tier with
+the types no anchor reaches at all — so the last hop bought nothing. `PlanDrafterTest`'s
+promote-a-type-at-exactly-MAX_DEPTH case failed on it. Now `MAX_DEPTH + 3`, and that test pins it.

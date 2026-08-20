@@ -12,6 +12,7 @@ import sdd.core.llm.ChatModel;
 import sdd.core.llm.ChatRequest;
 import sdd.core.llm.ChatResponse;
 import sdd.core.llm.ModelException;
+import sdd.core.kb.KbRefGraph;
 import sdd.plan.impact.AffectedRepo;
 import sdd.plan.impact.ImpactResult;
 import sdd.plan.spec.NormalizedSpec;
@@ -25,7 +26,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Predicate;
+import java.util.function.ToIntFunction;
 
 /**
  * The plan-drafting model call (the only model call Phase 3C-1 adds). Output is validated
@@ -53,6 +54,18 @@ public final class PlanDrafter {
     // guard against pathological line lengths. Setting a cap below what its budget can emit makes
     // the cap the real limiter again — measured, when a first attempt at 2000 chars cut the type
     // section at ~15 lines against a budget of 40 and dropped a type that used to be shown.
+    /**
+     * How many relevance tiers {@link #ranked} sorts into: named by the spec (0), one per graph
+     * distance 0..{@link KbRefGraph#MAX_DEPTH} (tiers 1..MAX_DEPTH+1), and one for everything else
+     * (MAX_DEPTH+2). Sized from the graph's own bound so raising one cannot silently outgrow the
+     * other.
+     *
+     * <p>The +3 is load-bearing and was wrong at +2: that left the furthest graph distance sharing
+     * a tier with the types no anchor reaches at all, so the outermost hop bought nothing. A test
+     * that promotes a type at exactly {@link KbRefGraph#MAX_DEPTH} pins it.
+     */
+    private static final int TIERS = KbRefGraph.MAX_DEPTH + 3;
+
     private static final int MAX_LINE = 150;
     static final int TYPE_CAP = TYPE_BUDGET * MAX_LINE;
     static final int MEMBER_CAP = MEMBER_BUDGET * MAX_LINE;
@@ -376,13 +389,21 @@ public final class PlanDrafter {
         for (String fqcn : result.anchorTypes()) {
             specTerms.add(lower(fqcn.substring(fqcn.lastIndexOf('.') + 1)));
         }
+        // Naming an anchor only reaches types the spec could already have named. The graph reaches
+        // the ones it could not: measured on the real estate, the classes a tier-invalidation task
+        // was about sit two reference hops from its anchors and never mention them, because a
+        // configuration class wires the two together. Computed once — the neighbourhood is
+        // estate-wide, not per repo — and strictly downstream of impact analysis, so invariant M1
+        // holds: anchors still gate nothing, they only rank.
+        KbRefGraph.Neighbourhood graph =
+                KbRefGraph.expand(jdbi, result.anchorTypes());
         for (AffectedRepo repo : result.affected()) {
             // The repo's own impact reasons carry the touchpoints and hits that put it in the plan,
             // so they rank its evidence alongside the spec's own vocabulary.
             Set<String> terms = new HashSet<>(specTerms);
             terms.addAll(tokens(String.join(" ", repo.reasons())));
             input.append("\n## ").append(repo.repo()).append('\n');
-            input.append(evidence(jdbi, repo.repo(), terms,
+            input.append(evidence(jdbi, repo.repo(), terms, graph,
                     "BUMP_REBUILD_ONLY".equals(repo.annotation())));
         }
         if (!priorQa.isBlank()) {
@@ -408,7 +429,8 @@ public final class PlanDrafter {
      * {@link #EVIDENCE_CAP} now truncates the least relevant lines rather than the last ones
      * alphabetically.
      */
-    private static String evidence(Jdbi jdbi, String repo, Set<String> terms, boolean rebuildOnly) {
+    private static String evidence(Jdbi jdbi, String repo, Set<String> terms,
+                                   KbRefGraph.Neighbourhood graph, boolean rebuildOnly) {
         int typeCap = rebuildOnly ? REBUILD_ONLY_CAP : TYPE_CAP;
         int memberCap = rebuildOnly ? 0 : MEMBER_CAP;
         int endpointCap = rebuildOnly ? 0 : ENDPOINT_CAP;
@@ -424,7 +446,7 @@ public final class PlanDrafter {
                             WHERE r.name = :r ORDER BY t.is_api DESC, t.fqcn LIMIT 400""")
                     .bind("r", repo).mapToMap().list();
             for (Map<String, Object> row : ranked(typeRows, TYPE_BUDGET,
-                    row -> names(terms, String.valueOf(row.get("fqcn"))))) {
+                    row -> tierOf(terms, graph, String.valueOf(row.get("fqcn"))))) {
                 String fqcn = String.valueOf(row.get("fqcn"));
                 types.append("- ").append(isTypeScript(row) ? TsNames.address(fqcn) : fqcn)
                         .append(" (").append(row.get("kind"))
@@ -443,9 +465,13 @@ public final class PlanDrafter {
                             WHERE r.name = :r
                             ORDER BY jt.is_api DESC, jt.fqcn, am.signature LIMIT 4000""")
                     .bind("r", repo).mapToMap().list();
+            // A member whose own name the spec writes is tier 0 regardless of its type: that is
+            // what keeps an anchored type's signatures in the prompt, and a declaration can only be
+            // copied from a line that is there.
             for (Map<String, Object> row : ranked(memberRows, MEMBER_BUDGET,
-                    row -> names(terms, String.valueOf(row.get("fqcn")))
-                            || terms.contains(lower(String.valueOf(row.get("mname")))))) {
+                    row -> terms.contains(lower(String.valueOf(row.get("mname"))))
+                            ? 0
+                            : tierOf(terms, graph, String.valueOf(row.get("fqcn"))))) {
                 String fqcn = String.valueOf(row.get("fqcn"));
                 String sig = String.valueOf(row.get("sig"));
                 // A declaration is copied from this line, so it has to BE a declaration. The
@@ -510,16 +536,49 @@ public final class PlanDrafter {
     }
 
 
-    /** Rows the spec names, in their existing order, then the rest in theirs — capped at budget. */
+    /**
+     * Rows in tier order, each tier keeping its incoming order — capped at budget.
+     *
+     * <p>Explicit buckets rather than a stable sort. {@code List.sort} is stable and would give the
+     * same answer, but the property this relies on would then be a documented fact about the JDK
+     * instead of something a reader can see. Within a tier the incoming order is the SQL one
+     * ({@code is_api DESC, fqcn}), which is already total, so no tie-break is needed and none is
+     * added: the output stays a deterministic function of the knowledge base and the spec, which it
+     * must be, because {@code sdd plan approve} hashes the plan.md this text produces.
+     *
+     * <p>{@link #EVIDENCE_CAP} therefore truncates the least relevant lines rather than the last
+     * ones alphabetically.
+     */
     private static List<Map<String, Object>> ranked(List<Map<String, Object>> rows, int budget,
-                                                    Predicate<Map<String, Object>> relevant) {
-        List<Map<String, Object>> named = new ArrayList<>();
-        List<Map<String, Object>> rest = new ArrayList<>();
-        for (Map<String, Object> row : rows) {
-            (relevant.test(row) ? named : rest).add(row);
+                                                    ToIntFunction<Map<String, Object>> tier) {
+        List<List<Map<String, Object>>> buckets = new ArrayList<>();
+        for (int i = 0; i < TIERS; i++) {
+            buckets.add(new ArrayList<>());
         }
-        named.addAll(rest);
-        return named.size() <= budget ? named : new ArrayList<>(named.subList(0, budget));
+        for (Map<String, Object> row : rows) {
+            buckets.get(Math.clamp(tier.applyAsInt(row), 0, TIERS - 1)).add(row);
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        buckets.forEach(out::addAll);
+        return out.size() <= budget ? out : new ArrayList<>(out.subList(0, budget));
+    }
+
+    /**
+     * Which tier a type falls in: named by the spec, then by increasing distance from an anchor in
+     * the reference graph, then everything else.
+     *
+     * <p>Tier 0 is unchanged behaviour — a spec that means a type almost always writes its name.
+     * The graph tiers exist for the case that motivated the whole feature: the type nobody named,
+     * because not knowing what to name is the reason the question is being asked.
+     *
+     * <p>An empty neighbourhood collapses this to the original two-way split, which is what makes a
+     * spec that anchors nothing compose byte-identically to the pre-graph build.
+     */
+    private static int tierOf(Set<String> terms, KbRefGraph.Neighbourhood graph, String fqcn) {
+        if (names(terms, fqcn)) {
+            return 0;
+        }
+        return graph.distanceOf(fqcn).map(d -> d + 1).orElse(TIERS - 1);
     }
 
     /**

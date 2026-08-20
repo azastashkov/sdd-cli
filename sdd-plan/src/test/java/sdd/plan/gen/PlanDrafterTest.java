@@ -195,6 +195,60 @@ class PlanDrafterTest {
     }
 
     @Test
+    void withNoAnchorsTheReferenceGraphCannotChangeTheCompositionAtAll() {
+        ImpactResult impact = seedCrowdedRepo();
+        assertThat(impact.anchorTypes()).isEmpty();
+
+        String withoutGraph = PlanDrafter.composeInput(db.jdbi(), specNaming("ZebraTarget"), impact,
+                ExecutionOrder.order(db.jdbi(), impact), "");
+
+        // Give the estate a dense reference graph over the very types being ranked. With no anchor
+        // to walk from, not one byte of the prompt may move: this is what lets every spec that
+        // declares no type-shaped touchpoint keep composing exactly as it did before the graph
+        // existed, and it is why KbRefGraph.expand short-circuits on an empty anchor set BEFORE
+        // issuing a query rather than merely returning an empty result.
+        db.jdbi().useHandle(h -> h.execute("""
+                INSERT INTO type_ref(from_type_id, to_fqcn, ref_kind, ref_count)
+                SELECT a.id, b.fqcn, 'TYPE', 1 FROM java_type a JOIN java_type b
+                WHERE a.id <> b.id"""));
+
+        String withGraph = PlanDrafter.composeInput(db.jdbi(), specNaming("ZebraTarget"), impact,
+                ExecutionOrder.order(db.jdbi(), impact), "");
+
+        assertThat(withGraph).isEqualTo(withoutGraph);
+    }
+
+    @Test
+    void aTypeTwoReferenceHopsFromAnAnchorIsPromotedPastTheRowBudget() {
+        ImpactResult impact = seedCrowdedRepo();
+
+        // The measured shape: the anchor is referenced by a config class, which in turn references
+        // the type the task is about. The listener never mentions the anchor, so naming alone --
+        // tier 0 -- cannot reach it, and neither could an inbound-only walk.
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path) "
+                    + "VALUES (3,'com.acme.WiringConfig','CLASS',0,'W.java')");
+            h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path) "
+                    + "VALUES (3,'com.acme.zzListener','CLASS',0,'L.java')");
+            h.execute("INSERT INTO type_ref(from_type_id, to_fqcn, ref_kind, ref_count) VALUES "
+                    + "((SELECT id FROM java_type WHERE fqcn='com.acme.WiringConfig'),'com.acme.ZebraTarget','IMPORT',1)");
+            h.execute("INSERT INTO type_ref(from_type_id, to_fqcn, ref_kind, ref_count) VALUES "
+                    + "((SELECT id FROM java_type WHERE fqcn='com.acme.WiringConfig'),'com.acme.zzListener','TYPE',1)");
+        });
+        ImpactResult anchored = new ImpactResult(impact.seeds(), impact.affected(),
+                impact.excluded(), impact.cycles(), impact.discrepancies(), impact.problems(),
+                impact.warnings(), java.util.Set.of("com.acme.ZebraTarget"));
+
+        String input = PlanDrafter.composeInput(db.jdbi(), specNaming("ZebraTarget"), anchored,
+                ExecutionOrder.order(db.jdbi(), anchored), "");
+
+        // zzListener sorts last of everything and the spec never names it, so before the graph it
+        // was budget filler that never reached the model.
+        assertThat(input).contains("com.acme.WiringConfig (CLASS)");
+        assertThat(input).contains("com.acme.zzListener (CLASS)");
+    }
+
+    @Test
     void validatesEveryUntrustedFieldWithNotes() {
         ScriptedChatModel planner = new ScriptedChatModel(List.of(response(GOOD_JSON, "stop")));
 
