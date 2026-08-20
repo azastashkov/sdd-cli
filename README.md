@@ -506,7 +506,14 @@ models:
     tls:                       # if the gateway authenticates with a client certificate
       cert: ${MODEL_CERT_PATH}
       key: ${MODEL_KEY_PATH}
+      truststore: /etc/ssl/corp-ca.pem   # only if the JDK does not already trust the gateway's CA
 ```
+
+`truststore` takes either a PEM bundle — the same file `curl --cacert` uses — or a JKS/PKCS12
+keystore, chosen by reading the file rather than by its extension, so there is no `keytool`
+conversion step. Omit `truststore_password` for a PEM bundle; a leftover value from a `.p12` is
+ignored rather than treated as an error. This applies to `atlassian.tls.truststore` too — it is one
+loader.
 
 `wire` is per endpoint and defaults to `openai`, which is byte-for-byte the request shape `sdd` has
 always sent — an endpoint without the key is unaffected. A value other than `openai` or `gigachat`
@@ -526,6 +533,13 @@ mentions nothing about `sdd.yml`.
 `tools` and `tool_calls` themselves are untouched: `{"type":"function","function":{…}}` with
 `arguments` as a JSON string, which is what the gateway receives from its own clients.
 
+On the way back, a reply in the older single-call `function_call` shape is read as a tool call too,
+on either wire, with `arguments` accepted as a JSON string or an object. Nothing has confirmed a
+gateway does this — we have captured a request but never a reply — but unread it would look like a
+prose turn, and three of those end an agent run as `MALFORMED` with no hint of the cause. When it
+fires, the run's events say so, because the tool-call id is then invented by sdd and unverified
+against that gateway.
+
 **Auth is a separate question from the wire.** `wire` selects a message shape and nothing else — it
 picks no host, no header and no credential. If the gateway wants a bearer token, that is `api_key`;
 if it wants a client certificate, that is `tls:`; it can want both or neither. Whatever `curl`
@@ -540,6 +554,11 @@ sdd doctor --endpoint planner --tools --completion
 A returned tool call means the wire and the credentials are both right. If that passes, leave
 `explore.single_tool` and `run.single_tool` **off** — they exist to work around the proxy's
 declaration ceiling, and nine declarations with their own schemas is the better interface.
+
+A gateway like this often serves no `/models` listing, so the headline `model:<name>` line may read
+`HTTP 404 — reachable, but no /models listing here`. That is not a blocker and `--tools` still runs:
+the tool-call probe is the check that predicts a real run. The same 404 can also mean `base_url` has
+`/chat/completions` left on the end, which is why the message names both.
 
 ## Measuring the explorer on your own estate
 

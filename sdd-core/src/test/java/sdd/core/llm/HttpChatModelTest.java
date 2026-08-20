@@ -241,6 +241,83 @@ class HttpChatModelTest {
         assertThat(resp.message().toolCalls().get(0).name()).isEqualTo("read_file");
     }
 
+    // We have captured a gateway REQUEST but never a reply, and GigaChat's native surface is
+    // recorded as answering with function_call rather than tool_calls. Unread, that reply looks
+    // like a prose turn, and three prose turns end an agent run as MALFORMED — a symptom naming
+    // neither its cause nor its fix.
+    @Test
+    void aLegacyFunctionCallReplyIsReadAsAToolCall() {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson("""
+                {"choices":[{"message":{"role":"assistant","content":"",
+                  "function_call":{"name":"read_file","arguments":{"path":"A.java","lines":20}}},
+                  "finish_reason":"function_call"}],
+                 "usage":{"prompt_tokens":1,"completion_tokens":1}}
+                """)));
+
+        ChatResponse resp = model().complete(request());
+
+        assertThat(resp.message().toolCalls()).hasSize(1);
+        ToolCall call = resp.message().toolCalls().get(0);
+        assertThat(call.name()).isEqualTo("read_file");
+        // The object form re-serialized: asText() on an object node returns "", which would have
+        // become a call with no arguments — a wrong answer rather than a failure.
+        assertThat(call.argumentsJson()).isEqualTo("{\"path\":\"A.java\",\"lines\":20}");
+        // The legacy shape carries no id, and the agent loop pairs results by id.
+        assertThat(call.id()).startsWith(HttpChatModel.SYNTHETIC_CALL_ID_PREFIX);
+        // Normalized, so no caller has to know two names for the same outcome.
+        assertThat(resp.finishReason()).isEqualTo("tool_calls");
+    }
+
+    @Test
+    void aStringArgumentsFunctionCallIsReadUnchanged() {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson("""
+                {"choices":[{"message":{"role":"assistant",
+                  "function_call":{"name":"read_file","arguments":"{\\"path\\":\\"A.java\\"}"}},
+                  "finish_reason":"function_call"}],
+                 "usage":{"prompt_tokens":1,"completion_tokens":1}}
+                """)));
+
+        assertThat(model().complete(request()).message().toolCalls().get(0).argumentsJson())
+                .isEqualTo("{\"path\":\"A.java\"}");
+    }
+
+    // tool_calls wins whenever it is present: the legacy read must never shadow the real one.
+    @Test
+    void toolCallsTakePrecedenceOverAFunctionCallFieldAndKeepTheirOwnIds() {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson("""
+                {"choices":[{"message":{"role":"assistant","content":"hello",
+                  "function_call":{"name":"other","arguments":{}},
+                  "tool_calls":[{"id":"c1","type":"function",
+                    "function":{"name":"read_file","arguments":"{}"}}]},
+                  "finish_reason":"tool_calls"}],
+                 "usage":{"prompt_tokens":1,"completion_tokens":1}}
+                """)));
+
+        ChatResponse resp = model().complete(request());
+
+        assertThat(resp.message().toolCalls()).singleElement().satisfies(c -> {
+            assertThat(c.name()).isEqualTo("read_file");
+            assertThat(c.id()).isEqualTo("c1");
+        });
+    }
+
+    // A null function_call is what an endpoint that supports the field but did not use it sends.
+    // Reading it as a call would manufacture one out of nothing.
+    @Test
+    void aNullFunctionCallIsNotAToolCall() {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson("""
+                {"choices":[{"message":{"role":"assistant","content":"just prose",
+                  "function_call":null},"finish_reason":"stop"}],
+                 "usage":{"prompt_tokens":1,"completion_tokens":1}}
+                """)));
+
+        ChatResponse resp = model().complete(request());
+
+        assertThat(resp.message().toolCalls()).isEmpty();
+        assertThat(resp.message().content()).isEqualTo("just prose");
+        assertThat(resp.finishReason()).isEqualTo("stop");
+    }
+
     @Test
     void attemptCapBoundsRetries() {
         wm.stubFor(post("/v1/chat/completions").willReturn(serverError()));

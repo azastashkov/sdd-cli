@@ -71,6 +71,11 @@ class HttpClientsMtlsHandshakeTest {
                 clientCert, clientKey, null, null, protocols);
     }
 
+    private TlsConfig withTruststore(Path truststore, String password) {
+        return new TlsConfig(truststore, password, null, fixtures.clientCertPem(),
+                fixtures.clientKeyPkcs8Unencrypted(), null, null, List.of());
+    }
+
     private HttpResponse<String> ping(HttpClient client) throws Exception {
         return client.send(HttpRequest.newBuilder(URI.create(wm.baseUrl() + "/ping")).GET().build(),
                 HttpResponse.BodyHandlers.ofString());
@@ -118,6 +123,56 @@ class HttpClientsMtlsHandshakeTest {
 
         assertThat(response.sslSession()).isPresent();
         assertThat(response.sslSession().get().getProtocol()).isNotEqualTo("TLSv1.2");
+    }
+
+    // A corporate CA arrives as the PEM bundle `curl --cacert` takes, not as a keystore. Before
+    // this it had to be converted with keytool first, and pointing truststore straight at the PEM
+    // failed as an unparseable PKCS12 — an error naming neither the format nor the fix. Same
+    // handshake, same everything, only the truststore file format differs from the test above.
+    @Test
+    void aPemCaBundleWorksAsTheTruststore() throws Exception {
+        HttpClient client = HttpClients.buildClient(withTruststore(fixtures.caCert(), null), null);
+
+        HttpResponse<String> response = ping(client);
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body()).isEqualTo("pong");
+    }
+
+    // A PEM file has no password. An operator migrating a working config from a .p12 should not
+    // have to also remember to delete the password line for the migration to work.
+    @Test
+    void aPemTruststoreIgnoresAConfiguredPasswordRatherThanFailingOnIt() throws Exception {
+        HttpClient client = HttpClients.buildClient(
+                withTruststore(fixtures.caCert(), "not-the-p12-password"), null);
+
+        assertThat(ping(client).statusCode()).isEqualTo(200);
+    }
+
+    // Every certificate in the bundle must land, each under its own alias — a real corporate
+    // bundle carries a root and its intermediates, and one alias for all of them would keep only
+    // the last. Concatenating an unrelated certificate ahead of the CA proves both: the extra
+    // entry does not collide, and the CA is still found behind it.
+    @Test
+    void everyCertificateInAMultiEntryPemBundleIsLoadedAsATrustAnchor() throws Exception {
+        Path bundle = dir.resolve("ca-bundle.pem");
+        java.nio.file.Files.writeString(bundle,
+                java.nio.file.Files.readString(fixtures.clientCertPem())
+                        + java.nio.file.Files.readString(fixtures.caCert()));
+
+        HttpClient client = HttpClients.buildClient(withTruststore(bundle, null), null);
+
+        assertThat(ping(client).statusCode()).isEqualTo(200);
+    }
+
+    // The binary path must be untouched by PEM detection: this is the same assertion as the
+    // unencrypted-PKCS#8 test above, kept as the explicit control for the format decision.
+    @Test
+    void aPkcs12TruststoreStillWorksExactlyAsBefore() throws Exception {
+        HttpClient client = HttpClients.buildClient(
+                withTruststore(fixtures.caTrustStoreP12(), new String(CertFixtures.TRUSTSTORE_PASSWORD)), null);
+
+        assertThat(ping(client).statusCode()).isEqualTo(200);
     }
 
     @Test

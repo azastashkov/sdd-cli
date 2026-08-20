@@ -182,10 +182,32 @@ runs one pre-flight check, `model:<name>:tls`, that validates exactly what
 would otherwise fail opaquely at the TLS layer
 (`DoctorCommand.java:249-283`):
 
+The truststore in that block takes either a **PEM certificate bundle** — the
+same file `curl --cacert` uses — or a JKS/PKCS12 keystore. Which one is
+decided by reading the file, not by its extension, so `.pem`, `.crt`, `.cer`
+and an extensionless bundle all work and no `keytool` conversion is needed
+(`HttpClients.isPem`). A PEM bundle has no password; a `truststore_password`
+left over from a `.p12` is ignored rather than raised, so a migrated config
+works unchanged. This is the shared loader, so `atlassian.tls.truststore`
+gains the same.
+
 | Validated | On failure | Verified |
 |---|---|---|
 | `tls.cert`/`tls.key` exist and are readable, and the key actually parses | Names the path (never file contents); a PKCS#1/SEC1/legacy-encrypted key names the header found and the exact `openssl pkcs8 -topk8 -nocrypt` conversion command | `DoctorCommand.java:255-264`, `HttpClients.java:228-266` |
 | The client certificate is not expired | `client certificate expired <notAfter> (subject=<subject>)` | `DoctorCommand.java:269-275` |
+
+**A gateway that serves no `/models` route.** The per-endpoint probe asks for
+`GET <base_url>/models`, which an OpenAI-compatible gateway need not serve.
+Such an endpoint reports `HTTP 404 — reachable, but no /models listing here`
+and the check is not green, deliberately: the identical 404 also means
+`base_url` still has `/chat/completions` on the end, which is the commonest
+configuration error there is, and those two need opposite fixes. What the 404
+no longer does is suppress the deeper probes — `--tools` and `--completion`
+run whenever a response came back at all, whatever its status
+(`EndpointProbe.ProbeResult.connected`), so on such a gateway
+`sdd doctor --endpoint <name> --tools` still answers the question that
+matters. A 401 is likewise `connected`, and the tool probe run against it
+reports the auth failure with more detail, not less.
 
 **Model endpoints that speak a different request dialect
 (`models.<name>.wire`).** `wire` selects the JSON shape sdd sends to that

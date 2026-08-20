@@ -28,6 +28,10 @@ public final class HttpChatModel implements ChatModel {
     // fact about HttpChatModel, not as "whatever Backoff happens to default to today".
     private static final int MAX_ATTEMPTS = Backoff.DEFAULT_MAX_ATTEMPTS;
     private static final ObjectMapper JSON = new ObjectMapper();
+    /** Marks an id this class invented for a reply that carried none — see
+     *  {@link #readLegacyFunctionCall}. Distinct so a transcript reader can see it. */
+    public static final String SYNTHETIC_CALL_ID_PREFIX = "sdd-synthesized-";
+
     private static final Set<String> PROTECTED_BODY_KEYS =
             Set.of("model", "messages", "tools", "max_tokens", "temperature", "stream");
 
@@ -231,7 +235,10 @@ public final class HttpChatModel implements ChatModel {
                 toolCalls.add(new ToolCall(
                         call.path("id").asText(),
                         call.path("function").path("name").asText(),
-                        call.path("function").path("arguments").asText()));
+                        arguments(call.path("function").path("arguments"))));
+            }
+            if (toolCalls.isEmpty()) {
+                readLegacyFunctionCall(message).ifPresent(toolCalls::add);
             }
             JsonNode contentNode = message.path("content");
             String content = readContent(contentNode);
@@ -250,10 +257,53 @@ public final class HttpChatModel implements ChatModel {
             Usage usage = new Usage(
                     root.path("usage").path("prompt_tokens").asInt(),
                     root.path("usage").path("completion_tokens").asInt());
-            return new ChatResponse(msg, choice.path("finish_reason").asText(), usage);
+            String finishReason = choice.path("finish_reason").asText();
+            return new ChatResponse(msg,
+                    "function_call".equals(finishReason) ? "tool_calls" : finishReason, usage);
         } catch (IOException e) {
             throw new ModelException("unparseable model response: " + body, e);
         }
+    }
+
+    /**
+     * The pre-{@code tools} single-call shape, read only when {@code tool_calls} is absent.
+     *
+     * <p>We have captured a gateway REQUEST but never a reply, and the assistant turns in that
+     * capture were composed by the client, so they do not settle what the endpoint actually
+     * returns. GigaChat's native surface is separately recorded as answering with
+     * {@code function_call} rather than {@code tool_calls}. If a gateway does that, the parser
+     * above finds nothing, {@link sdd.core.llm.ChatResponse} looks like a prose turn, and three of
+     * those end an agent run as MALFORMED — a symptom that names neither its cause nor its fix.
+     * Reading the older shape costs a few lines and removes that whole class of confusion.
+     *
+     * <p>The id is synthesized, because the legacy shape carries none and the agent loop pairs
+     * results by id. That is the part worth distrusting: if this path ever fires against a real
+     * gateway, the id we send back with the result has never been verified as acceptable to it.
+     * A caller that cares can tell this happened — the id is prefixed distinctly.
+     */
+    private static java.util.Optional<ToolCall> readLegacyFunctionCall(JsonNode message) {
+        JsonNode fn = message.path("function_call");
+        if (fn.isMissingNode() || fn.isNull() || fn.path("name").asText("").isEmpty()) {
+            return java.util.Optional.empty();
+        }
+        String name = fn.path("name").asText();
+        return java.util.Optional.of(
+                new ToolCall(SYNTHETIC_CALL_ID_PREFIX + name, name, arguments(fn.path("arguments"))));
+    }
+
+    /**
+     * A call's arguments as the JSON string {@link ToolCall} holds.
+     *
+     * <p>OpenAI sends a string containing JSON; GigaChat's native shape sends the object itself.
+     * {@code asText()} on an object node returns the EMPTY STRING rather than its JSON, so without
+     * this an object-valued arguments field would silently become a call with no arguments — a
+     * wrong answer, not a failure, which is the worse of the two.
+     */
+    private static String arguments(JsonNode node) {
+        if (node.isMissingNode() || node.isNull()) {
+            return "{}";
+        }
+        return node.isTextual() ? node.asText() : node.toString();
     }
 
     /**

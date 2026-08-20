@@ -62,15 +62,27 @@ final class PemKeyLoader {
      *  {@link CertificateFactory#generateCertificates} already parses a whole concatenated PEM
      *  file in one call, so there is no bespoke multi-cert splitting to get wrong here. */
     static List<X509Certificate> certificateChain(Path certPath) {
-        try (InputStream in = Files.newInputStream(certPath)) {
+        return certificates(certPath, "client certificate " + certPath);
+    }
+
+    /**
+     * {@link #certificateChain} with the thing being loaded named by the caller.
+     *
+     * <p>A PEM file full of certificates is a client chain in one place and a CA trust bundle in
+     * another ({@code HttpClients.trustManagers}), and the two must not report each other's name:
+     * "cannot load client certificate /etc/ssl/corp-ca.pem" sends an operator to the wrong
+     * {@code sdd.yml} key. The parsing is identical, so only the label is a parameter.
+     */
+    static List<X509Certificate> certificates(Path path, String what) {
+        try (InputStream in = Files.newInputStream(path)) {
             CertificateFactory cf = CertificateFactory.getInstance("X.509");
             var certs = cf.generateCertificates(in);
             if (certs.isEmpty()) {
-                throw new ConfigException("no certificates found in " + certPath);
+                throw new ConfigException("no certificates found in " + path);
             }
             return certs.stream().map(X509Certificate.class::cast).toList();
         } catch (IOException | GeneralSecurityException e) {
-            throw new ConfigException("cannot load client certificate " + certPath + ": " + e.getMessage(), e);
+            throw new ConfigException("cannot load " + what + ": " + e.getMessage(), e);
         }
     }
 

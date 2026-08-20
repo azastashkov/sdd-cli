@@ -27,8 +27,29 @@ public final class EndpointProbe {
      * pre-existing call site (this class's own four {@code new ProbeResult(ok, detail)} sites below,
      * and {@code ImplementCommandWaitEndpointTest}'s two direct constructions) keeps compiling with
      * {@code negotiatedProtocol} defaulting to null, unchanged.
+     *
+     * <p>{@code connected}: whether an HTTP response came back AT ALL, whatever its status — as
+     * opposed to {@code ok}, which means that response was 2xx. The two differ for exactly one
+     * reason, and it matters: this probe asks for {@code /models}, and a gateway is under no
+     * obligation to serve an OpenAI model-listing route. Such a gateway answers 404 while
+     * {@code /chat/completions} works perfectly, and {@code sdd doctor} gates its {@code --tools}
+     * and {@code --completion} probes on this field rather than on {@code ok} so the checks that
+     * actually predict a run still get to run.
+     *
+     * <p>{@code ok} is deliberately NOT redefined to mean this. A 404 on {@code /models} from an
+     * ordinary OpenAI endpoint means {@code base_url} is wrong — usually the {@code
+     * /chat/completions} suffix left on, the misconfiguration {@code sdd.yml.example} and the
+     * runbook both warn about. Reporting that green to make one gateway look tidy would hide the
+     * commonest configuration error this project has. The older constructors default
+     * {@code connected} to {@code ok}, which is exactly right for them: every one is either a 2xx
+     * or a failure with no response.
      */
-    public record ProbeResult(boolean ok, String detail, String negotiatedProtocol) {
+    public record ProbeResult(boolean ok, String detail, String negotiatedProtocol,
+                             boolean connected) {
+        public ProbeResult(boolean ok, String detail, String negotiatedProtocol) {
+            this(ok, detail, negotiatedProtocol, ok);
+        }
+
         public ProbeResult(boolean ok, String detail) {
             this(ok, detail, null);
         }
@@ -85,7 +106,10 @@ public final class EndpointProbe {
             HttpResponse<Void> resp = client.send(builder.build(), HttpResponse.BodyHandlers.discarding());
             int status = resp.statusCode();
             String protocol = resp.sslSession().map(SSLSession::getProtocol).orElse(null);
-            return new ProbeResult(status >= 200 && status < 300, "HTTP " + status, protocol);
+            boolean ok = status >= 200 && status < 300;
+            // The response arrived, so the host, the TLS handshake and the routing all worked.
+            // That is worth reporting separately from the status — see ProbeResult's javadoc.
+            return new ProbeResult(ok, detail(status, ok), protocol, true);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new ProbeResult(false, "interrupted");
@@ -102,5 +126,22 @@ public final class EndpointProbe {
         } catch (Exception e) {
             return new ProbeResult(false, String.valueOf(e.getMessage()));
         }
+    }
+
+    /**
+     * What a status means, when the difference changes the operator's next move.
+     *
+     * <p>404/405 on {@code /models} has two readings that need opposite fixes, and neither is
+     * guessable from {@code HTTP 404} alone: the gateway serves no model listing (fine — the real
+     * check is {@code --tools}), or {@code base_url} is wrong. Naming both is the only honest
+     * option, since nothing observable here distinguishes them.
+     */
+    private static String detail(int status, boolean ok) {
+        if (ok || (status != 404 && status != 405)) {
+            return "HTTP " + status;
+        }
+        return "HTTP " + status + " — reachable, but no /models listing here. Either this gateway "
+                + "does not serve one (run --tools to check what matters), or base_url is wrong "
+                + "(it must NOT include /chat/completions)";
     }
 }

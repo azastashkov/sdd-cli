@@ -135,6 +135,11 @@ public final class HttpClients {
      * trusts this gateway's CA" per the plan's example config — so this branch exists for the
      * model path without changing a single byte of the Atlassian one, which never exercises it.
      *
+     * <p>The truststore may be a binary keystore (JKS or PKCS12) or a PEM certificate bundle —
+     * the same file {@code curl --cacert} takes. Which one is decided by content, never by
+     * extension; see {@link #isPem}. Both callers get this, so {@code atlassian.tls.truststore}
+     * accepts a PEM bundle for exactly the same reason a model endpoint's does.
+     *
      * <p>Error messages here are built from {@code tls.configPath()} — {@code "atlassian.tls"} for
      * the one Atlassian truststore, {@code "models.<name>.tls"} for a model endpoint, {@code null}
      * (falling back to the bare {@code tls} prefix — see {@link TlsConfig}'s javadoc) for a
@@ -163,15 +168,78 @@ public final class HttpClients {
             throw new ConfigException(truststoreKey + " " + path + " does not exist");
         }
         char[] password = tls.truststorePassword() == null ? new char[0] : tls.truststorePassword().toCharArray();
-        try (InputStream in = Files.newInputStream(path)) {
-            KeyStore keyStore = KeyStore.getInstance(truststoreType(path));
-            keyStore.load(in, password);
+        try {
+            KeyStore keyStore = isPem(path)
+                    ? pemTrustStore(path, truststoreKey)
+                    : binaryTrustStore(path, password);
             TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
             tmf.init(keyStore);
             return tmf.getTrustManagers();
         } catch (IOException | GeneralSecurityException e) {
             throw new ConfigException("cannot load " + truststoreKey + " " + path + ": " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Whether this truststore is a PEM certificate bundle rather than a binary keystore.
+     *
+     * <p>Detected by CONTENT, not by extension. A corporate CA bundle is spelled {@code .pem},
+     * {@code .crt}, {@code .cer} or nothing at all, and every one of those would otherwise be tried
+     * as PKCS12 (see {@link #truststoreType}) and fail with a keystore-parse error that names
+     * neither the real format nor the fix. Content detection also keeps the binary path
+     * bit-identical: a JKS or PKCS12 file does not contain this marker.
+     *
+     * <p>{@code contains}, not {@code startsWith}: {@code openssl}-produced bundles routinely
+     * precede each certificate with human-readable subject/issuer commentary, and refusing those
+     * would reject the commonest bundle there is. Decoded as ISO-8859-1 because it maps every byte
+     * and therefore cannot throw on a binary file — the question here is only whether a marker is
+     * present.
+     *
+     * <p>An unreadable file answers "not PEM" and falls through to the keystore loader, which
+     * raises the real I/O error naming the config key. Deciding the format is not the place to
+     * report that a file cannot be opened.
+     */
+    private static boolean isPem(Path path) {
+        try {
+            return Files.readString(path, java.nio.charset.StandardCharsets.ISO_8859_1)
+                    .contains("-----BEGIN CERTIFICATE-----");
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Every certificate in a PEM bundle as trust anchors, in an in-memory keystore built for the
+     * purpose — the same vehicle {@link #keyManagers} already uses to hand a PEM pair to a JDK API
+     * that only speaks {@link KeyStore}.
+     *
+     * <p>Each certificate gets its own alias because a bundle carries several (a root and its
+     * intermediates), and a keystore entry is one certificate. Parsing is
+     * {@code PemKeyLoader}'s, so a bundle and a client chain can never diverge on what counts as
+     * readable PEM.
+     *
+     * <p>{@code truststore_password} is not consulted and not an error when set: a PEM file has no
+     * password, and an operator migrating from a {@code .p12} should not have to also remember to
+     * delete the password line to make the migration work.
+     */
+    private static KeyStore pemTrustStore(Path path, String truststoreKey)
+            throws IOException, GeneralSecurityException {
+        KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
+        keyStore.load(null, null);
+        int i = 0;
+        for (X509Certificate ca : PemKeyLoader.certificates(path, truststoreKey + " " + path)) {
+            keyStore.setCertificateEntry("ca-" + i++, ca);
+        }
+        return keyStore;
+    }
+
+    private static KeyStore binaryTrustStore(Path path, char[] password)
+            throws IOException, GeneralSecurityException {
+        KeyStore keyStore = KeyStore.getInstance(truststoreType(path));
+        try (InputStream in = Files.newInputStream(path)) {
+            keyStore.load(in, password);
+        }
+        return keyStore;
     }
 
     /** {@link #trustManagers(TlsConfig)}, callable with the Atlassian shape directly — every
@@ -320,6 +388,8 @@ public final class HttpClients {
         return proxy == null ? null : new ProxyConfig(proxy.host(), proxy.port(), proxy.noProxy());
     }
 
+    /** The BINARY keystore type for a truststore that is not a PEM bundle — {@link #isPem} has
+     *  already answered that question by content, so this only ever sees a real keystore file. */
     private static String truststoreType(Path path) {
         String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
         return name.endsWith(".jks") ? "JKS" : "PKCS12";

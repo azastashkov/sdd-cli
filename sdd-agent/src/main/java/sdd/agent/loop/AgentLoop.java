@@ -9,6 +9,7 @@ import sdd.agent.tool.ToolException;
 import sdd.agent.tool.Tools;
 import sdd.core.llm.ChatModel;
 import sdd.core.llm.ChatMessage;
+import sdd.core.llm.HttpChatModel;
 import sdd.core.llm.ChatRequest;
 import sdd.core.llm.ChatResponse;
 import sdd.core.llm.ModelException;
@@ -89,6 +90,7 @@ public final class AgentLoop {
         int sameSignature = 0;
         String lastBuildOutput = null;
         boolean evictedOnFourHundred = false;
+        boolean warnedSynthesizedIds = false;
 
         while (true) {
             if (turns >= budget.maxTurns()) {
@@ -160,6 +162,16 @@ public final class AgentLoop {
             }
 
             window.addAssistant(message);
+            // The endpoint answered in the pre-tools `function_call` shape, so HttpChatModel had to
+            // invent the id this loop pairs the result by. It works here, but nothing has verified
+            // that the gateway accepts an id it never issued — say so once, in the record a reader
+            // actually opens, rather than leaving it to be inferred from the transcript.
+            if (!warnedSynthesizedIds && message.toolCalls().stream()
+                    .anyMatch(c -> c.id().startsWith(HttpChatModel.SYNTHETIC_CALL_ID_PREFIX))) {
+                warnedSynthesizedIds = true;
+                events.add("turn " + turns + ": endpoint returned function_call, not tool_calls — "
+                        + "tool-call ids are synthesized and unverified against this gateway");
+            }
             for (ToolCall raw : message.toolCalls()) {
                 // The tool set gets to say what this call means before anything else looks at
                 // it, so a multiplexed declaration is invisible to done interception, the wedge

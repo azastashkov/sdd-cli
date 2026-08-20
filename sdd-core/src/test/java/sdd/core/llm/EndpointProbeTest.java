@@ -40,6 +40,51 @@ class EndpointProbeTest {
         assertThat(EndpointProbe.probe(ep("bad")).ok()).isFalse();
     }
 
+    // A GigaChat-style gateway serves /chat/completions and no model listing. Gating doctor's
+    // --tools probe on ok() meant it never ran there — withholding the one check that predicts
+    // whether an agent run can work at all. connected() is the field that keeps it reachable.
+    @Test
+    void aGatewayWithNoModelsRouteIsNotOkButIsConnected() {
+        wm.stubFor(get("/v1/models").willReturn(notFound()));
+
+        EndpointProbe.ProbeResult r = EndpointProbe.probe(ep("sk-x"));
+
+        assertThat(r.ok()).isFalse();
+        assertThat(r.connected()).isTrue();
+        // Two readings, opposite fixes, and nothing observable here tells them apart — so name both.
+        assertThat(r.detail()).contains("HTTP 404")
+                .contains("does not serve one")
+                .contains("base_url is wrong");
+    }
+
+    @Test
+    void anAuthFailureIsConnectedTooSoTheDeeperProbesStillReportIt() {
+        wm.stubFor(get("/v1/models").willReturn(unauthorized()));
+
+        EndpointProbe.ProbeResult r = EndpointProbe.probe(ep("bad"));
+
+        assertThat(r.ok()).isFalse();
+        assertThat(r.connected()).isTrue();
+        // Only 404/405 get the base_url hint; a 401 means something else entirely.
+        assertThat(r.detail()).isEqualTo("HTTP 401");
+    }
+
+    @Test
+    void aTransportFailureIsNotConnected() {
+        ModelEndpoint dead = new ModelEndpoint("http://127.0.0.1:1/v1", "m", null,
+                256, 0.0, Duration.ofSeconds(1), Map.of());
+
+        assertThat(EndpointProbe.probe(dead).connected()).isFalse();
+    }
+
+    // The legacy constructors default connected to ok, which is right for every one of their call
+    // sites: each is either a 2xx or a failure with no response at all.
+    @Test
+    void theOlderProbeResultConstructorsDefaultConnectedToOk() {
+        assertThat(new EndpointProbe.ProbeResult(true, "HTTP 200").connected()).isTrue();
+        assertThat(new EndpointProbe.ProbeResult(false, "boom", "TLSv1.2").connected()).isFalse();
+    }
+
     @Test
     void unreachableHostIsNotOkAndDoesNotThrow() {
         ModelEndpoint dead = new ModelEndpoint("http://127.0.0.1:1/v1", "m", null,
