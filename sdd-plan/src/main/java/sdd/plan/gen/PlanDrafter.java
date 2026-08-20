@@ -15,6 +15,7 @@ import sdd.core.llm.ModelException;
 import sdd.core.kb.KbRefGraph;
 import sdd.plan.impact.AffectedRepo;
 import sdd.plan.impact.ImpactResult;
+import sdd.plan.openspec.OpenSpecPlan;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecItem;
 import sdd.plan.spec.SpecRenderer;
@@ -129,7 +130,15 @@ public final class PlanDrafter {
                              "files": [string, ...], "provides_contracts": [contract ids],
                              "consumes_contracts": [contract ids],
                              "version_action": "none"|"patch"|"minor"|"major",
-                             "verification": [string, ...]}, ...]}
+                             "verification": [string, ...],
+                             "openspec_capability": string (OPTIONAL — the durable behaviour area \
+            of THIS repo that the change belongs to, lowercase-hyphenated, e.g. "tier-resolution" \
+            or "order-submission". Name the area, never the change: "add-tier-invalidation" is \
+            wrong. It becomes a directory in that repo that outlives this change),
+                             "acceptance_for": {"R1": ["A1", ...], ...} (OPTIONAL — which \
+            acceptance criteria verify which of THIS step's requirements. Allocate only ids that \
+            exist in the spec, and only requirements this step covers; use [] for a requirement no \
+            acceptance criterion covers)}, ...]}
             Rules:
             - One repo_steps entry per affected repo that needs work; name only affected repos.
             - Name only files and classes present in the evidence; contracts' bodies are concrete
@@ -137,6 +146,9 @@ public final class PlanDrafter {
             - Every contract referenced by a step must be defined in "contracts".
             - Anything uncertain becomes a question, not an invention; the same goes for
               "declarations" — when unsure, omit the list rather than guess.
+            - "openspec_capability" and "acceptance_for" are exported into the repo as a spec a
+              foreign agent can act on. Omit either when unsure: both have deterministic fallbacks,
+              and a wrong allocation is worse than an absent one.
             """;
 
     /**
@@ -246,6 +258,7 @@ public final class PlanDrafter {
         }
         Set<String> requirementIds = new LinkedHashSet<>(
                 spec.requirements().stream().map(SpecItem::id).toList());
+        List<String> acceptanceIds = spec.acceptance().stream().map(SpecItem::id).toList();
         List<String> notes = new ArrayList<>();
 
         List<DraftContract> contracts = new ArrayList<>();
@@ -329,7 +342,8 @@ public final class PlanDrafter {
                 }
             }
             steps.add(new DraftStep(repo, covers, node.path("sub_spec").asText(), files,
-                    provides, consumes, versionAction, verification));
+                    provides, consumes, versionAction, verification,
+                    openspecBlock(node, repo, covers, acceptanceIds, notes)));
         }
 
         List<Question> questions = new ArrayList<>();
@@ -372,6 +386,47 @@ public final class PlanDrafter {
                         JOIN repo r ON r.id = m.repo_id
                         WHERE r.name = :r AND t.file_path = :p""")
                 .bind("r", repo).bind("p", path).mapTo(Integer.class).one()) > 0;
+    }
+
+    /**
+     * The step's {@code - openspec:} block, built from the model's two optional fields and then put
+     * through {@link OpenSpecPlan} — the same parser a human's Gate-1 edit goes through.
+     *
+     * <p>Routing the model's output through the parser rather than trusting it has two effects
+     * worth having: whatever is rendered into plan.md is guaranteed to parse back to the same
+     * thing, and the model and the human are held to one grammar with one set of messages. Every
+     * rejection lands in {@code notes}, i.e. in plan.md's Generation Notes, where it is visible
+     * before Gate 1 rather than as a surprise in a committed repo.
+     *
+     * <p>An absent or unusable field is never an error. The export has a fallback ladder for both,
+     * and a wrong allocation is worse than an absent one.
+     */
+    private static List<String> openspecBlock(JsonNode node, String repo, List<String> covers,
+                                              List<String> acceptanceIds, List<String> notes) {
+        List<String> lines = new ArrayList<>();
+        String capability = node.path("openspec_capability").asText("").strip();
+        if (!capability.isBlank()) {
+            lines.add("capability: " + capability);
+        }
+        JsonNode allocation = node.path("acceptance_for");
+        if (allocation.isObject()) {
+            allocation.fieldNames().forEachRemaining(requirement -> {
+                List<String> ids = new ArrayList<>();
+                for (JsonNode id : allocation.path(requirement)) {
+                    ids.add(id.asText().strip());
+                }
+                lines.add(requirement.strip() + " -> " + (ids.isEmpty() ? "none"
+                        : String.join(", ", ids)));
+            });
+        }
+        if (lines.isEmpty()) {
+            return List.of();
+        }
+        OpenSpecPlan plan = OpenSpecPlan.parse(lines, covers, acceptanceIds);
+        for (String problem : plan.problems()) {
+            notes.add("step " + repo + ": " + problem);
+        }
+        return plan.render();
     }
 
     static String composeInput(Jdbi jdbi, NormalizedSpec spec, ImpactResult result,
