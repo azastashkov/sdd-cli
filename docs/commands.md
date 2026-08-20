@@ -851,8 +851,12 @@ result names the repos it searched.
 | `--model <key>` | which `models:` entry to explore with (default: `planner`) |
 | `--out <path>` | write the enriched spec here instead of in place |
 
-**`read_file` takes `offset` and `limit`**, and numbers the lines it
-returns. Without them a read always started at line 1 and stopped at 400 lines
+**`read_file` takes `offset` and `limit`** (also spelled
+`startLine`/`endLine`), and numbers the lines it returns. An argument name it
+does not understand is **refused by name** rather than ignored — a wrong window
+is not recoverable, because nothing tells the model it got one, while a
+malformed call measurably is: told that `search_code` takes `regex` rather than
+`query`, a live run corrected itself on the very next turn. Without them a read always started at line 1 and stopped at 400 lines
 or 16 KB, which on a large file is a dead end: measured on a live run,
 `search_code` located a method at line 363 of a file whose import block alone
 exhausts the cap, so every read came back as the same package declaration and

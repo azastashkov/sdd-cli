@@ -321,4 +321,61 @@ class ExploreToolsTest {
                 "{\"path\":\"payments-api/Small.java\",\"offset\":\"line 363\"}"))
                 .contains("1: a");
     }
+
+    // The second live wedge, verbatim: startLine/endLine were ignored, the read returned line 1,
+    // and the model re-searched and re-read the same imports until the wedge detector stopped it.
+    @Test
+    void startLineAndEndLineAreUnderstoodAsAWindow() throws Exception {
+        StringBuilder big = new StringBuilder();
+        for (int i = 1; i <= 557; i++) {
+            big.append(i == 400 ? "public void toApp(Message m) {}\n" : "// line " + i + "\n");
+        }
+        Files.writeString(ws.resolve("payments-api/Big.java"), big.toString());
+
+        String out = tools.dispatch("read_file", """
+                {"path":"payments-api/Big.java","repo":"payments-api",\
+                "startLine":"339","endLine":"557"}""");
+
+        assertThat(out).contains("payments-api/Big.java:339-557 of 557 lines");
+        assertThat(out).contains("400: public void toApp(Message m) {}");
+        assertThat(out).doesNotContain("1: // line 1\n");
+    }
+
+    // An end LINE is not a count: 339 plus 557 more would overshoot the file and look like it
+    // worked.
+    @Test
+    void anEndLineIsNotTreatedAsACount() throws Exception {
+        Files.writeString(ws.resolve("payments-api/Ten.java"),
+                "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+
+        assertThat(tools.dispatch("read_file",
+                "{\"path\":\"payments-api/Ten.java\",\"startLine\":3,\"endLine\":5}"))
+                .contains(":3-5 of 10 lines").contains("5: 5").doesNotContain("6: 6");
+    }
+
+    // A wrong window is not recoverable, because nothing tells the model it got one. A malformed
+    // call is: on a live run the model was told search_code takes regex rather than query and
+    // corrected itself on the next turn.
+    @Test
+    void anUnknownArgumentIsRefusedByNameRatherThanSilentlyReadingLineOne() throws Exception {
+        Files.writeString(ws.resolve("payments-api/Ten.java"), "1\n2\n3\n");
+
+        assertThatThrownBy(() -> tools.dispatch("read_file",
+                "{\"path\":\"payments-api/Ten.java\",\"beginningAt\":\"3\"}"))
+                .isInstanceOf(MalformedCallException.class)
+                .hasMessageContaining("beginningAt")
+                .hasMessageContaining("offset")
+                .hasMessageContaining("startLine");
+    }
+
+    // repo is accepted and ignored: search_code takes one, a model reasonably reuses it, and the
+    // repo is already the path's first segment. Costing a turn to teach that would be pedantry.
+    @Test
+    void aRedundantRepoArgumentIsAccepted() throws Exception {
+        Files.writeString(ws.resolve("payments-api/Ten.java"), "1\n2\n3\n");
+
+        assertThat(tools.dispatch("read_file",
+                "{\"path\":\"payments-api/Ten.java\",\"repo\":\"payments-api\"}"))
+                .contains("1: 1");
+    }
 }

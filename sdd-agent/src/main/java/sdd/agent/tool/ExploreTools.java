@@ -18,7 +18,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.List;
 import java.util.Set;
 
@@ -154,8 +156,8 @@ public final class ExploreTools implements Tools {
                 new ToolSpec("list_files", "List the entries of a directory.",
                         one("path", "<repo>/<dir>")),
                 new ToolSpec("read_file",
-                        "Read a file, numbered. offset is the first line (default 1), limit how "
-                                + "many (default 400). Read around a search hit's line number.",
+                        "Read a file, numbered. offset = first line (1-based), limit = how many. "
+                                + "startLine/endLine also work. Read around a search hit's line.",
                         """
                         {"type":"object","properties":{\
                         "path":{"type":"string","description":"<repo>/<path>"},\
@@ -262,8 +264,7 @@ public final class ExploreTools implements Tools {
         return switch (name) {
             case "list_repos" -> listRepos();
             case "list_files" -> listFiles(str(args, "path"));
-            case "read_file" -> readFile(str(args, "path"),
-                    number(args, "offset", 1), number(args, "limit", FileTools.MAX_READ_LINES));
+            case "read_file" -> readFile(str(args, "path"), args);
             case "search_code" -> searchCode(str(args, "regex"), optional(args, "repo"),
                     optional(args, "glob"));
             case "search_symbols" -> searchSymbols(str(args, "query"));
@@ -287,10 +288,70 @@ public final class ExploreTools implements Tools {
         return FileTools.listEntries(jail.resolveExisting(path), path);
     }
 
-    private String readFile(String path, int offset, int limit) {
+    private String readFile(String path, JsonNode args) {
+        int[] window = window(args);
         Path file = jail.resolveExisting(path);
         seen.add(normalize(path));
-        return FileTools.readWindow(file, path, offset, limit);
+        return FileTools.readWindow(file, path, window[0], window[1]);
+    }
+
+    /** Argument names {@link #window} understands, and the only ones {@code read_file} accepts. */
+    private static final Set<String> OFFSET_KEYS =
+            Set.of("offset", "startline", "start_line", "start", "from", "line");
+    private static final Set<String> LIMIT_KEYS = Set.of("limit", "count", "lines");
+    private static final Set<String> END_KEYS = Set.of("endline", "end_line", "end", "to");
+    /** {@code path} names the file; {@code repo} is accepted and ignored because {@code search_code}
+     *  takes one and a model reasonably reuses it — the repo is already the path's first segment. */
+    private static final Set<String> OTHER_KEYS = Set.of("path", "repo");
+
+    /**
+     * {@code [offset, limit]} for a read, from whatever the model called the arguments.
+     *
+     * <p>Two failures produced the same symptom on live runs, twice: a read that asked for line 363
+     * and one that asked for lines 339-557 both came back as line 1, because the argument name was
+     * not recognised and was silently ignored. The model then re-searched to confirm the line it
+     * already had, read again, got the same imports, and was killed by the wedge detector for doing
+     * exactly the right thing three times.
+     *
+     * <p>So two rules. Recognise the spellings that have actually been observed —
+     * {@code offset}/{@code limit} and {@code startLine}/{@code endLine} — since a round trip spent
+     * teaching a name costs a turn on an endpoint that manages one call per turn. And <b>refuse an
+     * argument name that is not understood</b>, naming the accepted ones, rather than reading
+     * somewhere else and calling it an answer. A malformed call is recoverable and measurably is:
+     * on a live run the model was told {@code search_code} takes {@code regex} rather than
+     * {@code query} and corrected itself on the very next turn. A wrong window is not recoverable,
+     * because nothing tells the model it got one.
+     */
+    private static int[] window(JsonNode args) {
+        int offset = 1;
+        int limit = FileTools.MAX_READ_LINES;
+        Integer end = null;
+        List<String> unknown = new ArrayList<>();
+        Iterator<String> names = args.fieldNames();
+        while (names.hasNext()) {
+            String raw = names.next();
+            String key = raw.toLowerCase(Locale.ROOT);
+            if (OFFSET_KEYS.contains(key)) {
+                offset = number(args, raw, offset);
+            } else if (LIMIT_KEYS.contains(key)) {
+                limit = number(args, raw, limit);
+            } else if (END_KEYS.contains(key)) {
+                end = number(args, raw, -1);
+            } else if (!OTHER_KEYS.contains(key)) {
+                unknown.add(raw);
+            }
+        }
+        if (!unknown.isEmpty()) {
+            throw new MalformedCallException("read_file does not take " + String.join(", ", unknown)
+                    + " — it takes path, and optionally offset (first line, 1-based) and limit "
+                    + "(how many lines). startLine/endLine work too.");
+        }
+        // An end LINE is not a count. Reading 339-557 as "339 plus 557 more" would overshoot the
+        // file and look like it worked.
+        if (end != null && end >= offset) {
+            limit = end - offset + 1;
+        }
+        return new int[] {offset, limit};
     }
 
     private String searchCode(String regex, String repo, String glob) {
