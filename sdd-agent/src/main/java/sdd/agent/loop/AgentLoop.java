@@ -163,15 +163,20 @@ public final class AgentLoop {
 
             window.addAssistant(message);
             // The endpoint did not return structured tool_calls — the call arrived in the older
-            // `function_call` field, or as plain content — so HttpChatModel had to invent the id
-            // this loop pairs results by. It works here, but nothing has verified the gateway
-            // accepts an id it never issued. Say so once, in the record a reader actually opens,
-            // rather than leaving it to be inferred from the transcript.
+            // `function_call` field, or as plain content that HttpChatModel parsed. Worth saying
+            // once, in the record a reader actually opens: it is the difference between a model
+            // that drove tools and one whose replies had to be interpreted, and if a call is ever
+            // mis-read this line is where the search starts.
+            //
+            // Deliberately says nothing about the synthesized ids being risky. Whether they reach
+            // the endpoint at all depends on the wire — GigaChat's pairs a result to its call by
+            // NAME and never sends an id — and a warning that names a hazard which does not apply
+            // is worse than none, because the next reader spends real time on it.
             if (!warnedSynthesizedIds && message.toolCalls().stream()
                     .anyMatch(c -> c.id().startsWith(HttpChatModel.SYNTHETIC_CALL_ID_PREFIX))) {
                 warnedSynthesizedIds = true;
                 events.add("turn " + turns + ": endpoint did not return structured tool_calls — "
-                        + "tool-call ids are synthesized and unverified against this gateway");
+                        + "sdd read them from the reply content");
             }
             for (ToolCall raw : message.toolCalls()) {
                 // The tool set gets to say what this call means before anything else looks at

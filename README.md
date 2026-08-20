@@ -605,7 +605,10 @@ models:
     tool_calls: text     # default: native
 ```
 
-sdd then reads the call out of `content`. **This is strictly worse than native and is not a mode to
+sdd then reads the call out of `content`. Whether the id sdd invents for such a call ever reaches
+the endpoint depends on the wire: `openai` sends it as `tool_call_id`, and nothing has verified a
+gateway accepts an id it never issued; `gigachat` pairs a result to its call by **name** and sends
+no id at all, so the question does not arise there. **This is strictly worse than native and is not a mode to
 prefer** — the tool-call id has to be invented, so nothing has verified the gateway accepts the
 `tool_call_id` sent back with the result, and a schema violation stops being something the endpoint
 reports. An agent run whose calls came back this way says so in its events. It exists because the
