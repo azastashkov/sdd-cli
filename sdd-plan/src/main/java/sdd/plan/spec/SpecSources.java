@@ -35,7 +35,8 @@ public final class SpecSources {
             if (BROWSE_PATH.matcher(path).find()) {
                 return SpecRefKind.JIRA;
             }
-            if (path.contains("/pages/") || path.contains("/display/") || path.contains("/x/")) {
+            if (path.contains("/pages/") || path.contains("/display/") || path.contains("/x/")
+                    || path.endsWith("/viewpage.action") || hasPageIdParam(ref)) {
                 return SpecRefKind.CONFLUENCE_PAGE;
             }
         }
@@ -44,6 +45,38 @@ public final class SpecSources {
 
     public static boolean isConfluenceExport(String ref) {
         return classify(ref) == SpecRefKind.CONFLUENCE_EXPORT;
+    }
+
+    /**
+     * Whether the URL carries a {@code pageId} query parameter — the legacy Data Center shape
+     * {@code /viewpage.action?pageId=65601}, whose path holds no {@code /pages/} segment at all.
+     *
+     * <p>{@code ConfluenceClient.resolvePageId} reads {@code pageId} from the query BEFORE it looks
+     * at the path, so the resolver has always handled this shape and {@code docs/commands.md} lists
+     * it as supported; only the classifier disagreed. The symptom was the least helpful one
+     * available — the URL fell through to MARKDOWN and {@code sdd plan} reported it as a missing
+     * file.
+     *
+     * <p>Matched on the parameter NAME, not as a substring, so {@code ?notapageId=} is not it.
+     */
+    private static boolean hasPageIdParam(String ref) {
+        URI uri;
+        try {
+            uri = new URI(ref);
+        } catch (URISyntaxException e) {
+            return false;
+        }
+        String query = uri.getQuery();
+        if (query == null) {
+            return false;
+        }
+        for (String pair : query.split("&")) {
+            int eq = pair.indexOf('=');
+            if ("pageId".equals(eq < 0 ? pair : pair.substring(0, eq))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The path of an http(s) URL, recognised by shape alone (no DNS, no connection). Returns

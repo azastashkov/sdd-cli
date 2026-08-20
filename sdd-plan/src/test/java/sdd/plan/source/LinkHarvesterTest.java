@@ -115,6 +115,60 @@ class LinkHarvesterTest {
     }
 
     @Test
+    void anOversizedPageBecomesANoteRatherThanEndingTheRun() {
+        // ConfluenceExtract.extract throws SpecNormalizationException, which extends
+        // RuntimeException -- NOT AtlassianException -- and fetchPage calls it. So one 300k-char
+        // page anywhere in the link graph took down the whole `sdd plan` run, and did it looking
+        // like a budgeting bug rather than an exception-typing one. Every other declined link in
+        // this class earns a note; this one has to as well.
+        ConfluencePages fake = new ConfluencePages() {
+            @Override
+            public String resolvePageId(String url) {
+                return "1";
+            }
+
+            @Override
+            public SourceDoc fetchPage(String pageId) {
+                throw new sdd.plan.confluence.SpecNormalizationException(
+                        "Confluence export too large: extracted 421337 chars (limit 300000)");
+            }
+        };
+        LinkHarvester harvester = new LinkHarvester(fake, "confluence.corp.local", 1, 20);
+        SourceDoc issue = new SourceDoc(SourceDoc.Kind.JIRA_ISSUE, "PROJ-1", null, null, null,
+                "See https://confluence.corp.local/pages/viewpage.action?pageId=1 for context.",
+                List.of());
+
+        LinkHarvester.Result result = harvester.harvest(List.of(issue), List.of());
+
+        assertThat(result.pages()).isEmpty();
+        assertThat(result.notes()).singleElement().asString()
+                .contains("too large to read")
+                .contains("https://confluence.corp.local/pages/viewpage.action?pageId=1")
+                .contains("421337");
+    }
+
+    @Test
+    void anUnresolvablePageThatThrowsIsStillJustANote() {
+        ConfluencePages fake = new ConfluencePages() {
+            @Override
+            public String resolvePageId(String url) {
+                throw new sdd.plan.confluence.SpecNormalizationException("bad escape in title");
+            }
+
+            @Override
+            public SourceDoc fetchPage(String pageId) {
+                throw new AssertionError("must not be reached");
+            }
+        };
+        LinkHarvester harvester = new LinkHarvester(fake, "confluence.corp.local", 1, 20);
+        SourceDoc issue = new SourceDoc(SourceDoc.Kind.JIRA_ISSUE, "PROJ-1", null, null, null,
+                "See https://confluence.corp.local/display/ENG/x for context.", List.of());
+
+        assertThat(harvester.harvest(List.of(issue), List.of()).notes())
+                .singleElement().asString().contains("unresolvable");
+    }
+
+    @Test
     void fetchFailureBecomesANoteRatherThanAbortingIngestion() {
         FakeConfluencePages fake = new FakeConfluencePages()
                 .map("https://confluence.corp.local/pages/viewpage.action?pageId=1", "1");

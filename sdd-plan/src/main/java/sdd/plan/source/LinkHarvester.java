@@ -1,6 +1,7 @@
 package sdd.plan.source;
 
 import sdd.core.http.AtlassianException;
+import sdd.plan.confluence.SpecNormalizationException;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -114,7 +115,7 @@ public final class LinkHarvester {
             String pageId;
             try {
                 pageId = confluencePages.resolvePageId(candidate.url());
-            } catch (AtlassianException e) {
+            } catch (AtlassianException | SpecNormalizationException e) {
                 notes.add("unresolvable: " + candidate.url() + " (" + e.getMessage() + ")");
                 continue;
             }
@@ -134,6 +135,15 @@ public final class LinkHarvester {
                 page = confluencePages.fetchPage(pageId);
             } catch (AtlassianException e) {
                 notes.add("fetch failed: " + candidate.url() + " (" + e.getMessage() + ")");
+                continue;
+            } catch (SpecNormalizationException e) {
+                // ConfluenceExtract enforces its 300k-char ceiling by throwing, and
+                // SpecNormalizationException extends RuntimeException rather than
+                // AtlassianException -- so before this catch a single oversized page anywhere in
+                // the link graph ended the whole `sdd plan` run, and did it wearing the clothes of
+                // a budgeting bug. One page nobody can read is a note, exactly like a page that
+                // 404s or one that lives on the wrong host.
+                notes.add("too large to read: " + candidate.url() + " (" + e.getMessage() + ")");
                 continue;
             }
             fetchedPageIds.add(pageId);

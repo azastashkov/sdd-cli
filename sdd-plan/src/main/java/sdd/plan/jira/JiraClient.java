@@ -11,6 +11,7 @@ import sdd.plan.source.SourceDoc;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -81,7 +82,7 @@ public final class JiraClient {
                 descExtract.text(), descExtract.attachments());
 
         List<SourceDoc> commentDocs = new ArrayList<>();
-        List<String> hrefUrls = new ArrayList<>(hrefsIn(descriptionHtml));
+        List<String> hrefUrls = new ArrayList<>(hrefsIn(descriptionHtml, baseUrl));
         for (JsonNode comment : rendered.path("comment").path("comments")) {
             String commentId = comment.path("id").asText();
             String commentHtml = comment.path("body").asText("");
@@ -89,7 +90,7 @@ public final class JiraClient {
             String commentUpdated = normalizeUpdated(comment.path("updated").asText(null));
             commentDocs.add(new SourceDoc(SourceDoc.Kind.JIRA_COMMENT, key + "-comment-" + commentId,
                     issueUrl + "#comment-" + commentId, null, commentUpdated, body.text(), body.attachments()));
-            hrefUrls.addAll(hrefsIn(commentHtml));
+            hrefUrls.addAll(hrefsIn(commentHtml, baseUrl));
         }
 
         List<String> subtaskKeys = new ArrayList<>();
@@ -163,18 +164,49 @@ public final class JiraClient {
      * handing everything to {@code LinkHarvester}; {@code LinkHarvester}'s own exact-URL dedup
      * means one link mentioned in both places (or twice in one place) still yields one fetch.
      */
-    static List<String> hrefsIn(String html) {
+    static List<String> hrefsIn(String html, String baseUrl) {
         List<String> hrefs = new ArrayList<>();
         if (html == null || html.isBlank()) {
             return hrefs;
         }
+        URI base = baseUrl == null ? null : safeUri(baseUrl);
         for (Element a : Jsoup.parse(html).select("a[href]")) {
             String href = a.attr("href").strip();
             if (href.startsWith("http://") || href.startsWith("https://")) {
                 hrefs.add(href);
+                continue;
             }
+            // A relative href used to be dropped here, on the reasoning that it has no host. True,
+            // but it has an implied one, and Data Center commonly serves Jira and Confluence on a
+            // SINGLE host under two context paths and renders same-origin links relatively. So the
+            // spec everybody links from the ticket arrived as "/confluence/pages/..." and vanished
+            // -- with no note, because LinkHarvester never received a candidate to decline.
+            //
+            // Resolving against Jira's own base URL is the correct reading of what a relative href
+            // in Jira-rendered HTML means, and it cannot invent a cross-host link: URI.resolve
+            // keeps the base's scheme, host and port, so whether the result is a Confluence page at
+            // all is still decided downstream by LinkHarvester's host check.
+            //
+            // Fragments, mailto:, javascript: and the like carry no page to fetch and are skipped
+            // rather than resolved.
+            if (base == null || href.isEmpty() || href.startsWith("#") || href.contains(":")) {
+                continue;
+            }
+            URI resolved = safeUri(href);
+            if (resolved == null) {
+                continue;
+            }
+            hrefs.add(base.resolve(resolved).toString());
         }
         return hrefs;
+    }
+
+    private static URI safeUri(String value) {
+        try {
+            return new URI(value);
+        } catch (java.net.URISyntaxException e) {
+            return null;
+        }
     }
 
     /** Matches "block"/"depend" case-insensitively against name/inward/outward, per the brief —

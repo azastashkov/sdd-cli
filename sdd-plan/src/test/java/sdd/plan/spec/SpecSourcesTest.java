@@ -47,6 +47,30 @@ class SpecSourcesTest {
     }
 
     @Test
+    void theLegacyViewpageShapeIsAConfluencePage() {
+        // The bare form -- no /pages/ segment, the page id only in the query. docs/commands.md
+        // lists it as a supported shape and ConfluenceClient.resolvePageId reads pageId from the
+        // query before it looks at the path at all, so the resolver always handled it; only the
+        // classifier did not, and the symptom is the least helpful possible: sdd reports the URL
+        // as a missing markdown FILE.
+        assertThat(SpecSources.classify("https://confluence.corp.local/viewpage.action?pageId=65601"))
+                .isEqualTo(SpecRefKind.CONFLUENCE_PAGE);
+        // Under a context path too.
+        assertThat(SpecSources.classify(
+                "https://wiki.corp.local/confluence/viewpage.action?pageId=65601"))
+                .isEqualTo(SpecRefKind.CONFLUENCE_PAGE);
+    }
+
+    @Test
+    void aPageIdQueryParameterAloneIsEnough() {
+        assertThat(SpecSources.classify("https://confluence.corp.local/spaces/x?pageId=42"))
+                .isEqualTo(SpecRefKind.CONFLUENCE_PAGE);
+        // ...but a parameter that merely ends in the same letters is not it.
+        assertThat(SpecSources.classify("https://example.com/thing?notapageId=42"))
+                .isEqualTo(SpecRefKind.MARKDOWN);
+    }
+
+    @Test
     void unrecognisedRefsAreMarkdown() {
         assertThat(SpecSources.classify("spec.md")).isEqualTo(SpecRefKind.MARKDOWN);
         assertThat(SpecSources.classify("loyalty.spec.md")).isEqualTo(SpecRefKind.MARKDOWN);

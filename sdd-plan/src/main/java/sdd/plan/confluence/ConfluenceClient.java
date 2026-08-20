@@ -58,6 +58,19 @@ public final class ConfluenceClient implements ConfluencePages {
      *  candidate URL naming a non-standard port on the right host and scheme) is rejected the same
      *  way — see {@link #effectivePort}. */
     private final int confluencePort;
+    /**
+     * The context path {@code baseUrl} is served under — {@code "/confluence"} for an install at
+     * {@code https://wiki.corp.local/confluence}, {@code ""} at a host root. Derived from
+     * {@code baseUrl} rather than configured separately, for the same reason
+     * {@link #confluenceHost} is: the two can never disagree this way.
+     *
+     * <p>Every shape-matching pattern below anchors at the start of the path, so without this the
+     * whole class silently assumed a root install. {@code /pages/} happened to survive on
+     * {@code find()}, which made the failure worse rather than better: page-id URLs kept working
+     * while every tiny link and every {@code /display/} URL came back "unresolvable", which reads
+     * like a broken link rather than a misread base URL.
+     */
+    private final String basePath;
     private final DiagnosticWriter diagnostics;
 
     /**
@@ -113,6 +126,7 @@ public final class ConfluenceClient implements ConfluencePages {
         this.confluenceScheme = baseUri == null || baseUri.getScheme() == null
                 ? null : baseUri.getScheme().toLowerCase(Locale.ROOT);
         this.confluencePort = effectivePort(baseUri);
+        this.basePath = normalizeBasePath(baseUri);
         this.diagnostics = diagnostics;
     }
 
@@ -161,7 +175,15 @@ public final class ConfluenceClient implements ConfluencePages {
         if (queryPageId != null) {
             return queryPageId;
         }
-        String path = uri.getPath() == null ? "" : uri.getPath();
+        // RAW path, not getPath(): URI.getPath() has already percent-decoded, and the second
+        // decode below would then read a decoded "+" (from %2B) as a space and reject a decoded
+        // "%" (from %25) outright — the first losing the page silently, the second throwing
+        // IllegalArgumentException, which LinkHarvester does not catch and which therefore ended
+        // the whole run. Decoding exactly once, at the one place a title is needed, fixes both.
+        String path = relativePath(uri.getRawPath());
+        if (path == null) {
+            return null;
+        }
         Matcher pages = PAGES_ID.matcher(path);
         if (pages.find()) {
             return pages.group(1);
@@ -171,9 +193,41 @@ public final class ConfluenceClient implements ConfluencePages {
         }
         Matcher display = DISPLAY.matcher(path);
         if (display.matches()) {
-            return resolveByTitleSearch(display.group(1), decode(display.group(2)));
+            String space = decode(display.group(1));
+            String title = decode(display.group(2));
+            return space == null || title == null
+                    ? null
+                    : resolveByTitleSearch(space, title);
         }
         return null;
+    }
+
+    /**
+     * The given raw path with the install's context path removed, or null when it does not sit
+     * under that context path at all.
+     *
+     * <p>Rejecting rather than tolerating is deliberate and matches {@link #hostMatches}: a URL on
+     * the configured host but outside the configured install is some other application, and
+     * resolving it would send this instance's bearer token there.
+     */
+    private String relativePath(String rawPath) {
+        String p = rawPath == null ? "" : rawPath;
+        if (basePath.isEmpty()) {
+            return p;
+        }
+        if (p.equals(basePath)) {
+            return "";
+        }
+        return p.startsWith(basePath + "/") ? p.substring(basePath.length()) : null;
+    }
+
+    /** A base URL's path, trailing slash removed; "" at a host root. */
+    private static String normalizeBasePath(URI baseUri) {
+        String p = baseUri == null || baseUri.getRawPath() == null ? "" : baseUri.getRawPath();
+        while (p.endsWith("/")) {
+            p = p.substring(0, p.length() - 1);
+        }
+        return p;
     }
 
     /**
@@ -319,8 +373,20 @@ public final class ConfluenceClient implements ConfluencePages {
         return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
     }
 
+    /**
+     * Percent-decodes one path segment, or null when it is not decodable.
+     *
+     * <p>Null rather than a throw: a malformed escape in a URL somebody pasted into a Jira
+     * description is an unresolvable link, which the caller already knows how to note. Letting
+     * {@code IllegalArgumentException} out made it a run-ending failure instead, because
+     * {@code LinkHarvester} catches only {@code AtlassianException}.
+     */
     private static String decode(String value) {
-        return URLDecoder.decode(value, StandardCharsets.UTF_8);
+        try {
+            return URLDecoder.decode(value, StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private static URI parse(String url) {

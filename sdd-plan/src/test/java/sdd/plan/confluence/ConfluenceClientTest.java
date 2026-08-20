@@ -110,6 +110,75 @@ class ConfluenceClientTest {
         assertThat(id).isEqualTo("65602");
     }
 
+    /** A Data Center install served under a context path, e.g. https://wiki.corp.local/confluence. */
+    private ConfluenceClient contextPathClient() {
+        String base = wm.baseUrl() + "/confluence";
+        RestClient rc = new RestClient("Confluence", base, "sk-token", "CONFLUENCE_PAT",
+                Duration.ofSeconds(5), HttpClient.newHttpClient());
+        return new ConfluenceClient(rc, HttpClient.newHttpClient(), "sk-token", base,
+                Duration.ofSeconds(5));
+    }
+
+    @Test
+    void everyUrlShapeResolvesWhenConfluenceIsServedUnderAContextPath() {
+        // Nothing in this suite has ever exercised a non-root base_url: wm.baseUrl() is always
+        // http://localhost:PORT. TINY_LINK and DISPLAY were anchored with ^, so on an install at
+        // /confluence they matched nothing and every tiny link and display URL in the estate would
+        // have come back "unresolvable" -- while /pages/ kept working, because PAGES_ID uses find().
+        wm.stubFor(get(urlEqualTo("/confluence/x/AbCd")).willReturn(aResponse().withStatus(302)
+                .withHeader("Location", "/confluence/pages/viewpage.action?pageId=65601")));
+        wm.stubFor(get(urlEqualTo(
+                "/confluence/rest/api/content?spaceKey=ENG&title=Order%20API%20spec&expand=version"))
+                .willReturn(okJson(fixture("content-search-by-title.json"))));
+
+        ConfluenceClient client = contextPathClient();
+
+        assertThat(client.resolvePageId(wm.baseUrl() + "/confluence/pages/viewpage.action?pageId=65601"))
+                .isEqualTo("65601");
+        assertThat(client.resolvePageId(wm.baseUrl() + "/confluence/x/AbCd")).isEqualTo("65601");
+        assertThat(client.resolvePageId(wm.baseUrl() + "/confluence/display/ENG/Order+API+spec"))
+                .isEqualTo("65602");
+    }
+
+    @Test
+    void aSameHostUrlOutsideTheContextPathIsRefused() {
+        // Fails closed, the same way a host or scheme mismatch does: the configured install lives
+        // under /confluence, so /display/... on that host is some other application.
+        assertThat(contextPathClient().resolvePageId(wm.baseUrl() + "/display/ENG/Order+API+spec"))
+                .isNull();
+    }
+
+    @Test
+    void aTitleContainingAPlusSignIsNotTurnedIntoASpace() {
+        // uri.getPath() has ALREADY percent-decoded, so %2B arrives as a literal '+', and the
+        // second URLDecoder pass then reads it as a space -- the search goes out for the wrong
+        // title and quietly finds nothing.
+        wm.stubFor(get(urlEqualTo(
+                "/rest/api/content?spaceKey=ENG&title=C%2B%2B%20style&expand=version"))
+                .willReturn(okJson(fixture("content-search-by-title.json"))));
+
+        assertThat(client().resolvePageId(wm.baseUrl() + "/display/ENG/C%2B%2B+style"))
+                .isEqualTo("65602");
+    }
+
+    @Test
+    void aTitleContainingAPercentSignDoesNotBlowUpTheRun() {
+        // Same double decode, worse outcome: %25 decodes to a bare '%', which URLDecoder rejects
+        // with IllegalArgumentException. LinkHarvester catches only AtlassianException, so this
+        // took the whole sdd plan run down rather than becoming one unresolvable note.
+        wm.stubFor(get(urlEqualTo(
+                "/rest/api/content?spaceKey=ENG&title=100%25%20uptime&expand=version"))
+                .willReturn(okJson(fixture("content-search-by-title.json"))));
+
+        assertThat(client().resolvePageId(wm.baseUrl() + "/display/ENG/100%25+uptime"))
+                .isEqualTo("65602");
+    }
+
+    @Test
+    void aMalformedEscapeInATitleIsUnresolvableRatherThanFatal() {
+        assertThat(client().resolvePageId(wm.baseUrl() + "/display/ENG/broken%ZZ")).isNull();
+    }
+
     @Test
     void aDisplayUrlWithNoMatchingTitleIsUnresolvable() {
         wm.stubFor(get(urlEqualTo(

@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.equalToJson;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
@@ -202,6 +203,30 @@ class JiraClientTest {
         wm.verify(postRequestedFor(urlEqualTo("/rest/api/2/issue/PROJ-123/comment"))
                 .withHeader("Authorization", com.github.tomakehurst.wiremock.client.WireMock.equalTo("Bearer sk-token"))
                 .withRequestBody(equalToJson("{\"body\": \"sdd: plan approved for `SPEC-7`\"}")));
+    }
+
+    @Test
+    void aRelativeHrefIsResolvedAgainstTheJiraBaseUrlRatherThanDropped() {
+        // Data Center commonly serves Jira and Confluence on ONE host under two context paths, and
+        // renders a same-origin link relatively. Keeping only absolute hrefs dropped those without
+        // a note -- LinkHarvester never saw a candidate, so not one of its "declined" branches
+        // fired. A silent drop, in a class whose whole contract is that every declined link is
+        // named.
+        List<String> hrefs = JiraClient.hrefsIn("""
+                <p>see <a href="/confluence/pages/viewpage.action?pageId=65601">the spec</a>
+                and <a href="https://elsewhere.example/x">this</a>
+                and <a href="#local">this anchor</a>
+                and <a href="mailto:someone@corp.local">this address</a></p>""",
+                "https://atlassian.corp.local/jira");
+
+        assertThat(hrefs).containsExactly(
+                "https://atlassian.corp.local/confluence/pages/viewpage.action?pageId=65601",
+                "https://elsewhere.example/x");
+    }
+
+    @Test
+    void aRelativeHrefIsStillDroppedWhenThereIsNoBaseUrlToResolveAgainst() {
+        assertThat(JiraClient.hrefsIn("<a href=\"/confluence/x/AbCd\">s</a>", null)).isEmpty();
     }
 
     @Test
