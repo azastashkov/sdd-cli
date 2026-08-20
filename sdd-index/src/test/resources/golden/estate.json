@@ -389,5 +389,7 @@
     "response_type" : "String"
   } ],
   "runtime_edge" : [ ],
-  "runtime_remote" : [ ]
+  "runtime_remote" : [ ],
+  "type_ref" : [ ],
+  "type_supertype" : [ ]
 }

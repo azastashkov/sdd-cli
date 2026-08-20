@@ -29,7 +29,7 @@ final class DbDump {
             "repo", "module", "artifact", "dep_edge", "java_type", "api_member", "api_usage",
             "file_ref", "rest_endpoint", "rest_client", "rest_call_edge", "kafka_topic",
             "kafka_role", "config_property", "repo_card", "fts_symbol",
-            "runtime_remote", "runtime_edge");
+            "runtime_remote", "runtime_edge", "type_supertype", "type_ref");
 
     private DbDump() {}
 
