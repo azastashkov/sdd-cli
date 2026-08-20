@@ -42,7 +42,6 @@ public record OpenSpecInput(
         List<Contract> consumes,
         List<String> bumps,
         String baseSha,
-        boolean capabilityExists,
         Map<String, String> requirementOwners) {
 
     /** An id-and-text pair, matching {@code SpecItem} without depending on it. */

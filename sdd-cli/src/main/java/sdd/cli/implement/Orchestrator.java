@@ -53,6 +53,13 @@ public final class Orchestrator {
     private final RunStore store;
     private final long runTokenBudget;
     private final Map<String, RepoPropagation> propagation;
+    /**
+     * One rendered-input per repo with a step, or empty when the export is not configured. A field
+     * with a setter rather than an eleventh constructor parameter: four public constructors already
+     * delegate down to one, and every OrchestratorTest call site would have to change to say "no
+     * export" — which is exactly the churn the nodeHome/progress overloads were added to avoid.
+     */
+    private Map<String, sdd.plan.openspec.OpenSpecInput> openSpecInputs = Map.of();
     private final MavenLocalPublisher publisher;
     private final JarBuilder jarBuilder;
     /** Where node lives, for the npm substitution; null takes it from PATH. */
@@ -182,6 +189,36 @@ public final class Orchestrator {
     }
 
     /** One repo, walking the escalation ladder. Returns false when the walk must stop (a pause landed). */
+    /**
+     * Renders this repo's export and keeps the run's own copy, or returns null when no export is
+     * configured. Never throws into the run: an export is an extra, and failing a repo that
+     * otherwise succeeded because a markdown file could not be written would be a bad trade.
+     */
+    private sdd.plan.openspec.OpenSpecChange.Files renderOpenSpec(Path runDir, String repo,
+                                                                  RepoStep step,
+                                                                  List<String> events) {
+        sdd.plan.openspec.OpenSpecInput input = openSpecInputs.get(repo);
+        if (input == null) {
+            return null;
+        }
+        try {
+            boolean exists = OpenSpecExport.capabilityExists(step.repoRoot(),
+                    sdd.plan.openspec.OpenSpecChange.capabilityOf(input));
+            sdd.plan.openspec.OpenSpecChange.Files files =
+                    sdd.plan.openspec.OpenSpecChange.render(input, exists);
+            store.writeOpenSpec(runDir, repo, files.byPath(input.changeId()));
+            return files;
+        } catch (RuntimeException e) {
+            events.add("openspec: export skipped — " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** Supplies the OpenSpec export; absent means the run writes none. */
+    public void openSpecInputs(Map<String, sdd.plan.openspec.OpenSpecInput> inputs) {
+        this.openSpecInputs = Map.copyOf(inputs);
+    }
+
     private boolean runRepo(Path runDir, String runId, PlanModel plan, Map<String, RepoStep> steps,
                             RunState state, String repo) {
         Runnable entryPaint;
@@ -228,9 +265,19 @@ public final class Orchestrator {
         // rather than by remembering to write it.
         Map<String, CompatGate> gates = new LinkedHashMap<>();
         List<NpmOverlay.Applied> overlaysApplied = List.of();
+        sdd.plan.openspec.OpenSpecChange.Files openSpec = null;
         try {
             RunGit.startBranch(step.repoRoot(), branch, base);
             applyBumps(repo, step, events);
+            // Rendered here, not earlier: startBranch has just hard-reset to base_sha and cleaned,
+            // so this is the one point where the tree is provably at the commit the plan was made
+            // against — on a fresh run and on a resume alike, since PreFlight.checkResume
+            // deliberately skips tree checks. That is what makes the capability probe meaningful.
+            // Rendered once per repo; an escalation re-enters this block, and the probe cannot
+            // change, so the second render is discarded.
+            if (openSpec == null) {
+                openSpec = renderOpenSpec(runDir, repo, step, events);
+            }
             // Overlays live only for as long as this repo is being built. They are filesystem
             // state rather than a flag, so unlike Gradle's substitution they have to be undone —
             // the finally below does that on every path out of this block, including a model
@@ -334,6 +381,16 @@ public final class Orchestrator {
             // Before the checkpoint, so a pin the agent moved never reaches the commit a human
             // reviews or the release runbook publishes from.
             reassertBumps(repo, step, events);
+            // After the agent, before the checkpoint. Writing it before the agent would need a
+            // reassert pass mirroring reassertBumps, because startBranch cleans on every
+            // escalation; after SUCCESS there is no escalation left, so there is nothing to
+            // re-apply. It also keeps tasks.md out of the agent's own jail and untracked markdown
+            // out of the verification build.
+            if (openSpec != null) {
+                events.addAll(OpenSpecExport.materialize(step.repoRoot(),
+                        sdd.plan.openspec.ChangeId.of(plan.specId(), plan.planVersion()),
+                        openSpec).events());
+            }
             store.writeAgentEvents(runDir, repo, events);
             String sha = RunGit.commitAll(step.repoRoot(), "sdd: " + runId + " " + repo);
             RepoPropagation prop = propagation.getOrDefault(repo, RepoPropagation.none());

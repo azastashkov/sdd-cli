@@ -60,7 +60,7 @@ class OpenSpecGoldenTest {
                         + "entry in JdbcTierResolver. Keep the existing resolveTier signature untouched.",
                 List.of("src/main/java/com/trading/pricing/core/JdbcTierResolver.java"),
                 List.of("./gradlew :pricing-core:test"), "minor",
-                List.of(TIER_API), List.of(), List.of(), "a1b2c3d4e5f6", false,
+                List.of(TIER_API), List.of(), List.of(), "a1b2c3d4e5f6",
                 Map.of("R2", "svc-orders"));
     }
 
@@ -80,7 +80,7 @@ class OpenSpecGoldenTest {
                 "Call TierResolver.invalidate from the tier-update handler.",
                 List.of("src/main/java/com/trading/orders/TierUpdateHandler.java"),
                 List.of("./gradlew :svc-orders:test"), "none",
-                List.of(), List.of(TIER_API), List.of(), "b2c3d4e5f6a1", false,
+                List.of(), List.of(TIER_API), List.of(), "b2c3d4e5f6a1",
                 Map.of("R1", "pricing-core"));
     }
 

@@ -35,7 +35,7 @@ class OpenSpecChangeTest {
                 List.of(new OpenSpecInput.Contract("tier-invalidation-api", "java-api",
                         "pricing-core", List.of("svc-orders"), "TierResolver gains invalidate",
                         "binary-compatible", List.of("com.trading.TierResolver#invalidate(String): void"))),
-                List.of(), List.of(), "a1b2c3d4e5", false, Map.of("R2", "svc-orders"));
+                List.of(), List.of(), "a1b2c3d4e5", Map.of("R2", "svc-orders"));
     }
 
     private static OpenSpecInput allocated() {
@@ -164,7 +164,7 @@ class OpenSpecChangeTest {
                 "", List.of(), List.of(), List.of(), List.of(), List.of(), OpenSpecPlan.absent(),
                 "Rebuild only.", List.of(), List.of("./gradlew build"), "patch", List.of(),
                 List.of(), List.of("Update `com.trading:pricing-core` from `0.3.0` to `0.4.0`."),
-                "aaaa", false, Map.of());
+                "aaaa", Map.of());
 
         OpenSpecChange.Files files = OpenSpecChange.render(in);
 
@@ -189,7 +189,7 @@ class OpenSpecChangeTest {
         OpenSpecInput in = new OpenSpecInput("spec-x-v1", "r", "SEED", List.of("r"), List.of(),
                 "SPEC-X", 1, "T", "G", "", List.of(), List.of(), List.of(),
                 List.of(item("R1", "Do a thing.")), List.of(), OpenSpecPlan.absent(), "", List.of(),
-                List.of("build"), "none", List.of(), List.of(), List.of(), "", false, Map.of());
+                List.of("build"), "none", List.of(), List.of(), List.of(), "", Map.of());
 
         String why = OpenSpecChange.render(in).proposal()
                 .split("## Why\n", 2)[1].split("\n## ", 2)[0];
@@ -232,7 +232,7 @@ class OpenSpecChangeTest {
                 "Call invalidate.", List.of(), List.of("./gradlew test"), "none", List.of(),
                 List.of(new OpenSpecInput.Contract("tier-invalidation-api", "java-api",
                         "pricing-core", List.of("svc-orders"), "body", null, List.of())),
-                List.of(), "bbbb", false, Map.of());
+                List.of(), "bbbb", Map.of());
 
         String tasks = OpenSpecChange.render(consumer).tasks();
 
@@ -272,7 +272,7 @@ class OpenSpecChangeTest {
                 List.of("build"), "none",
                 List.of(new OpenSpecInput.Contract("c", "java-api", "r", List.of(),
                         "body with ``` inside", null, List.of())),
-                List.of(), List.of(), "", false, Map.of());
+                List.of(), List.of(), "", Map.of());
 
         OpenSpecChange.Files files = OpenSpecChange.render(in);
 

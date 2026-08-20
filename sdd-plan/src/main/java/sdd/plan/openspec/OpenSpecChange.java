@@ -79,13 +79,27 @@ public final class OpenSpecChange {
         }
     }
 
+    /** Renders with no knowledge of the target tree — the capability reads as new. */
     public static Files render(OpenSpecInput in) {
+        return render(in, false);
+    }
+
+    /**
+     * @param capabilityExists whether the target repository already has a main spec for this
+     *                         capability. A filesystem fact, not plan data, which is why it is a
+     *                         parameter rather than a field on {@link OpenSpecInput}: the input is
+     *                         built at plan time and this is only knowable once the tree is at the
+     *                         plan's base commit. It changes only whether the proposal says New or
+     *                         Modified Capabilities — the delta is ADDED either way.
+     */
+    public static Files render(OpenSpecInput in, boolean capabilityExists) {
         String capability = capabilityOf(in);
         Map<String, String> deltas = in.rebuildOnly() || in.covers().isEmpty()
                 ? Map.of()
                 : Map.of(capability, delta(in, capability));
-        return new Files(openSpecYaml(deltas.isEmpty()), proposal(in, capability, deltas.isEmpty()),
-                design(in), tasks(in), deltas);
+        return new Files(openSpecYaml(deltas.isEmpty()),
+                proposal(in, capability, deltas.isEmpty(), capabilityExists), design(in), tasks(in),
+                deltas);
     }
 
     // ---------------------------------------------------------------- .openspec.yaml
@@ -112,7 +126,7 @@ public final class OpenSpecChange {
      * corrects it at Gate 1. The fallbacks exist so the export never fails; the last one says so
      * loudly in the proposal.
      */
-    static String capabilityOf(OpenSpecInput in) {
+    public static String capabilityOf(OpenSpecInput in) {
         if (in.plan().capability() != null) {
             return in.plan().capability();
         }
@@ -131,7 +145,8 @@ public final class OpenSpecChange {
 
     // ---------------------------------------------------------------- proposal.md
 
-    private static String proposal(OpenSpecInput in, String capability, boolean noDeltas) {
+    private static String proposal(OpenSpecInput in, String capability, boolean noDeltas,
+                                   boolean capabilityExists) {
         StringBuilder md = new StringBuilder();
         md.append("# ").append(inline(in.specTitle())).append("\n\n");
 
@@ -183,7 +198,7 @@ public final class OpenSpecChange {
         if (noDeltas) {
             md.append("\n_None — this change makes no behavioural change in this repository._\n");
         } else {
-            md.append("\n### ").append(in.capabilityExists() ? "Modified" : "New")
+            md.append("\n### ").append(capabilityExists ? "Modified" : "New")
                     .append(" Capabilities\n");
             md.append("- `").append(capability).append("`: ")
                     .append(capabilityBlurb(in, capability)).append('\n');

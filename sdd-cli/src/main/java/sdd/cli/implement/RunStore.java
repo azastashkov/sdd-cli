@@ -248,6 +248,27 @@ public class RunStore {
      * breadcrumbs, not the full record. See {@link #writeTranscript} and {@link #writeEdits} for the
      * design's per-model-call transcript and applied-edit log.
      */
+    /**
+     * The run's own copy of a repo's OpenSpec export, under the existing per-repo run directory.
+     *
+     * <p>Written whether or not the repo later succeeds, so a FAILED repo's slice can still be
+     * handed to a foreign agent by hand — the tree copy only lands on SUCCESS. Kept under
+     * {@code <runDir>/<repo>/} rather than a new top-level {@code openspec/}, which would collide
+     * with a repository actually named "openspec".
+     */
+    public void writeOpenSpec(Path runDir, String repo, Map<String, String> files) {
+        try {
+            Path base = runDir.resolve(sanitize(repo));
+            for (Map.Entry<String, String> file : files.entrySet()) {
+                Path target = base.resolve(file.getKey());
+                Files.createDirectories(target.getParent());
+                Files.writeString(target, file.getValue());
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot write the OpenSpec export for " + repo, e);
+        }
+    }
+
     public void writeAgentEvents(Path runDir, String repo, List<String> events) {
         try {
             Path repoDir = runDir.resolve(sanitize(repo));

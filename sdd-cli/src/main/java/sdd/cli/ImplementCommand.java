@@ -14,6 +14,7 @@ import sdd.agent.tool.GradleTool;
 import sdd.cli.implement.JarBuilder;
 import sdd.cli.implement.MavenLocalInit;
 import sdd.cli.implement.MavenLocalPublisher;
+import sdd.cli.implement.OpenSpecInputs;
 import sdd.cli.implement.Orchestrator;
 import sdd.cli.implement.PlanJsonReader;
 import sdd.cli.implement.PlanModel;
@@ -379,6 +380,12 @@ public final class ImplementCommand implements Callable<Integer> {
                         new MavenLocalPublisher(java.time.Duration.ofMinutes(10), config.gradleHome()),
                         new JarBuilder(java.time.Duration.ofMinutes(10), config.gradleHome()),
                         config.nodeHome(), progress);
+                // Built from the frozen plan and the run dir's spec snapshot, so a resumed run
+                // exports what the original run would have. Repos with no step are absent by
+                // construction: they are never branched, so writing into them would touch a
+                // repository this run does not own.
+                orchestrator.openSpecInputs(
+                        OpenSpecInputs.forPlan(activePlan, parsedSpec, activePropagation));
                 Orchestrator.RunResult result = initialState == null
                         ? orchestrator.run(runDir, activePlan, activeSteps)
                         : orchestrator.run(runDir, activePlan, activeSteps, initialState);
