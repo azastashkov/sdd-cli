@@ -161,12 +161,43 @@ public final class FileTools {
         return String.join("\n", names) + (names.isEmpty() ? "" : "\n");
     }
 
+    /** Backwards-compatible: content search over the whole repo. */
     public String search(String regex) {
-        Pattern pattern;
-        try {
-            pattern = Pattern.compile(regex);
-        } catch (PatternSyntaxException e) {
-            throw new ToolException("bad regex: " + e.getMessage());
+        return search(regex, null);
+    }
+
+    /**
+     * Searches file contents by regex, lists files by path glob, or both.
+     *
+     * <p>The glob argument is new, and so is omitting the regex. Measured on a recorded run
+     * (estate11 SPEC-203-v1, trading-core): with no way to scope a search to a path, the agent
+     * encoded the filename INTO the regex — {@code SubmitRequest\.java.*price} — four times across
+     * turns 54-57, and got an empty result every time, because hits are matched per LINE of content
+     * and a filename never appears on the same line as the code it names. The same run spent 12
+     * {@code list_files} calls walking single-child package directories one level at a time.
+     */
+    public String search(String regex, String glob) {
+        boolean hasRegex = regex != null && !regex.isBlank();
+        boolean hasGlob = glob != null && !glob.isBlank();
+        if (!hasRegex && !hasGlob) {
+            throw new ToolException("give a regex to search file contents, a glob to list matching "
+                    + "paths, or both to search within those paths");
+        }
+        Pattern pattern = null;
+        if (hasRegex) {
+            try {
+                pattern = Pattern.compile(regex);
+            } catch (PatternSyntaxException e) {
+                throw new ToolException("bad regex: " + e.getMessage());
+            }
+        }
+        java.nio.file.PathMatcher matcher = null;
+        if (hasGlob) {
+            try {
+                matcher = java.nio.file.FileSystems.getDefault().getPathMatcher("glob:" + glob);
+            } catch (IllegalArgumentException | UnsupportedOperationException e) {
+                throw new ToolException("bad path glob: " + e.getMessage());
+            }
         }
         Path root = jail.root();
         List<String> hits = new ArrayList<>();
@@ -180,6 +211,14 @@ public final class FileTools {
                 if (hits.size() >= MAX_SEARCH_HITS) {
                     truncated[0] = true;
                     break;
+                }
+                Path rel = root.relativize(file);
+                if (matcher != null && !matcher.matches(rel)) {
+                    continue;
+                }
+                if (pattern == null) {
+                    hits.add(rel.toString().replace('\\', '/'));
+                    continue;
                 }
                 scanFile(root, file, pattern, hits, truncated);
             }

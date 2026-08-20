@@ -167,13 +167,17 @@ public final class ExploreTools implements Tools {
                         "offset":{"type":"integer","description":"First line, 1-based"},\
                         "limit":{"type":"integer","description":"How many lines"}},\
                         "required":["path"]}"""),
-                new ToolSpec("search_code", "Regex-search every repo's text.",
+                new ToolSpec("search_code",
+                        "Search file contents by regex, and/or list files by path glob. "
+                                + "Give regex to search, glob to list matching paths "
+                                + "(e.g. src/**/*.ts), or both to search only within those paths.",
                         """
                         {"type":"object","properties":{\
-                        "regex":{"type":"string","description":"Java regex"},\
+                        "regex":{"type":"string","description":"Java regex over file contents; \
+                        omit to just list the files the glob matches"},\
                         "repo":{"type":"string","description":"Optional repo filter"},\
-                        "glob":{"type":"string","description":"Optional path glob"}},\
-                        "required":["regex"]}"""),
+                        "glob":{"type":"string","description":"Path glob over the repo-relative \
+                        path, e.g. **/*.sql or src/**/*.ts"}}}"""),
                 new ToolSpec("search_symbols", "Search indexed type and member names.",
                         one("query", "Words or an identifier")),
                 new ToolSpec("who_references",
@@ -215,7 +219,7 @@ public final class ExploreTools implements Tools {
     private static ToolSpec multiplexed() {
         return new ToolSpec(MULTIPLEXED,
                 "Explore the estate. One action per call: list_repos | list_files(path) | "
-                        + "read_file(path[,offset][,limit]) | search_code(regex[,repo][,glob]) | "
+                        + "read_file(path[,offset][,limit]) | search_code([regex][,repo][,glob]) | "
                         + "search_symbols(query) | who_references(fqcn[,direction]) | "
                         + "kb_resolve(kind,value) | "
                         + "propose_touchpoint(kind,value) | record_finding(claim,citation) | "
@@ -281,7 +285,7 @@ public final class ExploreTools implements Tools {
             case "list_repos" -> listRepos();
             case "list_files" -> listFiles(str(args, "path"));
             case "read_file" -> readFile(str(args, "path"), args);
-            case "search_code" -> searchCode(str(args, "regex"), optional(args, "repo"),
+            case "search_code" -> searchCode(optional(args, "regex"), optional(args, "repo"),
                     optional(args, "glob"));
             case "search_symbols" -> searchSymbols(str(args, "query"));
             case "who_references" -> whoReferences(str(args, "fqcn"), optional(args, "direction"));

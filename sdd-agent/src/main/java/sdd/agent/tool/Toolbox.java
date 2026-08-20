@@ -80,6 +80,7 @@ public final class Toolbox implements Tools {
                 "action":{"type":"string","enum":["read_file","list_files","search","apply_edit",\
                 "%s","done"]},\
                 "path":{"type":"string"},"dir":{"type":"string"},"regex":{"type":"string"},\
+                "glob":{"type":"string"},\
                 "search":{"type":"string"},"replace":{"type":"string"},"task":{"type":"string"},\
                 "result":{"type":"string"},"summary":{"type":"string"}},"required":["action"]}"""
                         .formatted(build.toolName()));
@@ -97,8 +98,16 @@ public final class Toolbox implements Tools {
                         obj("path", "string", "Repo-relative file path")),
                 new ToolSpec("list_files", "List the entries of a directory.",
                         obj("dir", "string", "Repo-relative directory path")),
-                new ToolSpec("search", "Regex-search the repo's text files.",
-                        obj("regex", "string", "A Java regular expression")),
+                new ToolSpec("search",
+                        "Search file contents by regex, and/or list files by path glob. Give "
+                                + "regex to search, glob to list matching paths (e.g. "
+                                + "src/**/*.java), or both to search only within those paths.",
+                        """
+                        {"type":"object","properties":{\
+                        "regex":{"type":"string","description":"A Java regular expression over \
+                        file contents; omit to just list the files the glob matches"},\
+                        "glob":{"type":"string","description":"Path glob over the repo-relative \
+                        path, e.g. **/*.yml or src/main/java/**/*Test.java"}}}"""),
                 new ToolSpec("apply_edit",
                         "Replace a search block with a replacement (empty search = create the file).",
                         editSchema()),
@@ -125,7 +134,7 @@ public final class Toolbox implements Tools {
         return switch (name) {
             case "read_file" -> files.readFile(str(args, "path"));
             case "list_files" -> files.listFiles(str(args, "dir"));
-            case "search" -> files.search(str(args, "regex"));
+            case "search" -> files.search(optional(args, "regex"), optional(args, "glob"));
             case "apply_edit" -> files.applyEdit(str(args, "path"), str(args, "search"), str(args, "replace"));
             case "done" -> throw new MalformedCallException("done is handled by the loop, not dispatched");
             default -> throw new MalformedCallException("unknown tool: " + name);
@@ -150,6 +159,13 @@ public final class Toolbox implements Tools {
             throw new MalformedCallException("missing required string argument: " + field);
         }
         return value.asText();
+    }
+
+    /** A string argument that may legitimately be absent — {@code search} now takes two, either
+     *  of which alone is a valid call, so a missing one is not a malformed call. */
+    private static String optional(JsonNode args, String field) {
+        JsonNode value = args.get(field);
+        return value == null || !value.isTextual() ? null : value.asText();
     }
 
     private static String obj(String field, String type, String desc) {

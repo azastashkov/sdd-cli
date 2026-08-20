@@ -151,4 +151,39 @@ class FileToolsReadTest {
             return true;
         }
     }
+
+    @Test
+    void searchListsFilesByGlobWhenNoRegexIsGiven() throws Exception {
+        // Implement-time search had no glob at all. Measured on a recorded run (estate11
+        // SPEC-203-v1, trading-core), the agent tried to scope a search by writing the filename
+        // into the regex -- SubmitRequest\\.java.*price, four times across turns 54-57 -- and got
+        // an empty result each time, because hits match per LINE and a filename never shares a
+        // line with the code it names.
+        Files.createDirectories(root.resolve("src/test/java/a"));
+        Files.writeString(root.resolve("src/test/java/a/ATest.java"), "class ATest {}\n");
+        Files.writeString(root.resolve("src/main/java/a/Empty.java"), "");
+
+        String listed = tools.search(null, "src/main/**/*.java");
+
+        assertThat(listed).contains("src/main/java/a/A.java")
+                .contains("src/main/java/a/B.java")
+                // an empty file is nameable this way and can never be found by a content search
+                .contains("src/main/java/a/Empty.java")
+                .doesNotContain("ATest.java");
+    }
+
+    @Test
+    void searchWithBothScopesTheContentSearchToTheGlob() throws Exception {
+        Files.writeString(root.resolve("notes.md"), "loyaltyTier is discussed here\n");
+
+        assertThat(tools.search("loyaltyTier", "**/*.java"))
+                .contains("A.java").doesNotContain("notes.md");
+    }
+
+    @Test
+    void searchWithNeitherArgumentSaysWhatItNeeds() {
+        assertThatThrownBy(() -> tools.search(null, null))
+                .isInstanceOf(ToolException.class)
+                .hasMessageContaining("give a regex");
+    }
 }

@@ -34,6 +34,14 @@ import java.util.stream.Stream;
  * <p>Read-only by construction: it holds an {@link EstateJail}, which has no writable resolve.
  */
 public final class EstateSearch {
+    /**
+     * Per repo in path-listing mode. Higher than {@link #MAX_HITS_PER_REPO} because a listing is
+     * one short line per file and the useful answer is usually "all of them" — 20 would truncate an
+     * ordinary {@code src/**}{@code /*.java}. 100 paths is roughly 6KB, well inside
+     * {@link #MAX_OUTPUT_BYTES}.
+     */
+    static final int MAX_PATHS_PER_REPO = 100;
+
     /** Per repo, not global — see the class note. */
     static final int MAX_HITS_PER_REPO = 20;
     static final int MAX_TOTAL_HITS = 200;
@@ -90,14 +98,29 @@ public final class EstateSearch {
 
     /** @see #search(String, String, String) */
     public Result find(String regex, String repo, String glob) {
-        Pattern pattern;
-        try {
-            pattern = Pattern.compile(regex);
-        } catch (PatternSyntaxException e) {
-            throw new ToolException("bad regex: " + e.getMessage());
+        boolean hasRegex = regex != null && !regex.isBlank();
+        boolean hasGlob = glob != null && !glob.isBlank();
+        if (!hasRegex && !hasGlob) {
+            throw new ToolException("give a regex to search file contents, a glob to list matching "
+                    + "paths, or both to search within those paths");
+        }
+        // A null pattern means LISTING mode: report the paths that match the glob rather than the
+        // lines that match a regex. Before this, the only way to ask "which files match
+        // src/**/*.ts" was to invent a regex that matches everything -- which does not work, because
+        // hits are counted per LINE, so one file's first 20 lines exhaust the repo's budget and the
+        // second filename is never seen. Files that are empty, binary, non-UTF-8 or over
+        // MAX_SEARCHED_FILE_BYTES are unnameable that way at any budget, since nothing in them is
+        // ever read.
+        Pattern pattern = null;
+        if (hasRegex) {
+            try {
+                pattern = Pattern.compile(regex);
+            } catch (PatternSyntaxException e) {
+                throw new ToolException("bad regex: " + e.getMessage());
+            }
         }
         PathMatcher matcher = null;
-        if (glob != null && !glob.isBlank()) {
+        if (hasGlob) {
             try {
                 matcher = FileSystems.getDefault().getPathMatcher("glob:" + glob);
             } catch (IllegalArgumentException | UnsupportedOperationException e) {
@@ -139,8 +162,8 @@ public final class EstateSearch {
                 total += hits.size();
             }
         }
-        return new Result(render(repos, hitsByRepo, capped, stoppedAt, timedOut, deadline),
-                List.copyOf(shown));
+        return new Result(render(repos, hitsByRepo, capped, stoppedAt, timedOut, deadline,
+                pattern == null), List.copyOf(shown));
     }
 
     /** @return how many lines matched in this repo, which may exceed what was collected */
@@ -159,6 +182,16 @@ public final class EstateSearch {
                 }
                 Path rel = root.relativize(file);
                 if (glob != null && !glob.matches(rel)) {
+                    continue;
+                }
+                if (pattern == null) {
+                    found++;
+                    // NOT added to `shown`. That set is what ExploreTools' citation gate treats as
+                    // "this run has read the file", and a listing surfaces no content at all --
+                    // record_finding must still require a real read.
+                    if (hits.size() < MAX_PATHS_PER_REPO) {
+                        hits.add(repo + "/" + rel.toString().replace('\\', '/'));
+                    }
                     continue;
                 }
                 found += scanFile(repo, rel, file, pattern, hits, shown);
@@ -211,7 +244,9 @@ public final class EstateSearch {
 
     private static String render(List<String> searched, Map<String, List<String>> hitsByRepo,
                                  Map<String, Integer> capped, List<String> stoppedAt,
-                                 boolean timedOut, Duration deadline) {
+                                 boolean timedOut, Duration deadline, boolean listing) {
+        String noun = listing ? "files" : "matches";
+        int perRepoCap = listing ? MAX_PATHS_PER_REPO : MAX_HITS_PER_REPO;
         StringBuilder out = new StringBuilder();
         for (var entry : hitsByRepo.entrySet()) {
             for (String hit : entry.getValue()) {
@@ -226,11 +261,12 @@ public final class EstateSearch {
         if (hitsByRepo.isEmpty()) {
             // Naming the repos searched is the point: "no matches" over an unstated scope is the
             // ambiguity that lets a model read a filtered search as an estate-wide absence.
-            out.append("no matches in: ").append(String.join(", ", searched)).append('\n');
+            out.append("no ").append(noun).append(" in: ")
+                    .append(String.join(", ", searched)).append('\n');
         }
         capped.forEach((repo, found) -> out.append("(").append(repo).append(": showing ")
-                .append(MAX_HITS_PER_REPO).append(" of ").append(found)
-                .append(" matches — pass repo=").append(repo).append(" to see more)\n"));
+                .append(perRepoCap).append(" of ").append(found).append(' ').append(noun)
+                .append(" — pass repo=").append(repo).append(" to see more)\n"));
         if (!stoppedAt.isEmpty()) {
             out.append("(not searched, ").append(timedOut ? "time limit reached" : "total hit cap reached")
                     .append(": ").append(String.join(", ", stoppedAt)).append(")\n");

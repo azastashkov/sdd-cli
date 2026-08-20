@@ -275,6 +275,66 @@ class ExploreToolsTest {
     }
 
     @Test
+    void aGlobWithNoRegexListsMatchingPaths() throws Exception {
+        // The gap the probe found. With a mandatory regex the only way to ask "which files match
+        // this pattern" was to invent one matching everything -- which does not work, because hits
+        // are counted per LINE, so one file's first 20 lines exhaust the repo budget.
+        Files.writeString(ws.resolve("payments-api/src/main/java/com/acme/Empty.java"), "");
+        Files.createDirectories(ws.resolve("payments-api/src/test/java/com/acme"));
+        Files.writeString(ws.resolve("payments-api/src/test/java/com/acme/PublisherTest.java"),
+                "package com.acme;\nclass PublisherTest {}\n");
+
+        String out = call("search_code", """
+                {"glob":"src/main/**/*.java"}""");
+
+        assertThat(out).contains("payments-api/src/main/java/com/acme/Publisher.java")
+                // an EMPTY file is nameable this way and can never be found by a content search
+                .contains("payments-api/src/main/java/com/acme/Empty.java")
+                .doesNotContain("PublisherTest.java")
+                .doesNotContain("README.md");
+    }
+
+    @Test
+    void aGlobAndARegexTogetherSearchOnlyWithinThoseFiles() {
+        // The four wasted turns in the recorded run were an attempt to express exactly this, by
+        // putting the filename in the regex -- which can never match, since a filename does not
+        // appear on the same line as the code it names.
+        assertThat(call("search_code", """
+                {"regex":"tier\\\\.lvc\\\\.map","glob":"**/Publisher.java"}"""))
+                .contains("Publisher.java").contains("tier.lvc.map");
+        assertThat(call("search_code", """
+                {"regex":"tier\\\\.lvc\\\\.map","glob":"**/*.md"}"""))
+                .contains("no matches in");
+    }
+
+    @Test
+    void listingFilesDoesNotCountAsHavingReadThem() {
+        // A listing surfaces paths, never content, so it must not satisfy the citation gate.
+        call("search_code", """
+                {"glob":"**/*.java"}""");
+
+        assertThatThrownBy(() -> call("record_finding", """
+                {"claim":"the key lives here","citation":"payments-api/src/main/java/com/acme/Publisher.java:3"}"""))
+                .isInstanceOf(ToolException.class)
+                .hasMessageContaining("this run has not read it");
+    }
+
+    @Test
+    void neitherARegexNorAGlobIsAnError() {
+        assertThatThrownBy(() -> call("search_code", "{}"))
+                .isInstanceOf(ToolException.class)
+                .hasMessageContaining("give a regex");
+    }
+
+    @Test
+    void aBadGlobIsReportedAsABadGlob() {
+        assertThatThrownBy(() -> call("search_code", """
+                {"glob":"src/**/{unclosed"}"""))
+                .isInstanceOf(ToolException.class)
+                .hasMessageContaining("bad path glob");
+    }
+
+    @Test
     void singleToolModeAdvertisesExactlyOneDeclaration() {
         assertThat(single().specs()).singleElement().satisfies(spec -> {
             assertThat(spec.name()).isEqualTo("sdd");
