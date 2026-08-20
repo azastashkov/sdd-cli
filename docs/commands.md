@@ -55,6 +55,28 @@ buckets, and does not soften the third one — its whole value is that someone
 debugging at 2am inside a network nobody else can reach finds the honest
 answer instead of a reassuring one.
 
+**Update, 2026-08-20 — still no live run, but the ground has moved.** Reading the code found five
+defects that would each have cost a trip to the network to diagnose, and they are fixed with tests
+that failed first: the legacy `viewpage.action?pageId=` shape classified as a missing markdown
+*file*; `ConfluenceClient`'s tiny-link and `/display/` patterns were anchored at the path root and
+so matched nothing on an install served under a context path; `/display/` titles were
+percent-decoded twice, silently searching for the wrong title on a `+` and throwing an uncaught
+`IllegalArgumentException` on a `%`; one oversized Confluence page ended the whole run rather than
+becoming a note; and a *relative* `<a href>` — the shape Data Center emits when Jira and Confluence
+share a host — was dropped with no note at all.
+
+Two silent under-reads now say so out loud (only the first page of comments; which issue-link types
+were and were not followed), and two diagnostics exist specifically to make the first live run
+readable: `sdd plan --fetch-only`, which exercises Jira and Confluence with no model call and
+nothing written, and `SDD_ATLASSIAN_DUMP`, which records every exchange including the response
+headers that carry `Location` and `Retry-After`.
+
+**None of this is verification.** Every item in bucket 3 below is still an assumption; several now
+fail more loudly or more narrowly than they did, which is not the same as being right. The staged
+run that would settle them is written up in
+[`atlassian-live-verification.md`](atlassian-live-verification.md), including what "done" means for
+this very section.
+
 ### 1. Verified by test
 
 The Jira/Confluence/Bitbucket integration, and the mutual-TLS model endpoints,
@@ -152,11 +174,11 @@ to bite first:**
 |---|---|---|
 | A Confluence `/x/AbCd` tiny-link redirect is single-hop and same-origin | `ConfluenceClient`'s tiny-link resolution (5-hop cap is defensive, not evidence-based) | A legitimate tiny link resolves to Open Questions as "unfollowed" instead of being read, because the real redirect chain is longer or cross-origin |
 | jsoup's `element.attr("href")` returns the literal, unresolved attribute value against Data Center's real rendered HTML | Jira/Confluence link-harvesting in `sdd-plan/src/main/java/sdd/plan/{jira,confluence}/` | A relative link that should have been followed is silently filtered out (or a link that should have been filtered is followed) |
-| A "blocking" Jira link type's `name` literally contains "block" or "depend" | Same link-harvesting code — admin-configurable per instance | A blocking dependency the estate actually has is missing from the plan's `## Sources`, with no error — it just never gets classified as blocking |
+| A "blocking" Jira link type's `name` literally contains "block" or "depend" | Same link-harvesting code — admin-configurable per instance, and localised per language | A blocking dependency the estate actually has is missing from the plan's `## Sources`. **Since 2026-08-20 the fetch emits a note listing every link type seen and whether it was followed**, so the miss is visible in `## Sources` rather than only by its absence — but the classification itself is still a substring guess |
 | `renderedFields.description`/comment bodies are the exact same HTML string both the link-harvest and `ConfluenceExtract.extract` read | Same area | Two readers of "the same" field quietly diverge — one follows a link the other doesn't see, again with no error |
 | `findOpenBySourceBranch` assuming at most one OPEN PR per source branch | `BitbucketClient.findOpenBySourceBranch` (`sdd-cli/src/main/java/sdd/cli/review/BitbucketClient.java:80-88`) | If a human manually opens a second PR from the same branch outside `sdd`, only the first result the API happens to return is ever read/updated — the other is silently ignored |
 | The PR-list pagination envelope's field names (`size`/`isLastPage`/`values`) — standard Bitbucket Server shape, never confirmed against a live response; `api-verification-report.md` item 16 verified only the `at=`/`direction=`/`state=` query parameters, not the response envelope | Same method — reads `node.path("values")` with no `isLastPage` check, and never requests a second page (`BitbucketClient.java:80-88`) | A distinct root cause from the row above, with an overlapping symptom: if a matching OPEN PR exists but sits on a later page, it is never seen at all (not merely de-prioritized) — `sdd review` then opens a duplicate PR instead of updating the existing one |
-| `atlassian.proxy` never carries proxy authentication credentials | `sdd.core.http.HttpClients` proxy wiring | Every Atlassian REST call AND the git push hang or fail with a generic 407/connect error on a corporate proxy that requires its own auth — indistinguishable at first glance from a plain network-down failure |
+| `atlassian.proxy` never carries proxy authentication credentials | `sdd.core.http.HttpClients` proxy wiring | Every Atlassian REST call AND the git push fail on a corporate proxy that requires its own auth. **Since 2026-08-20 a 407 names the proxy in effect and says plainly that sdd sends no proxy credentials**, instead of reading as a Jira permission problem — but sdd still cannot authenticate to such a proxy, and the JVM disables Basic proxy auth over HTTPS tunnels by default, so supporting one is more than adding a config key |
 
 None of the items in this bucket have ever caused a test failure — by
 construction, since nothing in this repo can exercise them against a real
