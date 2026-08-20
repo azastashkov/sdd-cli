@@ -7,6 +7,7 @@ import org.jdbi.v3.core.Jdbi;
 import sdd.core.kb.EntityKind;
 import sdd.core.kb.EntityMatch;
 import sdd.core.kb.KbEntities;
+import sdd.core.kb.KbRefGraph;
 import sdd.core.kb.Resolution;
 import sdd.core.llm.ToolCall;
 import sdd.core.llm.ToolSpec;
@@ -49,6 +50,8 @@ public final class ExploreTools implements Tools {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final int FTS_LIMIT = 30;
     private static final int MAX_CITED_LINE_CHARS = 300;
+    /** Reference lists are long for a hub type; truncation is always named. */
+    private static final int MAX_REFERENCES = 30;
 
     /**
      * The nine operations behind one declaration.
@@ -173,6 +176,16 @@ public final class ExploreTools implements Tools {
                         "required":["regex"]}"""),
                 new ToolSpec("search_symbols", "Search indexed type and member names.",
                         one("query", "Words or an identifier")),
+                new ToolSpec("who_references",
+                        "Types that reference a fully-qualified type (direction=in, the default), "
+                                + "or that it references (direction=out). Use it to tell a real "
+                                + "user of a symbol from a name collision.",
+                        """
+                        {"type":"object","properties":{\
+                        "fqcn":{"type":"string","description":"Fully-qualified type name"},\
+                        "direction":{"type":"string","enum":["in","out"],\
+                        "description":"in = who references it (default), out = what it references"}},\
+                        "required":["fqcn"]}"""),
                 new ToolSpec("kb_resolve", "Resolve a value against the knowledge base.",
                         kindValueSchema("Value to resolve")),
                 new ToolSpec("propose_touchpoint", "Propose a touchpoint. Refused if unresolvable.",
@@ -203,13 +216,14 @@ public final class ExploreTools implements Tools {
         return new ToolSpec(MULTIPLEXED,
                 "Explore the estate. One action per call: list_repos | list_files(path) | "
                         + "read_file(path[,offset][,limit]) | search_code(regex[,repo][,glob]) | "
-                        + "search_symbols(query) | kb_resolve(kind,value) | "
+                        + "search_symbols(query) | who_references(fqcn[,direction]) | "
+                        + "kb_resolve(kind,value) | "
                         + "propose_touchpoint(kind,value) | record_finding(claim,citation) | "
                         + "done(result,summary)",
                 """
                 {"type":"object","properties":{\
                 "action":{"type":"string","enum":["list_repos","list_files","read_file",\
-                "search_code","search_symbols","kb_resolve","propose_touchpoint",\
+                "search_code","search_symbols","who_references","kb_resolve","propose_touchpoint",\
                 "record_finding","done"]},\
                 "path":{"type":"string"},"offset":{"type":"string"},"limit":{"type":"string"},\
                 "regex":{"type":"string"},"repo":{"type":"string"},\
@@ -252,6 +266,8 @@ public final class ExploreTools implements Tools {
                     + (args.hasNonNull("repo") ? " in " + args.get("repo").asText() : "")
                     + (args.hasNonNull("glob") ? " glob " + args.get("glob").asText() : "");
             case "search_symbols" -> " " + args.path("query").asText("");
+            case "who_references" -> " " + args.path("fqcn").asText("")
+                    + ("out".equals(args.path("direction").asText("")) ? " (out)" : "");
             case "kb_resolve", "propose_touchpoint" ->
                     " " + args.path("kind").asText("") + ":" + args.path("value").asText("");
             case "record_finding" -> " " + args.path("citation").asText("");
@@ -268,6 +284,7 @@ public final class ExploreTools implements Tools {
             case "search_code" -> searchCode(str(args, "regex"), optional(args, "repo"),
                     optional(args, "glob"));
             case "search_symbols" -> searchSymbols(str(args, "query"));
+            case "who_references" -> whoReferences(str(args, "fqcn"), optional(args, "direction"));
             case "kb_resolve" -> describe(resolve(str(args, "kind"), str(args, "value")));
             case "propose_touchpoint" -> propose(str(args, "kind"), str(args, "value"));
             case "record_finding" -> recordFinding(str(args, "claim"), str(args, "citation"));
@@ -376,6 +393,61 @@ public final class ExploreTools implements Tools {
                     .append(hit.identifier().equals(hit.fqcn()) ? "" : " (" + hit.identifier() + ")")
                     .append(hit.docOnly() ? "  [javadoc match only]" : "")
                     .append('\n');
+        }
+        return out.toString();
+    }
+
+    /**
+     * Reference structure around one type — the signal {@code search_symbols} structurally cannot
+     * give.
+     *
+     * <p>Measured on the real estate, FTS reaches the right repositories with full recall but its
+     * top candidates are token collisions: a task about {@code tier.update} surfaces
+     * {@code PayloadKeySpec} and {@code CandleMdRejectListener} ahead of the listeners it is
+     * actually about. Which types genuinely use a symbol is what tells those apart, and it is a
+     * fact the name index does not hold.
+     *
+     * <p>Deliberately does NOT add to the {@code seen} set. It returns names, repos and paths but
+     * no file <em>content</em>, so it cannot ground a citation — exactly like
+     * {@code search_symbols}, and unlike {@code read_file} and {@code search_code}, which surface
+     * real text. The model must still read a file before {@code record_finding} will accept it.
+     *
+     * <p>One hop only. Walking further is a second call, which keeps each turn's output readable
+     * and lets the model stop when it has what it needs.
+     */
+    private String whoReferences(String fqcn, String direction) {
+        boolean outbound = "out".equals(direction);
+        if (direction != null && !outbound && !"in".equals(direction)) {
+            throw new MalformedCallException(
+                    "direction must be 'in' or 'out', got '" + direction + "'");
+        }
+        List<KbRefGraph.Edge> edges = outbound
+                ? KbRefGraph.outbound(jdbi, fqcn)
+                : KbRefGraph.inbound(jdbi, fqcn);
+        if (edges.isEmpty()) {
+            // Absence here has two very different causes and the agent must be able to tell them
+            // apart, so say which one it is rather than returning a bare "none".
+            boolean known = !KbRefGraph.inbound(jdbi, fqcn).isEmpty()
+                    || !KbRefGraph.outbound(jdbi, fqcn).isEmpty();
+            return known
+                    ? "no " + (outbound ? "outbound" : "inbound") + " references for " + fqcn + "\n"
+                    : "no reference edges recorded for '" + fqcn + "' — check the name is the "
+                            + "fully-qualified one (kb_resolve class:<name> finds it), and note "
+                            + "that references FROM a type nested inside a class are attributed to "
+                            + "its outer type\n";
+        }
+        StringBuilder out = new StringBuilder();
+        int shown = 0;
+        for (KbRefGraph.Edge e : edges) {
+            if (shown++ == MAX_REFERENCES) {
+                out.append("(showing ").append(MAX_REFERENCES).append(" of ").append(edges.size())
+                        .append(" — a cap the reader cannot see is a lie)\n");
+                break;
+            }
+            out.append(e.repo()).append(": ").append(e.fqcn())
+                    .append("  [").append(e.refKind().toLowerCase(java.util.Locale.ROOT))
+                    .append(e.refCount() > 1 ? " x" + e.refCount() : "").append("] @ ")
+                    .append(e.filePath()).append('\n');
         }
         return out.toString();
     }

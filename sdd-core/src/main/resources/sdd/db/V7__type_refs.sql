@@ -28,9 +28,15 @@
 --
 -- ref_kind is IMPORT / EXTENDS / CALL / TYPE, as ReferenceExtractor already classifies. Unlike
 -- api_usage.ref_kind, which has been written by one site and read by none since V1, this column
--- ships with a reader: an inbound EXTENDS edge outranks an inbound CALL at equal graph distance,
--- because the types that must change alongside a changed interface are its implementors. A fact
--- with no reader is worse than no fact.
+-- ships with a reader: KbRefGraph.Edge carries it and the explorer's who_references tool prints it,
+-- so an agent can tell "implements it" from "mentions it in a signature". A fact with no reader is
+-- worse than no fact.
+--
+-- It deliberately does NOT influence ranking. Promoting an inbound EXTENDS over an inbound CALL at
+-- equal graph distance is a plausible rule and was measured before being written: only 18 of the
+-- 1566 edges between two indexed types are EXTENDS, and exactly one of those touches the anchors of
+-- the case this graph was built for. A tie-break that fires once is a heuristic nothing can
+-- evaluate, and this file is not the place to add one on reasoning alone.
 --
 -- ref_count is how many distinct reference sites collapsed into this row, mirroring
 -- file_ref.ref_count. It bounds the traversal frontier. It is deliberately NOT part of any ordering

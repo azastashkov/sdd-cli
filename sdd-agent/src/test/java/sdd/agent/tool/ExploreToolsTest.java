@@ -182,6 +182,98 @@ class ExploreToolsTest {
         return new ExploreTools(db.jdbi(), new EstateJail(roots), true);
     }
 
+    private void seedRefs() {
+        db.jdbi().useHandle(h -> {
+            h.execute("INSERT INTO module(repo_id, gradle_path) VALUES(1, ':')");
+            for (String fqcn : new String[] {"com.acme.Publisher", "com.acme.WiringConfig",
+                    "com.acme.Listener"}) {
+                h.execute("INSERT INTO java_type(module_id, fqcn, kind, is_api, file_path) "
+                        + "VALUES(1, ?, 'CLASS', 0, ?)", fqcn, fqcn.replace('.', '/') + ".java");
+            }
+            h.execute("INSERT INTO type_ref(from_type_id, to_fqcn, ref_kind, ref_count) VALUES("
+                    + "(SELECT id FROM java_type WHERE fqcn='com.acme.WiringConfig'),"
+                    + "'com.acme.Publisher','IMPORT',2)");
+            h.execute("INSERT INTO type_ref(from_type_id, to_fqcn, ref_kind, ref_count) VALUES("
+                    + "(SELECT id FROM java_type WHERE fqcn='com.acme.WiringConfig'),"
+                    + "'com.acme.Listener','TYPE',1)");
+            h.execute("INSERT INTO type_ref(from_type_id, to_fqcn, ref_kind, ref_count) VALUES("
+                    + "(SELECT id FROM java_type WHERE fqcn='com.acme.Publisher'),"
+                    + "'org.slf4j.Logger','IMPORT',1)");
+        });
+    }
+
+    @Test
+    void whoReferencesNamesTheReferringTypesTheirKindAndTheirCount() {
+        seedRefs();
+
+        String out = call("who_references", """
+                {"fqcn":"com.acme.Publisher"}""");
+
+        assertThat(out).contains("payments-api: com.acme.WiringConfig")
+                .contains("[import x2]")
+                .contains("com/acme/WiringConfig.java");
+    }
+
+    @Test
+    void whoReferencesOutboundSkipsTargetsThatAreNotIndexed() {
+        seedRefs();
+
+        // Publisher imports org.slf4j.Logger, which has no java_type row. Reporting it would
+        // invite the agent to go looking for a file that is not in the estate.
+        assertThat(call("who_references", """
+                {"fqcn":"com.acme.Publisher","direction":"out"}""")).doesNotContain("slf4j");
+    }
+
+    @Test
+    void whoReferencesDistinguishesAnUnknownTypeFromOneWithNoReferences() {
+        seedRefs();
+
+        // Two very different facts. "Nothing references it" is an answer; "I have never heard of
+        // this name" is a correction the agent has to act on, so they must not read the same.
+        assertThat(call("who_references", """
+                {"fqcn":"com.acme.Listener","direction":"out"}"""))
+                .contains("no outbound references");
+        assertThat(call("who_references", """
+                {"fqcn":"com.acme.NoSuchType"}"""))
+                .contains("no reference edges recorded")
+                .contains("kb_resolve");
+    }
+
+    @Test
+    void whoReferencesCannotGroundACitation() {
+        seedRefs();
+        call("who_references", """
+                {"fqcn":"com.acme.Publisher"}""");
+
+        // It surfaces names and paths but never file CONTENT, so it must not mark the file as
+        // seen. record_finding still has to re-read the file itself to quote the line.
+        assertThatThrownBy(() -> call("record_finding", """
+                {"claim":"the key lives here","citation":"payments-api/src/main/java/com/acme/Publisher.java:3"}"""))
+                .isInstanceOf(ToolException.class)
+                .hasMessageContaining("this run has not read it");
+    }
+
+    @Test
+    void whoReferencesRejectsADirectionItDoesNotUnderstand() {
+        seedRefs();
+        assertThatThrownBy(() -> call("who_references", """
+                {"fqcn":"com.acme.Publisher","direction":"sideways"}"""))
+                .isInstanceOf(MalformedCallException.class)
+                .hasMessageContaining("'in' or 'out'");
+    }
+
+    @Test
+    void aWhoReferencesCallIsRoutedThroughTheSingleToolPath() {
+        // The mode has three places to register an operation -- the schema enum, dispatch and the
+        // trace switch. Miss one and single_tool silently cannot reach the tool at all.
+        sdd.core.llm.ToolCall routed = single().route(new sdd.core.llm.ToolCall(
+                "call-9", "sdd",
+                "{\"action\":\"who_references\",\"fqcn\":\"com.acme.Publisher\"}"));
+
+        assertThat(routed.name()).isEqualTo("who_references");
+        assertThat(routed.argumentsJson()).contains("com.acme.Publisher").doesNotContain("action");
+    }
+
     @Test
     void singleToolModeAdvertisesExactlyOneDeclaration() {
         assertThat(single().specs()).singleElement().satisfies(spec -> {
@@ -189,7 +281,8 @@ class ExploreToolsTest {
             // Every operation must still be reachable, or the mode silently removes capability.
             assertThat(spec.parametersSchemaJson())
                     .contains("list_repos").contains("read_file").contains("search_code")
-                    .contains("propose_touchpoint").contains("record_finding").contains("done");
+                    .contains("propose_touchpoint").contains("record_finding").contains("done")
+                    .contains("who_references");
         });
     }
 
