@@ -286,3 +286,27 @@ not have, and would make `resolution` a lie about how the row was arrived at.
 **Carried, with its trigger:** `supertype_module_id` remains dead schema. Remove it, or give it a
 reader, the next time `type_supertype` is touched — the trigger is any change that needs to know
 whether a supertype is inside the estate.
+
+---
+
+# Epoch self-heal — verified, not asserted
+
+Both extractor changes claim that bumping `SourceExtraction.EXTRACTOR_EPOCH` makes a plain
+`sdd index` re-extract, so nobody has to know to pass `--force`. Tested rather than reasoned about:
+
+```
+$ sqlite3 index.db "UPDATE repo SET extractor_epoch=2; DELETE FROM type_ref;"
+$ sqlite3 index.db "SELECT DISTINCT extractor_epoch FROM repo; SELECT COUNT(*) FROM type_ref;"
+2
+0
+$ sdd index --workspace <probe> --no-cards        # NO --force
+trading-candles … trading-product-b   OK  parse=OK
+$ sqlite3 index.db "SELECT DISTINCT extractor_epoch FROM repo; SELECT COUNT(*) FROM type_ref;"
+3
+3155
+```
+
+All six repos re-extracted on the stale epoch despite unchanged commits and clean trees, and the
+graph came back in full. This is the mechanism that failed twice before V6 introduced the epoch,
+when a schema change was invisible to the `head_commit||':'||dirty_hash` fingerprint and `sdd index`
+skipped every repo while reporting success.
