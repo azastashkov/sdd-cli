@@ -131,6 +131,23 @@ class RestClientTest {
         wm.verify(1, getRequestedFor(urlEqualTo("/x")));
     }
 
+    @Test
+    void a407NamesTheProxyRatherThanReadingAsASitePermissionProblem() {
+        // A 407 comes from the proxy in front of the site, not the site. The generic 4xx message
+        // sends whoever reads it hunting for a Jira permission problem that does not exist, on a
+        // network where that hunt is expensive.
+        wm.stubFor(get("/x").willReturn(aResponse().withStatus(407)
+                .withHeader("Proxy-Authenticate", "Negotiate")));
+
+        assertThatThrownBy(() -> client().get("/x"))
+                .isInstanceOf(AtlassianException.class)
+                .hasMessageContaining("proxy demanded authentication (HTTP 407)")
+                .hasMessageContaining("sdd sends no proxy credentials")
+                .hasMessageContaining("no_proxy");
+        // Not retried: it is a configuration fact, not a transient one.
+        wm.verify(1, getRequestedFor(urlEqualTo("/x")));
+    }
+
     // --- Gate review minor: the terminal-facing exception message must be at least as safe as the
     // --- diagnostics file's own copy of the same body (scrubbed, capped) --------------------------
 

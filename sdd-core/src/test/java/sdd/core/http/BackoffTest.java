@@ -40,8 +40,13 @@ class BackoffTest {
     }
 
     @Test
-    void retryAfterMillisFallsBackToNullOnHttpDateValue() {
-        assertThat(Backoff.retryAfterMillis(Optional.of("Wed, 21 Oct 2026 07:28:00 GMT"))).isNull();
+    void retryAfterMillisNowHonoursTheHttpDateFormItUsedToDiscard() {
+        // Was pinned to null, on the recorded reasoning that none of our targets send the date
+        // form. That held for model routers and does not survive a corporate network, where a WAF
+        // or reverse proxy in front of Jira answers the 429 itself. Behaviour deliberately changed;
+        // the boundary cases live alongside the other Retry-After tests at the end of this class.
+        assertThat(Backoff.retryAfterMillis(Optional.of("Wed, 21 Oct 2026 07:28:00 GMT"),
+                java.time.Instant.parse("2026-10-21T07:27:45Z"))).isEqualTo(15_000L);
     }
 
     @Test
@@ -54,5 +59,39 @@ class BackoffTest {
         assertThat(Backoff.DEFAULT_MAX_ATTEMPTS).isEqualTo(6);
         assertThat(Backoff.BASE_BACKOFF_MILLIS).isEqualTo(250L);
         assertThat(Backoff.MAX_BACKOFF_MILLIS).isEqualTo(60_000L);
+    }
+
+    @Test
+    void retryAfterAcceptsTheHttpDateFormNotJustDeltaSeconds() {
+        // Valid per RFC 9110 and previously unparsed, on the reasoning that no target sends it.
+        // A WAF or reverse proxy in front of Jira answers a 429 or 503 itself and commonly does --
+        // so we were discarding the one number the server actually gave us.
+        java.time.Instant now = java.time.Instant.parse("2026-10-21T07:28:00Z");
+
+        assertThat(Backoff.retryAfterMillis(
+                java.util.Optional.of("Wed, 21 Oct 2026 07:28:30 GMT"), now)).isEqualTo(30_000L);
+    }
+
+    @Test
+    void aRetryAfterDateInThePastIsZeroNotNegative() {
+        // Clock skew between us and the server must not become a busy loop.
+        java.time.Instant now = java.time.Instant.parse("2026-10-21T07:30:00Z");
+
+        assertThat(Backoff.retryAfterMillis(
+                java.util.Optional.of("Wed, 21 Oct 2026 07:28:00 GMT"), now)).isZero();
+    }
+
+    @Test
+    void aRetryAfterDateFarInTheFutureIsClampedToTheCeiling() {
+        java.time.Instant now = java.time.Instant.parse("2026-10-21T07:28:00Z");
+
+        assertThat(Backoff.retryAfterMillis(
+                java.util.Optional.of("Thu, 22 Oct 2026 07:28:00 GMT"), now))
+                .isEqualTo(Backoff.MAX_BACKOFF_MILLIS);
+    }
+
+    @Test
+    void anUnparseableRetryAfterStillFallsBackToTheCurve() {
+        assertThat(Backoff.retryAfterMillis(java.util.Optional.of("soon"))).isNull();
     }
 }

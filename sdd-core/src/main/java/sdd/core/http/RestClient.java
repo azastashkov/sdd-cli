@@ -236,6 +236,18 @@ public final class RestClient {
                     backoff(attempt, null);
                     continue;
                 }
+                if (status == 407) {
+                    // A 407 is not the site rejecting us, it is the proxy in front of it -- and the
+                    // generic message below sends someone hunting for a Jira permission problem
+                    // that does not exist. describeEffectiveProxy already existed and was called
+                    // only on the transport-failure path, where a 407 never lands.
+                    throw logFailure(method, path, new AtlassianException(
+                            "the HTTP proxy demanded authentication (HTTP 407) before "
+                            + siteOrGeneric() + " was reached — " + proxyDescription()
+                            + ". sdd sends no proxy credentials; configure a proxy that does not "
+                            + "require them for this host, or route around it via "
+                            + "atlassian.proxy.no_proxy"));
+                }
                 throw logFailure(method, path, new AtlassianException(siteOrGeneric() + " HTTP " + status
                         + ": " + safeBody(resp.body())));
             } catch (IOException e) {
@@ -338,6 +350,16 @@ public final class RestClient {
     private String rejectedTokenMessage(int status) {
         String tokenDesc = tokenVar != null ? "the token in $" + tokenVar : "the configured token";
         return siteOrGeneric() + " rejected " + tokenDesc + " (HTTP " + status + ") — reissue it";
+    }
+
+    /** The proxy actually in effect for this site's host, for a 407's message. */
+    private String proxyDescription() {
+        String host = UrlHosts.hostOf(baseUrl);
+        if (transport.proxy() == null || host == null) {
+            return "no atlassian.proxy is configured, so this proxy is one the JVM or the "
+                    + "environment supplied";
+        }
+        return HttpClients.describeEffectiveProxy(transport.proxy(), host);
     }
 
     private HttpResponse<String> execute(String method, String path, JsonNode body)

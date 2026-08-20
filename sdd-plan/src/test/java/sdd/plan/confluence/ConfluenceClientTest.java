@@ -102,7 +102,7 @@ class ConfluenceClientTest {
     @Test
     void resolvesADisplayUrlByTitleSearch() {
         wm.stubFor(get(urlEqualTo(
-                "/rest/api/content?spaceKey=ENG&title=Order%20API%20spec&expand=version"))
+                "/rest/api/content?spaceKey=ENG&title=Order%20API%20spec&type=page&status=current&expand=version"))
                 .willReturn(okJson(fixture("content-search-by-title.json"))));
 
         String id = client().resolvePageId(wm.baseUrl() + "/display/ENG/Order+API+spec");
@@ -128,7 +128,7 @@ class ConfluenceClientTest {
         wm.stubFor(get(urlEqualTo("/confluence/x/AbCd")).willReturn(aResponse().withStatus(302)
                 .withHeader("Location", "/confluence/pages/viewpage.action?pageId=65601")));
         wm.stubFor(get(urlEqualTo(
-                "/confluence/rest/api/content?spaceKey=ENG&title=Order%20API%20spec&expand=version"))
+                "/confluence/rest/api/content?spaceKey=ENG&title=Order%20API%20spec&type=page&status=current&expand=version"))
                 .willReturn(okJson(fixture("content-search-by-title.json"))));
 
         ConfluenceClient client = contextPathClient();
@@ -154,7 +154,7 @@ class ConfluenceClientTest {
         // second URLDecoder pass then reads it as a space -- the search goes out for the wrong
         // title and quietly finds nothing.
         wm.stubFor(get(urlEqualTo(
-                "/rest/api/content?spaceKey=ENG&title=C%2B%2B%20style&expand=version"))
+                "/rest/api/content?spaceKey=ENG&title=C%2B%2B%20style&type=page&status=current&expand=version"))
                 .willReturn(okJson(fixture("content-search-by-title.json"))));
 
         assertThat(client().resolvePageId(wm.baseUrl() + "/display/ENG/C%2B%2B+style"))
@@ -167,7 +167,7 @@ class ConfluenceClientTest {
         // with IllegalArgumentException. LinkHarvester catches only AtlassianException, so this
         // took the whole sdd plan run down rather than becoming one unresolvable note.
         wm.stubFor(get(urlEqualTo(
-                "/rest/api/content?spaceKey=ENG&title=100%25%20uptime&expand=version"))
+                "/rest/api/content?spaceKey=ENG&title=100%25%20uptime&type=page&status=current&expand=version"))
                 .willReturn(okJson(fixture("content-search-by-title.json"))));
 
         assertThat(client().resolvePageId(wm.baseUrl() + "/display/ENG/100%25+uptime"))
@@ -180,9 +180,44 @@ class ConfluenceClientTest {
     }
 
     @Test
+    void anAmbiguousTitleSearchPrefersTheExactMatchOverWhateverSortedFirst() {
+        // Confluence title search is not exact, and the old code took results[0] with no tie-break:
+        // whichever the server happened to list first won. Resolving "Order API spec (old)" when
+        // the human asked for "Order API spec" builds the spec from the wrong page, and reads
+        // afterwards as a content problem rather than a resolution one.
+        wm.stubFor(get(urlEqualTo(
+                "/rest/api/content?spaceKey=ENG&title=Order%20API%20spec"
+                        + "&type=page&status=current&expand=version"))
+                .willReturn(okJson("""
+                        {"results": [
+                          {"id": "111", "title": "Order API spec (old)"},
+                          {"id": "222", "title": "Order API spec"}
+                        ]}""")));
+
+        assertThat(client().resolvePageId(wm.baseUrl() + "/display/ENG/Order+API+spec"))
+                .isEqualTo("222");
+    }
+
+    @Test
+    void theTitleSearchAsksForCurrentPagesOnly() {
+        // A blogpost or a trashed page can carry the same title; a /display/ URL can only ever
+        // name a current page. Asserted on the OUTGOING request, not on the reply.
+        wm.stubFor(get(urlEqualTo(
+                "/rest/api/content?spaceKey=ENG&title=Order%20API%20spec"
+                        + "&type=page&status=current&expand=version"))
+                .willReturn(okJson(fixture("content-search-by-title.json"))));
+
+        client().resolvePageId(wm.baseUrl() + "/display/ENG/Order+API+spec");
+
+        wm.verify(getRequestedFor(urlEqualTo(
+                "/rest/api/content?spaceKey=ENG&title=Order%20API%20spec"
+                        + "&type=page&status=current&expand=version")));
+    }
+
+    @Test
     void aDisplayUrlWithNoMatchingTitleIsUnresolvable() {
         wm.stubFor(get(urlEqualTo(
-                "/rest/api/content?spaceKey=ENG&title=Nonexistent&expand=version"))
+                "/rest/api/content?spaceKey=ENG&title=Nonexistent&type=page&status=current&expand=version"))
                 .willReturn(okJson(fixture("content-search-empty.json"))));
 
         String id = client().resolvePageId(wm.baseUrl() + "/display/ENG/Nonexistent");

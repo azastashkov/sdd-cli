@@ -1,5 +1,8 @@
 package sdd.core.http;
 
+import java.time.DateTimeException;
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -45,20 +48,42 @@ public final class Backoff {
     }
 
     /**
-     * Parses a {@code Retry-After} header value expressed as delta-seconds. Null when the header is
-     * absent, or when it is present but not a delta-seconds integer — the HTTP-date form
-     * ({@code Retry-After: Wed, 21 Oct 2026 07:28:00 GMT}) is valid per RFC 9110 but is not parsed
-     * here; the caller falls back to exponential backoff instead of teaching this pure-math class a
-     * date parser for a form none of our targets (model routers, and now Jira/Confluence/Bitbucket)
-     * are known to send.
+     * Parses a {@code Retry-After} header value, in either RFC 9110 form: delta-seconds, or an
+     * HTTP-date.
+     *
+     * <p>The date form was previously unparsed, on the reasoning that no target was known to send
+     * it. That reasoning does not survive contact with a corporate network: a WAF or reverse proxy
+     * in front of Jira answers a 429 or 503 itself, and those commonly send the date form. The
+     * consequence was mild — the caller fell back to the exponential curve — but it meant ignoring
+     * the one number the server actually gave us.
+     *
+     * <p>A date in the past, or one absurdly far ahead, yields a delay of zero and
+     * {@link #MAX_BACKOFF_MILLIS} respectively, so a clock skew between us and the server cannot
+     * turn into either a busy loop or an effectively permanent hang.
      */
     public static Long retryAfterMillis(Optional<String> headerValue) {
+        return retryAfterMillis(headerValue, Instant.now());
+    }
+
+    /** As above, against an explicit "now" so the date form is testable without wall-clock races. */
+    public static Long retryAfterMillis(Optional<String> headerValue, Instant now) {
         return headerValue.map(v -> {
+            String trimmed = v.trim();
             try {
-                return Long.parseLong(v.trim()) * 1000L;
-            } catch (NumberFormatException e) {
-                return null;
+                return Long.parseLong(trimmed) * 1000L;
+            } catch (NumberFormatException notSeconds) {
+                return httpDateMillis(trimmed, now);
             }
         }).orElse(null);
+    }
+
+    private static Long httpDateMillis(String value, Instant now) {
+        try {
+            long millis = Instant.from(DateTimeFormatter.RFC_1123_DATE_TIME.parse(value))
+                    .toEpochMilli() - now.toEpochMilli();
+            return Math.clamp(millis, 0L, MAX_BACKOFF_MILLIS);
+        } catch (DateTimeException e) {
+            return null;
+        }
     }
 }

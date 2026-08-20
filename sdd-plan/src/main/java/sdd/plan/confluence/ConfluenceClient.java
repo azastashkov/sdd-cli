@@ -385,9 +385,26 @@ public final class ConfluenceClient implements ConfluencePages {
     }
 
     private String resolveByTitleSearch(String spaceKey, String title) {
-        String path = "/rest/api/content?spaceKey=" + encode(spaceKey) + "&title=" + encode(title) + "&expand=version";
+        // type=page&status=current narrow the search to what a /display/ URL can actually name.
+        // Without them a blogpost, or a trashed page still carrying the title, can be returned --
+        // and the old code took results[0] with no tie-break at all, so which one won was whatever
+        // the server happened to list first.
+        String path = "/rest/api/content?spaceKey=" + encode(spaceKey) + "&title=" + encode(title)
+                + "&type=page&status=current&expand=version";
         JsonNode results = restClient.get(path).path("results");
-        return results.isArray() && results.size() > 0 ? results.get(0).path("id").asText(null) : null;
+        if (!results.isArray() || results.isEmpty()) {
+            return null;
+        }
+        // Prefer an exact title match before falling back to the first result: Confluence title
+        // search is not guaranteed to be exact, and silently resolving "Order API spec (old)" when
+        // the human asked for "Order API spec" produces a spec built from the wrong page, which
+        // reads as a content problem rather than a resolution one.
+        for (JsonNode result : results) {
+            if (title.equals(result.path("title").asText(null))) {
+                return result.path("id").asText(null);
+            }
+        }
+        return results.get(0).path("id").asText(null);
     }
 
     private static String encode(String value) {
