@@ -242,10 +242,15 @@ public final class DoctorCommand implements Callable<Integer> {
         EndpointProbe.ProbeResult result = EndpointProbe.probe(ep);
         report(result.ok(), "model:" + name, ep.baseUrl() + " → " + result.detail());
         recordModelTlsDiagnostics(name, ep.tls(), result);
-        if (completion && result.ok()) {
+        // connected(), not ok(): the probe above asks for /models, which a gateway is under no
+        // obligation to serve. Gating on ok() meant that on such a gateway --tools printed one red
+        // line and never ran the tool-call probe at all — silently withholding the one check that
+        // predicts whether sdd implement or sdd explore can work there. A non-2xx that still
+        // answered (a 404 listing route, a 401) makes these MORE informative, not less.
+        if (completion && result.connected()) {
             probeCompletion(name, ep);
         }
-        if (tools && result.ok()) {
+        if (tools && result.connected()) {
             probeToolCalling(name, ep);
         }
     }

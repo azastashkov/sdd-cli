@@ -263,6 +263,25 @@ and are readable, that the key parses, and — the most common mTLS failure
 of all, whose TLS alert (`bad_certificate`) says nothing useful on its own —
 that the client certificate is not expired (with a warning inside 30 days).
 
+**No proxy is needed in front of the gateway.** If a GigaChat gateway is
+reached through the `gpt2giga` proxy, add `wire: gigachat` to each tier and
+point `base_url` at the gateway itself instead. The proxy translates OpenAI
+`tools` into GigaChat's native `functions`, and that translation fails by
+declaration count: measured against one gateway with an identical request
+repeated twenty times, one declaration succeeded 20/20, six 13/20 and nine
+0/20 — which is why `sdd explore` (nine) failed there while
+`sdd doctor --tools` (one) passed. Reached directly, the same gateway accepts
+OpenAI `tools` unchanged. See README, "Talking to a GigaChat gateway
+directly", for the full request-shape difference.
+
+**The truststore may be the PEM bundle itself.** `models.<name>.tls.truststore`
+takes either a PEM certificate bundle — the same file `curl --cacert` uses —
+or a JKS/PKCS12 keystore, and picks between them by reading the file, not by
+its extension. There is no `keytool` conversion step. A PEM bundle has no
+password, so omit `truststore_password` for one (a leftover value is ignored
+rather than treated as an error, so a config migrated from a `.p12` works
+as-is).
+
 **The trust-store trap applies here too, and is usually the first thing to
 check.** A working `curl` to the gateway's URL is not evidence the JDK
 trusts the same certificate chain: curl trusts the OS certificate store

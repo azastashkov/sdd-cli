@@ -28,6 +28,10 @@ public final class HttpChatModel implements ChatModel {
     // fact about HttpChatModel, not as "whatever Backoff happens to default to today".
     private static final int MAX_ATTEMPTS = Backoff.DEFAULT_MAX_ATTEMPTS;
     private static final ObjectMapper JSON = new ObjectMapper();
+    /** Marks an id this class invented for a reply that carried none — see
+     *  {@link #readLegacyFunctionCall}. Distinct so a transcript reader can see it. */
+    public static final String SYNTHETIC_CALL_ID_PREFIX = "sdd-synthesized-";
+
     private static final Set<String> PROTECTED_BODY_KEYS =
             Set.of("model", "messages", "tools", "max_tokens", "temperature", "stream");
 
@@ -141,15 +145,17 @@ public final class HttpChatModel implements ChatModel {
     private String toJson(ChatRequest req) {
         ObjectNode root = JSON.createObjectNode();
         root.put("model", req.model());
+        WireFormat wire = endpoint.wire();
         ArrayNode messages = root.putArray("messages");
         for (ChatMessage m : req.messages()) {
             ObjectNode msg = messages.addObject();
             msg.put("role", m.role());
-            if (m.content() != null) {
-                msg.put("content", m.content());
-            }
+            putContent(msg, m, wire);
             if (m.toolCallId() != null) {
                 msg.put("tool_call_id", m.toolCallId());
+            }
+            if (wire.carriesReasoning() && m.reasoningContent() != null) {
+                msg.put("reasoning_content", m.reasoningContent());
             }
             if (!m.toolCalls().isEmpty()) {
                 ArrayNode calls = msg.putArray("tool_calls");
@@ -193,6 +199,32 @@ public final class HttpChatModel implements ChatModel {
         return root.toString();
     }
 
+    /**
+     * Writes one message's {@code content} in the dialect this endpoint speaks.
+     *
+     * <p>On {@link WireFormat#OPENAI} this is what it always was: a string, and the key is absent
+     * when there is nothing to say (an assistant turn that is purely {@code tool_calls}).
+     *
+     * <p>On {@link WireFormat#GIGACHAT} it follows the gateway's observed traffic — {@code user}
+     * and {@code tool} messages carry an array of {@code {"type":"text","text":…}} parts,
+     * {@code system} and {@code assistant} carry a string, and an assistant turn always carries
+     * one even when empty. A null content becomes {@code ""} rather than a fabricated placeholder:
+     * the model said nothing, and saying so is the honest encoding of that.
+     */
+    private static void putContent(ObjectNode msg, ChatMessage m, WireFormat wire) {
+        if (wire.partsFor(m.role())) {
+            ObjectNode part = msg.putArray("content").addObject();
+            part.put("type", "text");
+            part.put("text", m.content() == null ? "" : m.content());
+            return;
+        }
+        if (m.content() != null) {
+            msg.put("content", m.content());
+        } else if (wire.assistantContentAlwaysPresent() && "assistant".equals(m.role())) {
+            msg.put("content", "");
+        }
+    }
+
     private ChatResponse parse(String body) {
         try {
             JsonNode root = JSON.readTree(body);
@@ -203,22 +235,102 @@ public final class HttpChatModel implements ChatModel {
                 toolCalls.add(new ToolCall(
                         call.path("id").asText(),
                         call.path("function").path("name").asText(),
-                        call.path("function").path("arguments").asText()));
+                        arguments(call.path("function").path("arguments"))));
+            }
+            if (toolCalls.isEmpty()) {
+                readLegacyFunctionCall(message).ifPresent(toolCalls::add);
             }
             JsonNode contentNode = message.path("content");
-            String content = (contentNode.isMissingNode() || contentNode.isNull()) ? null : contentNode.asText();
+            String content = readContent(contentNode);
             // A reasoning model with no request-side off switch returns its thinking inline. Every
             // consumer of a response parses it as JSON, so a reply that opens with a think block is
             // not truncated but "unparseable" — stripping at this boundary fixes all of them at
             // once, and is a no-op for a model that never emits the tags. See ReasoningContent.
             content = ReasoningContent.strip(content);
-            ChatMessage msg = new ChatMessage("assistant", content, List.copyOf(toolCalls), null);
+            // Carried, never authored: a reply that separates its thinking from its answer gets
+            // that thinking handed back with the turn it belongs to on the next request, which is
+            // what the gateway's own clients do. Absent on every other wire, so this is null there.
+            JsonNode reasoningNode = message.path("reasoning_content");
+            String reasoning = endpoint.wire().carriesReasoning() ? readContent(reasoningNode) : null;
+            ChatMessage msg = new ChatMessage("assistant", content, List.copyOf(toolCalls), null,
+                    reasoning);
             Usage usage = new Usage(
                     root.path("usage").path("prompt_tokens").asInt(),
                     root.path("usage").path("completion_tokens").asInt());
-            return new ChatResponse(msg, choice.path("finish_reason").asText(), usage);
+            String finishReason = choice.path("finish_reason").asText();
+            return new ChatResponse(msg,
+                    "function_call".equals(finishReason) ? "tool_calls" : finishReason, usage);
         } catch (IOException e) {
             throw new ModelException("unparseable model response: " + body, e);
         }
+    }
+
+    /**
+     * The pre-{@code tools} single-call shape, read only when {@code tool_calls} is absent.
+     *
+     * <p>We have captured a gateway REQUEST but never a reply, and the assistant turns in that
+     * capture were composed by the client, so they do not settle what the endpoint actually
+     * returns. GigaChat's native surface is separately recorded as answering with
+     * {@code function_call} rather than {@code tool_calls}. If a gateway does that, the parser
+     * above finds nothing, {@link sdd.core.llm.ChatResponse} looks like a prose turn, and three of
+     * those end an agent run as MALFORMED — a symptom that names neither its cause nor its fix.
+     * Reading the older shape costs a few lines and removes that whole class of confusion.
+     *
+     * <p>The id is synthesized, because the legacy shape carries none and the agent loop pairs
+     * results by id. That is the part worth distrusting: if this path ever fires against a real
+     * gateway, the id we send back with the result has never been verified as acceptable to it.
+     * A caller that cares can tell this happened — the id is prefixed distinctly.
+     */
+    private static java.util.Optional<ToolCall> readLegacyFunctionCall(JsonNode message) {
+        JsonNode fn = message.path("function_call");
+        if (fn.isMissingNode() || fn.isNull() || fn.path("name").asText("").isEmpty()) {
+            return java.util.Optional.empty();
+        }
+        String name = fn.path("name").asText();
+        return java.util.Optional.of(
+                new ToolCall(SYNTHETIC_CALL_ID_PREFIX + name, name, arguments(fn.path("arguments"))));
+    }
+
+    /**
+     * A call's arguments as the JSON string {@link ToolCall} holds.
+     *
+     * <p>OpenAI sends a string containing JSON; GigaChat's native shape sends the object itself.
+     * {@code asText()} on an object node returns the EMPTY STRING rather than its JSON, so without
+     * this an object-valued arguments field would silently become a call with no arguments — a
+     * wrong answer, not a failure, which is the worse of the two.
+     */
+    private static String arguments(JsonNode node) {
+        if (node.isMissingNode() || node.isNull()) {
+            return "{}";
+        }
+        return node.isTextual() ? node.asText() : node.toString();
+    }
+
+    /**
+     * Reads a content field that may be a string or an array of typed parts.
+     *
+     * <p>A gateway that ACCEPTS parts may also return them, and a reply whose content arrived as
+     * {@code [{"type":"text","text":"…"}]} must not reach a caller as the literal text of a JSON
+     * array — every consumer of a response parses it as JSON, so that failure would surface as
+     * "unparseable" far from its cause. Non-text parts are skipped rather than rendered: sdd has
+     * no use for an image part and inventing a placeholder for one would be a fabricated fact.
+     *
+     * <p>Extraction only — {@code <think>}-tag stripping stays at the one call site that wants it,
+     * since reasoning is the POINT of the field this also reads.
+     */
+    private static String readContent(JsonNode node) {
+        if (node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        if (node.isArray()) {
+            StringBuilder text = new StringBuilder();
+            for (JsonNode part : node) {
+                if ("text".equals(part.path("type").asText())) {
+                    text.append(part.path("text").asText());
+                }
+            }
+            return text.toString();
+        }
+        return node.asText();
     }
 }

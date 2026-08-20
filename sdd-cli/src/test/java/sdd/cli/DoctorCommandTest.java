@@ -40,12 +40,17 @@ class DoctorCommandTest {
 
     private record Run(int exitCode, String out) {}
 
-    private Run doctor(Path workspace) {
+    private Run doctor(Path workspace, String... extraArgs) {
         StringWriter sw = new StringWriter();
         CommandLine cmd = new CommandLine(new SddCli());
         cmd.setOut(new PrintWriter(sw, true));
         cmd.setErr(new PrintWriter(sw, true));
-        int code = cmd.execute("doctor", "--workspace", workspace.toString());
+        String[] args = new String[3 + extraArgs.length];
+        args[0] = "doctor";
+        args[1] = "--workspace";
+        args[2] = workspace.toString();
+        System.arraycopy(extraArgs, 0, args, 3, extraArgs.length);
+        int code = cmd.execute(args);
         return new Run(code, sw.toString());
     }
 
@@ -62,6 +67,28 @@ class DoctorCommandTest {
                 .contains("[ OK ] model:planner")
                 .contains("[ OK ] model:coder");
         assertThat(run.exitCode()).isZero();
+    }
+
+    // A GigaChat-style gateway serves /chat/completions and nothing else. Gated on ok(), --tools
+    // printed one red line for /models and never ran the tool-call probe — silently withholding
+    // the one check that says whether an agent run can work against that endpoint at all.
+    @Test
+    void toolProbeStillRunsOnAGatewayThatServesNoModelsRoute() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        wm.stubFor(get("/v1/models").willReturn(notFound()));
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson("""
+                {"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"c1",
+                  "type":"function","function":{"name":"report_status",
+                  "arguments":"{\\"status\\":\\"ok\\"}"}}]},"finish_reason":"tool_calls"}],
+                 "usage":{"prompt_tokens":1,"completion_tokens":1}}
+                """)));
+
+        Run run = doctor(ws, "--endpoint", "planner", "--tools");
+
+        assertThat(run.out()).contains("[ OK ] model:planner:tools");
+        // The /models line still reports honestly, and names both readings of a 404 — a gateway
+        // without a listing route, or a base_url with /chat/completions left on it.
+        assertThat(run.out()).contains("model:planner").contains("base_url is wrong");
     }
 
     @Test
