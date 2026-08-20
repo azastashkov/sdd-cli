@@ -1,5 +1,7 @@
 package sdd.plan.openspec;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -72,7 +74,12 @@ public record OpenSpecInput(
         provides = List.copyOf(provides);
         consumes = List.copyOf(consumes);
         bumps = List.copyOf(bumps);
-        requirementOwners = Map.copyOf(requirementOwners);
+        // NOT Map.copyOf: its iteration order is randomized per JVM instance by design, so the
+        // Non-Goals list in design.md came out in a different order on every run. That breaks the
+        // export's byte-determinism, and idempotence rule 4 decides "ours, unchanged" by byte
+        // comparison — so on a --resume sdd would see its own output as differing and, under
+        // rule 5, refuse to write anything at all. Found by re-rendering a real run.
+        requirementOwners = Collections.unmodifiableMap(new LinkedHashMap<>(requirementOwners));
         plan = plan == null ? OpenSpecPlan.absent() : plan;
     }
 

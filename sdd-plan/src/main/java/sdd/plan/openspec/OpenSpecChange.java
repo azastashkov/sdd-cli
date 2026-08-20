@@ -323,11 +323,13 @@ public final class OpenSpecChange {
         md.append("\n**Non-Goals:**\n");
         List<String> nonGoals = new ArrayList<>();
         in.outOfScope().forEach(o -> nonGoals.add(inline(o)));
-        in.requirementOwners().forEach((requirement, owner) -> {
-            if (!owner.equals(in.repo())) {
-                nonGoals.add(requirement + ", which `" + owner + "` covers in this change");
-            }
-        });
+        // Sorted by requirement id, not by map order: canonical whatever the producer's order
+        // happens to be, and "R1, R2, R3" is what a reader expects to see.
+        in.requirementOwners().entrySet().stream()
+                .filter(e -> !e.getValue().equals(in.repo()))
+                .sorted(java.util.Map.Entry.comparingByKey(OpenSpecChange::compareItemIds))
+                .forEach(e -> nonGoals.add(
+                        e.getKey() + ", which `" + e.getValue() + "` covers in this change"));
         if (nonGoals.isEmpty()) {
             nonGoals.add("Anything not named in the goals above.");
         }
@@ -686,5 +688,22 @@ public final class OpenSpecChange {
 
     private static String shortSha(String sha) {
         return sha.length() <= 8 ? sha : sha.substring(0, 8);
+    }
+
+    /**
+     * Orders item ids the way a human numbers them: {@code R2} before {@code R10}, which plain
+     * string order gets backwards. Ids that do not fit the letter-then-digits shape fall back to
+     * string order, so this can never throw on an id sdd did not generate.
+     */
+    static int compareItemIds(String left, String right) {
+        java.util.regex.Pattern shape = java.util.regex.Pattern.compile("([A-Za-z]*)(\\d+)");
+        java.util.regex.Matcher l = shape.matcher(left);
+        java.util.regex.Matcher r = shape.matcher(right);
+        if (!l.matches() || !r.matches()) {
+            return left.compareTo(right);
+        }
+        int prefix = l.group(1).compareTo(r.group(1));
+        return prefix != 0 ? prefix
+                : new java.math.BigInteger(l.group(2)).compareTo(new java.math.BigInteger(r.group(2)));
     }
 }

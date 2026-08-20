@@ -352,4 +352,42 @@ class OpenSpecChangeTest {
                 List.of(item("R1", "A tier update makes the next resolution return the new tier.")))));
         assertThat(guessed).contains("Derived by term overlap");
     }
+
+    @Test
+    void nonGoalsAreOrderedByRequirementIdWhateverTheMapOrderWas() {
+        // The map reached the record via Map.copyOf, whose iteration order is RANDOMIZED per JVM
+        // instance. design.md's Non-Goals therefore came out in a different order on every run —
+        // invisible to renderIsDeterministic(), which renders twice in ONE JVM where the salt is
+        // fixed. It broke byte-determinism, and idempotence rule 4 compares bytes: on a --resume
+        // sdd would see its own export as differing and refuse to write it under rule 5.
+        // Asserting the SORT rather than insertion order is what makes this test deterministic.
+        java.util.LinkedHashMap<String, String> owners = new java.util.LinkedHashMap<>();
+        owners.put("R10", "svc-orders");
+        owners.put("R2", "svc-orders");
+        owners.put("R1", "svc-orders");
+
+        OpenSpecInput in = new OpenSpecInput("spec-tiers-v1", "pricing-core", "SEED",
+                List.of("pricing-core", "svc-orders"),
+                List.of(List.of("pricing-core"), List.of("svc-orders")),
+                "SPEC-TIERS", 1, "Invalidate cached client tiers", "Goal text that is long enough.",
+                // a constraint so design.md renders at all — it is null when a repo has nothing
+                // to decide, and requirementOwners alone does not open that gate
+                "Background prose.", List.of(), List.of(item("C1", "No schema change.")), List.of(),
+                List.of(item("R3", "Expose a way to invalidate a cached tier.")),
+                List.of(item("A1", "A tier update makes the next resolution return the new tier.")),
+                new OpenSpecPlan("tier-resolution", Map.of("R3", List.of("A1")), List.of()),
+                "Add invalidate(clientId).", List.of("src/main/java/TierResolver.java"),
+                List.of("./gradlew test"), "minor", List.of(), List.of(), List.of(),
+                "a1b2c3d4e5", owners);
+
+        String design = OpenSpecChange.render(in).design();
+        assertThat(design).as("design.md is written for a repo with covers()").isNotNull();
+        assertThat(design.indexOf("R1, which")).isLessThan(design.indexOf("R2, which"));
+        assertThat(design.indexOf("R2, which"))
+                .as("R2 before R10 — string order gets this backwards")
+                .isLessThan(design.indexOf("R10, which"));
+
+        // and the record must not have re-ordered the map on the way in
+        assertThat(in.requirementOwners().keySet()).containsExactly("R10", "R2", "R1");
+    }
 }
