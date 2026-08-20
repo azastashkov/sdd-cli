@@ -40,8 +40,11 @@ public final class SourceExtraction {
      * shift in {@code ReferenceExtractor}'s repo type index that moves intra-repo references to
      * those types out of {@code api_usage} (where they sat with an unresolvable NULL target) and
      * into {@code file_ref}.
+     * <p>3 = the epoch that populates {@code type_ref} (V7). The table is created empty by the
+     * migration, so without this bump a plain {@code sdd index} would short-circuit and leave the
+     * graph empty while reporting success — the exact failure this constant exists to prevent.
      */
-    public static final int EXTRACTOR_EPOCH = 2;
+    public static final int EXTRACTOR_EPOCH = 3;
     private SourceExtraction() {}
 
     public static String extractRepo(Jdbi jdbi, long repoId, String repoName,
@@ -112,8 +115,9 @@ public final class SourceExtraction {
             SourcePersistence.clearRepoFileRefs(h, repoId);
             for (ModuleWork w : work) {
                 ReferenceExtractor.Refs refs = ReferenceExtractor.extract(w.session(), repoTypeIndex);
-                SourcePersistence.persistModuleSource(h, repoId, w.moduleId(),
-                        typesByModule.get(w.moduleId()), refs.usages(), refs.fileRefs());
+                List<SourceModel.TypeRef> typeRefs = ReferenceExtractor.typeRefs(w.session());
+                SourcePersistence.persistModuleSource(h, repoId, w.moduleId(), "JAVA",
+                        typesByModule.get(w.moduleId()), refs.usages(), refs.fileRefs(), typeRefs);
                 SpringConfigPersistence.persistModuleConfig(h, w.moduleId(), w.config().entries());
 
                 Map<String, String> defaults =

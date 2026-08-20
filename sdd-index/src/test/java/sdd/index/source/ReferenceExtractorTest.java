@@ -24,6 +24,109 @@ class ReferenceExtractorTest {
         return SourceParser.parseModule(repo, repo, List.of());
     }
 
+    private Map<String, Integer> refs(SourceParser.Session session) {
+        return ReferenceExtractor.typeRefs(session).stream().collect(Collectors.toMap(
+                r -> r.fromFqcn() + " -" + r.refKind() + "-> " + r.toFqcn(),
+                SourceModel.TypeRef::count));
+    }
+
+    @Test
+    void typeRefsKeepBothEndsIncludingTheIntraRepoEdgesApiUsageNeverSees() throws Exception {
+        var session = write(Map.of(
+                "src/main/java/com/acme/svc/OrderService.java", """
+                        package com.acme.svc;
+                        import com.acme.pricing.PriceCalculator;
+                        import java.util.List;
+                        public class OrderService {
+                            private final OrderRepo repo = new OrderRepo();
+                            public void place() { repo.save(); repo.flush(); }
+                        }
+                        """,
+                "src/main/java/com/acme/svc/OrderRepo.java", """
+                        package com.acme.svc;
+                        public class OrderRepo {
+                            public void save() {}
+                            public void flush() {}
+                        }
+                        """));
+
+        Map<String, Integer> refs = refs(session);
+
+        // The edge api_usage structurally cannot hold: same repo, same module, both ends named.
+        // UsageLinker deletes rows whose consumer and provider module coincide, so this pair has
+        // only ever existed as a file_ref, at file granularity and without the type names.
+        assertThat(refs).containsKey("com.acme.svc.OrderService -TYPE-> com.acme.svc.OrderRepo");
+        // Three call sites collapse into one row carrying the count: two method calls plus the
+        // construction, since ReferenceExtractor classifies an ObjectCreationExpr as a CALL too.
+        assertThat(refs).containsEntry("com.acme.svc.OrderService -CALL-> com.acme.svc.OrderRepo", 3);
+        // Cross-repo imports still land, attributed to the importing type rather than the module.
+        assertThat(refs)
+                .containsKey("com.acme.svc.OrderService -IMPORT-> com.acme.pricing.PriceCalculator");
+        // java.* stays out, or every ref_count would be dominated by the JDK.
+        assertThat(refs.keySet()).noneMatch(k -> k.contains("java.util.List"));
+        // A type never references itself.
+        assertThat(refs.keySet()).noneMatch(k -> k.equals("com.acme.svc.OrderRepo -TYPE-> com.acme.svc.OrderRepo"));
+    }
+
+    @Test
+    void aNestedTypesReferencesAreNotAlsoCountedAgainstItsOuterType() throws Exception {
+        var session = write(Map.of(
+                "src/main/java/com/acme/Outer.java", """
+                        package com.acme;
+                        public class Outer {
+                            public static class Inner {
+                                private final Helper h = new Helper();
+                            }
+                        }
+                        """,
+                "src/main/java/com/acme/Helper.java",
+                "package com.acme;\npublic class Helper {}\n"));
+
+        Map<String, Integer> refs = refs(session);
+
+        // Nearest enclosing extracted declaration wins: Inner is itself extracted, so Outer must
+        // not also claim the reference. Otherwise every outer type inherits its nested types'
+        // entire reference set and the graph's distances become meaningless.
+        assertThat(refs.keySet()).anyMatch(k -> k.startsWith("com.acme.Outer.Inner -"));
+        assertThat(refs.keySet()).noneMatch(k -> k.startsWith("com.acme.Outer -"));
+    }
+
+    @Test
+    void importsAreAttributedToThePrimaryTypeOnlyNotToEveryTypeInTheFile() throws Exception {
+        var session = write(Map.of(
+                "src/main/java/com/acme/Main.java", """
+                        package com.acme;
+                        import com.acme.other.Thing;
+                        public class Main {}
+                        class Sidecar {}
+                        """));
+
+        Map<String, Integer> refs = refs(session);
+
+        // An import belongs to the compilation unit. Spraying it over Sidecar too would turn one
+        // written line into two claimed references and inflate every count in the file.
+        assertThat(refs).containsOnlyKeys("com.acme.Main -IMPORT-> com.acme.other.Thing");
+    }
+
+    @Test
+    void aPackagePrivateTopLevelTypeIsAValidSourceNode() throws Exception {
+        // The 2026-08-20 widening: before it, this type had no java_type row, so it could be
+        // neither end of an edge. That is the whole reason the graph is worth having.
+        var session = write(Map.of(
+                "src/main/java/com/acme/TierInvalidationListener.java", """
+                        package com.acme;
+                        class TierInvalidationListener {
+                            private final Channels channels = new Channels();
+                        }
+                        """,
+                "src/main/java/com/acme/Channels.java",
+                "package com.acme;\npublic class Channels {}\n"));
+
+        assertThat(refs(session).keySet())
+                .anyMatch(k -> k.startsWith("com.acme.TierInvalidationListener -")
+                        && k.endsWith("-> com.acme.Channels"));
+    }
+
     @Test
     void splitsIntraRepoFileRefsFromExternalUsages() throws Exception {
         var session = write(Map.of(

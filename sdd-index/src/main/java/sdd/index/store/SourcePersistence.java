@@ -53,12 +53,35 @@ public final class SourcePersistence {
                                            java.util.List<SourceModel.TypeInfo> types,
                                            java.util.List<SourceModel.UsageRef> usages,
                                            java.util.List<SourceModel.FileRef> fileRefs) {
+        persistModuleSource(h, repoId, moduleId, language, types, usages, fileRefs,
+                java.util.List.of());
+    }
+
+    /**
+     * As above, plus the type -> type edges of {@code V7__type_refs.sql}.
+     *
+     * <p>A separate overload rather than a widened signature so every existing caller — including
+     * {@code TsExtraction}, where TypeScript stays module-granular — keeps compiling and states its
+     * emptiness explicitly instead of by omission.
+     *
+     * <p>{@code type_ref} needs no DELETE of its own: {@code from_type_id} is a foreign key into
+     * {@code java_type} with ON DELETE CASCADE, and the wipe above already removes this module's
+     * types. If foreign keys were ever silently off, this table would accumulate orphans across
+     * re-indexes; {@code SourcePersistenceTest} pins that.
+     */
+    public static void persistModuleSource(Handle h, long repoId, long moduleId, String language,
+                                           java.util.List<SourceModel.TypeInfo> types,
+                                           java.util.List<SourceModel.UsageRef> usages,
+                                           java.util.List<SourceModel.FileRef> fileRefs,
+                                           java.util.List<SourceModel.TypeRef> typeRefs) {
         h.createUpdate("DELETE FROM java_type WHERE module_id=:m").bind("m", moduleId).execute();
         h.createUpdate("DELETE FROM api_usage WHERE from_module_id=:m").bind("m", moduleId).execute();
         FtsSymbolWriter.deleteForModule(h, moduleId);
+        java.util.Map<String, Long> typeIds = new java.util.HashMap<>();
         for (SourceModel.TypeInfo t : types) {
-            insertType(h, moduleId, language, t);
+            typeIds.put(t.fqcn(), insertType(h, moduleId, language, t));
         }
+        insertTypeRefs(h, typeIds, typeRefs);
         for (SourceModel.UsageRef u : usages) {
             h.createUpdate("INSERT INTO api_usage(from_module_id, target_fqcn, ref_kind) "
                             + "VALUES (:m, :fqcn, :kind)")
@@ -73,7 +96,43 @@ public final class SourcePersistence {
         }
     }
 
-    private static void insertType(Handle h, long moduleId, String language, SourceModel.TypeInfo t) {
+    /**
+     * One PreparedBatch, not a statement per row. {@code type_ref} is an order of magnitude larger
+     * than {@code api_usage} — every import, call site and type mention of every extracted type in
+     * the estate — and row-at-a-time inserts here are the one place this table's cost could stop
+     * being negligible.
+     *
+     * <p>A {@code fromFqcn} with no id means the extractor and
+     * {@code ApiSurfaceExtractor.isExtractedType} disagree about what becomes a row. That is a bug
+     * in this module, not a data condition to absorb, so it fails loudly rather than dropping the
+     * edge — a silently missing edge is invisible for as long as it takes someone to wonder why the
+     * graph is thin.
+     */
+    private static void insertTypeRefs(Handle h, java.util.Map<String, Long> typeIds,
+                                       java.util.List<SourceModel.TypeRef> typeRefs) {
+        if (typeRefs.isEmpty()) {
+            return;
+        }
+        org.jdbi.v3.core.statement.PreparedBatch batch = h.prepareBatch("""
+                INSERT INTO type_ref(from_type_id, to_fqcn, ref_kind, ref_count)
+                VALUES (:from, :to, :kind, :count)
+                ON CONFLICT(from_type_id, to_fqcn, ref_kind)
+                DO UPDATE SET ref_count = ref_count + excluded.ref_count""");
+        for (SourceModel.TypeRef r : typeRefs) {
+            Long fromId = typeIds.get(r.fromFqcn());
+            if (fromId == null) {
+                throw new IllegalStateException("type_ref names a type with no java_type row: "
+                        + r.fromFqcn() + " -> " + r.toFqcn()
+                        + " (ApiSurfaceExtractor.isExtractedType and ReferenceExtractor.typeRefs "
+                        + "have drifted apart)");
+            }
+            batch.bind("from", fromId).bind("to", r.toFqcn())
+                    .bind("kind", r.refKind()).bind("count", r.count()).add();
+        }
+        batch.execute();
+    }
+
+    private static long insertType(Handle h, long moduleId, String language, SourceModel.TypeInfo t) {
         String annotationsJson;
         try {
             annotationsJson = JSON.writeValueAsString(t.annotations());
@@ -116,6 +175,7 @@ public final class SourcePersistence {
                 FtsSymbolWriter.insert(h, moduleId, m.name(), t.fqcn(), "");
             }
         }
+        return typeId;
     }
 
     /**

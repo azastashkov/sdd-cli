@@ -335,7 +335,7 @@
     "build_system" : "GRADLE",
     "dirty_hash" : "<scrubbed>",
     "error" : null,
-    "extractor_epoch" : 2,
+    "extractor_epoch" : 3,
     "gradle_status" : "OK",
     "head_commit" : "<scrubbed>",
     "id" : 1,
@@ -350,7 +350,7 @@
     "build_system" : "GRADLE",
     "dirty_hash" : "<scrubbed>",
     "error" : null,
-    "extractor_epoch" : 2,
+    "extractor_epoch" : 3,
     "gradle_status" : "OK",
     "head_commit" : "<scrubbed>",
     "id" : 2,
@@ -390,6 +390,46 @@
   } ],
   "runtime_edge" : [ ],
   "runtime_remote" : [ ],
-  "type_ref" : [ ],
+  "type_ref" : [ {
+    "from_type_id" : 1,
+    "ref_count" : 1,
+    "ref_kind" : "IMPORT",
+    "to_fqcn" : "lombok.Getter"
+  }, {
+    "from_type_id" : 2,
+    "ref_count" : 1,
+    "ref_kind" : "IMPORT",
+    "to_fqcn" : "org.springframework.cloud.openfeign.FeignClient"
+  }, {
+    "from_type_id" : 2,
+    "ref_count" : 1,
+    "ref_kind" : "IMPORT",
+    "to_fqcn" : "org.springframework.web.bind.annotation.PostMapping"
+  }, {
+    "from_type_id" : 3,
+    "ref_count" : 1,
+    "ref_kind" : "IMPORT",
+    "to_fqcn" : "org.springframework.kafka.annotation.KafkaListener"
+  }, {
+    "from_type_id" : 3,
+    "ref_count" : 1,
+    "ref_kind" : "TYPE",
+    "to_fqcn" : "org.springframework.kafka.core.KafkaTemplate"
+  }, {
+    "from_type_id" : 6,
+    "ref_count" : 1,
+    "ref_kind" : "CALL",
+    "to_fqcn" : "com.acme.orders.OrderHelper"
+  }, {
+    "from_type_id" : 6,
+    "ref_count" : 2,
+    "ref_kind" : "TYPE",
+    "to_fqcn" : "com.acme.orders.OrderHelper"
+  }, {
+    "from_type_id" : 6,
+    "ref_count" : 1,
+    "ref_kind" : "IMPORT",
+    "to_fqcn" : "com.acme.pricing.PriceCalculator"
+  } ],
   "type_supertype" : [ ]
 }

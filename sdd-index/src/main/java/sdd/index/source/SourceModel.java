@@ -38,5 +38,16 @@ public final class SourceModel {
 
     public record UsageRef(String targetFqcn, String refKind) {}
 
+    /**
+     * One type -> type reference, carrying BOTH ends. This is what {@link UsageRef} cannot express:
+     * it names only the target, leaving the module to stand in for the referrer, and it is written
+     * only for targets declared outside the repo. See {@code V7__type_refs.sql}.
+     *
+     * @param fromFqcn the extracted type the reference was written inside — the nearest enclosing
+     *                 declaration that {@code ApiSurfaceExtractor.isExtractedType} admits
+     * @param count    how many reference sites collapsed into this row
+     */
+    public record TypeRef(String fromFqcn, String toFqcn, String refKind, int count) {}
+
     public record FileRef(String srcRel, String dstRel, int count) {}
 }

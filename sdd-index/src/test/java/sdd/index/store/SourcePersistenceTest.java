@@ -42,6 +42,67 @@ class SourcePersistenceTest {
                 TIER_JAVADOC);
     }
 
+    private List<Map<String, Object>> typeRefRows() {
+        return db.jdbi().withHandle(h -> h.createQuery(
+                "SELECT to_fqcn, ref_kind, ref_count FROM type_ref ORDER BY to_fqcn, ref_kind")
+                .mapToMap().list());
+    }
+
+    private void persistWithRefs(List<SourceModel.TypeRef> refs) {
+        db.jdbi().useHandle(h -> SourcePersistence.persistModuleSource(h, repoId, moduleId, "JAVA",
+                List.of(type()), List.of(), List.of(), refs));
+    }
+
+    @Test
+    void typeRefsArePersistedAndRePersistingAModuleIsIdempotent() {
+        List<SourceModel.TypeRef> refs = List.of(
+                new SourceModel.TypeRef("com.acme.pricing.LoyaltyTier", "com.acme.pricing.Money",
+                        "TYPE", 3),
+                new SourceModel.TypeRef("com.acme.pricing.LoyaltyTier", "com.acme.pricing.Money",
+                        "CALL", 1));
+
+        persistWithRefs(refs);
+        assertThat(typeRefRows()).hasSize(2);
+        assertThat(typeRefRows().get(1)).containsEntry("ref_count", 3);
+
+        // Re-indexing the same module must not double the counts. This is the property that makes
+        // the ON CONFLICT clause safe: the DELETE of java_type cascades the old rows away first,
+        // so the upsert only ever merges duplicates WITHIN one extraction pass.
+        persistWithRefs(refs);
+        assertThat(typeRefRows()).hasSize(2);
+        assertThat(typeRefRows().get(1)).containsEntry("ref_count", 3);
+    }
+
+    @Test
+    void deletingAModulesTypesCascadesItsTypeRefsAway() {
+        persistWithRefs(List.of(new SourceModel.TypeRef("com.acme.pricing.LoyaltyTier",
+                "com.acme.pricing.Money", "TYPE", 1)));
+        assertThat(typeRefRows()).hasSize(1);
+
+        // V7 adds no DELETE of its own and relies entirely on ON DELETE CASCADE plus
+        // Database.dataSource's enforceForeignKeys(true). If foreign keys were ever silently off,
+        // type_ref would accumulate orphans across every re-index while every other table stayed
+        // correct -- a drift nothing else in the suite would notice.
+        db.jdbi().useHandle(h ->
+                h.createUpdate("DELETE FROM java_type WHERE module_id=:m")
+                        .bind("m", moduleId).execute());
+
+        assertThat(typeRefRows()).isEmpty();
+    }
+
+    @Test
+    void aTypeRefNamingATypeWithNoRowFailsLoudlyRatherThanBeingDropped() {
+        // Means ApiSurfaceExtractor.isExtractedType and ReferenceExtractor.typeRefs have drifted
+        // apart. A silently dropped edge is invisible for as long as it takes someone to wonder
+        // why the graph is thin, so this must not be absorbed.
+        assertThatThrownBy(() -> persistWithRefs(List.of(
+                new SourceModel.TypeRef("com.acme.pricing.NotExtracted", "com.acme.pricing.Money",
+                        "TYPE", 1))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("no java_type row")
+                .hasMessageContaining("com.acme.pricing.NotExtracted");
+    }
+
     @Test
     void persistsTypesMembersUsagesFileRefsAndFts() {
         SourcePersistence.clearRepoFileRefs(db.jdbi(), repoId);
