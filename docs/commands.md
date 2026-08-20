@@ -196,6 +196,24 @@ gains the same.
 | `tls.cert`/`tls.key` exist and are readable, and the key actually parses | Names the path (never file contents); a PKCS#1/SEC1/legacy-encrypted key names the header found and the exact `openssl pkcs8 -topk8 -nocrypt` conversion command | `DoctorCommand.java:255-264`, `HttpClients.java:228-266` |
 | The client certificate is not expired | `client certificate expired <notAfter> (subject=<subject>)` | `DoctorCommand.java:269-275` |
 
+**Seeing the exact request and reply (`SDD_HTTP_DUMP`).** When an endpoint
+answers 4xx, it read the body and rejected it — and gateway messages for that
+are routinely useless (`"Your request contains invalid JSON syntax"` for a
+body that verifiably parses names neither the field nor the reason). Set
+`SDD_HTTP_DUMP` to a file path and every model request and its reply is
+appended there as one JSON object per line, with both bodies nested as JSON
+so nothing has to be unescaped to read:
+
+```sh
+SDD_HTTP_DUMP=/tmp/sdd-wire.jsonl sdd doctor --endpoint <name> --tools
+```
+
+Bodies only, never headers — an `Authorization` value cannot leak into the
+file because the file has no place to put one. It is **not** part of
+`--report`: that file is meant to be handed to someone remote, while a full
+prompt dump is source, spec text and estate structure. Off unless the
+variable is set. `doctor` prints this hint itself on a 4xx.
+
 **A gateway that serves no `/models` route.** The per-endpoint probe asks for
 `GET <base_url>/models`, which an OpenAI-compatible gateway need not serve.
 Such an endpoint reports `HTTP 404 — reachable, but no /models listing here`

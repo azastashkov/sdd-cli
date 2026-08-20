@@ -272,12 +272,36 @@ public final class DoctorCommand implements Callable<Integer> {
             out.println("    finish_reason   : " + r.finishReason());
             out.println("    tokens used     : " + r.completionTokens() + " of " + r.maxTokensSent());
             out.println("    answered instead: " + r.contentExcerpt());
+            printDumpHint(r.detail());
         }
         diagnostics.note(check + ": called_tool=" + r.calledTool()
                 + " tool=" + r.toolName()
                 + " finish_reason=" + r.finishReason()
                 + " completion_tokens=" + r.completionTokens()
                 + " max_tokens=" + r.maxTokensSent());
+    }
+
+    /**
+     * Points at the one thing that settles an endpoint's complaint about the request itself.
+     *
+     * <p>A 4xx here means the gateway read the body and rejected it, and gateway messages for that
+     * are routinely useless — "invalid JSON syntax" for a body that verifiably parses, naming
+     * neither the field nor the reason. Reading the exchange is the only honest next step, and an
+     * operator has no way to guess that sdd can show it. Only printed when the dump is not already
+     * on, and only for a status that means the request was the problem: nothing about a 500 or a
+     * timeout is answered by looking at bytes that were accepted.
+     */
+    private void printDumpHint(String detail) {
+        if (detail == null || System.getenv("SDD_HTTP_DUMP") != null) {
+            return;
+        }
+        if (!detail.startsWith("HTTP 4")) {
+            return;
+        }
+        spec.commandLine().getOut().println(
+                "    the endpoint rejected the REQUEST — to see exactly what was sent and what came "
+                + "back:\n      SDD_HTTP_DUMP=/tmp/sdd-wire.jsonl sdd doctor --endpoint <name> --tools\n"
+                + "    (bodies only, no headers, written where you say — not included in --report)");
     }
 
     /** Reports what the tier actually produced, with the numbers that explain a truncation. */
@@ -296,6 +320,9 @@ public final class DoctorCommand implements Callable<Integer> {
                         : ""));
         out.println("    answer chars    : " + r.answerChars());
         out.println("    raw reply head  : " + r.rawExcerpt());
+        if (!r.ok()) {
+            printDumpHint(r.detail());
+        }
         diagnostics.note(check + ": finish_reason=" + r.finishReason()
                 + " completion_tokens=" + r.completionTokens()
                 + " max_tokens=" + r.maxTokensSent()

@@ -39,6 +39,10 @@ public final class HttpChatModel implements ChatModel {
     private final int maxAttempts;
     private final HttpClient client;
     private final Sleeper sleeper;
+    /** Null unless SDD_HTTP_DUMP names a file — see {@link WireDump} for why this exists. Read
+     *  from the environment here rather than threaded through a constructor: WireDump's own logic
+     *  is unit-tested directly, and a getenv call is not the part worth a test seam. */
+    private final WireDump dump = WireDump.fromEnv(System.getenv());
 
     public HttpChatModel(ModelEndpoint endpoint) {
         this(endpoint, MAX_ATTEMPTS);
@@ -87,6 +91,9 @@ public final class HttpChatModel implements ChatModel {
             try {
                 HttpResponse<String> resp = send(body);
                 int status = resp.statusCode();
+                if (dump != null) {
+                    dump.record(completionsUrl(), body, status, resp.body());
+                }
                 if (status >= 200 && status < 300) {
                     return parse(resp.body());
                 }
@@ -103,6 +110,9 @@ public final class HttpChatModel implements ChatModel {
                 throw new ModelException("HTTP " + status + ": " + resp.body(), status);
             } catch (IOException e) {
                 String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                if (dump != null) {
+                    dump.recordFailure(completionsUrl(), body, detail);
+                }
                 last = new ModelException("transport error: " + detail, e);
                 backoff(attempt, null);
             } catch (InterruptedException e) {
@@ -113,9 +123,13 @@ public final class HttpChatModel implements ChatModel {
         throw last;
     }
 
+    private String completionsUrl() {
+        return endpoint.baseUrl() + "/chat/completions";
+    }
+
     private HttpResponse<String> send(String body) throws IOException, InterruptedException {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
-                .uri(URI.create(endpoint.baseUrl() + "/chat/completions"))
+                .uri(URI.create(completionsUrl()))
                 .timeout(endpoint.timeout())
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body));
