@@ -51,13 +51,37 @@ final class DsmlToolCalls {
     private DsmlToolCalls() {
     }
 
+    /**
+     * The sentinel bar these tags are actually built from.
+     *
+     * <p>DeepSeek's tokenizer spells its control markers with U+FF5C FULLWIDTH VERTICAL LINE, not
+     * ASCII {@code |} — {@code <｜begin▁of▁sentence｜>} is the same family. In a terminal the two
+     * are nearly indistinguishable: the fullwidth form just looks like a bar with padding around
+     * it, which is exactly how it appeared in the transcript that produced this parser.
+     */
+    private static final char FULLWIDTH_BAR = '\uFF5C';
+
     /** Whether this content is worth handing to {@link #read} at all. */
     static boolean present(String content) {
-        return content != null && content.contains(INVOKE_OPEN);
+        return content != null && scannable(content).contains(INVOKE_OPEN);
+    }
+
+    /**
+     * The content with fullwidth bars folded to ASCII, for LOCATING tags only.
+     *
+     * <p>{@link String#replace(char, char)} is one character for one character, so every index into
+     * this string is also valid in the original. That is what lets tags be found here while every
+     * argument VALUE is cut from the untouched original: folding a bar inside a value would be a
+     * silent edit to what the model asked for, and a search-and-replace argument has to match a
+     * file exactly.
+     */
+    private static String scannable(String content) {
+        return content.indexOf(FULLWIDTH_BAR) < 0 ? content : content.replace(FULLWIDTH_BAR, '|');
     }
 
     /** Every call in the content, or empty when any part of it does not hold up. */
-    static List<ToolCall> read(String content, Set<String> declared) {
+    static List<ToolCall> read(String raw, Set<String> declared) {
+        String content = scannable(raw);
         List<ToolCall> out = new ArrayList<>();
         int from = 0;
         while (true) {
@@ -77,7 +101,9 @@ final class DsmlToolCalls {
             if (name == null || !declared.contains(name)) {
                 return List.of();
             }
-            ObjectNode args = arguments(content.substring(tagEnd + 1, close));
+            // Located on the folded copy, cut from the original: same indices, untouched bytes.
+            ObjectNode args = arguments(content.substring(tagEnd + 1, close),
+                    raw.substring(tagEnd + 1, close));
             if (args == null) {
                 return List.of();
             }
@@ -89,8 +115,10 @@ final class DsmlToolCalls {
         }
     }
 
-    /** Every parameter in one invoke body, or null if a parameter tag does not close. */
-    private static ObjectNode arguments(String body) {
+    /** Every parameter in one invoke body, or null if a parameter tag does not close.
+     *  {@code body} is the folded copy used to find tags; {@code rawBody} is the original the
+     *  values themselves are cut from. */
+    private static ObjectNode arguments(String body, String rawBody) {
         ObjectNode args = JSON.createObjectNode();
         int from = 0;
         while (true) {
@@ -110,7 +138,7 @@ final class DsmlToolCalls {
             if (name == null) {
                 return null;
             }
-            args.put(name, value(body.substring(tagEnd + 1, close)));
+            args.put(name, value(rawBody.substring(tagEnd + 1, close)));
             from = close + PARAM_CLOSE.length();
         }
     }

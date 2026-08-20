@@ -88,6 +88,35 @@ class DsmlToolCallsTest {
         assertThat(calls.get(1).argumentsJson()).isEqualTo("{\"path\":\"a/B.java\"}");
     }
 
+    // DeepSeek's tokenizer spells its sentinels with U+FF5C FULLWIDTH VERTICAL LINE, not ASCII
+    // '|'. In a terminal the two are nearly indistinguishable — the fullwidth form just looks like
+    // a bar with padding — so a transcript can read as ASCII while matching nothing.
+    private static String fullwidth(String ascii) {
+        return ascii.replace('|', '\uFF5C');
+    }
+
+    @Test
+    void fullwidthSentinelBarsAreReadTheSameAsAsciiOnes() {
+        assertThat(TextToolCalls.read(fullwidth(TURN_1), DECLARED)).singleElement()
+                .satisfies(c -> {
+                    assertThat(c.name()).isEqualTo("list_repos");
+                    assertThat(c.argumentsJson()).isEqualTo("{\"pattern\":\"\"}");
+                });
+        assertThat(TextToolCalls.read(fullwidth(TURN_2), DECLARED)).hasSize(1);
+    }
+
+    // Folding happens on a copy used only to LOCATE tags. A bar inside a value is content — an
+    // apply_edit search argument has to match a file exactly — so it must survive untouched.
+    @Test
+    void aFullwidthBarInsideAnArgumentValueIsNotFoldedToAscii() {
+        String call = fullwidth("<|DSML|invoke name=\"search_code\">"
+                + "<|DSML|parameter name=\"regex\">PLACEHOLDER</|DSML|parameter>"
+                + "</|DSML|invoke>").replace("PLACEHOLDER", "a\uFF5Cb");
+
+        assertThat(TextToolCalls.read(call, DECLARED)).singleElement()
+                .satisfies(c -> assertThat(c.argumentsJson()).isEqualTo("{\"regex\":\"a\uFF5Cb\"}"));
+    }
+
     @Test
     void aNameTheRequestNeverDeclaredIsNotACall() {
         assertThat(TextToolCalls.read(
