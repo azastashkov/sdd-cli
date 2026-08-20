@@ -49,7 +49,11 @@ public final class PlanJsonReader {
         for (JsonNode s : root.path("steps")) {
             steps.add(new PlanModel.PlanStep(text(s, "repo"), strings(s.path("covers")),
                     text(s, "version_action"), strings(s.path("provides")), strings(s.path("consumes")),
-                    strings(s.path("files")), strings(s.path("verification")), text(s, "sub_spec")));
+                    strings(s.path("files")), strings(s.path("verification")), text(s, "sub_spec"),
+                    // A MissingNode iterates as empty, so a plan.json from before the OpenSpec
+                    // export loads with an empty block rather than failing. Both frozen runs on
+                    // this machine predate it.
+                    strings(s.path("openspec"))));
         }
         return new PlanModel(text(root, "spec_id"), root.path("plan_version").asInt(),
                 text(root, "spec_sha256"), text(root, "plan_sha256"),

@@ -61,8 +61,15 @@ public final class PlanJson {
                     String compat, List<String> declared) {
     }
 
+    /**
+     * @param openspec the raw {@code - openspec:} block lines, frozen so the export renders the
+     *                 capability and allocation a human approved rather than re-deriving them.
+     *                 Absent on every plan.json written before the export existed, which is why
+     *                 the reader tolerates a missing key.
+     */
     record Step(String repo, List<String> covers, String version_action, List<String> provides,
-                List<String> consumes, List<String> files, List<String> verification, String sub_spec) {
+                List<String> consumes, List<String> files, List<String> verification,
+                String sub_spec, List<String> openspec) {
     }
 
     private PlanJson() {
@@ -128,7 +135,8 @@ public final class PlanJson {
         List<Step> steps = new ArrayList<>();
         for (PlanDocument.PlanStep step : plan.steps()) {
             steps.add(new Step(step.repo(), step.covers(), step.versionAction(), step.provides(),
-                    step.consumes(), step.files(), step.verification(), step.subSpec()));
+                    step.consumes(), step.files(), step.verification(), step.subSpec(),
+                    step.openspec()));
         }
         try {
             return JSON.writerWithDefaultPrettyPrinter().writeValueAsString(new Root(

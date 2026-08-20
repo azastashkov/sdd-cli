@@ -6,6 +6,7 @@ import sdd.core.contract.DeclaredContract;
 import sdd.core.toolchain.Toolchain;
 import sdd.plan.gen.ExecutionOrder;
 import sdd.plan.spec.NormalizedSpec;
+import sdd.plan.openspec.OpenSpecPlan;
 import sdd.plan.spec.SpecItem;
 
 import java.util.ArrayList;
@@ -126,6 +127,13 @@ public final class PlanValidator {
             if (!VERSION_ACTIONS.contains(step.versionAction())) {
                 problems.add("version_action '" + step.versionAction() + "' on step "
                         + step.repo() + " is not one of none|patch|minor|major");
+            }
+            // A malformed openspec block is only reachable by a human edit at this gate, it is one
+            // line to fix, and coercing it silently at implement time would put a wrong capability
+            // or a bogus allocation into a committed repo. Problems, not warnings.
+            for (String problem : OpenSpecPlan.parse(step.openspec(), step.covers(),
+                    spec.acceptance().stream().map(SpecItem::id).toList()).problems()) {
+                problems.add("step " + step.repo() + ": " + problem);
             }
             for (String id : step.provides()) {
                 if (!contractIds.contains(id)) {

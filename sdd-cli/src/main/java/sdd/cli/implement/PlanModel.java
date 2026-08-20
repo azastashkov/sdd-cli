@@ -30,14 +30,30 @@ public record PlanModel(String specId, int planVersion, String specSha256, Strin
         }
     }
 
+    /**
+     * @param openspec the raw {@code - openspec:} block lines. Empty for every plan.json written
+     *                 before the OpenSpec export existed — {@code PlanJsonReader} reads a missing
+     *                 key as an empty list, so a frozen run from before this feature still loads
+     *                 and still resumes.
+     */
     public record PlanStep(String repo, List<String> covers, String versionAction, List<String> provides,
-                           List<String> consumes, List<String> files, List<String> verification, String subSpec) {
+                           List<String> consumes, List<String> files, List<String> verification,
+                           String subSpec, List<String> openspec) {
+        /** Pre-OpenSpec shape, so every existing construction site compiles untouched. */
+        public PlanStep(String repo, List<String> covers, String versionAction, List<String> provides,
+                        List<String> consumes, List<String> files, List<String> verification,
+                        String subSpec) {
+            this(repo, covers, versionAction, provides, consumes, files, verification, subSpec,
+                    List.of());
+        }
+
         public PlanStep {
             covers = List.copyOf(covers);
             provides = List.copyOf(provides);
             consumes = List.copyOf(consumes);
             files = List.copyOf(files);
             verification = List.copyOf(verification);
+            openspec = List.copyOf(openspec);
         }
     }
 
