@@ -520,15 +520,28 @@ always sent — an endpoint without the key is unaffected. A value other than `o
 fails config load naming the key, rather than reaching the network and coming back as a 500 that
 mentions nothing about `sdd.yml`.
 
-`wire: gigachat` sends the captured shape, which differs from plain OpenAI in three ways
-(`WireFormat.java`, asserted field by field in `GigaChatWireTest`):
+`wire: gigachat` matches what that gateway validates. It presents an OpenAI face over GigaChat
+semantics — `tools` and `tool_calls` pass through unchanged, but the messages are checked against
+GigaChat's own rules (`WireFormat.java`, asserted field by field in `GigaChatWireTest`):
 
 | | `openai` | `gigachat` |
 |---|---|---|
-| `user` and `tool` `content` | a string | `[{"type":"text","text":…}]` |
-| `system` and `assistant` `content` | a string | a string (unchanged — the asymmetry is real) |
+| a tool result | the text the tool produced | a JSON object — `{"result": "…"}` unless the tool already returned one |
 | assistant turn that is only `tool_calls` | `content` omitted | `content` present, empty if there is none |
 | a reply's thinking | `<think>…</think>` inline in `content`, stripped on arrival | a `reasoning_content` field, read off the reply and sent back with the turn it belongs to |
+
+The tool-result rule was found by hitting it: a plain-text result gets
+`HTTP 422 INVALID_PARAMS: function content must contain FunctionResult`. Note what that error
+implies — the gateway had already accepted a `role: "tool"` message *as* a function message, so the
+role mapping is its problem, not sdd's; only the content shape is. Almost every tool here returns
+prose, so almost every result needs wrapping, and the text is carried through verbatim under a key
+rather than summarized.
+
+**This wire used to send `user` and `tool` content as `[{"type":"text","text":…}]` parts**, copied
+from captured traffic. That returned `HTTP 400 "Your request contains invalid JSON syntax"` — the
+capture was a *different service surface* in the same estate, not this gateway. It was removed
+rather than left behind a flag: a capture proves what that URL accepts and nothing more, and a
+measured-wrong option under a name an operator will reach for is worse than not offering one.
 
 `tools` and `tool_calls` themselves are untouched: `{"type":"function","function":{…}}` with
 `arguments` as a JSON string, which is what the gateway receives from its own clients.

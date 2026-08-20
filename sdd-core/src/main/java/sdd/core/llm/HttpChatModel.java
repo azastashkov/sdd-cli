@@ -216,20 +216,16 @@ public final class HttpChatModel implements ChatModel {
     /**
      * Writes one message's {@code content} in the dialect this endpoint speaks.
      *
-     * <p>On {@link WireFormat#OPENAI} this is what it always was: a string, and the key is absent
-     * when there is nothing to say (an assistant turn that is purely {@code tool_calls}).
+     * <p>A string on every role and every wire; the key is absent when there is nothing to say,
+     * except on {@link WireFormat#GIGACHAT}, where an assistant turn carrying only {@code tool_calls}
+     * still writes an empty one. A null content becomes {@code ""} rather than a fabricated
+     * placeholder: the model said nothing, and saying so is the honest encoding of that.
      *
-     * <p>On {@link WireFormat#GIGACHAT} it follows the gateway's observed traffic — {@code user}
-     * and {@code tool} messages carry an array of {@code {"type":"text","text":…}} parts,
-     * {@code system} and {@code assistant} carry a string, and an assistant turn always carries
-     * one even when empty. A null content becomes {@code ""} rather than a fabricated placeholder:
-     * the model said nothing, and saying so is the honest encoding of that.
+     * <p>A tool result is the one shape that genuinely differs — see {@link #functionResult}.
      */
     private static void putContent(ObjectNode msg, ChatMessage m, WireFormat wire) {
-        if (wire.partsFor(m.role())) {
-            ObjectNode part = msg.putArray("content").addObject();
-            part.put("type", "text");
-            part.put("text", m.content() == null ? "" : m.content());
+        if ("tool".equals(m.role()) && wire.wrapsToolResults()) {
+            msg.put("content", functionResult(m.content()));
             return;
         }
         if (m.content() != null) {
@@ -237,6 +233,32 @@ public final class HttpChatModel implements ChatModel {
         } else if (wire.assistantContentAlwaysPresent() && "assistant".equals(m.role())) {
             msg.put("content", "");
         }
+    }
+
+    /**
+     * A tool result as GigaChat requires it: a JSON object, serialized.
+     *
+     * <p>{@code HTTP 422 INVALID_PARAMS: function content must contain FunctionResult} is what a
+     * plain-text result gets. Almost every tool in this codebase returns prose — a directory
+     * listing, search hits, a build log — so almost every result needs wrapping.
+     *
+     * <p>A result that is ALREADY a JSON object passes through untouched, so a tool that returns
+     * structured data is not double-wrapped into {@code {"result":"{...}"}}, which would hand the
+     * model its own JSON as an escaped string to re-parse. An array or a bare scalar is wrapped:
+     * the requirement is an object specifically, not merely valid JSON.
+     */
+    private static String functionResult(String content) {
+        String text = content == null ? "" : content;
+        try {
+            if (JSON.readTree(text).isObject()) {
+                return text;
+            }
+        } catch (IOException e) {
+            // Not JSON at all, which is the common case. Fall through and wrap it.
+        }
+        ObjectNode wrapped = JSON.createObjectNode();
+        wrapped.put("result", text);
+        return wrapped.toString();
     }
 
     private ChatResponse parse(String body, ChatRequest req) {

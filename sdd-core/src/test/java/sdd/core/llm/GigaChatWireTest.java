@@ -76,34 +76,70 @@ class GigaChatWireTest {
         return JSON.readTree(sent.get(0).getBodyAsString());
     }
 
+    // HTTP 422 INVALID_PARAMS: function content must contain FunctionResult — what this gateway
+    // answers a plain-text tool result. Almost every tool here returns prose (a directory listing,
+    // search hits, a build log), so almost every result needs wrapping.
     @Test
-    void userAndToolMessagesCarryTypedTextPartsWhileSystemAndAssistantCarryPlainStrings()
-            throws Exception {
+    void aToolResultIsSentAsAJsonObject() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+
+        model(WireFormat.GIGACHAT).complete(conversation(toolCallTurn("\n\n\n", null)));
+
+        JsonNode toolMsg = sentBody().path("messages").get(3);
+        assertThat(toolMsg.path("content").isTextual()).isTrue();
+        JsonNode result = JSON.readTree(toolMsg.path("content").asText());
+        assertThat(result.isObject()).isTrue();
+        // Wrapped, not replaced: the text is what the model reads to keep working.
+        assertThat(result.path("result").asText())
+                .isEqualTo("Listed 2 item(s) in /src:\n[DIR] main\n[DIR] test");
+        assertThat(toolMsg.path("tool_call_id").asText()).isEqualTo("call_c784f2");
+    }
+
+    // Not double-wrapped into {"result":"{...}"}, which would hand the model its own JSON back as
+    // an escaped string to re-parse.
+    @Test
+    void aResultThatIsAlreadyAJsonObjectPassesThroughUntouched() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+        ChatRequest req = new ChatRequest("Qwen3.6-35B", List.of(
+                ChatMessage.user("go"),
+                ChatMessage.tool("call_c784f2", "{\"files\":2}")), List.of(), 256, 0.0);
+
+        model(WireFormat.GIGACHAT).complete(req);
+
+        assertThat(sentBody().path("messages").get(1).path("content").asText())
+                .isEqualTo("{\"files\":2}");
+    }
+
+    // The requirement is an OBJECT specifically, not merely valid JSON.
+    @Test
+    void anArrayOrScalarResultIsStillWrapped() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+        ChatRequest req = new ChatRequest("Qwen3.6-35B", List.of(
+                ChatMessage.user("go"),
+                ChatMessage.tool("call_c784f2", "[1,2]")), List.of(), 256, 0.0);
+
+        model(WireFormat.GIGACHAT).complete(req);
+
+        assertThat(sentBody().path("messages").get(1).path("content").asText())
+                .isEqualTo("{\"result\":\"[1,2]\"}");
+    }
+
+    // Every other role stays a plain string. The parts-array encoding this wire first shipped with
+    // was copied from a capture of a DIFFERENT service in the same estate and returned HTTP 400
+    // "Your request contains invalid JSON syntax" here; it was removed rather than left behind a
+    // flag, since a measured-wrong option under a name an operator reaches for is worse than none.
+    @Test
+    void systemUserAndAssistantContentAreAllPlainStrings() throws Exception {
         wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
 
         model(WireFormat.GIGACHAT).complete(conversation(toolCallTurn("\n\n\n", null)));
 
         JsonNode messages = sentBody().path("messages");
-        // The asymmetry is in the captured traffic, not an invention: system and assistant are
-        // strings in the same request where user and tool are arrays of parts.
         assertThat(messages.get(0).path("content").isTextual()).isTrue();
-        assertThat(messages.get(0).path("content").asText())
-                .isEqualTo("You are a file search specialist agent.");
-        assertThat(messages.get(2).path("content").isTextual()).isTrue();
-
-        JsonNode userContent = messages.get(1).path("content");
-        assertThat(userContent.isArray()).isTrue();
-        assertThat(userContent).hasSize(1);
-        assertThat(userContent.get(0).path("type").asText()).isEqualTo("text");
-        assertThat(userContent.get(0).path("text").asText())
+        assertThat(messages.get(1).path("content").isTextual()).isTrue();
+        assertThat(messages.get(1).path("content").asText())
                 .isEqualTo("Very thoroughly explore the src directory structure.");
-
-        JsonNode toolContent = messages.get(3).path("content");
-        assertThat(toolContent.isArray()).isTrue();
-        assertThat(toolContent.get(0).path("type").asText()).isEqualTo("text");
-        assertThat(toolContent.get(0).path("text").asText())
-                .isEqualTo("Listed 2 item(s) in /src:\n[DIR] main\n[DIR] test");
-        assertThat(messages.get(3).path("tool_call_id").asText()).isEqualTo("call_c784f2");
+        assertThat(messages.get(2).path("content").isTextual()).isTrue();
     }
 
     @Test
@@ -180,7 +216,9 @@ class GigaChatWireTest {
 
         JsonNode messages = sentBody().path("messages");
         assertThat(messages.get(1).path("content").isTextual()).isTrue();
-        assertThat(messages.get(3).path("content").isTextual()).isTrue();
+        // Unwrapped: the OPENAI wire sends a tool result exactly as the tool produced it.
+        assertThat(messages.get(3).path("content").asText())
+                .isEqualTo("Listed 2 item(s) in /src:\n[DIR] main\n[DIR] test");
         assertThat(messages.get(2).has("content")).isFalse();
         assertThat(messages.get(2).has("reasoning_content")).isFalse();
         assertThat(resp.message().reasoningContent()).isNull();
