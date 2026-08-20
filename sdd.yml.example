@@ -270,6 +270,18 @@ excludes: []              # workspace directories to skip
 #   write_back: none             # none | comment — off by default; a tool that can silently start
 #                                 # commenting on tickets needs an explicit opt-in
 #   pull_requests: false         # off by default, same reason
+#
+# Diagnosing Atlassian access on a closed network:
+#   sdd plan --fetch-only PROJ-123      fetch the sources, print their provenance and sizes, and
+#                                       stop — no model is called, nothing is written, so Jira and
+#                                       Confluence can be tested independently of the model gateway
+#   SDD_ATLASSIAN_DUMP=1 sdd plan …     record every Atlassian request and response as JSONL to
+#                                       .sdd/atlassian-wire.jsonl (already gitignored); set it to a
+#                                       path to write elsewhere. Request headers are never written;
+#                                       allowlisted response headers (Location, Retry-After,
+#                                       Content-Type, …) are, because a tiny-link redirect and a
+#                                       rewriting proxy show up nowhere else. Configured tokens are
+#                                       redacted; ticket and page text is NOT.
 
 # Runtime composition: which repo builds a bundle a host application loads at run time. Declared
 # rather than derived — a manifest says the host loads /mfe/a/trading-mfe-a.js, but which repo

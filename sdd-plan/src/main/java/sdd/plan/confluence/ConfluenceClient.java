@@ -1,6 +1,7 @@
 package sdd.plan.confluence;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import sdd.core.diagnostics.AtlassianWireDump;
 import sdd.core.diagnostics.DiagnosticWriter;
 import sdd.core.http.AtlassianException;
 import sdd.core.http.RestClient;
@@ -72,6 +73,8 @@ public final class ConfluenceClient implements ConfluencePages {
      */
     private final String basePath;
     private final DiagnosticWriter diagnostics;
+    /** Set only when {@code SDD_ATLASSIAN_DUMP} is configured — see {@link #wireDump}. */
+    private AtlassianWireDump wireDump;
 
     /**
      * @param httpClient the same {@code HttpClients.build(...)}-constructed client the caller's
@@ -128,6 +131,21 @@ public final class ConfluenceClient implements ConfluencePages {
         this.confluencePort = effectivePort(baseUri);
         this.basePath = normalizeBasePath(baseUri);
         this.diagnostics = diagnostics;
+    }
+
+    /**
+     * Records the tiny-link probe to {@code dump}.
+     *
+     * <p>This class makes exactly one request that bypasses {@code restClient}, for the one reason
+     * {@code RestClient} cannot serve it: reading a {@code Location} header off a 3xx. That is also
+     * the single most likely thing a corporate proxy interferes with, so a dump wired only into
+     * {@code RestClient} would be blind to precisely the exchange it is most needed for. The probe
+     * uses {@code BodyHandlers.discarding()}, so headers are the entire record — which is why this
+     * dump captures response headers at all.
+     */
+    public ConfluenceClient wireDump(AtlassianWireDump dump) {
+        this.wireDump = dump;
+        return this;
     }
 
     public SourceDoc fetchPage(String pageId) {
@@ -261,6 +279,9 @@ public final class ConfluenceClient implements ConfluencePages {
         }
         int status = response.statusCode();
         logTinyLinkRequest(uri, status, startNanos, response);
+        if (wireDump != null) {
+            wireDump.record("GET", uri.toString(), null, status, response.headers().map(), null);
+        }
         if (status < 300 || status >= 400) {
             return null;   // not a redirect: this "tiny link" shape did not behave like one
         }

@@ -304,6 +304,21 @@ public final class DoctorCommand implements Callable<Integer> {
                 + "    (bodies only, no headers, written where you say — not included in --report)");
     }
 
+    /**
+     * Names {@code SDD_ATLASSIAN_DUMP} once, the same way {@link #printDumpHint} names its model
+     * counterpart. Deliberately a hint and not a default: the dump contains whatever the tickets
+     * and pages contain, so turning it on is the operator's decision, not doctor's.
+     */
+    private void printAtlassianDumpHint() {
+        if (System.getenv(sdd.core.diagnostics.AtlassianWireDump.ENV) != null) {
+            return;
+        }
+        spec.commandLine().getOut().println(
+                "    to record exactly what Jira/Confluence sent and returned:\n"
+                + "      SDD_ATLASSIAN_DUMP=1 sdd plan --fetch-only <ISSUE-KEY>\n"
+                + "    (writes .sdd/atlassian-wire.jsonl; credentials redacted, ticket text is not)");
+    }
+
     /** Reports what the tier actually produced, with the numbers that explain a truncation. */
     private void probeCompletion(String name, ModelEndpoint ep) {
         var r = sdd.core.llm.CompletionProbe.probe(ep, new sdd.core.llm.HttpChatModel(ep));
@@ -460,6 +475,7 @@ public final class DoctorCommand implements Callable<Integer> {
             reportAtlassianProbe("atlassian:confluence", "Confluence", ac.confluence(), "/rest/api/user/current",
                     client, clientBuildError, truststore, "username", "displayName");
         }
+        printAtlassianDumpHint();
         if (ac.bitbucket() != null) {
             BitbucketSite bb = ac.bitbucket();
             // Fix 2 (review): Bitbucket Data Center's REST 1.0 API has no /users/self resource —

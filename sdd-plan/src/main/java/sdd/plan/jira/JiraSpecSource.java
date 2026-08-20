@@ -93,6 +93,7 @@ public final class JiraSpecSource implements SpecSource {
         for (String key : rootKeys) {
             JiraClient.Issue issue = fetchRoot(key);
             rootIssues.add(issue);
+            notes.addAll(issue.notes());
             addIssue(docs, linkUrls, issue);
         }
 
@@ -112,7 +113,9 @@ public final class JiraSpecSource implements SpecSource {
                 continue;
             }
             try {
-                addIssue(docs, linkUrls, jiraClient.fetchIssue(key));
+                JiraClient.Issue linked = jiraClient.fetchIssue(key);
+                notes.addAll(linked.notes());
+                addIssue(docs, linkUrls, linked);
             } catch (AtlassianException e) {
                 notes.add("linked issue " + key + " could not be fetched: " + e.getMessage());
             }

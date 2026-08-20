@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.MissingNode;
 import sdd.core.config.AtlassianProxy;
 import sdd.core.config.AtlassianTls;
 import sdd.core.diagnostics.DiagnosticWriter;
+import sdd.core.diagnostics.AtlassianWireDump;
 import sdd.core.diagnostics.Redactor;
 
 import javax.net.ssl.SSLException;
@@ -100,6 +101,12 @@ public final class RestClient {
      *  no visibility into any other configured site's credentials, and does not need it — it only
      *  ever talks to the one site it was constructed for. */
     private final Redactor redactor;
+    /**
+     * Set only when {@code SDD_ATLASSIAN_DUMP} is configured. A field with a fluent setter rather
+     * than a seventh constructor overload: six already exist, every one of them public and used,
+     * and this is opt-in diagnostics rather than part of any caller's contract.
+     */
+    private AtlassianWireDump wireDump;
 
     public RestClient(String siteName, String baseUrl, String token, String tokenVar, Duration timeout,
             HttpClient client) {
@@ -165,6 +172,19 @@ public final class RestClient {
         this.diagnostics = diagnostics;
         this.transport = transport == null ? TransportContext.NONE : transport;
         this.redactor = Redactor.of(token != null ? List.of(token) : List.of());
+        this.wireDump = null;
+    }
+
+    /**
+     * Records every exchange to {@code dump}, or stops recording when null.
+     *
+     * <p>Wired here rather than inside {@link #execute} reading the environment itself, so a test
+     * can attach one without touching process state, and so the secret set the dump redacts is
+     * assembled by the caller that knows every configured site's token — not just this client's.
+     */
+    public RestClient wireDump(AtlassianWireDump dump) {
+        this.wireDump = dump;
+        return this;
     }
 
     public JsonNode get(String path) {
@@ -337,7 +357,24 @@ public final class RestClient {
             case "PUT" -> builder.header("Content-Type", "application/json").PUT(publisher);
             default -> throw new IllegalArgumentException("unsupported method: " + method);
         }
-        return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+        HttpRequest request = builder.build();
+        String requestBody = body == null ? null : body.toString();
+        if (wireDump == null) {
+            return client.send(request, HttpResponse.BodyHandlers.ofString());
+        }
+        HttpResponse<String> response;
+        try {
+            response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        } catch (IOException | InterruptedException e) {
+            // A transport failure is exactly the case the dump exists for -- a TLS handshake
+            // rejected by a corporate CA, or a proxy refusing to tunnel -- so it must be recorded
+            // before the exception continues on its way.
+            wireDump.recordFailure(method, baseUrl + path, requestBody, String.valueOf(e));
+            throw e;
+        }
+        wireDump.record(method, baseUrl + path, requestBody, response.statusCode(),
+                response.headers().map(), response.body());
+        return response;
     }
 
     private void backoff(int attempt, Long retryAfterMillis) {

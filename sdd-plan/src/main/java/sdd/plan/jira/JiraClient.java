@@ -1,6 +1,7 @@
 package sdd.plan.jira;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.MissingNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Element;
@@ -55,7 +56,15 @@ public final class JiraClient {
      * people do when writing a description.
      */
     public record Issue(SourceDoc issueDoc, List<SourceDoc> commentDocs, List<String> subtaskKeys,
-                         List<String> linkedIssueKeys, List<String> remoteLinkUrls, List<String> hrefUrls) {
+                         List<String> linkedIssueKeys, List<String> remoteLinkUrls,
+                         List<String> hrefUrls, List<String> notes) {
+        /** Pre-notes shape, so existing constructions and tests stay unchanged. */
+        public Issue(SourceDoc issueDoc, List<SourceDoc> commentDocs, List<String> subtaskKeys,
+                     List<String> linkedIssueKeys, List<String> remoteLinkUrls,
+                     List<String> hrefUrls) {
+            this(issueDoc, commentDocs, subtaskKeys, linkedIssueKeys, remoteLinkUrls, hrefUrls,
+                    List.of());
+        }
     }
 
     private static final String ISSUE_FIELDS =
@@ -81,16 +90,37 @@ public final class JiraClient {
         SourceDoc issueDoc = new SourceDoc(SourceDoc.Kind.JIRA_ISSUE, key, issueUrl, summary, updated,
                 descExtract.text(), descExtract.attachments());
 
+        List<String> notes = new ArrayList<>();
         List<SourceDoc> commentDocs = new ArrayList<>();
         List<String> hrefUrls = new ArrayList<>(hrefsIn(descriptionHtml, baseUrl));
-        for (JsonNode comment : rendered.path("comment").path("comments")) {
-            String commentId = comment.path("id").asText();
+        // renderedFields carries each comment's BODY as HTML, which is the whole reason this class
+        // needs no wiki-markup parser. Whether it also carries the id and updated timestamp is one
+        // of the assumptions no live instance has ever confirmed, so read them from
+        // fields.comment.comments[] -- already requested in ISSUE_FIELDS and until now unused --
+        // whenever the rendered copy lacks them. Positional, because the two arrays are the same
+        // comments in the same order. Zero extra requests.
+        JsonNode renderedComments = rendered.path("comment").path("comments");
+        JsonNode rawComments = fields.path("comment").path("comments");
+        for (int i = 0; i < renderedComments.size(); i++) {
+            JsonNode comment = renderedComments.get(i);
+            JsonNode raw = i < rawComments.size() ? rawComments.get(i) : MissingNode.getInstance();
+            String commentId = firstNonBlank(comment.path("id").asText(""), raw.path("id").asText(""));
             String commentHtml = comment.path("body").asText("");
             ConfluenceExtract.Extracted body = ConfluenceExtract.extract(commentHtml);
-            String commentUpdated = normalizeUpdated(comment.path("updated").asText(null));
+            String commentUpdated = normalizeUpdated(firstNonBlank(
+                    comment.path("updated").asText(""), raw.path("updated").asText("")));
             commentDocs.add(new SourceDoc(SourceDoc.Kind.JIRA_COMMENT, key + "-comment-" + commentId,
                     issueUrl + "#comment-" + commentId, null, commentUpdated, body.text(), body.attachments()));
             hrefUrls.addAll(hrefsIn(commentHtml, baseUrl));
+        }
+        // Data Center returns the comment field as a paginated envelope. Reading only the first
+        // page is defensible -- SourceBudget drops JIRA_COMMENT before anything else anyway -- but
+        // doing it silently is not: a cap the human cannot see is a lie, which is the rule
+        // LinkHarvester already states and enforces for every link it declines.
+        int total = fields.path("comment").path("total").asInt(renderedComments.size());
+        if (total > renderedComments.size()) {
+            notes.add("only " + renderedComments.size() + " of " + total + " comments read on "
+                    + key + " (Jira returns comments one page at a time)");
         }
 
         List<String> subtaskKeys = new ArrayList<>();
@@ -99,18 +129,36 @@ public final class JiraClient {
         }
 
         List<String> linkedIssueKeys = new ArrayList<>();
+        List<String> typesSeen = new ArrayList<>();
         for (JsonNode link : fields.path("issuelinks")) {
-            if (isBlockOrDependLink(link.path("type"))) {
+            boolean followed = isBlockOrDependLink(link.path("type"));
+            String typeName = link.path("type").path("name").asText("");
+            if (!typeName.isBlank()) {
+                String entry = typeName + (followed ? " (followed)" : " (not followed)");
+                if (!typesSeen.contains(entry)) {
+                    typesSeen.add(entry);
+                }
+            }
+            if (followed) {
                 JsonNode target = link.has("inwardIssue") ? link.path("inwardIssue") : link.path("outwardIssue");
                 if (!target.isMissingNode()) {
                     linkedIssueKeys.add(target.path("key").asText());
                 }
             }
         }
+        // Which links were followed is decided by a substring match on "block"/"depend" against an
+        // issue-link type NAME, and those names are configurable per instance and localised per
+        // language. On a non-English Data Center nothing matches, no error is raised, and the
+        // dependency simply is not in the plan. Naming every type seen makes that visible in the
+        // spec's own Sources section instead of leaving it to be discovered by its absence.
+        if (!typesSeen.isEmpty()) {
+            notes.add("issue link types on " + key + ": " + String.join(", ", typesSeen));
+        }
 
         List<String> remoteLinkUrls = fetchRemoteLinks(key);
 
-        return new Issue(issueDoc, commentDocs, subtaskKeys, linkedIssueKeys, remoteLinkUrls, hrefUrls);
+        return new Issue(issueDoc, commentDocs, subtaskKeys, linkedIssueKeys, remoteLinkUrls,
+                hrefUrls, notes);
     }
 
     /**
@@ -199,6 +247,10 @@ public final class JiraClient {
             hrefs.add(base.resolve(resolved).toString());
         }
         return hrefs;
+    }
+
+    private static String firstNonBlank(String preferred, String fallback) {
+        return preferred != null && !preferred.isBlank() ? preferred : fallback;
     }
 
     private static URI safeUri(String value) {

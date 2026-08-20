@@ -230,6 +230,65 @@ class JiraClientTest {
     }
 
     @Test
+    void commentIdAndTimestampAreRecoveredFromFieldsWhenRenderedFieldsOmitThem() {
+        // Whether renderedFields.comment.comments[] carries id and updated is one of the
+        // assumptions no live instance has ever confirmed. fields.comment.comments[] is already
+        // requested in ISSUE_FIELDS and was going unused, and it is the same comments in the same
+        // order -- so the fallback costs no extra request. Without it a missing id produced the doc
+        // id "PROJ-9-comment-" and a Sources bullet with a double space and no timestamp.
+        wm.stubFor(get(urlEqualTo(
+                "/rest/api/2/issue/PROJ-9?expand=renderedFields"
+                + "&fields=summary,description,issuelinks,subtasks,comment,status,updated"))
+                .willReturn(okJson(fixture("issue-with-comments.json"))));
+        wm.stubFor(get(urlEqualTo("/rest/api/2/issue/PROJ-9/remotelink"))
+                .willReturn(okJson(fixture("remotelink-empty.json"))));
+
+        JiraClient.Issue issue = client().fetchIssue("PROJ-9");
+
+        assertThat(issue.commentDocs()).hasSize(2);
+        assertThat(issue.commentDocs().get(0).id()).isEqualTo("PROJ-9-comment-30001");
+        assertThat(issue.commentDocs().get(0).version()).isEqualTo("2026-08-19T08:30:00Z");
+        assertThat(issue.commentDocs().get(1).id()).isEqualTo("PROJ-9-comment-30002");
+        assertThat(issue.commentDocs().get(0).text()).isEqualTo("first comment");
+    }
+
+    @Test
+    void readingOnlyTheFirstPageOfCommentsIsReportedRatherThanSilent() {
+        wm.stubFor(get(urlEqualTo(
+                "/rest/api/2/issue/PROJ-9?expand=renderedFields"
+                + "&fields=summary,description,issuelinks,subtasks,comment,status,updated"))
+                .willReturn(okJson(fixture("issue-with-comments.json"))));
+        wm.stubFor(get(urlEqualTo("/rest/api/2/issue/PROJ-9/remotelink"))
+                .willReturn(okJson(fixture("remotelink-empty.json"))));
+
+        assertThat(client().fetchIssue("PROJ-9").notes())
+                .anySatisfy(n -> assertThat(n).contains("only 2 of 7 comments read on PROJ-9"));
+    }
+
+    @Test
+    void everyIssueLinkTypeSeenIsNamedIncludingTheOnesNotFollowed() {
+        // "Followed" is decided by a substring match on "block"/"depend" against a type NAME, and
+        // those names are configurable per instance and localised per language. On this fixture --
+        // a Russian-language Data Center -- nothing matches, no error is raised, and the blocking
+        // dependency simply is not in the plan. The note is what makes that visible instead of
+        // leaving it to be discovered by its absence.
+        wm.stubFor(get(urlEqualTo(
+                "/rest/api/2/issue/PROJ-9?expand=renderedFields"
+                + "&fields=summary,description,issuelinks,subtasks,comment,status,updated"))
+                .willReturn(okJson(fixture("issue-with-comments.json"))));
+        wm.stubFor(get(urlEqualTo("/rest/api/2/issue/PROJ-9/remotelink"))
+                .willReturn(okJson(fixture("remotelink-empty.json"))));
+
+        JiraClient.Issue issue = client().fetchIssue("PROJ-9");
+
+        assertThat(issue.linkedIssueKeys()).isEmpty();
+        assertThat(issue.notes()).anySatisfy(n -> assertThat(n)
+                .contains("issue link types on PROJ-9")
+                .contains("блокирует (not followed)")
+                .contains("Relates (not followed)"));
+    }
+
+    @Test
     void commentOnAServerErrorPropagatesAnAtlassianExceptionForTheCallerToTreatAsBestEffort() {
         wm.stubFor(post(urlEqualTo("/rest/api/2/issue/PROJ-123/comment")).willReturn(serverError()));
         // maxAttempts=1 with a no-op sleeper (the same seam RestClientTest's own

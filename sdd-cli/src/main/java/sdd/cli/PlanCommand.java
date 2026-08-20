@@ -12,6 +12,7 @@ import sdd.core.config.ConfigLoader;
 import sdd.core.config.ModelEndpoint;
 import sdd.core.config.SddConfig;
 import sdd.core.db.Database;
+import sdd.core.diagnostics.AtlassianWireDump;
 import sdd.core.diagnostics.DiagnosticWriter;
 import sdd.core.diagnostics.Diagnostics;
 import sdd.core.http.HttpClients;
@@ -36,6 +37,8 @@ import sdd.plan.impact.ImpactResult;
 import sdd.plan.impact.Seed;
 import sdd.plan.jira.JiraClient;
 import sdd.plan.jira.JiraSpecSource;
+import sdd.plan.source.SourceBudget;
+import sdd.plan.source.SourceBullet;
 import sdd.plan.source.SourceBundle;
 import sdd.plan.source.SourceDoc;
 import sdd.plan.spec.MarkdownSpecSource;
@@ -56,6 +59,7 @@ import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.concurrent.Callable;
 
@@ -82,6 +86,11 @@ public final class PlanCommand implements Callable<Integer> {
      * The RESOLVED sha travels into the plan through the seed's provenance, which is what keeps the
      * plan self-describing without making the spec time-dependent.
      */
+    @Option(names = "--fetch-only",
+            description = "Fetch the source documents, print their provenance and sizes, and stop. "
+                    + "No model is called. Use it to test Jira/Confluence access on its own.")
+    boolean fetchOnly;
+
     @Option(names = "--since", description = "Seed impact analysis from what changed in git: "
             + "<ref>, <a>..<b>, or <repo>=<ref> to scope it (repeatable)")
     List<String> since = new ArrayList<>();
@@ -94,6 +103,10 @@ public final class PlanCommand implements Callable<Integer> {
     @Spec CommandSpec spec;
 
     ChatModel plannerForTest;   // test seam — mirrors IndexService's injectable ChatModel
+
+    /** Test seam for {@code SDD_ATLASSIAN_DUMP}, same idiom as {@link #plannerForTest}: a test
+     *  must be able to enable the dump without setting a variable on the whole JVM. */
+    Map<String, String> envForTest;
 
     /**
      * Resolves {@code --since} into per-repo revision ranges. A bare ref applies to every indexed
@@ -169,6 +182,16 @@ public final class PlanCommand implements Callable<Integer> {
                 return 1;
             }
             boolean hasAtlassianRefs = kinds.stream().anyMatch(k -> k == SpecRefKind.JIRA || k == SpecRefKind.CONFLUENCE_PAGE);
+            // Rejected rather than half-supported. --fetch-only exists to isolate Jira/Confluence
+            // ACCESS from everything downstream of it; on a canonical spec there is nothing to
+            // fetch, and on an export file the fetching already happened when someone saved it.
+            // Accepting the flag and quietly doing something else is how a diagnostic stops being
+            // one.
+            if (fetchOnly && !hasAtlassianRefs) {
+                errWriter.println("error: --fetch-only applies to Jira and Confluence refs; "
+                        + "this invocation has none to fetch");
+                return 1;
+            }
             try {
                 if (markdownRefs == 1) {
                     return validate(config, refs.get(0), outWriter, errWriter, progress);
@@ -290,11 +313,19 @@ public final class PlanCommand implements Callable<Integer> {
         ChatModel model = plannerForTest != null ? plannerForTest : new HttpChatModel(planner);
         HttpClient httpClient = HttpClients.build(atlassian.tls(), atlassian.proxy());
         RestClient.TransportContext transport = RestClient.TransportContext.of(atlassian.tls(), atlassian.proxy());
+        // Built from EVERY configured site's token, not just the one client being constructed:
+        // a Jira comment quoting a Confluence PAT must be redacted out of the Jira dump too.
+        AtlassianWireDump wireDump = AtlassianWireDump.fromEnv(envForTest != null ? envForTest : System.getenv(), workspace,
+                AtlassianWireDump.secrets(
+                        atlassian.jira() == null ? null : atlassian.jira().token(),
+                        atlassian.confluence() == null ? null : atlassian.confluence().token(),
+                        atlassian.bitbucket() == null ? null : atlassian.bitbucket().site().token()));
 
         JiraClient jiraClient = null;
         if (!jiraKeys.isEmpty()) {
             jiraClient = new JiraClient(
-                    atlassianRestClient("Jira", atlassian.jira(), httpClient, diagnostics, transport),
+                    atlassianRestClient("Jira", atlassian.jira(), httpClient, diagnostics, transport)
+                            .wireDump(wireDump),
                     atlassian.jira().baseUrl());
         }
         ConfluenceClient confluenceClient = null;
@@ -309,8 +340,13 @@ public final class PlanCommand implements Callable<Integer> {
             // deferred-credential message if the token is unset, so site.token() below is only
             // ever reached once that has already succeeded — no second check needed.
             confluenceClient = new ConfluenceClient(
-                    atlassianRestClient("Confluence", site, httpClient, diagnostics, transport),
-                    httpClient, site.token(), site.baseUrl(), site.timeout(), diagnostics);
+                    atlassianRestClient("Confluence", site, httpClient, diagnostics, transport)
+                            .wireDump(wireDump),
+                    httpClient, site.token(), site.baseUrl(), site.timeout(), diagnostics)
+                    // The tiny-link probe bypasses RestClient entirely, so it needs the dump
+                    // attached separately or the one exchange a proxy most often mangles would be
+                    // the one exchange the dump cannot see.
+                    .wireDump(wireDump);
             confluenceHost = URI.create(site.baseUrl()).getHost();
         }
 
@@ -373,8 +409,54 @@ public final class PlanCommand implements Callable<Integer> {
                 : pageAnchorId != null ? workspace.resolve(pageAnchorId + ".spec.md")
                 : workspace.resolve(slugify(texts.get(0)) + ".spec.md");
 
+        if (fetchOnly) {
+            return printFetched(docs, notes, outWriter);
+        }
         NormalizedSpec normalized = jiraSpecSource.assemble(docs, notes, fallbackId);
         return writeNormalized(normalized, target, outWriter);
+    }
+
+    /**
+     * Prints exactly what was fetched, and stops before the model.
+     *
+     * <p>Without this seam the first command that touches Jira runs fetch, linked-issue traversal,
+     * link harvesting, budgeting, one model call, spec rendering and a re-parse self-check behind a
+     * single exit code — six subsystems whose failures are indistinguishable from outside. It is
+     * also the only way to exercise Atlassian access at all when the model gateway is unreachable,
+     * which on a corporate network is a routine condition rather than an outage.
+     *
+     * <p>The budget is applied first, so what prints is what a normalization would actually have
+     * seen — including which documents were dropped to fit, which is otherwise visible only as an
+     * absence in the finished spec.
+     */
+    private Integer printFetched(List<SourceDoc> docs, List<String> notes, PrintWriter outWriter) {
+        SourceBundle capped = SourceBudget.apply(new SourceBundle(docs, notes));
+        outWriter.println("# Sources");
+        for (SourceDoc doc : capped.docs()) {
+            outWriter.println("- " + SourceBullet.render(doc));
+        }
+        outWriter.println();
+        outWriter.println("# Sizes");
+        int total = 0;
+        for (SourceDoc doc : capped.docs()) {
+            int chars = doc.text() == null ? 0 : doc.text().length();
+            total += chars;
+            outWriter.println("- " + doc.kind() + " " + doc.id() + ": " + chars + " chars"
+                    + (doc.attachments().isEmpty() ? ""
+                            : "  attachments: " + String.join(", ", doc.attachments())));
+        }
+        outWriter.println("- TOTAL: " + total + " chars across " + capped.docs().size()
+                + " document(s)");
+        outWriter.println();
+        outWriter.println("# Notes");
+        if (capped.notes().isEmpty()) {
+            outWriter.println("- none");
+        } else {
+            capped.notes().forEach(n -> outWriter.println("- " + n));
+        }
+        outWriter.println();
+        outWriter.println("fetched only — no model was called, nothing was written");
+        return 0;
     }
 
     /** {@code ["plan", ...the exact tokens this invocation was called with]} — mirrors {@code

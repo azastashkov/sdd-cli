@@ -1,0 +1,45 @@
+{
+  "id": "10010",
+  "key": "PROJ-9",
+  "fields": {
+    "summary": "Tier invalidation fan-out",
+    "status": { "name": "In Progress" },
+    "updated": "2026-08-20T11:00:00.000+0000",
+    "subtasks": [],
+    "issuelinks": [
+      {
+        "id": "20010",
+        "type": {
+          "id": "10100",
+          "name": "блокирует",
+          "inward": "блокируется",
+          "outward": "блокирует"
+        },
+        "outwardIssue": { "id": "10011", "key": "PROJ-10", "fields": { "summary": "Publisher change" } }
+      },
+      {
+        "id": "20011",
+        "type": { "id": "10101", "name": "Relates", "inward": "relates to", "outward": "relates to" },
+        "outwardIssue": { "id": "10012", "key": "PROJ-11", "fields": { "summary": "Unrelated" } }
+      }
+    ],
+    "comment": {
+      "startAt": 0,
+      "maxResults": 2,
+      "total": 7,
+      "comments": [
+        { "id": "30001", "updated": "2026-08-19T08:30:00.000+0000", "body": "first comment" },
+        { "id": "30002", "updated": "2026-08-19T09:45:00.000+0000", "body": "second comment" }
+      ]
+    }
+  },
+  "renderedFields": {
+    "description": "<p>The fan-out is too broad.</p>",
+    "comment": {
+      "comments": [
+        { "body": "<p>first comment</p>" },
+        { "body": "<p>second comment</p>" }
+      ]
+    }
+  }
+}

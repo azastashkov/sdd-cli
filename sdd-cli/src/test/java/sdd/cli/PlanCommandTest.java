@@ -15,6 +15,7 @@ import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.okJson;
@@ -714,6 +715,101 @@ class PlanCommandTest {
         assertThat(content).contains("id: PROJ-1")
                 .contains("## Sources")
                 .contains("- jira PROJ-1 updated 2026-08-16T09:12:00Z " + wm.baseUrl() + "/browse/PROJ-1");
+    }
+
+    @Test
+    void fetchOnlyPrintsProvenanceAndSizesAndNeverCallsTheModel() throws Exception {
+        wm.stubFor(get(urlEqualTo("/rest/api/2/issue/PROJ-1"
+                + "?expand=renderedFields&fields=summary,description,issuelinks,subtasks,comment,status,updated"))
+                .willReturn(okJson("""
+                        {"id": "1", "key": "PROJ-1",
+                         "fields": {"summary": "Order API", "status": {"name": "Open"},
+                                    "updated": "2026-08-16T09:12:00.000+0000", "subtasks": [],
+                                    "issuelinks": [], "comment": {"total": 3, "comments": [
+                                        {"id": "900", "updated": "2026-08-16T10:00:00.000+0000",
+                                         "body": "c"}]}},
+                         "renderedFields": {"description": "<p>Add pagination.</p>",
+                                             "comment": {"comments": [{"body": "<p>c</p>"}]}}}
+                        """)));
+        wm.stubFor(get(urlEqualTo("/rest/api/2/issue/PROJ-1/remotelink")).willReturn(okJson("[]")));
+        Files.writeString(ws.resolve("sdd.yml"), yaml() + """
+                atlassian:
+                  jira:
+                    base_url: %s
+                    token: sk-jira
+                """.formatted(wm.baseUrl()));
+        PlanCommand cmd = new PlanCommand();
+        // No plannerForTest at all: if --fetch-only reached the model this would try to build a
+        // real HttpChatModel against the configured planner endpoint and fail. That is the
+        // assertion -- the flag's entire purpose is that Atlassian access can be exercised when
+        // the model gateway cannot be.
+
+        Run run = plan(cmd, "--workspace", ws.toString(), "--fetch-only", "PROJ-1");
+
+        assertThat(run.exitCode()).isZero();
+        assertThat(run.out())
+                .contains("# Sources")
+                .contains("jira PROJ-1 updated 2026-08-16T09:12:00Z " + wm.baseUrl() + "/browse/PROJ-1")
+                .contains("jira-comment PROJ-1 900 updated 2026-08-16T10:00:00Z")
+                .contains("# Sizes")
+                .contains("TOTAL:")
+                .contains("# Notes")
+                // the pagination note travels with the fetch, so a short read is visible here too
+                .contains("only 1 of 3 comments read on PROJ-1")
+                .contains("no model was called, nothing was written");
+        assertThat(ws.resolve("PROJ-1.spec.md")).doesNotExist();
+    }
+
+    @Test
+    void theAtlassianWireDumpRecordsRealTrafficWhenTheVariableIsSet() throws Exception {
+        wm.stubFor(get(urlEqualTo("/rest/api/2/issue/PROJ-1"
+                + "?expand=renderedFields&fields=summary,description,issuelinks,subtasks,comment,status,updated"))
+                .willReturn(okJson("""
+                        {"id": "1", "key": "PROJ-1",
+                         "fields": {"summary": "Order API", "status": {"name": "Open"},
+                                    "updated": "2026-08-16T09:12:00.000+0000", "subtasks": [],
+                                    "issuelinks": [], "comment": {"comments": []}},
+                         "renderedFields": {"description": "<p>repro: curl -H 'Authorization: Bearer sk-jira-abcdef1234567890'</p>",
+                                             "comment": {"comments": []}}}
+                        """)));
+        wm.stubFor(get(urlEqualTo("/rest/api/2/issue/PROJ-1/remotelink")).willReturn(okJson("[]")));
+        // A realistic PAT length. Redactor deliberately ignores secrets shorter than 8 characters,
+        // because a short or mid-rotation token would substring-match ordinary prose and corrupt
+        // the very file someone is trying to read -- so a toy value like "sk-jira" would not be
+        // redacted, and a test using one would be asserting nothing.
+        Files.writeString(ws.resolve("sdd.yml"), yaml() + """
+                atlassian:
+                  jira:
+                    base_url: %s
+                    token: sk-jira-abcdef1234567890
+                """.formatted(wm.baseUrl()));
+        Path dump = ws.resolve("wire.jsonl");
+        PlanCommand cmd = new PlanCommand();
+        cmd.envForTest = Map.of("SDD_ATLASSIAN_DUMP", dump.toString());
+
+        Run run = plan(cmd, "--workspace", ws.toString(), "--fetch-only", "PROJ-1");
+
+        assertThat(run.exitCode()).isZero();
+        String written = Files.readString(dump);
+        assertThat(written)
+                .contains("Known credentials are redacted")
+                .contains("/rest/api/2/issue/PROJ-1")
+                .contains("\"status\":200")
+                .contains("content-type")
+                // the configured token, quoted inside the issue's own prose, is scrubbed
+                .doesNotContain("sk-jira-abcdef1234567890");
+    }
+
+    @Test
+    void fetchOnlyIsRefusedWhenThereIsNothingToFetch() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        Files.writeString(ws.resolve("s.md"), VALID_SPEC);
+
+        Run run = plan(new PlanCommand(), "--workspace", ws.toString(), "--fetch-only",
+                ws.resolve("s.md").toString());
+
+        assertThat(run.exitCode()).isEqualTo(1);
+        assertThat(run.out()).contains("--fetch-only applies to Jira and Confluence refs");
     }
 
     @Test
