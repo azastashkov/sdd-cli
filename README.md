@@ -520,22 +520,25 @@ always sent — an endpoint without the key is unaffected. A value other than `o
 fails config load naming the key, rather than reaching the network and coming back as a 500 that
 mentions nothing about `sdd.yml`.
 
-`wire: gigachat` matches what that gateway validates. It presents an OpenAI face over GigaChat
-semantics — `tools` and `tool_calls` pass through unchanged, but the messages are checked against
-GigaChat's own rules (`WireFormat.java`, asserted field by field in `GigaChatWireTest`):
+`wire: gigachat` speaks GigaChat's own function-calling protocol behind that OpenAI face. The
+`tools` declaration goes over unchanged, but a call and its result must be spelled GigaChat's way.
+This was settled by sending one three-message conversation ten ways against a live gateway
+(`gigachat-toolresult-probe.py` in the diagnostics repo); exactly one shape was accepted, and each
+refusal named its rule:
 
-| | `openai` | `gigachat` |
-|---|---|---|
-| a tool result | the text the tool produced | a JSON object — `{"result": "…"}` unless the tool already returned one |
-| assistant turn that is only `tool_calls` | `content` omitted | `content` present, empty if there is none |
-| a reply's thinking | `<think>…</think>` inline in `content`, stripped on arrival | a `reasoning_content` field, read off the reply and sent back with the turn it belongs to |
+| | `openai` | `gigachat` | what refusing it says |
+|---|---|---|---|
+| an assistant call | `tool_calls: [ … ]`, `arguments` a JSON string | one `function_call: {name, arguments}`, `arguments` an **object** | *every function result must have an assistant function call in history* |
+| a result's role | `tool`, paired by `tool_call_id` | `function`, paired by `name`, no id | *function content must contain FunctionResult* |
+| a result's content | the text the tool produced | a **string** that itself parses as JSON | plain text → *invalid function result … JSON parse error*; an object → `HTTP 400` |
+| assistant turn that is only calls | `content` omitted | `content` present, empty if none | |
+| a reply's thinking | `<think>…</think>` inline, stripped on arrival | a `reasoning_content` field, sent back with its turn | |
 
-The tool-result rule was found by hitting it: a plain-text result gets
-`HTTP 422 INVALID_PARAMS: function content must contain FunctionResult`. Note what that error
-implies — the gateway had already accepted a `role: "tool"` message *as* a function message, so the
-role mapping is its problem, not sdd's; only the content shape is. Almost every tool here returns
-prose, so almost every result needs wrapping, and the text is carried through verbatim under a key
-rather than summarized.
+**One call per turn is all this protocol can express** — `function_call` is a single object, not an
+array — so a reply carrying several is truncated to the first on this wire. That loses work the
+model asked for, which is why it is confined to the wire that cannot represent it: keeping the
+extras would build a history the gateway refuses, losing the whole run instead of one call the
+model will simply ask for again.
 
 **This wire used to send `user` and `tool` content as `[{"type":"text","text":…}]` parts**, copied
 from captured traffic. That returned `HTTP 400 "Your request contains invalid JSON syntax"` — the
@@ -543,8 +546,8 @@ capture was a *different service surface* in the same estate, not this gateway. 
 rather than left behind a flag: a capture proves what that URL accepts and nothing more, and a
 measured-wrong option under a name an operator will reach for is worse than not offering one.
 
-`tools` and `tool_calls` themselves are untouched: `{"type":"function","function":{…}}` with
-`arguments` as a JSON string, which is what the gateway receives from its own clients.
+The `tools` DECLARATION is untouched on both wires: `{"type":"function","function":{…}}`, which is
+what the gateway accepts from its own clients — only the call and the result differ.
 
 On the way back, a reply in the older single-call `function_call` shape is read as a tool call too,
 on either wire, with `arguments` accepted as a JSON string or an object. Nothing has confirmed a

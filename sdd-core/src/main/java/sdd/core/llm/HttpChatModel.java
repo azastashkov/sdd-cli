@@ -163,23 +163,39 @@ public final class HttpChatModel implements ChatModel {
         ArrayNode messages = root.putArray("messages");
         for (ChatMessage m : req.messages()) {
             ObjectNode msg = messages.addObject();
-            msg.put("role", m.role());
+            // GigaChat pairs a result to its call by NAME and has no tool_call_id at all, so the
+            // role and the key both change together — see WireFormat for the measurement.
+            boolean functionShape = wire.usesFunctionCall();
+            msg.put("role", functionShape && "tool".equals(m.role()) ? "function" : m.role());
             putContent(msg, m, wire);
-            if (m.toolCallId() != null) {
+            if (functionShape && "tool".equals(m.role())) {
+                if (m.name() != null) {
+                    msg.put("name", m.name());
+                }
+            } else if (m.toolCallId() != null) {
                 msg.put("tool_call_id", m.toolCallId());
             }
             if (wire.carriesReasoning() && m.reasoningContent() != null) {
                 msg.put("reasoning_content", m.reasoningContent());
             }
             if (!m.toolCalls().isEmpty()) {
-                ArrayNode calls = msg.putArray("tool_calls");
-                for (ToolCall c : m.toolCalls()) {
-                    ObjectNode call = calls.addObject();
-                    call.put("id", c.id());
-                    call.put("type", "function");
-                    ObjectNode fn = call.putObject("function");
+                if (functionShape) {
+                    // A single object, not an array: the protocol cannot express a second call, and
+                    // parse() has already truncated to one so the history stays representable.
+                    ToolCall c = m.toolCalls().get(0);
+                    ObjectNode fn = msg.putObject("function_call");
                     fn.put("name", c.name());
-                    fn.put("arguments", c.argumentsJson());
+                    fn.set("arguments", argumentsNode(c.argumentsJson()));
+                } else {
+                    ArrayNode calls = msg.putArray("tool_calls");
+                    for (ToolCall c : m.toolCalls()) {
+                        ObjectNode call = calls.addObject();
+                        call.put("id", c.id());
+                        call.put("type", "function");
+                        ObjectNode fn = call.putObject("function");
+                        fn.put("name", c.name());
+                        fn.put("arguments", c.argumentsJson());
+                    }
                 }
             }
         }
@@ -232,6 +248,19 @@ public final class HttpChatModel implements ChatModel {
             msg.put("content", m.content());
         } else if (wire.assistantContentAlwaysPresent() && "assistant".equals(m.role())) {
             msg.put("content", "");
+        }
+    }
+
+    /** {@code function_call.arguments} as GigaChat spells it — an object, where OpenAI uses a
+     *  JSON string. Unparseable arguments become an empty object rather than failing the whole
+     *  request: the call still names a tool, and a tool that rejects bad arguments reports it far
+     *  more usefully than a gateway rejecting the conversation. */
+    private static JsonNode argumentsNode(String argumentsJson) {
+        try {
+            JsonNode node = JSON.readTree(argumentsJson == null ? "{}" : argumentsJson);
+            return node.isObject() ? node : JSON.createObjectNode();
+        } catch (IOException e) {
+            return JSON.createObjectNode();
         }
     }
 
@@ -298,6 +327,12 @@ public final class HttpChatModel implements ChatModel {
                     toolCalls.addAll(fromText);
                     content = null;
                 }
+            }
+            if (endpoint.wire().usesFunctionCall() && toolCalls.size() > 1) {
+                // This protocol has one function_call per turn and no way to say more. Keeping
+                // extras would build a history it cannot serialize, and the request after it would
+                // be refused — losing the whole run rather than one call the model will re-request.
+                toolCalls = new ArrayList<>(toolCalls.subList(0, 1));
             }
             ChatMessage msg = new ChatMessage("assistant", content, List.copyOf(toolCalls), null,
                     reasoning);

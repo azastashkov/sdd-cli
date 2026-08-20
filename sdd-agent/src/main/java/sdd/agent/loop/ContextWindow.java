@@ -82,7 +82,7 @@ public final class ContextWindow {
     }
 
     public void addToolResult(String toolCallId, String toolName, String content) {
-        entries.add(new Entry(ChatMessage.tool(toolCallId, content), toolName));
+        entries.add(new Entry(ChatMessage.tool(toolCallId, toolName, content), toolName));
     }
 
     public List<ChatMessage> messages() {
@@ -115,7 +115,8 @@ public final class ContextWindow {
                     || (e.toolName.equals("run_gradle") && i == lastGradle)
                     || (e.toolName.equals("read_file") && latestReads.contains(i));
             if (!preserve) {
-                e.message = ChatMessage.tool(e.message.toolCallId(), "[evicted: " + e.toolName + " result]");
+                e.message = ChatMessage.tool(e.message.toolCallId(), e.toolName,
+                    "[evicted: " + e.toolName + " result]");
                 e.stubbed = true;
                 evicted++;
             }
@@ -142,7 +143,8 @@ public final class ContextWindow {
                 continue;
             }
             int was = e.message.content() == null ? 0 : e.message.content().length();
-            e.message = ChatMessage.tool(e.message.toolCallId(), "[evicted: " + e.toolName + " result]");
+            e.message = ChatMessage.tool(e.message.toolCallId(), e.toolName,
+                    "[evicted: " + e.toolName + " result]");
             e.stubbed = true;
             evicted++;
             freed += was;
@@ -162,7 +164,8 @@ public final class ContextWindow {
             if (e.toolName == null || e.stubbed) {
                 continue;
             }
-            e.message = ChatMessage.tool(e.message.toolCallId(), "[evicted: " + e.toolName + " result]");
+            e.message = ChatMessage.tool(e.message.toolCallId(), e.toolName,
+                    "[evicted: " + e.toolName + " result]");
             e.stubbed = true;
             evicted++;
         }

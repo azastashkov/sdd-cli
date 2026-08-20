@@ -11,19 +11,32 @@ import java.util.Locale;
  * string on every role, an assistant turn that carries only {@code tool_calls} omits {@code content}
  * entirely, and a model's thinking is not part of the conversation.
  *
- * <p>{@link #GIGACHAT} is the same protocol as a corp GigaChat gateway actually validates it. That
- * gateway presents an OpenAI face over GigaChat semantics: it takes {@code tools} and
- * {@code tool_calls} unchanged, but checks the messages against GigaChat's own rules. One rule has
- * been measured, by hitting it: a tool result must be a **JSON object**, not free text —
- * {@code HTTP 422 INVALID_PARAMS: function content must contain FunctionResult}. Note what that
- * error implies and what it does not: the gateway had already accepted a {@code role: "tool"}
- * message AS a function message, so the role mapping is its problem, not ours; only the content
- * shape is.
+ * <p>{@link #GIGACHAT} is GigaChat's own function-calling protocol, behind a gateway that presents
+ * an OpenAI face. It takes the OpenAI {@code tools} DECLARATION unchanged, but a call and its
+ * result must be spelled GigaChat's way. Measured by sending one three-message conversation ten
+ * ways against a live gateway; exactly one shape was accepted, and the refusals named the rules:
  *
- * <p>So this wire wraps a tool result that is not already a JSON object, and carries
- * {@code reasoning_content} — a real message field this gateway returns, rather than
- * {@code <think>} tags inline in {@code content} (which is what the {@code gpt2giga} proxy produced,
- * and what {@link ReasoningContent} exists to undo).
+ * <ul>
+ *   <li>An assistant turn carries a single {@code function_call: {name, arguments}}, not
+ *       {@code tool_calls}. With {@code tool_calls}: <em>"every function result must have an
+ *       assistant function call in history"</em>. {@code arguments} is an OBJECT here, unlike
+ *       OpenAI's JSON string.</li>
+ *   <li>A result is {@code role: "function"} with a {@code name} — pairing is by name, and there
+ *       is no {@code tool_call_id}. With {@code role: "tool"}: <em>"function content must contain
+ *       FunctionResult"</em>.</li>
+ *   <li>Its {@code content} is a STRING that itself parses as JSON. A plain string:
+ *       <em>"invalid function result … JSON parse error"</em>. An actual JSON object:
+ *       {@code HTTP 400 "Your request contains invalid JSON syntax"}.</li>
+ * </ul>
+ *
+ * <p>One call per assistant turn is all this protocol can express — {@code function_call} is a
+ * single object, not an array. So a reply carrying several is truncated to the first on this wire;
+ * see {@code HttpChatModel}. That loses work the model asked for, which is why it is confined to
+ * the wire that cannot represent it.
+ *
+ * <p>{@code reasoning_content} is carried too: a real message field this gateway returns, rather
+ * than {@code <think>} tags inline in {@code content} (which is what the {@code gpt2giga} proxy
+ * produced, and what {@link ReasoningContent} exists to undo).
  *
  * <p><b>What this wire deliberately no longer does.</b> It first shipped sending {@code user} and
  * {@code tool} content as {@code [{"type":"text","text":…}]} parts, copied from captured traffic.
@@ -59,6 +72,11 @@ public enum WireFormat {
      * carried through verbatim under a key rather than summarized or discarded.
      */
     boolean wrapsToolResults() {
+        return this == GIGACHAT;
+    }
+
+    /** Whether a call and its result are spelled GigaChat's way rather than OpenAI's. */
+    boolean usesFunctionCall() {
         return this == GIGACHAT;
     }
 

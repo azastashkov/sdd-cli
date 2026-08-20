@@ -56,8 +56,9 @@ class GigaChatWireTest {
                 ChatMessage.system("You are a file search specialist agent."),
                 ChatMessage.user("Very thoroughly explore the src directory structure."),
                 assistantTurn,
-                ChatMessage.tool("call_c784f2", "Listed 2 item(s) in /src:\n[DIR] main\n[DIR] test"),
-                ChatMessage.tool("call_44062f", "Found 3 file(s) matching **/*.yml")),
+                ChatMessage.tool("call_c784f2", "list_directory",
+                        "Listed 2 item(s) in /src:\n[DIR] main\n[DIR] test"),
+                ChatMessage.tool("call_44062f", "glob", "Found 3 file(s) matching **/*.yml")),
                 List.of(new ToolSpec("list_directory", "List a directory.",
                         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}")),
                 256, 0.0);
@@ -92,7 +93,8 @@ class GigaChatWireTest {
         // Wrapped, not replaced: the text is what the model reads to keep working.
         assertThat(result.path("result").asText())
                 .isEqualTo("Listed 2 item(s) in /src:\n[DIR] main\n[DIR] test");
-        assertThat(toolMsg.path("tool_call_id").asText()).isEqualTo("call_c784f2");
+        // Keyed by name, not by an id this protocol does not have.
+        assertThat(toolMsg.path("name").asText()).isEqualTo("list_directory");
     }
 
     // Not double-wrapped into {"result":"{...}"}, which would hand the model its own JSON back as
@@ -142,18 +144,78 @@ class GigaChatWireTest {
         assertThat(messages.get(2).path("content").isTextual()).isTrue();
     }
 
+    // The one shape a live gateway accepted, out of ten tried. Each assertion below is a rule the
+    // refusals named; see WireFormat for the errors they came from.
+    @Test
+    void anAssistantCallIsAFunctionCallObjectNotAToolCallsArray() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+
+        model(WireFormat.GIGACHAT).complete(conversation(toolCallTurn("\n\n\n", null)));
+
+        JsonNode assistant = sentBody().path("messages").get(2);
+        assertThat(assistant.has("tool_calls")).isFalse();
+        JsonNode call = assistant.path("function_call");
+        assertThat(call.path("name").asText()).isEqualTo("list_directory");
+        // An object, where OpenAI uses a JSON string.
+        assertThat(call.path("arguments").isObject()).isTrue();
+        assertThat(call.path("arguments").path("path").asText()).isEqualTo("/src");
+    }
+
+    @Test
+    void aResultIsRoleFunctionKeyedByNameWithNoCallId() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+
+        model(WireFormat.GIGACHAT).complete(conversation(toolCallTurn("\n\n\n", null)));
+
+        JsonNode result = sentBody().path("messages").get(3);
+        assertThat(result.path("role").asText()).isEqualTo("function");
+        assertThat(result.path("name").asText()).isEqualTo("list_directory");
+        assertThat(result.has("tool_call_id")).isFalse();
+        // A string that itself parses as JSON: an object gets HTTP 400, a bare string a 422.
+        assertThat(result.path("content").isTextual()).isTrue();
+        assertThat(JSON.readTree(result.path("content").asText()).isObject()).isTrue();
+    }
+
+    // function_call is one object, not an array, so a reply carrying several calls would build a
+    // history this wire cannot serialize — and the NEXT request would be refused, losing the run
+    // rather than one call the model will simply ask for again.
+    @Test
+    void aReplyWithSeveralCallsIsTruncatedToOneOnThisWire() {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+
+        ChatResponse resp = model(WireFormat.GIGACHAT)
+                .complete(conversation(toolCallTurn("x", null)));
+
+        assertThat(resp.message().toolCalls()).hasSize(1);
+        assertThat(resp.message().toolCalls().get(0).name()).isEqualTo("list_directory");
+    }
+
+    @Test
+    void theOpenAiWireKeepsEveryCallAndTheToolRoleAndTheCallId() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+
+        ChatResponse resp = model(WireFormat.OPENAI)
+                .complete(conversation(toolCallTurn(null, null)));
+
+        assertThat(resp.message().toolCalls()).hasSize(2);
+        JsonNode result = sentBody().path("messages").get(3);
+        assertThat(result.path("role").asText()).isEqualTo("tool");
+        assertThat(result.path("tool_call_id").asText()).isEqualTo("call_c784f2");
+        assertThat(result.has("name")).isFalse();
+    }
+
     @Test
     void parallelToolCallsKeepTheOpenAiFunctionShapeWithArgumentsAsAJsonString() throws Exception {
         wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
 
-        model(WireFormat.GIGACHAT).complete(conversation(toolCallTurn("\n\n\n", null)));
+        model(WireFormat.OPENAI).complete(conversation(toolCallTurn("\n\n\n", null)));
 
         JsonNode calls = sentBody().path("messages").get(2).path("tool_calls");
         assertThat(calls).hasSize(2);
         assertThat(calls.get(0).path("id").asText()).isEqualTo("call_c784f2");
         assertThat(calls.get(0).path("type").asText()).isEqualTo("function");
         assertThat(calls.get(0).path("function").path("name").asText()).isEqualTo("list_directory");
-        // A string, not a nested object — the gateway receives it exactly as OpenAI spells it.
+        // A string, not a nested object — the OpenAI wire spells it exactly as OpenAI does.
         assertThat(calls.get(0).path("function").path("arguments").isTextual()).isTrue();
         assertThat(calls.get(0).path("function").path("arguments").asText())
                 .isEqualTo("{\"path\":\"/src\"}");
@@ -183,7 +245,8 @@ class GigaChatWireTest {
         assertThat(resp.message().reasoningContent())
                 .isEqualTo("The user wants a thorough exploration of the project structure.");
         assertThat(resp.message().content()).isEqualTo("\n\n\n");
-        assertThat(resp.message().toolCalls()).hasSize(2);
+        // Truncated to one: this protocol has a single function_call per turn.
+        assertThat(resp.message().toolCalls()).hasSize(1);
 
         // Now hand that same message back, as an agent loop does.
         wm.resetRequests();
