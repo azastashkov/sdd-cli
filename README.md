@@ -595,9 +595,22 @@ prefer** — the tool-call id has to be invented, so nothing has verified the ga
 reports. An agent run whose calls came back this way says so in its events. It exists because the
 alternative on such a gateway is that `sdd implement` and `sdd explore` do not run at all.
 
-What it will read, and nothing else: a bare JSON object or array, one ```-fenced block, or
-`<tool_call>…</tool_call>` blocks. Three rules keep it from inventing calls out of prose
-(`TextToolCalls.java`, each pinned by a test):
+What it will read, and nothing else — four dialects, all exactly delimited:
+
+| | looks like |
+|---|---|
+| bare JSON | `{"name": "read_file", "arguments": {"path": "A.java"}}` |
+| a single ```-fenced block | the same, fenced |
+| `<tool_call>…</tool_call>` blocks | what Qwen models emit |
+| DeepSeek tags | `<\|DSML\|invoke name="read_file"><\|DSML\|parameter name="path">A.java</\|DSML\|parameter>…` |
+
+The last one is not JSON at all: an argument's value is the text between its parameter tags, and
+`string="true"` is a type annotation that is ignored, because every tool argument in this codebase
+is declared `"type":"string"` (`DsmlToolCalls.java`). Exactly one leading and one trailing newline
+is removed from a value — the template renders one tag per line — and the interior is untouched,
+since `apply_edit`'s `search` has to match a file byte for byte.
+
+Three rules keep all of it from inventing calls out of prose (each pinned by a test):
 
 - **The name must be one this request declared.** The load-bearing rule: without it any JSON answer
   — which is most of what sdd asks for — could be misread as a call.

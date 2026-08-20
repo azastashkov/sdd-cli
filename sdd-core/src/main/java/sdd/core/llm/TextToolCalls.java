@@ -32,9 +32,10 @@ import java.util.Set;
  *       rather than a failure.</li>
  * </ol>
  *
- * <p>Three delimiters are recognised, all exact: the bare JSON object or array, a single
- * ```-fenced block, and {@code <tool_call>…</tool_call>} blocks (what Qwen models emit, and this
- * estate's gateway serves Qwen). Nothing else — no bracket-matching, no first-brace-to-last-brace.
+ * <p>Four dialects are recognised, all exactly delimited: the bare JSON object or array, a single
+ * ```-fenced block, {@code <tool_call>…</tool_call>} blocks (what Qwen models emit), and the
+ * DeepSeek tag form, which is not JSON at all and is handled by {@link DsmlToolCalls}. Nothing
+ * else — no bracket-matching, no first-brace-to-last-brace.
  */
 final class TextToolCalls {
 
@@ -55,6 +56,10 @@ final class TextToolCalls {
     static List<ToolCall> read(String content, Set<String> declared) {
         if (content == null || content.isBlank() || declared.isEmpty()) {
             return List.of();
+        }
+        // A tag dialect never parses as JSON, so it is answered first rather than after a failure.
+        if (DsmlToolCalls.present(content)) {
+            return DsmlToolCalls.read(content, declared);
         }
         List<String> blocks = taggedBlocks(content);
         if (blocks.isEmpty()) {
