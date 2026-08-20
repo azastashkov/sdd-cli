@@ -13,3 +13,8 @@ dependencies {
     testImplementation(testFixtures(project(":sdd-core")))
     testRuntimeOnly(libs.junit.launcher)
 }
+
+// Same idiom as sdd-index: a golden test regenerates on demand rather than being hand-edited.
+tasks.test {
+    systemProperty("sdd.regenGolden", System.getProperty("sdd.regenGolden", "false"))
+}
