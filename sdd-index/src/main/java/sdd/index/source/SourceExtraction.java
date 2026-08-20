@@ -34,8 +34,14 @@ public final class SourceExtraction {
      * bump it rather than forcing a needless full re-extract.
      *
      * <p>1 = the epoch that introduced {@code type_supertype}.
+     * <p>2 = the epoch that admitted top-level package-private types
+     * ({@link ApiSurfaceExtractor#isExtractedType}). Output-changing in three ways, all needing a
+     * re-extract: new {@code java_type} rows, the {@code fts_symbol} rows built from them, and a
+     * shift in {@code ReferenceExtractor}'s repo type index that moves intra-repo references to
+     * those types out of {@code api_usage} (where they sat with an unresolvable NULL target) and
+     * into {@code file_ref}.
      */
-    public static final int EXTRACTOR_EPOCH = 1;
+    public static final int EXTRACTOR_EPOCH = 2;
     private SourceExtraction() {}
 
     public static String extractRepo(Jdbi jdbi, long repoId, String repoName,

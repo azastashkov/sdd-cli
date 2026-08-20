@@ -128,13 +128,58 @@ class PlanFactsHarness {
                 .append(declared.stream().filter(r -> !affected.contains(r)).toList()).append('\n');
         report.append("reached-but-not-expected: ")
                 .append(affected.stream().filter(r -> !declared.contains(r)).toList()).append('\n');
+        report.append("anchor types: ").append(new java.util.TreeSet<>(result.anchorTypes()))
+                .append('\n');
         report.append("prompt chars: ").append(prompt.length()).append('\n');
+        probeClasses(prompt, report);
         for (String repo : affected) {
             report.append("  evidence[").append(repo).append("] chars: ")
                     .append(sectionLength(prompt, repo))
                     .append(sectionLength(prompt, repo) == 0 ? "  (NO SECTION)" : "")
                     .append(prompt.contains("…(truncated)") ? "" : "").append('\n');
         }
+    }
+
+    /**
+     * A0 instrumentation: how often each probe class name appears in the composed prompt, and at
+     * what rank it sits in the "## &lt;repo&gt;" type sections. Probe names come from
+     * {@code SDD_MEASURE_PROBES} (comma-separated simple names); absent means no probing.
+     *
+     * <p>Rank is counted over the rendered "- &lt;fqcn&gt; (&lt;kind&gt;) @ &lt;path&gt;" type lines
+     * across the whole prompt, which is what TYPE_BUDGET truncates. A name that never appears is
+     * reported as absent rather than as rank 0 — the two mean different things.
+     */
+    private void probeClasses(String prompt, StringBuilder report) {
+        String probes = System.getenv("SDD_MEASURE_PROBES");
+        if (probes == null || probes.isBlank()) return;
+
+        List<String> typeLines = prompt.lines().filter(l -> l.startsWith("- ") && l.contains(" @ "))
+                .toList();
+        report.append("probe classes:\n");
+        for (String probe : probes.split(",")) {
+            String name = probe.trim();
+            if (name.isEmpty()) continue;
+            int occurrences = countOccurrences(prompt, name);
+            List<Integer> ranks = new ArrayList<>();
+            for (int i = 0; i < typeLines.size(); i++) {
+                if (simpleNameOf(typeLines.get(i)).equals(name)) ranks.add(i + 1);
+            }
+            report.append("  ").append(name).append(": ").append(occurrences)
+                    .append(" occurrence(s), type-line rank(s) ")
+                    .append(ranks.isEmpty() ? "ABSENT" : ranks.toString()).append('\n');
+        }
+    }
+
+    private static String simpleNameOf(String typeLine) {
+        String fqcn = typeLine.substring(2, typeLine.indexOf(" (") < 0
+                ? typeLine.length() : typeLine.indexOf(" ("));
+        return fqcn.substring(fqcn.lastIndexOf('.') + 1);
+    }
+
+    private static int countOccurrences(String haystack, String needle) {
+        int n = 0;
+        for (int i = haystack.indexOf(needle); i >= 0; i = haystack.indexOf(needle, i + 1)) n++;
+        return n;
     }
 
     /**

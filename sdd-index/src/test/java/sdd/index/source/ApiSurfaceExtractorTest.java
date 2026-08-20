@@ -50,6 +50,53 @@ class ApiSurfaceExtractorTest {
     }
 
     @Test
+    void topLevelPackagePrivateTypesAreExtractedButAreNeverApi() throws Exception {
+        // The 2026-08-20 measurement: both TierInvalidationListeners and OrdersConfig are written
+        // exactly like this, and none of them had a java_type row. See
+        // docs/measurements/2026-08-20-graph-evidence/a0-baseline.md.
+        var session = parse("src/main/java/com/acme/auth/TierInvalidationListener.java", """
+                package com.acme.auth;
+                class TierInvalidationListener {
+                    public void onMessage(String channel) {}
+                }
+                """);
+
+        List<SourceModel.TypeInfo> types = ApiSurfaceExtractor.extract(session, true);
+
+        assertThat(types).extracting(SourceModel.TypeInfo::fqcn)
+                .containsExactly("com.acme.auth.TierInvalidationListener");
+        // is_api is the primary sort key of the drafter's evidence and the work order's manifest.
+        // Nothing outside the package can name this type, so a library module must not promote it.
+        assertThat(types.get(0).isApi()).isFalse();
+        assertThat(types.get(0).members()).extracting(SourceModel.MemberInfo::name)
+                .containsExactly("onMessage");
+    }
+
+    @Test
+    void packagePrivateNestedInAClassStaysExcludedButNestedInAnInterfaceDoesNot() throws Exception {
+        var session = parse("src/main/java/com/acme/Holder.java", """
+                package com.acme;
+                public class Holder {
+                    class NestedInClass {}
+                    private class PrivateNested {}
+                }
+                """);
+        assertThat(ApiSurfaceExtractor.extract(session, true))
+                .extracting(SourceModel.TypeInfo::fqcn)
+                .containsExactly("com.acme.Holder");
+
+        var iface = parse("src/main/java/com/acme/Api.java", """
+                package com.acme;
+                public interface Api {
+                    class Impl {}
+                }
+                """);
+        assertThat(ApiSurfaceExtractor.extract(iface, true))
+                .extracting(SourceModel.TypeInfo::fqcn)
+                .contains("com.acme.Api.Impl");
+    }
+
+    @Test
     void internalPackagesAndServiceModulesAreNotApi() throws Exception {
         var session = parse("src/main/java/com/acme/internal/Impl.java",
                 "package com.acme.internal;\npublic class Impl {}\n");

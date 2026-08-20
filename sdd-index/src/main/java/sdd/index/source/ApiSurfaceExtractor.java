@@ -45,12 +45,54 @@ public final class ApiSurfaceExtractor {
             String pkg = unit.cu().getPackageDeclaration()
                     .map(p -> p.getNameAsString()).orElse("");
             unit.cu().findAll(TypeDeclaration.class).stream()
-                    .filter(t -> t.isPublic() || t.hasModifier(com.github.javaparser.ast.Modifier.Keyword.PROTECTED)
-                            || (!t.isPrivate() && (t.getParentNode().filter(p -> p instanceof ClassOrInterfaceDeclaration c && c.isInterface()).isPresent()
-                                    || t.getParentNode().filter(p -> p instanceof AnnotationDeclaration).isPresent())))
+                    .filter(ApiSurfaceExtractor::isExtractedType)
                     .forEach(t -> out.add(toTypeInfo(t, pkg, unit.relPath(), libraryModule, unit.cu())));
         }
         return List.copyOf(out);
+    }
+
+    /**
+     * Whether a declaration becomes a {@code java_type} row. The one definition of what this
+     * knowledge base can see; {@link ReferenceExtractor#typeRefs} must select over exactly the same
+     * set, or a reference would be attributed to a type that has no row to hang it on.
+     *
+     * <p>Three admitting cases:
+     * <ul>
+     *   <li>{@code public} or {@code protected} — declared surface, in any position;
+     *   <li><b>any top-level type</b>, including a package-private one. A top-level declaration
+     *       cannot be {@code private} in Java, so this admits the whole file-level set;
+     *   <li>a non-private type nested in an interface or annotation, which Java makes implicitly
+     *       public.
+     * </ul>
+     *
+     * <p>The top-level clause was added on measured evidence (2026-08-20). Restricting the index to
+     * public/protected types put <b>19% of this estate's main-source files out of reach — 37% of
+     * trading-core's</b>, and among them every class the 2026-08-19 explore measurement was about:
+     * both {@code TierInvalidationListener}s and {@code OrdersConfig} are package-private, so the
+     * repeated finding that "perfect seeding still never names the classes" was never a ranking
+     * failure. The rows did not exist. A Spring {@code @Component}, a listener, a config class —
+     * the idiomatic way to write one is package-private, and those are exactly the types a
+     * change-impact question is about.
+     *
+     * <p>Deliberately still excluded: a package-private type <em>nested inside a class</em>. It is
+     * addressable only through its outer type, which does have a row, and admitting it would fill
+     * the corpus with helper classes for no measured gain. Revisit only with evidence, the same way
+     * this clause arrived.
+     */
+    static boolean isExtractedType(TypeDeclaration<?> t) {
+        if (t.isPublic() || t.hasModifier(com.github.javaparser.ast.Modifier.Keyword.PROTECTED)) {
+            return true;
+        }
+        if (t.isPrivate()) {
+            return false;
+        }
+        if (t.getParentNode()
+                .filter(p -> p instanceof com.github.javaparser.ast.CompilationUnit).isPresent()) {
+            return true;
+        }
+        return t.getParentNode().filter(p -> p instanceof ClassOrInterfaceDeclaration c
+                        && c.isInterface()).isPresent()
+                || t.getParentNode().filter(p -> p instanceof AnnotationDeclaration).isPresent();
     }
 
     private static SourceModel.TypeInfo toTypeInfo(TypeDeclaration<?> t, String pkg,
@@ -68,7 +110,16 @@ public final class ApiSurfaceExtractor {
         lombok.synthesized().stream()
                 .filter(m -> !realSignatures.contains(m.signature()))
                 .forEach(members::add);
-        boolean isApi = libraryModule && !fqcn.contains(".internal.");
+        // A package-private type is not API surface however library-ish its module is: nothing
+        // outside its package can name it. Without this clause, widening the extractor to top-level
+        // package-private types would silently mark them is_api=1 in every library module, and
+        // is_api is the primary sort key of the drafter's and the work order's evidence.
+        boolean declaredSurface = t.isPublic()
+                || t.hasModifier(com.github.javaparser.ast.Modifier.Keyword.PROTECTED)
+                || t.getParentNode().filter(p -> p instanceof ClassOrInterfaceDeclaration c
+                                && c.isInterface()).isPresent()
+                || t.getParentNode().filter(p -> p instanceof AnnotationDeclaration).isPresent();
+        boolean isApi = libraryModule && declaredSurface && !fqcn.contains(".internal.");
         List<SourceModel.SupertypeRef> supertypes =
                 t instanceof com.github.javaparser.ast.body.ClassOrInterfaceDeclaration decl
                         ? SupertypeResolver.resolve(cu, decl)
