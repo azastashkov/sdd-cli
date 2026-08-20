@@ -161,8 +161,14 @@ final class Sections {
             }
             List<String> files = new ArrayList<>();
             List<String> verification = new ArrayList<>();
+            List<String> openspec = new ArrayList<>();
             i = sublist(body, i, "- files:", files);
             i = sublist(body, i, "- verification:", verification);
+            // Third optional sublist, and deliberately NOT a new '## ' section: every name in
+            // PlanMdParser.SECTIONS is REQUIRED, so a new section would fail every plan.md written
+            // before the OpenSpec export existed with "missing required section". Absent here is
+            // simply an empty list, exactly as an absent '- files:' already is.
+            i = sublist(body, i, "- openspec:", openspec);
             List<String> prose = new ArrayList<>();
             while (i < body.size() && !body.get(i).startsWith("### ")) {
                 prose.add(body.get(i));
@@ -170,7 +176,7 @@ final class Sections {
             }
             b.steps.add(new PlanDocument.PlanStep(repo, csv(scalars[0]), scalars[1],
                     csv(scalars[2]), csv(scalars[3]), files, verification,
-                    String.join("\n", prose).strip()));
+                    String.join("\n", prose).strip(), openspec));
         }
     }
 

@@ -139,15 +139,31 @@ public final class PlanDrafter {
               "declarations" — when unsure, omit the list rather than guess.
             """;
 
+    /**
+     * @param openspec the rendered lines of the {@code - openspec:} sublist — the capability and
+     *                 the requirement-to-acceptance allocation the OpenSpec export needs. Empty
+     *                 when the model proposed neither, which is not an error: the export has a
+     *                 fallback ladder for exactly that case, and the plan still approves.
+     */
     public record DraftStep(String repo, List<String> covers, String subSpec, List<String> files,
                             List<String> providesContracts, List<String> consumesContracts,
-                            String versionAction, List<String> verification) {
+                            String versionAction, List<String> verification,
+                            List<String> openspec) {
+        /** Pre-OpenSpec shape, so every existing construction site compiles untouched. */
+        public DraftStep(String repo, List<String> covers, String subSpec, List<String> files,
+                         List<String> providesContracts, List<String> consumesContracts,
+                         String versionAction, List<String> verification) {
+            this(repo, covers, subSpec, files, providesContracts, consumesContracts, versionAction,
+                    verification, List.of());
+        }
+
         public DraftStep {
             covers = List.copyOf(covers);
             files = List.copyOf(files);
             providesContracts = List.copyOf(providesContracts);
             consumesContracts = List.copyOf(consumesContracts);
             verification = List.copyOf(verification);
+            openspec = List.copyOf(openspec);
         }
     }
 

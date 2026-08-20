@@ -113,6 +113,10 @@ public final class PlanMdRenderer {
                 md.append("- consumes: ").append(step.consumesContracts().isEmpty() ? "-" : String.join(",", step.consumesContracts())).append('\n');
                 bullets(md, "files", step.files());
                 bullets(md, "verification", step.verification());
+                // Emitted last, after the two sublists Sections.steps already reads in this order,
+                // and only when non-empty — so a plan drafted without it renders byte-identically
+                // to one from before the OpenSpec export existed.
+                bullets(md, "openspec", step.openspec());
                 String subSpec = prose(step.subSpec());
                 if (!subSpec.isBlank()) {
                     md.append('\n').append(subSpec).append('\n');

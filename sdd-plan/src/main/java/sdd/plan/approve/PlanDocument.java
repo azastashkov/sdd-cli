@@ -63,9 +63,24 @@ public record PlanDocument(String specId, int planVersion, String summary,
         }
     }
 
+    /**
+     * @param openspec the raw lines of the optional {@code - openspec:} sublist, parsed by
+     *                 {@code sdd.plan.openspec.OpenSpecPlan}. Empty for every plan.md written
+     *                 before the OpenSpec export existed — which is why it is carried as raw lines
+     *                 with an empty default rather than a parsed type: an absent block is silent,
+     *                 not malformed, and must never fail approve.
+     */
     public record PlanStep(String repo, List<String> covers, String versionAction,
                            List<String> provides, List<String> consumes, List<String> files,
-                           List<String> verification, String subSpec) {
+                           List<String> verification, String subSpec, List<String> openspec) {
+        /** Pre-OpenSpec shape, so every existing construction site compiles untouched. */
+        public PlanStep(String repo, List<String> covers, String versionAction,
+                        List<String> provides, List<String> consumes, List<String> files,
+                        List<String> verification, String subSpec) {
+            this(repo, covers, versionAction, provides, consumes, files, verification, subSpec,
+                    List.of());
+        }
+
         public PlanStep {
             Objects.requireNonNull(repo);
             covers = List.copyOf(covers);
@@ -75,6 +90,7 @@ public record PlanDocument(String specId, int planVersion, String summary,
             files = List.copyOf(files);
             verification = List.copyOf(verification);
             Objects.requireNonNull(subSpec);
+            openspec = List.copyOf(openspec);
         }
     }
 }
