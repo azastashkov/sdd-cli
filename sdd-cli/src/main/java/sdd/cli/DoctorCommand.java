@@ -217,6 +217,33 @@ public final class DoctorCommand implements Callable<Integer> {
                     + "(costs one call per tier; sdd implement is entirely tool-driven)")
     boolean tools;
 
+    /**
+     * How many tool declarations to put on the wire, so a gateway's ceiling can be FOUND rather
+     * than inferred.
+     *
+     * <p>Plain {@code --tools} sends one declaration, which answers "can this endpoint emit a tool
+     * call at all" and nothing else. The failure this exists for is different: some gateways
+     * degrade as the declaration set grows, measured on one at 20/20 with a single declaration,
+     * 13/20 with six and 0/20 with nine. {@code sdd explore} advertises ten by default and twelve
+     * with both {@code --interactive} and {@code --since}, so the one-declaration probe passes
+     * cheerfully while a real survey dies.
+     *
+     * <p>Takes a list because the answer is a threshold, not a yes/no — {@code --tools-count
+     * 1,6,10,12} walks it in one session — and pairs with {@code --tools-repeat} because that
+     * ceiling was measured as PROBABILISTIC and observed to move within a single day. A single
+     * green attempt at one count is the weakest possible evidence about it.
+     */
+    @Option(names = "--tools-count", split = ",",
+            description = "How many tool declarations to send, as a list to sweep "
+                    + "(e.g. 1,6,10,12). Finds the gateway's declaration ceiling instead of "
+                    + "inferring it. Implies --tools.")
+    java.util.List<Integer> toolsCount = new java.util.ArrayList<>();
+
+    @Option(names = "--tools-repeat",
+            description = "Attempts per --tools-count entry (default 1). The ceiling is "
+                    + "probabilistic, so one green attempt proves little.")
+    int toolsRepeat = 1;
+
     @Option(names = "--completion",
             description = "Also ask each model tier to produce a short answer, and report "
                     + "finish_reason, token spend and any inline reasoning (costs one call per tier)")
@@ -250,7 +277,10 @@ public final class DoctorCommand implements Callable<Integer> {
         if (completion && result.connected()) {
             probeCompletion(name, ep);
         }
-        if (tools && result.connected()) {
+        // --tools-count implies --tools, the way --retry implies --resume: an operator who named
+        // counts has already said what they want probed, and silently ignoring the flag they typed
+        // is the one response that teaches them nothing.
+        if ((tools || !toolsCount.isEmpty()) && result.connected()) {
             probeToolCalling(name, ep);
         }
     }
@@ -264,6 +294,10 @@ public final class DoctorCommand implements Callable<Integer> {
      * it was meant to predict, which is the one way a diagnostic can be worse than no diagnostic.
      */
     private void probeToolCalling(String name, ModelEndpoint ep) {
+        if (!toolsCount.isEmpty()) {
+            sweepToolCalling(name, ep);
+            return;
+        }
         var r = sdd.core.llm.ToolCallProbe.probe(ep, new sdd.core.llm.HttpChatModel(ep));
         String check = "model:" + name + ":tools";
         report(r.ok(), check, r.detail());
@@ -279,6 +313,54 @@ public final class DoctorCommand implements Callable<Integer> {
                 + " finish_reason=" + r.finishReason()
                 + " completion_tokens=" + r.completionTokens()
                 + " max_tokens=" + r.maxTokensSent());
+    }
+
+    /**
+     * Walks the requested declaration counts and reports how many attempts survived each.
+     *
+     * <p><b>Single attempts, deliberately</b> — {@code maxAttempts = 1}. Everywhere else a probe
+     * retries because it exists to predict a real run, and a real run retries. Here that would
+     * destroy the measurement: the thing being counted IS the failure rate, and retrying until
+     * something works reports a gateway that fails half the time as one that works.
+     */
+    private void sweepToolCalling(String name, ModelEndpoint ep) {
+        var out = spec.commandLine().getOut();
+        int repeats = Math.max(1, toolsRepeat);
+        java.util.List<Integer> counts = toolsCount.stream()
+                .filter(java.util.Objects::nonNull).filter(c -> c >= 1).sorted().distinct().toList();
+        if (counts.isEmpty()) {
+            report(false, "model:" + name + ":tools", "--tools-count needs at least one count >= 1");
+            return;
+        }
+        boolean allOk = true;
+        StringBuilder note = new StringBuilder();
+        for (int count : counts) {
+            int ok = 0;
+            String lastFailure = null;
+            for (int i = 0; i < repeats; i++) {
+                var r = sdd.core.llm.ToolCallProbe.probe(ep,
+                        new sdd.core.llm.HttpChatModel(ep, 1), count);
+                if (r.ok()) {
+                    ok++;
+                } else {
+                    lastFailure = r.detail();
+                }
+            }
+            allOk &= ok == repeats;
+            out.println(String.format("    %3d declarations : %d/%d%s",
+                    count, ok, repeats, lastFailure == null ? "" : "   " + lastFailure));
+            note.append(count).append('=').append(ok).append('/').append(repeats).append(' ');
+            if (lastFailure != null) {
+                printDumpHint(lastFailure);
+            }
+        }
+        String check = "model:" + name + ":tools";
+        report(allOk, check, allOk
+                ? "every count carried: " + note.toString().strip()
+                : "declaration ceiling reached — " + note.toString().strip()
+                        + " (explore advertises 10 by default, 12 with --interactive and --since; "
+                        + "explore.single_tool collapses them to 1)");
+        diagnostics.note(check + ": sweep " + note.toString().strip() + " repeats=" + repeats);
     }
 
     /**

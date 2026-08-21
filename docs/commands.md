@@ -249,6 +249,46 @@ run whenever a response came back at all, whatever its status
 matters. A 401 is likewise `connected`, and the tool probe run against it
 reports the auth failure with more detail, not less.
 
+**Finding a gateway's declaration ceiling: `--tools-count`.** Plain `--tools`
+sends exactly ONE declaration (`ToolCallProbe`), which answers "can this
+endpoint emit a tool call at all" and nothing else. A different failure needs a
+different probe: some gateways have a function-calling path that degrades as the
+declaration set grows — measured against one, an identical request succeeded
+20/20 with a single declaration, 13/20 with six and 0/20 with nine, as fast
+uniform HTTP 500s rather than timeouts. `sdd explore` advertises ten by default
+and twelve with both `--interactive` and `--since`, so the one-declaration probe
+passes cheerfully while a real survey dies.
+
+```
+sdd doctor --endpoint planner --tools-count 1,6,10,12 --tools-repeat 4
+      1 declarations : 4/4
+      6 declarations : 2/4   HTTP 500: internal error (6 functions)
+     10 declarations : 0/4   HTTP 500: internal error (10 functions)
+     12 declarations : 0/4   HTTP 500: internal error (12 functions)
+[FAIL] model:planner:tools — declaration ceiling reached — 1=4/4 6=2/4 10=0/4 12=0/4
+```
+
+It takes a **list** because the answer is a threshold rather than a yes/no, and
+pairs with `--tools-repeat` because that ceiling is probabilistic and was
+observed to MOVE within a single day — one green attempt at one count is the
+weakest possible evidence about it. `--tools-count` implies `--tools`.
+
+Two deliberate choices worth knowing. The sweep probes with **no retries**
+(`maxAttempts = 1`), unlike every other probe here: elsewhere retrying makes a
+probe predict a real run, but here the thing being counted *is* the failure
+rate, and retrying until something works would report a gateway that fails half
+the time as one that works. And the padding declarations are
+identifier-shaped and schema-bearing rather than `tool_1..tool_n`, because what
+degrades is the payload the set produces — they approximate the explorer's own
+declarations rather than importing them, since `ExploreTools` lives in a module
+that depends on this one.
+
+If the ceiling sits below what you need, `explore.single_tool` collapses every
+operation into one declaration — but check
+[Talking to a GigaChat gateway directly](../README.md#talking-to-a-gigachat-gateway-directly)
+first: measured, that ceiling belonged to a translating proxy rather than to the
+gateway itself.
+
 **Model endpoints that will not return structured tool calls
 (`models.<name>.tool_calls`).** Default `native`: the call arrives in
 `message.tool_calls`, with an id the endpoint issued. `text` is for a gateway
