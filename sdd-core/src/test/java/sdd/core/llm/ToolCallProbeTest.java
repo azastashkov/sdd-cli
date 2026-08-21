@@ -175,4 +175,96 @@ class ToolCallProbeTest {
         assertThat(r.declarationsSent()).isEqualTo(9);
         assertThat(r.detail()).contains("HTTP 500");
     }
+
+    // ---------------------------------------------------------------- the nudge
+
+    private static ChatResponse prose(String said) {
+        return new ChatResponse(ChatMessage.assistant(said), "stop", new Usage(30, 8));
+    }
+
+    private static ChatResponse called() {
+        return new ChatResponse(new ChatMessage("assistant", null,
+                List.of(new ToolCall("1", "report_status", "{\"status\":\"ok\"}")), null),
+                "tool_calls", new Usage(30, 12));
+    }
+
+    @Test
+    void aColdSuccessCostsNoSecondCall() {
+        int[] calls = {0};
+        ChatModel model = req -> {
+            calls[0]++;
+            return called();
+        };
+
+        ToolCallProbe.Nudged n = ToolCallProbe.probeNudged(endpoint(4096), model, 5);
+
+        assertThat(calls[0]).isEqualTo(1);
+        assertThat(n.cold().ok()).isTrue();
+        assertThat(n.afterNudge()).isNull();
+        assertThat(n.recovered()).isFalse();
+    }
+
+    /** The shape must match the loop's next turn, or the number does not transfer. */
+    @Test
+    void theRetryReplaysExactlyWhatTheLoopWouldSend() {
+        List<List<ChatMessage>> sent = new java.util.ArrayList<>();
+        ChatModel model = req -> {
+            sent.add(req.messages());
+            return sent.size() == 1 ? prose("Sure, the status is ok.") : called();
+        };
+
+        ToolCallProbe.Nudged n = ToolCallProbe.probeNudged(endpoint(4096), model, 3);
+
+        assertThat(sent).hasSize(2);
+        List<ChatMessage> retry = sent.get(1);
+        assertThat(retry).hasSize(4);
+        assertThat(retry.get(0).role()).isEqualTo("system");
+        assertThat(retry.get(1)).isEqualTo(sent.get(0).get(1));           // the same instruction
+        assertThat(retry.get(2).role()).isEqualTo("assistant");
+        assertThat(retry.get(2).content()).isEqualTo("Sure, the status is ok.");
+        assertThat(retry.get(3).role()).isEqualTo("user");
+        assertThat(retry.get(3).content()).isEqualTo(ToolCallProbe.NUDGE);
+        assertThat(n.recovered()).isTrue();
+    }
+
+    @Test
+    void aGatewayThatKeepsAnsweringInProseIsReportedAsNotRecovered() {
+        ChatModel model = req -> prose("Still prose.");
+
+        ToolCallProbe.Nudged n = ToolCallProbe.probeNudged(endpoint(4096), model, 3);
+
+        assertThat(n.cold().ok()).isFalse();
+        assertThat(n.afterNudge()).isNotNull();
+        assertThat(n.afterNudge().ok()).isFalse();
+        assertThat(n.recovered()).isFalse();
+    }
+
+    /** Nothing came back at all, so there is no prose turn to replay and no retry to make. */
+    @Test
+    void aTransportFailureIsNotNudged() {
+        int[] calls = {0};
+        ChatModel model = req -> {
+            calls[0]++;
+            throw new ModelException("HTTP 500", 500);
+        };
+
+        ToolCallProbe.Nudged n = ToolCallProbe.probeNudged(endpoint(4096), model, 9);
+
+        assertThat(calls[0]).isEqualTo(1);
+        assertThat(n.afterNudge()).isNull();
+        assertThat(n.recovered()).isFalse();
+    }
+
+    @Test
+    void theRetryCarriesTheSameDeclarationSet() {
+        List<Integer> counts = new java.util.ArrayList<>();
+        ChatModel model = req -> {
+            counts.add(req.tools().size());
+            return counts.size() == 1 ? prose("nope") : called();
+        };
+
+        ToolCallProbe.probeNudged(endpoint(4096), model, 11);
+
+        assertThat(counts).containsExactly(11, 11);
+    }
 }

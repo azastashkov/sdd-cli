@@ -288,6 +288,29 @@ fall away with the count, so single_tool would not fix this). Every failure was 
 ANSWERING IN PROSE rather than rejecting the request — check models.<name>.tool_calls ...
 ```
 
+**`--tools-nudge` measures whether a prose rate is survivable.** Three
+CONSECUTIVE no-tool-call turns end a run `MALFORMED` (`AgentLoop`, `MAX_STRIKES
+= 3`), and the strike counter resets on any good turn — so what threatens a
+survey is not the cold prose rate but the rate that survives a retry. The loop
+does not retry blind: it appends the prose turn plus
+`Call a tool or done — do not answer in prose.` and asks again. This flag
+replays exactly that, and only for attempts that failed:
+
+```
+      6 declarations : 8/10 cold, 2 of 2 recovered after the nudge
+[FAIL] ... The loop's own retry recovered 4 of 4 prose replies (100%) — a run is wedged only by
+THREE IN A ROW, so the cold rate above overstates the risk by roughly that much
+```
+
+At an independent 15% prose rate a 200-turn survey has only a ~56% chance of
+finishing; if the nudge recovers most of those, the real figure is far better,
+and if it recovers none the cold rate *is* the per-turn rate. That is the
+difference between "raise the turn cap" and "this tier cannot drive a survey",
+so it is worth the extra call. The retry request is byte-identical in shape to
+the loop's next turn — system, the original instruction, the assistant's own
+prose, then the nudge as a user message — and `AgentLoopTest` pins the probe's
+copy of that string against the loop's, since the two live in different modules.
+
 That shape is what a real gateway produced on the first live run: ~85% success
 flat from 1 to 11 declarations with a genuine cliff at 12, and every failure a
 prose reply rather than an HTTP rejection. The `answered instead:` line is

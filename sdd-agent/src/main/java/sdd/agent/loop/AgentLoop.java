@@ -29,6 +29,9 @@ import java.util.List;
 public final class AgentLoop {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final int MAX_STRIKES = 3;
+    /** What a prose turn is answered with. Pinned against {@code ToolCallProbe.NUDGE} by test, so
+     *  the diagnostic that measures how often this works keeps measuring THIS. */
+    static final String NUDGE = "Call a tool or done — do not answer in prose.";
     private static final int WEDGE_REPEAT = 3;
 
     private final ChatModel model;
@@ -152,7 +155,7 @@ public final class AgentLoop {
             ChatMessage message = response.message();
             if (message.toolCalls().isEmpty()) {
                 window.addAssistant(message);
-                window.addWorkOrder("Call a tool or done — do not answer in prose.");
+                window.addWorkOrder(NUDGE);
                 events.add("turn " + turns + ": no tool call");
                 if (++strikes >= MAX_STRIKES) {
                     // "no tool calls" alone names a symptom shared by two unrelated causes: an

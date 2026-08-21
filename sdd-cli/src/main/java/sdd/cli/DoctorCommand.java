@@ -244,6 +244,21 @@ public final class DoctorCommand implements Callable<Integer> {
                     + "probabilistic, so one green attempt proves little.")
     int toolsRepeat = 1;
 
+    /**
+     * Measure the loop's own recovery, not just the cold failure rate.
+     *
+     * <p>A gateway that answers in prose 15% of the time looks fatal on paper — three consecutive
+     * prose turns end a run MALFORMED, which over a 200-turn survey is a coin flip IF the turns are
+     * independent. They are not: the loop appends the prose turn and a nudge and asks again. This
+     * measures P(prose | nudged), which is the number the survival estimate actually needs, and
+     * costs a second call only for attempts that failed.
+     */
+    @Option(names = "--tools-nudge",
+            description = "With --tools-count: after a prose reply, retry it exactly as the agent "
+                    + "loop does and report how often that recovers. Answers whether a prose rate "
+                    + "is survivable rather than fatal.")
+    boolean toolsNudge;
+
     @Option(names = "--completion",
             description = "Also ask each model tier to produce a short answer, and report "
                     + "finish_reason, token spend and any inline reasoning (costs one call per tier)")
@@ -344,15 +359,31 @@ public final class DoctorCommand implements Callable<Integer> {
         boolean allOk = true;
         int prose = 0;
         int transport = 0;
+        int totalNudged = 0;
+        int totalRecovered = 0;
         java.util.List<Integer> rates = new java.util.ArrayList<>();
         StringBuilder note = new StringBuilder();
         for (int count : counts) {
             int ok = 0;
+            int nudged = 0;
+            int recovered = 0;
             String lastFailure = null;
             String lastSaid = null;
             for (int i = 0; i < repeats; i++) {
-                var r = sdd.core.llm.ToolCallProbe.probe(ep,
-                        new sdd.core.llm.HttpChatModel(ep, 1), count);
+                var model = new sdd.core.llm.HttpChatModel(ep, 1);
+                sdd.core.llm.ToolCallProbe.Result r;
+                if (toolsNudge) {
+                    var n = sdd.core.llm.ToolCallProbe.probeNudged(ep, model, count);
+                    r = n.cold();
+                    if (n.afterNudge() != null) {
+                        nudged++;
+                        if (n.recovered()) {
+                            recovered++;
+                        }
+                    }
+                } else {
+                    r = sdd.core.llm.ToolCallProbe.probe(ep, model, count);
+                }
                 if (r.ok()) {
                     ok++;
                     continue;
@@ -369,8 +400,13 @@ public final class DoctorCommand implements Callable<Integer> {
             }
             allOk &= ok == repeats;
             rates.add(ok);
-            out.println(String.format("    %3d declarations : %d/%d%s",
-                    count, ok, repeats, lastFailure == null ? "" : "   " + lastFailure));
+            totalNudged += nudged;
+            totalRecovered += recovered;
+            out.println(String.format("    %3d declarations : %d/%d cold%s%s",
+                    count, ok, repeats,
+                    nudged == 0 ? "" : String.format(", %d of %d recovered after the nudge",
+                            recovered, nudged),
+                    lastFailure == null ? "" : "   " + lastFailure));
             // The one line that separates "wrote no call" from "wrote a call sdd could not parse".
             // Dropping it was why the first live sweep could not be read without a second run.
             if (lastSaid != null && !lastSaid.isBlank()) {
@@ -384,9 +420,33 @@ public final class DoctorCommand implements Callable<Integer> {
         String check = "model:" + name + ":tools";
         report(allOk, check, allOk
                 ? "every count carried: " + note.toString().strip()
-                : verdict(note.toString().strip(), counts, rates, repeats, prose, transport));
+                : verdict(note.toString().strip(), counts, rates, repeats, prose, transport)
+                        + recoveryNote(totalNudged, totalRecovered));
         diagnostics.note(check + ": sweep " + note.toString().strip() + " repeats=" + repeats
-                + " prose_failures=" + prose + " transport_failures=" + transport);
+                + " prose_failures=" + prose + " transport_failures=" + transport
+                + " nudged=" + totalNudged + " recovered=" + totalRecovered);
+    }
+
+    /**
+     * What the nudge bought, in the terms the run cares about.
+     *
+     * <p>Three CONSECUTIVE prose turns end a run MALFORMED, so what threatens a survey is not the
+     * cold rate but the rate that survives a retry. A high recovery figure means the cold rate
+     * overstates the danger by a lot.
+     */
+    private static String recoveryNote(int nudged, int recovered) {
+        if (nudged == 0) {
+            return "";
+        }
+        int pct = recovered * 100 / nudged;
+        String head = ". The loop's own retry recovered " + recovered + " of " + nudged
+                + " prose replies (" + pct + "%)";
+        if (pct == 0) {
+            return head + " — NOTHING recovered, so the cold rate above is the real per-turn rate "
+                    + "and three of them in a row ends a run MALFORMED";
+        }
+        return head + " — a run is wedged only by THREE IN A ROW, so the cold rate above overstates "
+                + "the risk by roughly that much";
     }
 
     /**

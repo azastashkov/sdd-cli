@@ -407,4 +407,16 @@ class AgentLoopTest {
 
         assertThat(outcome.result()).isEqualTo(AgentResult.DONE);
     }
+
+    /**
+     * The diagnostic that measures how often the nudge works must measure THIS nudge.
+     *
+     * <p>{@code ToolCallProbe} cannot import {@code AgentLoop} — sdd-agent depends on sdd-core, not
+     * the reverse — so the string is duplicated there. This is the only thing keeping the two
+     * honest, and without it the probe could quietly start predicting a loop that no longer exists.
+     */
+    @Test
+    void theProbesNudgeIsTheLoopsNudge() {
+        assertThat(sdd.core.llm.ToolCallProbe.NUDGE).isEqualTo(AgentLoop.NUDGE);
+    }
 }

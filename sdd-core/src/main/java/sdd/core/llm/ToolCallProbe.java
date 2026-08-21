@@ -74,6 +74,16 @@ public final class ToolCallProbe {
     private static final String USER =
             "Call the report_status tool with status set to the single word: ok";
 
+    /**
+     * What {@code AgentLoop} pushes into the window after a turn that answered in prose.
+     *
+     * <p>Duplicated from {@code AgentLoop.NUDGE} rather than imported, because that class lives in
+     * {@code sdd-agent}, which depends on this module and not the reverse. {@code AgentLoopTest}
+     * asserts the two are equal — if this string drifts, the measurement stops describing the loop
+     * it is supposed to predict, which is the only way this probe can quietly become a lie.
+     */
+    public static final String NUDGE = "Call a tool or done — do not answer in prose.";
+
     private ToolCallProbe() {
     }
 
@@ -92,12 +102,56 @@ public final class ToolCallProbe {
      * @param declarations how many tool declarations to send, at least one
      */
     public static Result probe(ModelEndpoint endpoint, ChatModel model, int declarations) {
-        int maxTokens = endpoint.maxTokens();
+        return attempt(endpoint, model, specs(Math.max(1, declarations)),
+                List.of(ChatMessage.system(SYSTEM), ChatMessage.user(USER))).result();
+    }
+
+    /**
+     * A cold attempt, and — only when that answered in prose — the SAME retry the agent loop makes.
+     *
+     * <p>Exists to answer one question with a number instead of a guess: a gateway measured at ~15%
+     * prose replies would give a 200-turn survey a ~44% chance of dying MALFORMED if those replies
+     * were independent, but the loop does not retry blind. It appends the prose turn and
+     * {@link #NUDGE} and asks again, so the real per-turn rate is conditional, not marginal, and
+     * the honest survival number needs P(prose | nudged) rather than P(prose).
+     *
+     * <p>The follow-up request is byte-identical in shape to the loop's next turn: system, the
+     * original instruction, the assistant's own prose, then the nudge as a user message — which is
+     * what {@code ContextWindow.addWorkOrder} makes it.
+     */
+    public static Nudged probeNudged(ModelEndpoint endpoint, ChatModel model, int declarations) {
         List<ToolSpec> specs = specs(Math.max(1, declarations));
+        List<ChatMessage> cold = List.of(ChatMessage.system(SYSTEM), ChatMessage.user(USER));
+        Attempt first = attempt(endpoint, model, specs, cold);
+        if (first.result().ok() || first.message() == null) {
+            return new Nudged(first.result(), null);
+        }
+        List<ChatMessage> retry = List.of(cold.get(0), cold.get(1),
+                first.message(), ChatMessage.user(NUDGE));
+        return new Nudged(first.result(), attempt(endpoint, model, specs, retry).result());
+    }
+
+    /**
+     * @param cold       the first attempt
+     * @param afterNudge the retry, or null when the cold attempt already succeeded
+     */
+    public record Nudged(Result cold, Result afterNudge) {
+        /** Prose first, a call second — the thing being measured. */
+        public boolean recovered() {
+            return !cold.ok() && afterNudge != null && afterNudge.ok();
+        }
+    }
+
+    /** One request/response, and the assistant message it produced (null when nothing came back). */
+    private record Attempt(Result result, ChatMessage message) {
+    }
+
+    private static Attempt attempt(ModelEndpoint endpoint, ChatModel model,
+                                   List<ToolSpec> specs, List<ChatMessage> messages) {
+        int maxTokens = endpoint.maxTokens();
         try {
             ChatResponse response = model.complete(new ChatRequest(endpoint.model(),
-                    List.of(ChatMessage.system(SYSTEM), ChatMessage.user(USER)),
-                    specs, maxTokens, 0.15));
+                    messages, specs, maxTokens, 0.15));
 
             List<ToolCall> calls = response.message().toolCalls();
             String content = response.message().content();
@@ -106,12 +160,12 @@ public final class ToolCallProbe {
                 String wrong = TOOL.equals(first.name())
                         ? "" : " (asked for " + TOOL + ", so it chose the wrong one of "
                                 + specs.size() + ")";
-                return new Result(true,
+                return new Attempt(new Result(true,
                         "returned a tool call: " + first.name() + "("
                                 + excerpt(first.argumentsJson()) + ")" + wrong,
                         true, first.name(), first.argumentsJson(), response.finishReason(),
                         response.usage().completionTokens(), maxTokens, excerpt(content),
-                        specs.size());
+                        specs.size()), response.message());
             }
             boolean truncated = "length".equals(response.finishReason());
             String detail = truncated
@@ -121,11 +175,12 @@ public final class ToolCallProbe {
                     : "NO TOOL CALL: the endpoint answered in prose with finish_reason="
                             + response.finishReason()
                             + " — this tier cannot drive sdd implement";
-            return new Result(false, detail, false, null, null, response.finishReason(),
-                    response.usage().completionTokens(), maxTokens, excerpt(content), specs.size());
+            return new Attempt(new Result(false, detail, false, null, null,
+                    response.finishReason(), response.usage().completionTokens(), maxTokens,
+                    excerpt(content), specs.size()), response.message());
         } catch (ModelException e) {
-            return new Result(false, e.getMessage(), false, null, null, null, 0, maxTokens, "",
-                    specs.size());
+            return new Attempt(new Result(false, e.getMessage(), false, null, null, null, 0,
+                    maxTokens, "", specs.size()), null);
         }
     }
 
