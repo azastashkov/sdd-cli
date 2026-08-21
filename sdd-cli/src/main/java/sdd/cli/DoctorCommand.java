@@ -283,6 +283,7 @@ public final class DoctorCommand implements Callable<Integer> {
         modelTlsPreflight(name, ep.tls(), clock);
         EndpointProbe.ProbeResult result = EndpointProbe.probe(ep);
         report(result.ok(), "model:" + name, ep.baseUrl() + " → " + result.detail());
+        reportModelName(name, ep, result);
         recordModelTlsDiagnostics(name, ep.tls(), result);
         // connected(), not ok(): the probe above asks for /models, which a gateway is under no
         // obligation to serve. Gating on ok() meant that on such a gateway --tools printed one red
@@ -443,6 +444,31 @@ public final class DoctorCommand implements Callable<Integer> {
                 + " prose_failures=" + prose + " arguments_only=" + argsOnly
                 + " transport_failures=" + transport
                 + " nudged=" + totalNudged + " recovered=" + totalRecovered);
+    }
+
+    /**
+     * Says when the configured model is not one this gateway serves — on the ENDPOINT line, where
+     * it is seen before anything else runs.
+     *
+     * <p>Printed here and not only from the tool sweep because the endpoint probe is what an
+     * operator runs first, and it was reporting a cheerful green {@code HTTP 200} for a tier whose
+     * every completion would 404 with {@code "No such model"}. The listing that proves it had
+     * already been fetched and discarded.
+     *
+     * <p>Silent when the name IS served, and silent when the listing could not be parsed: a hint
+     * that fires on every healthy run is noise, and a wrong hint is worse than none.
+     */
+    private void reportModelName(String name, ModelEndpoint ep, EndpointProbe.ProbeResult result) {
+        if (result.models().isEmpty() || result.models().contains(ep.model())) {
+            return;
+        }
+        var out = spec.commandLine().getOut();
+        out.println("    configured model '" + ep.model() + "' is NOT served here — this gateway "
+                + "offers: " + String.join(", ", result.models()));
+        out.println("    every completion will fail with \"No such model\"; set models." + name
+                + ".model to one of the above");
+        diagnostics.note("model:" + name + ": configured=" + ep.model()
+                + " served=" + String.join(",", result.models()));
     }
 
     /**
