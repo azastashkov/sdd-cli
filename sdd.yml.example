@@ -182,14 +182,23 @@ run:
 #   tokens: 8000000       # per-run token cap (default 8000000)
 #   wall_seconds: 7200    # per-run wall clock (default 7200)
 #   context_soft_cap: 200000   # prompt tokens before the window starts evicting (default 200000)
-#   single_tool: false    # Advertise the explorer's nine operations as ONE tool declaration
-#                         # carrying an `action` argument, instead of nine declarations.
+#   single_tool: false    # Advertise every explorer operation as ONE tool declaration carrying
+#                         # an `action` argument, instead of one declaration each.
 #                         # Only for an endpoint whose function-calling path breaks as the
 #                         # declaration set grows: measured on one gateway, ordinary
 #                         # identifier-shaped text in the prompt failed every attempt at five
-#                         # declarations and none at one. It costs real quality — nine schemas
-#                         # tell the model what each operation takes — so leave it off unless
-#                         # `sdd explore` is returning HTTP 500 from the endpoint.
+#                         # declarations and none at one. It costs real quality — a schema per
+#                         # operation is what tells the model which arguments each one takes —
+#                         # so leave it off unless `sdd explore` is returning HTTP 500 from the
+#                         # endpoint.
+#                         #
+#                         # The count it collapses is TEN by default, and each of the two
+#                         # optional tools is advertised only when its flag asks for it:
+#                         # `ask_user_question` with --interactive, `git_history` with --since.
+#                         # So a run passing both is at twelve — the worst case on a gateway
+#                         # that degrades with the count, and the one where this setting earns
+#                         # itself. It costs nothing extra there: both collapse into the same
+#                         # single declaration as everything else.
 #   max_questions: 10     # How many questions `sdd explore --interactive` may put to you in one
 #                         # run (default 10). The only ceiling on human minutes: waiting spends
 #                         # no turns, no tokens, and is deliberately excluded from wall_seconds,
