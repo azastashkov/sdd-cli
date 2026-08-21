@@ -467,7 +467,7 @@ blocking one stops `sdd plan approve`. You answer in place, with the one
 human-only extension the plan parser accepts:
 
 ```markdown
-- Q1: [blocking] Which repos own the tier mapping?
+- Q1 [blocking]: Which repos own the tier mapping?
   - resolution: trading-core owns it; product-a only reads through the SDK.
 ```
 
