@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JacksonException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jdbi.v3.core.Jdbi;
+import sdd.core.git.GitRead;
 import sdd.core.kb.EntityKind;
 import sdd.core.kb.EntityMatch;
 import sdd.core.kb.KbEntities;
@@ -20,9 +21,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -56,6 +60,22 @@ public final class ExploreTools implements Tools {
     public static final int MAX_QUESTIONS = 10;
     /** How many times one question may be repeated before the tool refuses instead of answering. */
     private static final int MAX_REPEATS = 3;
+    /**
+     * What one {@code git_history} call may return, matching {@link EstateSearch}'s own ceiling.
+     *
+     * <p>This is the cap that matters most here. A branch-to-branch diff of a real repo is
+     * trivially a hundred thousand lines, and an oversized request does not merely truncate: it
+     * is an HTTP 400, which {@code AgentLoop} answers with {@code evictAll()} — the run loses
+     * every tool result it holds. So the defaults below return a STAT, and a full patch has to be
+     * asked for one path at a time.
+     */
+    private static final int MAX_GIT_OUTPUT_BYTES = 32768;
+    private static final int DEFAULT_LOG_LIMIT = 20;
+    private static final int MAX_LOG_LIMIT = 100;
+    /** Blame is the one read whose cost grows with history rather than with the answer. */
+    private static final int MAX_BLAME_LINES = 200;
+    private static final DateTimeFormatter GIT_DATE =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(ZoneOffset.UTC);
 
     /**
      * The nine operations behind one declaration.
@@ -96,6 +116,25 @@ public final class ExploreTools implements Tools {
     private final Notebook notebook = new Notebook();
     /** Estate paths this run has surfaced to the model — the provenance set the citation gate uses. */
     private final Set<String> seen = new LinkedHashSet<>();
+    /**
+     * Repo name -> the revision range this run is investigating, from {@code sdd explore --since}.
+     *
+     * <p>Empty means {@code git_history} is not advertised at all, exactly as a null {@code asker}
+     * un-advertises {@code ask_user_question}: a survey that was not asked to compare two points in
+     * history keeps today's declaration count, and with it the measured tool-call reliability on
+     * gateways that degrade as that count grows.
+     *
+     * <p>Non-empty, it is also the default {@code rev} for every operation, so the model starts
+     * from the range the human named rather than having to discover it.
+     *
+     * <p><b>Un-advertised is not disabled.</b> {@code dispatch} still serves a {@code git_history}
+     * call that arrives anyway — from a model remembering an earlier run, or an endpoint ignoring
+     * the declaration list — defaulting {@code rev} to HEAD. This is the same call {@code route}
+     * makes about a stale tool name: the flag exists to keep bytes off the wire, and refusing a
+     * read-only call that was already made would turn a cosmetic difference into a dead turn
+     * without protecting anything.
+     */
+    private final Map<String, String> ranges;
 
     public ExploreTools(Jdbi jdbi, EstateJail jail) {
         this(jdbi, jail, false);
@@ -125,12 +164,23 @@ public final class ExploreTools implements Tools {
     public ExploreTools(Jdbi jdbi, EstateJail jail, boolean singleTool,
                         java.util.function.Consumer<String> trace, HumanAsk asker,
                         int maxQuestions) {
+        this(jdbi, jail, singleTool, trace, asker, maxQuestions, Map.of());
+    }
+
+    /**
+     * @param ranges repo -> revision range under investigation, from {@code --since}. Empty leaves
+     *               {@code git_history} unadvertised; see the field's javadoc
+     */
+    public ExploreTools(Jdbi jdbi, EstateJail jail, boolean singleTool,
+                        java.util.function.Consumer<String> trace, HumanAsk asker,
+                        int maxQuestions, Map<String, String> ranges) {
         this.jdbi = jdbi;
         this.jail = jail;
         this.singleTool = singleTool;
         this.trace = trace;
         this.asker = asker;
         this.maxQuestions = maxQuestions;
+        this.ranges = ranges == null ? Map.of() : Map.copyOf(ranges);
         this.search = new EstateSearch(jail);
         this.fts = new FtsRetriever(jdbi);
     }
@@ -184,6 +234,7 @@ public final class ExploreTools implements Tools {
         // the per-tool declarations can never disagree about which operations exist.
         return singleTool ? List.of(multiplexed()) : declarations().stream()
                 .filter(spec -> asker != null || !spec.name().equals("ask_user_question"))
+                .filter(spec -> !ranges.isEmpty() || !spec.name().equals("git_history"))
                 .toList();
     }
 
@@ -241,6 +292,23 @@ public final class ExploreTools implements Tools {
                         kindValueSchema("Value to resolve")),
                 new ToolSpec("propose_touchpoint", "Propose a touchpoint. Refused if unresolvable.",
                         kindValueSchema("The value")),
+                new ToolSpec("git_history",
+                        "Read this repo's git history. op=log lists commits, show describes one, "
+                                + "diff compares two revisions, blame says who last touched each "
+                                + "line, refs lists branches and tags. rev takes a sha, branch, "
+                                + "tag, HEAD~2, or a range a..b.",
+                        """
+                        {"type":"object","properties":{\
+                        "repo":{"type":"string","description":"Repository name"},\
+                        "op":{"type":"string","enum":["log","show","diff","blame","refs"]},\
+                        "rev":{"type":"string","description":"Revision, or a..b range; defaults \
+                        to the range under investigation"},\
+                        "path":{"type":"string","description":"Repo-relative path to restrict to; \
+                        required for a full patch and for blame"},\
+                        "offset":{"type":"integer","description":"blame: first line, 1-based"},\
+                        "limit":{"type":"integer","description":"log: how many commits; blame: \
+                        how many lines"}},\
+                        "required":["repo","op"]}"""),
                 new ToolSpec("record_finding", "Record one claim plus the file:line you read.",
                         """
                         {"type":"object","properties":{\
@@ -270,18 +338,20 @@ public final class ExploreTools implements Tools {
                         + "search_symbols(query) | who_references(fqcn[,direction]) | "
                         + "ask_user_question(question[,why][,options]) | "
                         + "kb_resolve(kind,value) | "
+                        + "git_history(repo,op[,rev][,path][,offset][,limit]) | "
                         + "propose_touchpoint(kind,value) | record_finding(claim,citation) | "
                         + "done(result,summary)",
                 """
                 {"type":"object","properties":{\
                 "action":{"type":"string","enum":["list_repos","list_files","read_file",\
                 "search_code","search_symbols","who_references","ask_user_question","kb_resolve",\
-                "propose_touchpoint",\
+                "git_history","propose_touchpoint",\
                 "record_finding","done"]},\
                 "path":{"type":"string"},"offset":{"type":"string"},"limit":{"type":"string"},\
                 "regex":{"type":"string"},"repo":{"type":"string"},\
                 "glob":{"type":"string"},"query":{"type":"string"},"kind":{"type":"string"},\
                 "value":{"type":"string"},"claim":{"type":"string"},"citation":{"type":"string"},\
+                "op":{"type":"string"},"rev":{"type":"string"},\
                 "result":{"type":"string"},"summary":{"type":"string"}},"required":["action"]}""");
     }
 
@@ -324,6 +394,10 @@ public final class ExploreTools implements Tools {
                     + ("out".equals(args.path("direction").asText("")) ? " (out)" : "");
             case "kb_resolve", "propose_touchpoint" ->
                     " " + args.path("kind").asText("") + ":" + args.path("value").asText("");
+            case "git_history" -> " " + args.path("repo").asText("")
+                    + " " + args.path("op").asText("")
+                    + (args.hasNonNull("rev") ? " " + args.get("rev").asText() : "")
+                    + (args.hasNonNull("path") ? " " + args.get("path").asText() : "");
             case "record_finding" -> " " + args.path("citation").asText("");
             default -> "";
         };
@@ -344,6 +418,7 @@ public final class ExploreTools implements Tools {
             // an earlier run, deserves the real explanation.
             case "ask_user_question" -> ask(str(args, "question"), strings(args, "options"));
             case "kb_resolve" -> describe(resolve(str(args, "kind"), str(args, "value")));
+            case "git_history" -> gitHistory(str(args, "repo"), str(args, "op"), args);
             case "propose_touchpoint" -> propose(str(args, "kind"), str(args, "value"));
             case "record_finding" -> recordFinding(str(args, "claim"), str(args, "citation"));
             case "done" -> throw new MalformedCallException("done is handled by the loop, not dispatched");
@@ -685,6 +760,219 @@ public final class ExploreTools implements Tools {
                 new Notebook.Finding(claim.strip(), path + ":" + line, text));
         return (added ? "recorded" : "already recorded") + " — " + path + ":" + line
                 + " reads: " + text + "\n";
+    }
+
+
+    // ---------------------------------------------------------------- git history
+
+    /**
+     * Read-only git, the one thing the working tree cannot answer.
+     *
+     * <p><b>Nothing here adds to {@link #seen}, deliberately.</b> {@code record_finding} verifies a
+     * citation by re-reading the file <i>from the working tree</i> and copying the line itself. A
+     * line number taken from an old commit's diff does not point at the same text today, so a
+     * citation grounded in history would be verified against the wrong line — silently, when the
+     * file still has that many lines. The model cites the CURRENT line (it can: a diff names the
+     * path, and {@code read_file} follows) and carries the commit sha in the claim text instead.
+     * The same reasoning already keeps {@code who_references}, {@code search_symbols} and
+     * {@link EstateSearch}'s listing mode out of the provenance set.
+     *
+     * <p>{@link EstateJail#root} rather than {@code resolveExisting}: the jail bans {@code .git}
+     * by path segment and that ban stays exactly as it is. Nothing here reads {@code .git} as
+     * bytes — {@link GitRead} reaches it through JGit's typed API, where no verb that could write
+     * is reachable in the first place.
+     */
+    private String gitHistory(String repo, String op, JsonNode args) {
+        Path root = jail.root(repo);   // throws the estate's own "unknown repo" ToolException
+        String rev = optional(args, "rev");
+        if (rev == null || rev.isBlank()) {
+            rev = ranges.get(repo);   // the range under investigation, when the caller named none
+        }
+        String path = gitPath(repo, optional(args, "path"));
+        try {
+            return switch (op.toLowerCase(Locale.ROOT)) {
+                case "log" -> gitLog(repo, root, rev, path, args);
+                case "show" -> gitShow(repo, root, rev);
+                case "diff" -> gitDiff(repo, root, rev, path);
+                case "blame" -> gitBlame(repo, root, rev, path, args);
+                case "refs" -> gitRefs(repo, root);
+                default -> throw new MalformedCallException("git_history op must be one of "
+                        + "log, show, diff, blame, refs — got '" + op + "'");
+            };
+        } catch (IllegalStateException e) {
+            // A bad revision is the model's to correct, not a strike: ToolException RESETS the
+            // counter, so "no such revision: 'X-1'" costs a turn and buys a retry.
+            throw new ToolException(repo + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Accepts a bare repo-relative path AND the estate-wide {@code <repo>/<path>} spelling, because
+     * every other tool here takes the second and a model will reasonably reuse it.
+     */
+    private static String gitPath(String repo, String path) {
+        if (path == null || path.isBlank()) {
+            return null;
+        }
+        String cleaned = normalize(path);
+        return cleaned.startsWith(repo + "/") ? cleaned.substring(repo.length() + 1) : cleaned;
+    }
+
+    private String gitLog(String repo, Path root, String rev, String path, JsonNode args) {
+        int limit = Math.min(number(args, "limit", DEFAULT_LOG_LIMIT), MAX_LOG_LIMIT);
+        String wanted = rev == null || rev.isBlank() ? "HEAD" : rev;
+        List<GitRead.Commit> commits = GitRead.log(root, wanted, path, limit);
+        StringBuilder out = new StringBuilder();
+        out.append(repo).append(" log ").append(wanted).append(resolvedSuffix(root, wanted))
+                .append(path == null ? "" : " -- " + path).append('\n');
+        if (commits.isEmpty()) {
+            out.append("(no commits in that range")
+                    .append(path == null ? "" : " touching " + path).append(")\n");
+            return out.toString();
+        }
+        for (GitRead.Commit commit : commits) {
+            out.append(commit.shortSha()).append(' ').append(GIT_DATE.format(commit.when()))
+                    .append(' ').append(commit.author()).append("  ").append(commit.subject())
+                    .append('\n');
+        }
+        if (commits.size() == limit) {
+            out.append("(").append(limit).append(" shown — pass limit= for more, up to ")
+                    .append(MAX_LOG_LIMIT).append(")\n");
+        }
+        return cap(out.toString());
+    }
+
+    private String gitShow(String repo, Path root, String rev) {
+        String wanted = oneEnded(rev);
+        GitRead.Commit commit = GitRead.commit(root, wanted);
+        String parent = GitRead.parentOf(root, wanted);
+        StringBuilder out = new StringBuilder();
+        out.append(repo).append(" show ").append(commit.sha()).append('\n')
+                .append(GIT_DATE.format(commit.when())).append(' ').append(commit.author())
+                .append("  ").append(commit.subject()).append('\n');
+        if (parent == null) {
+            out.append("(root commit — shown against the empty tree)\n");
+        }
+        appendChanges(out, GitRead.diffFiles(root, parent, commit.sha(), null));
+        out.append("(pass op=diff with path= for the patch of one file)\n");
+        return cap(out.toString());
+    }
+
+    private String gitDiff(String repo, Path root, String rev, String path) {
+        GitRead.Range range = GitRead.range(root, rev == null || rev.isBlank() ? "HEAD" : rev);
+        StringBuilder out = new StringBuilder();
+        out.append(repo).append(" diff ").append(range.fromSha(), 0, GitRead.SHORT_SHA)
+                .append("..").append(range.toSha(), 0, GitRead.SHORT_SHA)
+                .append(path == null ? "" : " -- " + path).append('\n');
+        if (path == null) {
+            // A stat, never the patch. A whole-branch patch is the one result that can take the
+            // context window out from under the run; see MAX_GIT_OUTPUT_BYTES.
+            List<GitRead.FileChange> changes =
+                    GitRead.diffFiles(root, range.fromSha(), range.toSha(), null);
+            if (changes.isEmpty()) {
+                out.append("(the two trees are identical)\n");
+                return out.toString();
+            }
+            appendChanges(out, changes);
+            out.append("(pass path= for the patch of one file)\n");
+            return cap(out.toString());
+        }
+        String patch = GitRead.diffText(root, range.fromSha(), range.toSha(), path);
+        if (patch.isEmpty()) {
+            out.append("(").append(path).append(" is identical at both revisions)\n");
+            return out.toString();
+        }
+        return cap(out.append(patch).toString());
+    }
+
+    private static void appendChanges(StringBuilder out, List<GitRead.FileChange> changes) {
+        int insertions = 0;
+        int deletions = 0;
+        for (GitRead.FileChange change : changes) {
+            insertions += change.insertions();
+            deletions += change.deletions();
+            out.append("  ").append(change.changeKind().charAt(0)).append(' ')
+                    .append(change.path())
+                    .append(change.oldPath() == null ? "" : " (was " + change.oldPath() + ")")
+                    .append(" (+").append(change.insertions())
+                    .append(" -").append(change.deletions()).append(")\n");
+        }
+        out.append("(").append(changes.size())
+                .append(changes.size() == 1 ? " file, +" : " files, +").append(insertions)
+                .append(" -").append(deletions).append(")\n");
+    }
+
+    private String gitBlame(String repo, Path root, String rev, String path, JsonNode args) {
+        if (path == null) {
+            throw new ToolException("git_history op=blame needs path= — blaming a whole repo is "
+                    + "not a question git can answer");
+        }
+        String wanted = oneEnded(rev);
+        int from = number(args, "offset", 1);
+        int limit = Math.min(number(args, "limit", MAX_BLAME_LINES), MAX_BLAME_LINES);
+        int to = from + limit - 1;
+        List<GitRead.BlameLine> lines = GitRead.blame(root, path, wanted, from, to);
+        StringBuilder out = new StringBuilder();
+        out.append(repo).append(" blame ").append(path).append('@')
+                .append(GitRead.resolve(root, wanted), 0, GitRead.SHORT_SHA)
+                .append(" lines ").append(from).append('-').append(to).append('\n');
+        if (lines.isEmpty()) {
+            int total = GitRead.lineCount(root, path, wanted);
+            out.append("(").append(path).append(" has ").append(total)
+                    .append(" lines at that revision — line ").append(from)
+                    .append(" does not exist)\n");
+            return out.toString();
+        }
+        for (GitRead.BlameLine line : lines) {
+            out.append(line.shortSha()).append(' ').append(GIT_DATE.format(line.when()))
+                    .append(' ').append(line.author()).append(" | ").append(line.line())
+                    .append(": ").append(line.text()).append('\n');
+        }
+        return cap(out.toString());
+    }
+
+    private String gitRefs(String repo, Path root) {
+        StringBuilder out = new StringBuilder(repo + " refs\n");
+        for (String ref : GitRead.refs(root)) {
+            out.append(ref).append('\n');
+        }
+        return cap(out.toString());
+    }
+
+    /** A range argument reduced to its far end, for the operations that describe ONE revision. */
+    private static String oneEnded(String rev) {
+        if (rev == null || rev.isBlank()) {
+            return "HEAD";
+        }
+        int dots = rev.indexOf("..");
+        if (dots < 0) {
+            return rev.strip();
+        }
+        String to = rev.substring(dots + 2).strip();
+        return to.isEmpty() ? "HEAD" : to;
+    }
+
+    /** {@code (resolved <short>..<short>)}, so the answer stays meaningful after HEAD moves. */
+    private static String resolvedSuffix(Path root, String rev) {
+        try {
+            if (rev.contains("..")) {
+                GitRead.Range range = GitRead.range(root, rev);
+                return " (resolved " + range.fromSha().substring(0, GitRead.SHORT_SHA) + ".."
+                        + range.toSha().substring(0, GitRead.SHORT_SHA) + ")";
+            }
+            return " (resolved " + GitRead.resolve(root, rev).substring(0, GitRead.SHORT_SHA) + ")";
+        } catch (IllegalStateException e) {
+            return "";   // the operation itself will report it; a header is not the place
+        }
+    }
+
+    /** Truncation that names the argument which would narrow it, as {@link EstateSearch} does. */
+    private static String cap(String text) {
+        if (text.length() <= MAX_GIT_OUTPUT_BYTES) {
+            return text;
+        }
+        return text.substring(0, MAX_GIT_OUTPUT_BYTES)
+                + "\n... (truncated — pass path= to narrow, a smaller limit=, or a shorter range)\n";
     }
 
     /** Estate paths are forward-slashed and never leading-slashed, whichever way the model spells it. */

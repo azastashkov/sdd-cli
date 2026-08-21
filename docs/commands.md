@@ -838,9 +838,10 @@ spec, and the reason `Closure.expand` still takes no model.
 
 **Tools the agent has** (`ExploreTools.java`): `list_repos`, `list_files`, `read_file`,
 `search_code` (regex over every repo's real text, with an optional repo filter and path glob),
-`search_symbols` (the indexed FTS corpus), `kb_resolve`, `propose_touchpoint`, `record_finding`,
-`done`. There is **no** edit tool and **no** build tool — omitting `apply_edit` alone would not be
-read-only, since a Gradle or npm task writes to disk freely.
+`search_symbols` (the indexed FTS corpus), `who_references`, `kb_resolve`, `propose_touchpoint`,
+`record_finding`, `done` — nine always, plus `ask_user_question` with `--interactive` and
+`git_history` with `--since`. There is **no** edit tool and **no** build tool — omitting
+`apply_edit` alone would not be read-only, since a Gradle or npm task writes to disk freely.
 
 **Two gates enforced in code, not in the prompt:**
 
@@ -873,6 +874,7 @@ result names the repos it searched.
 | `--model <key>` | which `models:` entry to explore with (default: `planner`) |
 | `--out <path>` | write the enriched spec here instead of in place |
 | `--interactive` | let the explorer ask you a question when the answer changes what it would do |
+| `--since <ref>` | investigate a regression from the revision it last worked at: `<ref>`, `<a>..<b>`, or `<repo>=<ref>` (repeatable) |
 
 **`--interactive` and `ask_user_question`.** Without the flag the tool is **not
 advertised to the model at all**, so an unattended run keeps exactly the
@@ -912,6 +914,49 @@ lock makes `sdd review` and `sdd status` refuse while it is held. The existing
 route is better on every one of those counts: `done(result="blocked")` becomes a
 `FAILED` repo whose summary carries the question to Gate 2, where a human
 answers it with the diff in front of them via `sdd review redo <repo> <reason>`.
+
+**`--since` and `git_history`.** The regression case — *this worked at `X-1` and broke at `X`* —
+is the one question a working-tree-only agent cannot answer at all. `.git` is banned by path
+segment in both jails (`PathJail`), so `read_file` and `search_code` see only what is checked out.
+
+`--since` answers it in two halves, and the split is the point.
+
+- **The deterministic half needs no model.** The range is resolved and its changed files mapped to
+  types through the same `ChangeSet` path `sdd plan --since` already uses, and handed to the
+  explorer with the task. So the survey starts from what changed rather than hunting for it, and
+  the list is a function of git and the index — not of a model's roaming.
+- **The agentic half is `git_history`**, for what a file list cannot answer: which commit
+  introduced this, what the neighbouring branch is called, who last touched this line. One
+  declaration with an `op` argument — `log`, `show`, `diff`, `blame`, `refs` — never five
+  siblings, for the declaration-count reason `single_tool` exists. `rev` takes a sha, branch, tag,
+  `HEAD~2` or an `a..b` range, and defaults to the range under investigation.
+
+Four properties are worth knowing:
+
+- **It is not advertised without the flag**, exactly as `ask_user_question` is not advertised
+  without `--interactive`. A survey that was not asked to compare revisions keeps today's
+  declaration count and its measured reliability. Both flags together is twelve declarations;
+  `explore.single_tool` collapses them to one at no extra cost. Un-advertised is not disabled — a
+  call that arrives anyway is still served, defaulting to `HEAD`.
+- **It cannot write, structurally.** `sdd.core.git.GitRead` is JGit, not a `git` subprocess, so
+  there is no argv, no shell, no `-c`/`--ext-diff`/`--output` to reject and no `GIT_*` environment
+  to scrub. `checkout`, `reset`, `commit`, `clean` and `push` are unreachable because those methods
+  are not on the class. The `.git` ban is untouched: nothing reads it as bytes.
+- **A diff cannot ground a citation.** `record_finding` verifies by re-reading the file **from the
+  working tree**, and a line number from an old commit does not point at the same text today — so
+  history never joins the provenance set, exactly as `who_references` and `search_symbols` do not.
+  The model reads the *current* file, cites that line, and carries the sha in the claim. The
+  system prompt says so.
+- **Defaults return a stat, not a patch.** A branch-to-branch diff of a real repo is trivially a
+  hundred thousand lines, and an oversized request is an HTTP 400, which `AgentLoop` answers with
+  `evictAll()` — the run loses every tool result it holds. So `diff` and `show` summarise, a full
+  patch needs an explicit `path`, output is capped at 32 KB with a marker naming the argument that
+  would narrow it, and `blame` needs a `path` and a line window. `git_history` results are also on
+  `ContextWindow`'s EXPLORE keep-list, because unlike a read they cannot be converted into a
+  finding first.
+
+Every result echoes the **resolved** SHAs, never the ref that was typed: `HEAD~5` means something
+different tomorrow.
 
 **`read_file` takes `offset` and `limit`** (also spelled
 `startLine`/`endLine`), and numbers the lines it returns. An argument name it

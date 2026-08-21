@@ -2,18 +2,11 @@ package sdd.cli.implement;
 
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ResetCommand;
-import org.eclipse.jgit.diff.DiffEntry;
-import org.eclipse.jgit.diff.DiffFormatter;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.eclipse.jgit.lib.Ref;
-import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.revwalk.RevCommit;
-import org.eclipse.jgit.revwalk.RevWalk;
-import org.eclipse.jgit.treewalk.CanonicalTreeParser;
+import sdd.core.git.GitRead;
 
-import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -21,6 +14,13 @@ import java.util.List;
  * The orchestrator's write-capable git facade (design: orchestrator owns git via JGit —
  * branch/checkout/add/commit/reset-to-recorded-SHA only, never push/remote). LiveGit reads;
  * this writes.
+ *
+ * <p><b>The reads now live in {@link GitRead}.</b> {@link #diff}, {@link #diffStat},
+ * {@link #commitsBetween} and {@link #isAncestor} delegate there rather than keeping a second copy
+ * of the tree-parser idiom, which {@code sdd explore}'s {@code git_history} tool also needs. They
+ * pass {@code detectRenames=false} deliberately: the model-facing reads detect renames, but
+ * counting a rename once instead of as an add plus a delete would change the file counts in Gate
+ * 2's report.md, and that is a reporting change, not a refactor.
  *
  * <p><b>Still push-free (design amendment 2026-08-16).</b> Task 5 gives Gate 2 a Bitbucket pull
  * request, which needs a push — that push verb lives on {@code sdd.cli.review.RemoteGit}, reachable
@@ -106,17 +106,7 @@ public final class RunGit {
      *  commits an approve collapses, and the idempotence check that tells "already squashed" apart
      *  from "has a real range to squash". */
     public static int commitsBetween(Path repo, String fromSha, String toSha) {
-        try (Git git = Git.open(repo.toFile())) {
-            Repository repository = git.getRepository();
-            int n = 0;
-            for (var ignored : git.log().addRange(repository.resolve(fromSha),
-                    repository.resolve(toSha)).call()) {
-                n++;
-            }
-            return n;
-        } catch (Exception e) {
-            throw new IllegalStateException("cannot count commits in " + repo + ": " + e.getMessage(), e);
-        }
+        return GitRead.commitsBetween(repo, fromSha, toSha);
     }
 
     public static void resetHard(Path repo, String sha) {
@@ -133,52 +123,18 @@ public final class RunGit {
 
     /** Unified diff between two commits; empty when the trees are identical. */
     public static String diff(Path repo, String fromSha, String toSha) {
-        try (Git git = Git.open(repo.toFile());
-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            Repository repository = git.getRepository();
-            try (RevWalk walk = new RevWalk(repository);
-                 DiffFormatter formatter = new DiffFormatter(out)) {
-                formatter.setRepository(repository);
-                formatter.format(entries(repository, walk, formatter, fromSha, toSha));
-            }
-            return out.toString(StandardCharsets.UTF_8);
-        } catch (Exception e) {
-            throw new IllegalStateException("cannot diff " + repo + " " + fromSha + ".." + toSha
-                    + ": " + e.getMessage(), e);
-        }
+        return GitRead.diffText(repo, fromSha, toSha, null, false);
     }
 
     public static DiffStat diffStat(Path repo, String fromSha, String toSha) {
-        try (Git git = Git.open(repo.toFile());
-             ByteArrayOutputStream sink = new ByteArrayOutputStream()) {
-            Repository repository = git.getRepository();
-            try (RevWalk walk = new RevWalk(repository);
-                 DiffFormatter formatter = new DiffFormatter(sink)) {
-                formatter.setRepository(repository);
-                List<DiffEntry> entries = entries(repository, walk, formatter, fromSha, toSha);
-                int insertions = 0;
-                int deletions = 0;
-                for (DiffEntry entry : entries) {
-                    for (var edit : formatter.toFileHeader(entry).toEditList()) {
-                        insertions += edit.getEndB() - edit.getBeginB();
-                        deletions += edit.getEndA() - edit.getBeginA();
-                    }
-                }
-                return new DiffStat(entries.size(), insertions, deletions);
-            }
-        } catch (Exception e) {
-            throw new IllegalStateException("cannot diffstat " + repo + ": " + e.getMessage(), e);
+        int insertions = 0;
+        int deletions = 0;
+        List<GitRead.FileChange> changes = GitRead.diffFiles(repo, fromSha, toSha, null, false);
+        for (GitRead.FileChange change : changes) {
+            insertions += change.insertions();
+            deletions += change.deletions();
         }
-    }
-
-    private static List<DiffEntry> entries(Repository repository, RevWalk walk,
-                                           DiffFormatter formatter, String fromSha, String toSha)
-            throws java.io.IOException {
-        CanonicalTreeParser from = new CanonicalTreeParser();
-        from.reset(walk.getObjectReader(), walk.parseCommit(ObjectId.fromString(fromSha)).getTree());
-        CanonicalTreeParser to = new CanonicalTreeParser();
-        to.reset(walk.getObjectReader(), walk.parseCommit(ObjectId.fromString(toSha)).getTree());
-        return formatter.scan(from, to);
+        return new DiffStat(changes.size(), insertions, deletions);
     }
 
     /** The checked-out branch, or "" when detached. */
@@ -241,17 +197,7 @@ public final class RunGit {
      *  than on {@code RemoteGit} — that class exists to isolate the ONE write verb (push) the design
      *  amendment above is about, not every git operation Task 5 happens to need. */
     public static boolean isAncestor(Path repo, String ancestorSha, String descendantSha) {
-        try (Git git = Git.open(repo.toFile())) {
-            Repository repository = git.getRepository();
-            try (RevWalk walk = new RevWalk(repository)) {
-                RevCommit ancestor = walk.parseCommit(repository.resolve(ancestorSha));
-                RevCommit descendant = walk.parseCommit(repository.resolve(descendantSha));
-                return walk.isMergedInto(ancestor, descendant);
-            }
-        } catch (Exception e) {
-            throw new IllegalStateException("cannot check ancestry of " + ancestorSha + " and "
-                    + descendantSha + " in " + repo + ": " + e.getMessage(), e);
-        }
+        return GitRead.isAncestor(repo, ancestorSha, descendantSha);
     }
 
     public static void deleteBranch(Path repo, String branch) {

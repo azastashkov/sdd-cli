@@ -79,6 +79,29 @@ class ContextWindowTest {
     }
 
     @Test
+    void exploreRetentionKeepsTheTwoMostRecentGitHistoryResults() {
+        // git_history is on the keep list for a reason read_file is not: a history result CANNOT
+        // be turned into a record_finding, because that gate re-reads the working tree and a
+        // commit's line numbers do not survive the trip. An evicted diff is simply gone.
+        ContextWindow cw = new ContextWindow(1_000, ContextWindow.Retention.EXPLORE);
+        cw.addSystem("sys");
+        cw.addWorkOrder("wo");
+        for (int i = 1; i <= 4; i++) {
+            cw.addAssistant(assistantCall("g" + i, "git_history"));
+            cw.addToolResult("g" + i, "git_history", "D".repeat(4_000));
+        }
+
+        cw.evictIfOverCap(100_000);
+
+        List<String> tools = cw.messages().stream()
+                .filter(m -> m.role().equals("tool")).map(ChatMessage::content).toList();
+        assertThat(tools.get(0)).isEqualTo("[evicted: git_history result]");
+        assertThat(tools.get(1)).isEqualTo("[evicted: git_history result]");
+        assertThat(tools.get(2)).startsWith("DDDD");
+        assertThat(tools.get(3)).startsWith("DDDD");
+    }
+
+    @Test
     void exploreRetentionNeverEvictsARecordedFinding() {
         // Findings are the explorer's entire product. Losing one to eviction loses work that no
         // later turn can reconstruct, because nothing was written to disk.

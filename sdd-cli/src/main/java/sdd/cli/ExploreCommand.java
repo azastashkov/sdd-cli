@@ -66,10 +66,66 @@ public final class ExploreCommand implements Callable<Integer> {
     @Option(names = "--out", description = "Write the enriched spec here instead of in place")
     Path out;
 
+    /**
+     * The regression case: something worked at one revision and not at another.
+     *
+     * <p>It does two things at once, and the split is deliberate. The DETERMINISTIC half resolves
+     * the range and maps the changed files to types through the same {@code ChangeSet} path
+     * {@code sdd plan --since} already uses, and hands the explorer that list up front — so the
+     * survey starts from what changed instead of hunting for it. The AGENTIC half advertises
+     * {@code git_history}, for the questions a file list cannot answer: which commit introduced
+     * this, what the neighbouring branch is called, who last touched this line.
+     *
+     * <p>Advertising it only here is the same discipline {@code --interactive} follows. A survey
+     * that was not asked to compare two points in history keeps exactly today's declaration count,
+     * and with it the measured tool-call reliability on gateways that degrade as that count grows.
+     * A run that passes both flags is at twelve declarations; {@code explore.single_tool} collapses
+     * them to one at no extra cost.
+     *
+     * <p>A flag rather than a spec section, for the reason {@code PlanCommand.since} states: a spec
+     * is a durable reviewed artifact, and {@code since: HEAD~5} written into one would mean
+     * something different every day.
+     */
+    @Option(names = "--since", description = "Investigate a regression: give the revision it last "
+            + "worked at. <ref>, <a>..<b>, or <repo>=<ref> to scope it (repeatable). Seeds the "
+            + "survey with what changed, and offers the git_history tool.")
+    List<String> since = new java.util.ArrayList<>();
+
     @Option(names = "--interactive",
             description = "Let the explorer ask you a question when the answer changes what it "
                     + "would do. Without this the tool is not offered at all.")
     boolean interactive;
+
+    /**
+     * What {@code --since} resolved to, as prose the model reads with the task.
+     *
+     * <p>Deterministic on purpose. This is the half of a regression investigation that does not
+     * need a model at all — git and the index already know which files moved and which types they
+     * map to — so it is computed once, up front, and stated. What is left for {@code git_history}
+     * is the part that genuinely needs judgement: which of those changes explains the symptom.
+     *
+     * <p>Resolved SHAs, never the ref the human typed: {@code HEAD~5} means something different
+     * tomorrow, and a survey that quotes it back is not reproducible.
+     */
+    static String changeLog(List<sdd.plan.impact.ChangeSet.RepoChange> changes) {
+        if (changes.isEmpty()) {
+            return null;
+        }
+        StringBuilder out = new StringBuilder("# What changed in the range under investigation\n\n"
+                + "Resolved from --since. Use git_history to look into any of it.\n");
+        for (sdd.plan.impact.ChangeSet.RepoChange change : changes) {
+            out.append('\n').append(change.repo()).append(": ").append(change.fromSha())
+                    .append("..").append(change.toSha()).append(" — ")
+                    .append(change.files().size())
+                    .append(change.files().size() == 1 ? " file" : " files").append('\n');
+            for (sdd.plan.impact.ChangeSet.ChangedFile file : change.files()) {
+                out.append("  ").append(file.path())
+                        .append(file.fqcn() == null ? "" : "  -> " + file.fqcn())
+                        .append('\n');
+            }
+        }
+        return out.toString();
+    }
 
     /** Test-only injection point: null in real use, where the asker falls back to {@code System.in}.
      *  Copied from {@code ReviewCommand}, and for the same reason — the interactive path must be
@@ -107,8 +163,18 @@ public final class ExploreCommand implements Callable<Integer> {
                     return 1;
                 }
                 ExploreSettings settings = config.explore();
+                // Reused, not reimplemented: same <repo>=<ref> grammar, same per-repo resolution,
+                // and the same "an unresolvable ref warns rather than blocks" rule.
+                List<sdd.plan.impact.ChangeSet.RepoChange> changes =
+                        PlanCommand.changeSet(db.jdbi(), since, errWriter);
+                Map<String, String> ranges = new java.util.LinkedHashMap<>();
+                for (sdd.plan.impact.ChangeSet.RepoChange change : changes) {
+                    ranges.put(change.repo(), change.fromSha() + ".." + change.toSha());
+                }
                 outWriter.println("exploring " + roots.size() + " repos with " + modelKey
                         + " (up to " + settings.turns() + " turns"
+                        + (ranges.isEmpty() ? "" : ", history over " + ranges.size()
+                                + (ranges.size() == 1 ? " repo" : " repos"))
                         + (settings.singleTool() ? ", single-tool mode" : "") + ")");
                 Explorer.Exploration exploration = new Explorer(db.jdbi()).explore(
                         roots, SpecRenderer.render(parsed), model, modelName,
@@ -116,7 +182,8 @@ public final class ExploreCommand implements Callable<Integer> {
                         settings.contextSoftCap(), endpoint != null ? endpoint.maxTokens() : 4096,
                         InstantSource.system(), settings.singleTool(),
                         line -> outWriter.println("  " + line),
-                        interactive ? asker(outWriter) : null, settings.maxQuestions());
+                        interactive ? asker(outWriter) : null, settings.maxQuestions(),
+                        ranges, changeLog(changes));
                 return report(exploration, parsed, outWriter, errWriter);
             }
         } catch (java.io.IOException e) {

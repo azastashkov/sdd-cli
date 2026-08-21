@@ -128,12 +128,18 @@ public final class ContextWindow {
      * Oldest-first eviction, stopping as soon as enough has been freed — the EXPLORE policy.
      *
      * <p>Never touches a {@code record_finding} result, and keeps the two most recent
-     * {@code read_file} and {@code search_code} results so the agent does not lose the thing it is
-     * currently reasoning about.
+     * {@code read_file}, {@code search_code} and {@code git_history} results so the agent does not
+     * lose the thing it is currently reasoning about.
+     *
+     * <p>{@code git_history} is on that list for a reason the others are not: a history result
+     * CANNOT become a {@code record_finding}, because that gate re-reads the cited file from the
+     * working tree and a commit's line numbers do not survive the trip. So an evicted diff is
+     * simply gone — there is no durable form the model could have moved it into first.
      */
     private int evictOldestFirst(int charsToFree) {
         List<Integer> keep = new ArrayList<>(latestIndicesOfTool("read_file", 2));
         keep.addAll(latestIndicesOfTool("search_code", 2));
+        keep.addAll(latestIndicesOfTool("git_history", 2));
         int evicted = 0;
         int freed = 0;
         for (int i = 0; i < entries.size() && freed < charsToFree; i++) {

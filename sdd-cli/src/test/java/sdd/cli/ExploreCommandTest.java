@@ -85,6 +85,123 @@ class ExploreCommandTest {
         return spec;
     }
 
+    /**
+     * The same estate, but as a real checkout with two commits — what --since needs.
+     *
+     * @return the spec path; the regression landed in the SECOND commit
+     */
+    private Path setUpGitEstate() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner:
+                    base_url: http://127.0.0.1:1/v1
+                    model: deepseek-v4-flash
+                  coder:
+                    base_url: http://127.0.0.1:1/v1
+                    model: qwen
+                """);
+        sdd.core.testing.FixtureRepo repo = sdd.core.testing.FixtureRepo.in(ws, "payments-api")
+                .file("src/main/java/com/acme/Publisher.java", """
+                        package com.acme;
+                        public class Publisher {
+                        }
+                        """)
+                .commit("release 7", java.time.Instant.parse("2026-01-01T00:00:00Z"));
+        good = repo.headSha();
+        repo.file("src/main/java/com/acme/Publisher.java", """
+                        package com.acme;
+                        public class Publisher {
+                            static final String KEY = "tier.lvc.map";
+                        }
+                        """)
+                .commit("cache the tier map", java.time.Instant.parse("2026-01-08T00:00:00Z"));
+        try (sdd.core.db.Database db = sdd.core.db.Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute("INSERT INTO repo(name, path, kind) VALUES (?,?,?)",
+                    "payments-api", ws.resolve("payments-api").toString(), "SERVICE"));
+        }
+        Path spec = ws.resolve("SPEC-9.md");
+        Files.writeString(spec, SPEC);
+        return spec;
+    }
+
+    private String good;
+
+    @Test
+    void sinceSeedsTheSurveyWithWhatChangedAndOffersTheHistoryTool() throws Exception {
+        Path spec = setUpGitEstate();
+        ExploreCommand cmd = new ExploreCommand();
+        cmd.explorerForTest = new ScriptedChatModel(List.of(
+                call("1", "git_history", "{\"repo\":\"payments-api\",\"op\":\"diff\"}"),
+                call("2", "read_file",
+                        "{\"path\":\"payments-api/src/main/java/com/acme/Publisher.java\"}"),
+                call("3", "record_finding", """
+                        {"claim":"the tier cache landed in the second commit",\
+                        "citation":"payments-api/src/main/java/com/acme/Publisher.java:3"}"""),
+                call("4", "done", "{\"result\":\"success\",\"summary\":\"found it\"}")));
+
+        Run run = explore(cmd, "--workspace", ws.toString(), "--since", good, spec.toString());
+
+        assertThat(run.out()).isNotNull();
+        assertThat(run.exitCode()).describedAs(run.out()).isZero();
+        assertThat(run.out()).contains("history over 1 repo");
+        // The tool reached git, and the model then cited the CURRENT file rather than the diff.
+        assertThat(run.out()).contains("git_history payments-api diff");
+        assertThat(SpecParser.parse(Files.readString(spec)).evidence())
+                .containsExactly("the tier cache landed in the second commit"
+                        + " — payments-api/src/main/java/com/acme/Publisher.java:3");
+    }
+
+    /** The deterministic half: what changed is computed, not discovered. */
+    @Test
+    void theResolvedChangeListReachesTheModelWithTheTask() throws Exception {
+        Path spec = setUpGitEstate();
+        ExploreCommand cmd = new ExploreCommand();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"nothing to do\"}")));
+        cmd.explorerForTest = model;
+
+        explore(cmd, "--workspace", ws.toString(), "--since", good, spec.toString());
+
+        String prompt = model.requests().get(0).messages().stream()
+                .map(ChatMessage::content).filter(java.util.Objects::nonNull)
+                .reduce("", (a, b) -> a + "\n" + b);
+        assertThat(prompt).contains("What changed in the range under investigation")
+                .contains("src/main/java/com/acme/Publisher.java")
+                // resolved shas, never the ref the human typed -- HEAD~1 means something else
+                // tomorrow, and a survey that quotes it back is not reproducible
+                .contains(good.substring(0, 8));
+    }
+
+    @Test
+    void withoutSinceNothingAboutTheRunChanges() throws Exception {
+        Path spec = setUpGitEstate();
+        ExploreCommand cmd = new ExploreCommand();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"nothing to do\"}")));
+        cmd.explorerForTest = model;
+
+        Run run = explore(cmd, "--workspace", ws.toString(), spec.toString());
+
+        assertThat(run.out()).doesNotContain("history over");
+        assertThat(model.requests().get(0).tools()).extracting(sdd.core.llm.ToolSpec::name)
+                .doesNotContain("git_history");
+    }
+
+    /** An operator typo must not become a blocking claim about the estate. */
+    @Test
+    void anUnresolvableRefWarnsAndTheSurveyStillRuns() throws Exception {
+        Path spec = setUpGitEstate();
+        ExploreCommand cmd = new ExploreCommand();
+        cmd.explorerForTest = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"nothing to do\"}")));
+
+        Run run = explore(cmd, "--workspace", ws.toString(), "--since", "v99", spec.toString());
+
+        assertThat(run.exitCode()).isZero();
+        assertThat(run.out()).contains("warn: --since").contains("ref not found");
+        assertThat(run.out()).doesNotContain("history over");
+    }
+
     @Test
     void findingsAndTouchpointsLandInTheSpecAndItStillRoundTrips() throws Exception {
         Path spec = setUpEstate();

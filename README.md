@@ -404,6 +404,15 @@ human approves, keeps the deterministic half deterministic — `Closure.expand` 
 - It cannot cite a file it did not open. Every finding's citation is re-read from disk and the quoted
   line is copied from the file, never supplied by the model.
 
+**Investigating a regression: `sdd explore --since <ref>`.** Give it the revision the thing last
+worked at. It resolves what changed in that range and hands the explorer the list up front — that
+half needs no model — and it offers `git_history` (`log`, `show`, `diff`, `blame`, `refs`) for the
+part that does: which commit introduced it, what the other branch is called, who wrote this line.
+The tool is read-only because it is JGit rather than a `git` subprocess, so there is no command
+line to allowlist. Without the flag it is not advertised at all, so an ordinary survey keeps
+exactly the declaration count it has today. A diff still cannot ground a citation — the model reads
+the current file and puts the commit sha in the sentence.
+
 Ceilings live under `explore:` in `sdd.yml` (`turns`, `tokens`, `wall_seconds`, `context_soft_cap`).
 They exist so the survey terminates and is reproducible, not to save tokens. A run that ends early
 still writes everything it found, plus an Open Question saying the survey may be incomplete.

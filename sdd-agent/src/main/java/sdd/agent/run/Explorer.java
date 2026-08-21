@@ -68,9 +68,18 @@ public final class Explorer {
             you read. Record the thing a planner could not otherwise know — which repo owns a key, \
             what writes a channel, which service reads a table.
 
+            When the task is a regression — something worked at one revision and not at another — \
+            git_history is what the working tree cannot tell you. Start with op=refs if you do not \
+            know what the other revision is called, then op=log over the range to see what landed, \
+            op=diff to see which files it touched, and op=diff with path= for the actual patch of \
+            one file. op=blame says which commit last wrote a given line.
+
             Rules that matter:
             - Never state a fact you have not read. Every finding is re-read from disk before it is \
             accepted, so a citation you did not actually open will be rejected.
+            - A diff is not a citation. Line numbers from an old commit do not point at the same text \
+            today, so to record something you found in history, read_file the CURRENT file, cite the \
+            line you actually read, and put the commit sha in the sentence.
             - A term you cannot place is worth recording as a finding saying exactly that, with the \
             searches you tried. An honest gap is useful; a guess dressed as a fact is not.
             - Breadth before depth. A repo you never searched is a repo you have no opinion about.
@@ -128,13 +137,34 @@ public final class Explorer {
                                int maxTokensPerCall, InstantSource clock, boolean singleTool,
                                java.util.function.Consumer<String> trace,
                                sdd.agent.tool.HumanAsk asker, int maxQuestions) {
+        return explore(repoRoots, task, model, modelName, budget, contextSoftCap, maxTokensPerCall,
+                clock, singleTool, trace, asker, maxQuestions, Map.of(), null);
+    }
+
+    /**
+     * @param ranges    repo -> the revision range under investigation, from {@code --since}. Empty
+     *                  leaves {@code git_history} unadvertised, so a survey that was not asked to
+     *                  compare two points in history keeps today's declaration count exactly
+     * @param changeLog what those ranges resolved to, rendered, and appended to the task. Computed
+     *                  deterministically by the caller rather than discovered by the model — the
+     *                  same division {@code sdd plan --since} already draws, and it means the
+     *                  survey starts from the changed files instead of hunting for them. Null or
+     *                  blank appends nothing
+     */
+    public Exploration explore(Map<String, Path> repoRoots, String task, ChatModel model,
+                               String modelName, AgentBudget budget, int contextSoftCap,
+                               int maxTokensPerCall, InstantSource clock, boolean singleTool,
+                               java.util.function.Consumer<String> trace,
+                               sdd.agent.tool.HumanAsk asker, int maxQuestions,
+                               Map<String, String> ranges, String changeLog) {
         ExploreTools tools = new ExploreTools(jdbi, new EstateJail(repoRoots), singleTool, trace,
-                asker, maxQuestions);
+                asker, maxQuestions, ranges);
+        String prompt = changeLog == null || changeLog.isBlank() ? task : task + "\n\n" + changeLog;
         List<String> turns = new ArrayList<>();
         AgentLoop loop = new AgentLoop(model, tools, budget, contextSoftCap, clock,
                 ContextWindow.Retention.EXPLORE, turns::add);
         try {
-            return new Exploration(loop.run(SYSTEM_PROMPT, task, modelName, maxTokensPerCall),
+            return new Exploration(loop.run(SYSTEM_PROMPT, prompt, modelName, maxTokensPerCall),
                     tools.notebook());
         } catch (ModelException e) {
             // A transport failure is NOT a survey result, and the caller must be able to tell the
