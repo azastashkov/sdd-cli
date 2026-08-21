@@ -183,7 +183,8 @@ public final class ExploreCommand implements Callable<Integer> {
                         InstantSource.system(), settings.singleTool(),
                         line -> outWriter.println("  " + line),
                         interactive ? asker(outWriter) : null, settings.maxQuestions(),
-                        ranges, changeLog(changes));
+                        ranges, changeLog(changes),
+                        endpoint != null && endpoint.wire().oneCallPerTurn());
                 return report(exploration, parsed, outWriter, errWriter);
             }
         } catch (java.io.IOException e) {

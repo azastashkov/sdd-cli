@@ -543,7 +543,20 @@ refusal named its rule:
 | a result's content | the text the tool produced | a **string** that itself parses as JSON | plain text → *invalid function result … JSON parse error*; an object → `HTTP 400` |
 | assistant turn that is only calls | `content` omitted | `content` present, empty if none | |
 | an assistant turn that CALLS | `content` may carry prose too | `content` must be **empty** beside a call | *nothing.* a hard `HTTP 500` |
+| how many calls per turn | as many as the model likes | **one**, and the model must be told | *nothing.* a hard `HTTP 500`, from the REPLY not the request |
 | a reply's thinking | `<think>…</think>` inline, stripped on arrival | a `reasoning_content` field, sent back with its turn | |
+
+**The one-call row is not a request rule at all, which is why it took longest.** The protocol has
+a single `function_call` field and no way to express a second, so a model that attempts several
+produces a reply the gateway cannot return — and answers `500`. Measured on a request that failed
+20/20: sending `function_call: "none"`, or pinning a function, made the SAME BYTES succeed 5/5. The
+request was always valid. Neither of those is shippable — one forbids tool calling, the other pins
+the tool the agent is meant to choose — so sdd appends a line to the system prompt instead
+(`Explorer.ONE_CALL_PER_TURN`), which fixed the same request 5/5 while leaving the choice to the
+model. Only on this wire: several calls per turn are legitimate and faster on `openai`.
+
+It is also model-dependent. `GigaChat-2-Max` never hits it; `DeepSeek-V4-Pro`, `Qwen3.5-397b` and
+`glm-5.1` all do without the instruction.
 
 **The calling-turn row cost the most to find.** A model routinely answers with prose AND a call
 in the same turn — *"Let me start by understanding the landscape"* alongside

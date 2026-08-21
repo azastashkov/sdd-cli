@@ -86,6 +86,16 @@ public final class Explorer {
             - When you have covered every term in the task, call done(success) with a short summary. \
             If the task cannot be placed at all, call done(blocked) and say what is missing.""";
 
+    /**
+     * Appended to the system prompt on a wire that carries one tool call per turn.
+     *
+     * <p>Not general advice: on a wire that can express several, making them in one turn is faster
+     * and correct. See {@code WireFormat.oneCallPerTurn} for the measurement that forced this.
+     */
+    public static final String ONE_CALL_PER_TURN =
+            "\n\nCall exactly ONE tool per turn. Never emit more than one tool call in a single "
+                    + "reply; make the next call after you see this one's result.";
+
     private final Jdbi jdbi;
 
     public Explorer(Jdbi jdbi) {
@@ -157,6 +167,21 @@ public final class Explorer {
                                java.util.function.Consumer<String> trace,
                                sdd.agent.tool.HumanAsk asker, int maxQuestions,
                                Map<String, String> ranges, String changeLog) {
+        return explore(repoRoots, task, model, modelName, budget, contextSoftCap, maxTokensPerCall,
+                clock, singleTool, trace, asker, maxQuestions, ranges, changeLog, false);
+    }
+
+    /**
+     * @param oneCallPerTurn append {@link #ONE_CALL_PER_TURN} to the system prompt, for a wire
+     *                       that cannot carry a second tool call in one turn
+     */
+    public Exploration explore(Map<String, Path> repoRoots, String task, ChatModel model,
+                               String modelName, AgentBudget budget, int contextSoftCap,
+                               int maxTokensPerCall, InstantSource clock, boolean singleTool,
+                               java.util.function.Consumer<String> trace,
+                               sdd.agent.tool.HumanAsk asker, int maxQuestions,
+                               Map<String, String> ranges, String changeLog,
+                               boolean oneCallPerTurn) {
         ExploreTools tools = new ExploreTools(jdbi, new EstateJail(repoRoots), singleTool, trace,
                 asker, maxQuestions, ranges);
         String prompt = changeLog == null || changeLog.isBlank() ? task : task + "\n\n" + changeLog;
@@ -164,7 +189,8 @@ public final class Explorer {
         AgentLoop loop = new AgentLoop(model, tools, budget, contextSoftCap, clock,
                 ContextWindow.Retention.EXPLORE, turns::add);
         try {
-            return new Exploration(loop.run(SYSTEM_PROMPT, prompt, modelName, maxTokensPerCall),
+            String system = oneCallPerTurn ? SYSTEM_PROMPT + ONE_CALL_PER_TURN : SYSTEM_PROMPT;
+            return new Exploration(loop.run(system, prompt, modelName, maxTokensPerCall),
                     tools.notebook());
         } catch (ModelException e) {
             // A transport failure is NOT a survey result, and the caller must be able to tell the

@@ -85,6 +85,29 @@ public enum WireFormat {
         return this == GIGACHAT;
     }
 
+    /**
+     * Whether this wire can carry only ONE tool call per assistant turn, so the model must be
+     * told to make one at a time.
+     *
+     * <p>Measured, and it is the difference between a survey running and dying on its second turn.
+     * On a request that failed HTTP 500 twenty times out of twenty, sending
+     * {@code function_call: "none"} or pinning a function made the SAME BYTES succeed 5/5 — so the
+     * request was always valid and the 500 was what the model PRODUCED when left free to choose.
+     * This protocol has one {@code function_call} field and no way to express a second, and a
+     * model given a real task attempts several.
+     *
+     * <p>Neither of those diagnostics is shippable: one forbids tool calling, the other pins the
+     * tool the agent is supposed to choose. Saying it in the prompt is, and it fixed the same
+     * request 5/5 while leaving the choice to the model.
+     *
+     * <p>Public because the guidance has to reach a system prompt, which is assembled outside this
+     * module. It is a property of the WIRE, not of the agent: on {@code openai} several calls per
+     * turn are legitimate and useful, and telling a model otherwise would cost real parallelism.
+     */
+    public boolean oneCallPerTurn() {
+        return this == GIGACHAT;
+    }
+
     /** Whether {@code reasoning_content} is read off replies and sent back with the turn it came from. */
     boolean carriesReasoning() {
         return this == GIGACHAT;

@@ -241,6 +241,45 @@ class ExploreCommandTest {
                 .contains("git_history");
     }
 
+    /**
+     * On a wire that carries one tool call per turn, the model must be told so.
+     *
+     * <p>Measured: a request that failed HTTP 500 twenty times out of twenty succeeded 5/5 with
+     * the same bytes once the model was stopped from attempting several calls. The request was
+     * always valid; the 500 was what it PRODUCED. Forbidding calls or pinning one also fixed it
+     * and neither is shippable — this is, because the model still chooses which tool.
+     */
+    @Test
+    void theGigachatWireTellsTheModelToCallOneToolPerTurn() throws Exception {
+        Path spec = setUpGitEstate();
+        Files.writeString(ws.resolve("sdd.yml"), Files.readString(ws.resolve("sdd.yml"))
+                .replace("model: deepseek-v4-flash", "model: deepseek-v4-flash\n    wire: gigachat"));
+        ExploreCommand cmd = new ExploreCommand();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"nothing\"}")));
+        cmd.explorerForTest = model;
+
+        explore(cmd, "--workspace", ws.toString(), spec.toString());
+
+        String system = model.requests().get(0).messages().get(0).content();
+        assertThat(system).contains("Call exactly ONE tool per turn");
+    }
+
+    /** And the default wire is left alone: several calls per turn are legitimate there. */
+    @Test
+    void theOpenAiWireSaysNothingAboutHowManyToolsPerTurn() throws Exception {
+        Path spec = setUpGitEstate();
+        ExploreCommand cmd = new ExploreCommand();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"nothing\"}")));
+        cmd.explorerForTest = model;
+
+        explore(cmd, "--workspace", ws.toString(), spec.toString());
+
+        assertThat(model.requests().get(0).messages().get(0).content())
+                .doesNotContain("ONE tool per turn");
+    }
+
     /** An operator typo must not become a blocking claim about the estate. */
     @Test
     void anUnresolvableRefWarnsAndTheSurveyStillRuns() throws Exception {
