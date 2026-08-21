@@ -13,6 +13,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 
 public final class EndpointProbe {
     /**
@@ -45,15 +46,23 @@ public final class EndpointProbe {
      * or a failure with no response.
      */
     public record ProbeResult(boolean ok, String detail, String negotiatedProtocol,
-                             boolean connected) {
+                             boolean connected, List<String> models) {
+        public ProbeResult(boolean ok, String detail, String negotiatedProtocol,
+                           boolean connected) {
+            this(ok, detail, negotiatedProtocol, connected, List.of());
+        }
+
         public ProbeResult(boolean ok, String detail, String negotiatedProtocol) {
-            this(ok, detail, negotiatedProtocol, ok);
+            this(ok, detail, negotiatedProtocol, ok, List.of());
         }
 
         public ProbeResult(boolean ok, String detail) {
             this(ok, detail, null);
         }
     }
+
+    /** How many ids are worth naming before the list is just noise. */
+    private static final int MAX_MODEL_IDS = 40;
 
     private static final Duration PROBE_TIMEOUT = Duration.ofSeconds(10);
 
@@ -103,13 +112,18 @@ public final class EndpointProbe {
             if (ep.apiKey() != null) {
                 builder.header("Authorization", "Bearer " + ep.apiKey());
             }
-            HttpResponse<Void> resp = client.send(builder.build(), HttpResponse.BodyHandlers.discarding());
+            // The body was discarded here until a live run spent a round trip on
+            // {"status":404,"message":"No such model"} while THIS request had just returned 200
+            // with the list of models the gateway actually serves. Keeping it turns "no such
+            // model" into "it offers these; you configured that".
+            HttpResponse<String> resp = client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
             int status = resp.statusCode();
             String protocol = resp.sslSession().map(SSLSession::getProtocol).orElse(null);
             boolean ok = status >= 200 && status < 300;
             // The response arrived, so the host, the TLS handshake and the routing all worked.
             // That is worth reporting separately from the status — see ProbeResult's javadoc.
-            return new ProbeResult(ok, detail(status, ok), protocol, true);
+            return new ProbeResult(ok, detail(status, ok), protocol, true,
+                    ok ? modelIds(resp.body()) : List.of());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new ProbeResult(false, "interrupted");
@@ -125,6 +139,37 @@ public final class EndpointProbe {
                     truststore, e, configPath));
         } catch (Exception e) {
             return new ProbeResult(false, String.valueOf(e.getMessage()));
+        }
+    }
+
+    /**
+     * Model ids out of an OpenAI-shaped {@code /models} listing, or empty for anything else.
+     *
+     * <p>Best-effort by design: this is a diagnostic aid, and a gateway that answers /models in its
+     * own shape must not turn into an error on a path that was working. Empty simply means the
+     * hint cannot be offered.
+     */
+    private static List<String> modelIds(String body) {
+        if (body == null || body.isBlank()) {
+            return List.of();
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode root =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(body);
+            com.fasterxml.jackson.databind.JsonNode data = root.path("data");
+            if (!data.isArray()) {
+                return List.of();
+            }
+            List<String> ids = new java.util.ArrayList<>();
+            for (com.fasterxml.jackson.databind.JsonNode entry : data) {
+                String id = entry.path("id").asText(null);
+                if (id != null && !id.isBlank() && ids.size() < MAX_MODEL_IDS) {
+                    ids.add(id);
+                }
+            }
+            return List.copyOf(ids);
+        } catch (Exception e) {
+            return List.of();
         }
     }
 

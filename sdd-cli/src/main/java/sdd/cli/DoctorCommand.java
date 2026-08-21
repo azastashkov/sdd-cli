@@ -296,7 +296,7 @@ public final class DoctorCommand implements Callable<Integer> {
         // counts has already said what they want probed, and silently ignoring the flag they typed
         // is the one response that teaches them nothing.
         if ((tools || !toolsCount.isEmpty()) && result.connected()) {
-            probeToolCalling(name, ep);
+            probeToolCalling(name, ep, result);
         }
     }
 
@@ -308,9 +308,10 @@ public final class DoctorCommand implements Callable<Integer> {
      * retries reported a transient rate limit as a hard endpoint failure — harsher than the thing
      * it was meant to predict, which is the one way a diagnostic can be worse than no diagnostic.
      */
-    private void probeToolCalling(String name, ModelEndpoint ep) {
+    private void probeToolCalling(String name, ModelEndpoint ep,
+                                  EndpointProbe.ProbeResult endpointProbe) {
         if (!toolsCount.isEmpty()) {
-            sweepToolCalling(name, ep);
+            sweepToolCalling(name, ep, endpointProbe);
             return;
         }
         var r = sdd.core.llm.ToolCallProbe.probe(ep, new sdd.core.llm.HttpChatModel(ep));
@@ -347,7 +348,8 @@ public final class DoctorCommand implements Callable<Integer> {
      * suspected, so the two are separated here and a non-monotonic result is called out as not
      * being a ceiling.
      */
-    private void sweepToolCalling(String name, ModelEndpoint ep) {
+    private void sweepToolCalling(String name, ModelEndpoint ep,
+                                  EndpointProbe.ProbeResult endpointProbe) {
         var out = spec.commandLine().getOut();
         int repeats = Math.max(1, toolsRepeat);
         java.util.List<Integer> counts = toolsCount.stream()
@@ -422,6 +424,16 @@ public final class DoctorCommand implements Callable<Integer> {
             }
         }
         String check = "model:" + name + ":tools";
+        // Nothing succeeded anywhere, so the sweep exercised no declaration count at all and any
+        // sentence about ceilings would be manufactured from an empty measurement.
+        if (rates.stream().allMatch(r -> r == 0)) {
+            report(false, check, "THIS SWEEP MEASURED NOTHING — every attempt failed at every "
+                    + "count (" + note.toString().strip() + "), so nothing was learned about "
+                    + "declaration count. Fix the failure above and re-run"
+                    + modelHint(ep, endpointProbe));
+            diagnostics.note(check + ": sweep inconclusive " + note.toString().strip());
+            return;
+        }
         report(allOk, check, allOk
                 ? "every count carried: " + note.toString().strip()
                 : verdict(note.toString().strip(), counts, rates, repeats, prose, argsOnly,
@@ -431,6 +443,25 @@ public final class DoctorCommand implements Callable<Integer> {
                 + " prose_failures=" + prose + " arguments_only=" + argsOnly
                 + " transport_failures=" + transport
                 + " nudged=" + totalNudged + " recovered=" + totalRecovered);
+    }
+
+    /**
+     * Names the models the gateway actually serves, when the configured one is not among them.
+     *
+     * <p>{@code {"status":404,"message":"No such model"}} is a complete diagnosis and a useless
+     * one: it does not say what WOULD work. The {@code /models} listing that ran seconds earlier
+     * does, and until now its body was discarded. On a closed network that difference is a round
+     * trip to another machine.
+     */
+    private String modelHint(ModelEndpoint ep, EndpointProbe.ProbeResult endpointProbe) {
+        if (endpointProbe == null || endpointProbe.models().isEmpty()) {
+            return "";
+        }
+        if (endpointProbe.models().contains(ep.model())) {
+            return "";   // the name is served; whatever failed was not the model name
+        }
+        return ". Configured model '" + ep.model() + "' is NOT in this gateway's /models listing, "
+                + "which offers: " + String.join(", ", endpointProbe.models());
     }
 
     /**
@@ -493,6 +524,9 @@ public final class DoctorCommand implements Callable<Integer> {
                     + "the request — check models.<name>.tool_calls (a gateway that lets the model "
                     + "write the call as content needs `text`), and read the 'answered instead' "
                     + "lines above to see whether it wrote a call sdd could not parse");
+        } else if (transport > 0 && prose == 0 && argsOnly == 0) {
+            v.append(". Every failure was a TRANSPORT error — the request never produced a reply, "
+                    + "so nothing here is about tool calling at all");
         } else if (prose + argsOnly + transport > 0) {
             v.append(". Mixed failures: ").append(prose).append(" prose, ").append(argsOnly)
                     .append(" arguments-only, ").append(transport)

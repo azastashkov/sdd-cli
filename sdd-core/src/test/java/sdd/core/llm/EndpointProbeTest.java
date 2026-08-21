@@ -240,4 +240,43 @@ class EndpointProbeTest {
 
         assertThat(r.detail()).contains("models.corp.tls.truststore").doesNotContain(" tls.truststore");
     }
+
+    /**
+     * The listing body used to be discarded, which cost a live round trip: a gateway answered
+     * {@code {"status":404,"message":"No such model"}} to every completion while THIS request had
+     * just returned 200 carrying the names that would have worked.
+     */
+    @Test
+    void aSuccessfulListingKeepsTheModelIdsItNamed() {
+        wm.stubFor(get("/v1/models").willReturn(okJson("""
+                {"object":"list","data":[
+                  {"id":"GigaChat-2-Max","object":"model"},
+                  {"id":"GigaChat-2-Pro","object":"model"}]}""")));
+
+        EndpointProbe.ProbeResult r = EndpointProbe.probe(ep("sk-x"));
+
+        assertThat(r.ok()).isTrue();
+        assertThat(r.models()).containsExactly("GigaChat-2-Max", "GigaChat-2-Pro");
+    }
+
+    /** Best-effort: a gateway with its own listing shape must not become an error. */
+    @Test
+    void aListingThisDoesNotUnderstandIsSimplyNoHint() {
+        wm.stubFor(get("/v1/models").willReturn(okJson("{\"models\":[\"a\",\"b\"]}")));
+
+        EndpointProbe.ProbeResult r = EndpointProbe.probe(ep("sk-x"));
+
+        assertThat(r.ok()).isTrue();
+        assertThat(r.models()).isEmpty();
+    }
+
+    @Test
+    void aNonListingResponseCarriesNoModels() {
+        wm.stubFor(get("/v1/models").willReturn(aResponse().withStatus(404)));
+
+        EndpointProbe.ProbeResult r = EndpointProbe.probe(ep("sk-x"));
+
+        assertThat(r.connected()).isTrue();
+        assertThat(r.models()).isEmpty();
+    }
 }
