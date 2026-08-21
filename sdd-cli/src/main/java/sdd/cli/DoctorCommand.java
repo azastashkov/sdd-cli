@@ -320,6 +320,10 @@ public final class DoctorCommand implements Callable<Integer> {
         report(r.ok(), check, r.detail());
         if (!r.ok()) {
             var out = spec.commandLine().getOut();
+            if (r.reasoningExcerpt() != null && !r.reasoningExcerpt().isBlank()
+                    && !"(empty)".equals(r.reasoningExcerpt())) {
+                out.println("    reasoned        : " + r.reasoningExcerpt());
+            }
             out.println("    finish_reason   : " + r.finishReason());
             out.println("    tokens used     : " + r.completionTokens() + " of " + r.maxTokensSent());
             out.println("    answered instead: " + r.contentExcerpt());
@@ -374,6 +378,7 @@ public final class DoctorCommand implements Callable<Integer> {
             int recovered = 0;
             String lastFailure = null;
             String lastSaid = null;
+            String lastReasoned = null;
             for (int i = 0; i < repeats; i++) {
                 var model = new sdd.core.llm.HttpChatModel(ep, 1);
                 sdd.core.llm.ToolCallProbe.Result r;
@@ -394,6 +399,10 @@ public final class DoctorCommand implements Callable<Integer> {
                     continue;
                 }
                 lastFailure = r.detail();
+                if (r.reasoningExcerpt() != null && !r.reasoningExcerpt().isBlank()
+                        && !"(empty)".equals(r.reasoningExcerpt())) {
+                    lastReasoned = r.reasoningExcerpt();
+                }
                 switch (r.fault()) {
                     case ARGUMENTS_ONLY -> {
                         argsOnly++;
@@ -423,6 +432,12 @@ public final class DoctorCommand implements Callable<Integer> {
             // Dropping it was why the first live sweep could not be read without a second run.
             if (lastSaid != null && !lastSaid.isBlank()) {
                 out.println("        answered instead: " + lastSaid);
+            }
+            // The model's own account of what it thought it was doing. On one gateway this was the
+            // only field that distinguished "ignores declarations" from "misread which field is
+            // the name", after several runs of inferring from the reply alone.
+            if (lastReasoned != null) {
+                out.println("        reasoned: " + lastReasoned);
             }
             note.append(count).append('=').append(ok).append('/').append(repeats).append(' ');
             if (lastFailure != null) {

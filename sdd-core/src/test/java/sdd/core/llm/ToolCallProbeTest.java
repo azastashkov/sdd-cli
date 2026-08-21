@@ -385,4 +385,65 @@ class ToolCallProbeTest {
         assertThat(ToolCallProbe.probe(endpoint(4096), model, 10).fault())
                 .isNotEqualTo(ToolCallProbe.Fault.UNDECLARED_NAME);
     }
+
+    // ---------------------------------------------------------------- reasoning
+
+    /**
+     * The field that ended a five-round-trip investigation in one line.
+     *
+     * <p>Live, the reply was a fenced call to {@code status} and the reasoning read "I have a tool
+     * called \"status\" that takes a required \"status\" parameter" — the model had taken the
+     * PARAMETER name for the tool name. Nothing else in the exchange said so.
+     */
+    @Test
+    void aFailureCarriesTheModelsOwnAccountOfWhatItDid() {
+        ChatModel model = req -> new ChatResponse(new ChatMessage("assistant",
+                "```json\n{\"tool\": \"zulu\", \"zulu\": \"ok\"}\n```", List.of(), null,
+                "I have a tool called \"zulu\" that takes a required \"zulu\" parameter."),
+                "stop", new Usage(30, 12));
+
+        ToolCallProbe.Result r = ToolCallProbe.probe(endpoint(4096), model, 1);
+
+        assertThat(r.ok()).isFalse();
+        assertThat(r.reasoningExcerpt()).contains("I have a tool called");
+    }
+
+    @Test
+    void anEndpointThatReturnsNoReasoningSaysSoRatherThanNull() {
+        ChatModel model = req -> new ChatResponse(
+                ChatMessage.assistant("The status is ok."), "stop", new Usage(30, 6));
+
+        assertThat(ToolCallProbe.probe(endpoint(4096), model, 1).reasoningExcerpt())
+                .isEqualTo("(empty)");
+    }
+
+    /**
+     * The probe's own argument name must not collide with anything a tool could plausibly be
+     * called, or a model that guesses the most repeated identifier looks like one that ignores
+     * declarations entirely.
+     */
+    @Test
+    void theDeclaredArgumentNameCollidesWithNothingInTheRequest() {
+        List<List<ChatMessage>> sent = new java.util.ArrayList<>();
+        List<List<ToolSpec>> tools = new java.util.ArrayList<>();
+        ChatModel model = req -> {
+            sent.add(req.messages());
+            tools.add(req.tools());
+            return new ChatResponse(new ChatMessage("assistant", null,
+                    List.of(new ToolCall("1", "sdd_probe_ack", "{}")), null),
+                    "tool_calls", new Usage(30, 12));
+        };
+
+        ToolCallProbe.probe(endpoint(4096), model, 1);
+
+        ToolSpec probe = tools.get(0).get(0);
+        assertThat(probe.name()).isEqualTo("sdd_probe_ack");
+        // the argument is not a word the tool could be mistaken for...
+        assertThat(probe.parametersSchemaJson()).contains("zulu").doesNotContain("status");
+        // ...and neither the description nor the instruction reintroduces one.
+        assertThat(probe.description().toLowerCase(java.util.Locale.ROOT))
+                .doesNotContain("status");
+        assertThat(sent.get(0).get(1).content().toLowerCase(java.util.Locale.ROOT))
+                .doesNotContain("status");
+    }
 }

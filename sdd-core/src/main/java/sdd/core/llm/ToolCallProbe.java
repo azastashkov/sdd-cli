@@ -37,11 +37,16 @@ public final class ToolCallProbe {
      * @param arguments the arguments it sent, so a reader can see a malformed-but-present call
      *     (which is a different fault from no call at all)
      * @param contentExcerpt what it said instead, when it answered in prose
+     * @param reasoningExcerpt the model's own account of what it was doing, when the endpoint
+     *     returns one. The single most informative field there is on a failure: a live gateway
+     *     spent five round trips looking like "the model ignores declarations" until this line
+     *     read "I have a tool called \"status\"" — naming the PARAMETER, not the tool. Nothing
+     *     else in the exchange said that
      */
     public record Result(boolean ok, String detail, boolean calledTool, String toolName,
                          String arguments, String finishReason, int completionTokens,
                          int maxTokensSent, String contentExcerpt, int declarationsSent,
-                         Fault fault) {
+                         Fault fault, String reasoningExcerpt) {
     }
 
     /**
@@ -93,9 +98,23 @@ public final class ToolCallProbe {
             {"type":"object","properties":{\
             "path":{"type":"string","description":"Repository-relative path to operate on"},\
             "query":{"type":"string","description":"What to look for"}},"required":["path"]}""";
+    /**
+     * The argument is {@code zulu}, and that is not whimsy.
+     *
+     * <p>It was {@code status}, alongside a description reading "Report a one-word status" and an
+     * instruction saying "set its status argument". A live model then reasoned, in its own words,
+     * "I have a tool called \"status\" that takes a required \"status\" parameter" — it had taken
+     * the PARAMETER name for the tool name. With the word appearing three times against a tool
+     * name appearing once, the probe could not tell "this model ignores declared names" from
+     * "this model picked the most repeated identifier in the request".
+     *
+     * <p>An argument name that collides with nothing separates them: if a reply now calls
+     * {@code zulu}, the model is reading the schema and inventing the name from it; if it calls
+     * {@code sdd_probe_ack}, it reads names correctly.
+     */
     private static final String SCHEMA = """
-            {"type":"object","properties":{"status":{"type":"string",\
-            "description":"the single word ok"}},"required":["status"]}""";
+            {"type":"object","properties":{"zulu":{"type":"string",\
+            "description":"the single word ok"}},"required":["zulu"]}""";
     private static final String SYSTEM =
             "You drive tools. Never answer in prose; always call a tool.";
     /**
@@ -120,7 +139,7 @@ public final class ToolCallProbe {
      * and pairs with a {@link #TOOL} name no paraphrase of it could produce.
      */
     private static final String USER =
-            "Use the tool you have been given. Set its status argument to: ok";
+            "Use the tool you have been given. Set its zulu argument to: ok";
 
     /**
      * What {@code AgentLoop} pushes into the window after a turn that answered in prose.
@@ -213,7 +232,8 @@ public final class ToolCallProbe {
                                 + excerpt(first.argumentsJson()) + ")" + wrong,
                         true, first.name(), first.argumentsJson(), response.finishReason(),
                         response.usage().completionTokens(), maxTokens, excerpt(content),
-                        specs.size(), Fault.NONE), response.message());
+                        specs.size(), Fault.NONE,
+                        excerpt(response.message().reasoningContent())), response.message());
             }
             boolean truncated = "length".equals(response.finishReason());
             String invented = undeclaredName(content, specs);
@@ -249,17 +269,18 @@ public final class ToolCallProbe {
             }
             return new Attempt(new Result(false, detail, false, null, null,
                     response.finishReason(), response.usage().completionTokens(), maxTokens,
-                    excerpt(content), specs.size(), fault), response.message());
+                    excerpt(content), specs.size(), fault,
+                    excerpt(response.message().reasoningContent())), response.message());
         } catch (ModelException e) {
             return new Attempt(new Result(false, e.getMessage(), false, null, null, null, 0,
-                    maxTokens, "", specs.size(), Fault.TRANSPORT), null);
+                    maxTokens, "", specs.size(), Fault.TRANSPORT, ""), null);
         }
     }
 
     /** The real tool first, then as many decoys as the count asks for. */
     private static List<ToolSpec> specs(int declarations) {
         List<ToolSpec> specs = new java.util.ArrayList<>();
-        specs.add(new ToolSpec(TOOL, "Report a one-word status.", SCHEMA));
+        specs.add(new ToolSpec(TOOL, "Acknowledge readiness.", SCHEMA));
         for (int i = 0; specs.size() < declarations; i++) {
             // Past the pool, keep generating rather than repeating: two declarations with the same
             // name is a malformed request, and would fail for a reason that is not the count.

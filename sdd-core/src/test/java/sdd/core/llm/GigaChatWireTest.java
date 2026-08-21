@@ -271,11 +271,13 @@ class GigaChatWireTest {
     }
 
     // The default wire must be untouched by all of the above: every existing workspace is on it.
+    // That guarantee is about what is SENT, and it is unchanged. Reading is a separate axis — see
+    // the test below, which used to be the last assertion of this one.
     @Test
-    void theOpenAiWireSendsExactlyWhatItAlwaysSentAndNeverReadsReasoning() throws Exception {
+    void theOpenAiWireSendsExactlyWhatItAlwaysSent() throws Exception {
         wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
 
-        ChatResponse resp = model(WireFormat.OPENAI).complete(conversation(toolCallTurn(null, "thinking")));
+        model(WireFormat.OPENAI).complete(conversation(toolCallTurn(null, "thinking")));
 
         JsonNode messages = sentBody().path("messages");
         assertThat(messages.get(1).path("content").isTextual()).isTrue();
@@ -283,7 +285,34 @@ class GigaChatWireTest {
         assertThat(messages.get(3).path("content").asText())
                 .isEqualTo("Listed 2 item(s) in /src:\n[DIR] main\n[DIR] test");
         assertThat(messages.get(2).has("content")).isFalse();
+        // The load-bearing half: reasoning is never SENT on this wire, whatever was read.
         assertThat(messages.get(2).has("reasoning_content")).isFalse();
-        assertThat(resp.message().reasoningContent()).isNull();
+    }
+
+    /**
+     * Reading {@code reasoning_content} is not wire-specific, and used to be.
+     *
+     * <p>This assertion was inverted deliberately. It previously pinned "the OPENAI wire never
+     * reads reasoning", on the belief that no gateway returns the field there. A captured exchange
+     * disproved it: a corp gateway on the plain OpenAI wire answered with a reasoning_content that
+     * explained, in one sentence, why it had refused a tool call — and sdd threw it away, which
+     * cost several round trips of inference on a closed network to re-derive.
+     *
+     * <p>Reading a field that is usually absent costs nothing and yields null when it is. The
+     * protocol-specific decision is whether to send it BACK, and that is still gated on the wire,
+     * which is what the test above pins.
+     */
+    @Test
+    void reasoningIsReadOnEveryWireEvenThoughOnlyOneSendsItBack() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson("""
+                {"choices":[{"message":{"role":"assistant","content":"prose",
+                  "reasoning_content":"I have a tool called \\"zulu\\"."},
+                  "finish_reason":"stop"}],
+                 "usage":{"prompt_tokens":1,"completion_tokens":1}}
+                """)));
+
+        ChatResponse resp = model(WireFormat.OPENAI).complete(conversation(toolCallTurn(null, null)));
+
+        assertThat(resp.message().reasoningContent()).isEqualTo("I have a tool called \"zulu\".");
     }
 }

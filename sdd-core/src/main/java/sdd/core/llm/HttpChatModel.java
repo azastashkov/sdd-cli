@@ -314,9 +314,17 @@ public final class HttpChatModel implements ChatModel {
             content = ReasoningContent.strip(content);
             // Carried, never authored: a reply that separates its thinking from its answer gets
             // that thinking handed back with the turn it belongs to on the next request, which is
-            // what the gateway's own clients do. Absent on every other wire, so this is null there.
+            // what the gateway's own clients do.
+            //
+            // READ on every wire, SENT only on the one that carries it (see the request builder).
+            // This used to be read only under `wire: gigachat`, on the belief that no other wire
+            // returns the field. A captured exchange disproved it: the same gateway, on the plain
+            // OpenAI wire, answered with a reasoning_content that said in one sentence why a tool
+            // call had been refused — and sdd discarded it, which cost several round trips of
+            // inference on a closed network. Reading a field that is usually absent is free; the
+            // protocol-specific decision is whether to send it BACK, and that stays gated.
             JsonNode reasoningNode = message.path("reasoning_content");
-            String reasoning = endpoint.wire().carriesReasoning() ? readContent(reasoningNode) : null;
+            String reasoning = readContent(reasoningNode);
             // Last resort, and only where an operator has said this endpoint needs it: the call
             // arrived as ordinary content because the gateway never structured it. content is
             // cleared when it IS the call — otherwise the model would be shown its own call twice,
