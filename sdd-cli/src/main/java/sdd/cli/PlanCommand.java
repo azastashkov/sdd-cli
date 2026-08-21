@@ -140,9 +140,29 @@ public final class PlanCommand implements Callable<Integer> {
             if (!"RESOLVED".equals(change.resolution())) {
                 errWriter.println("warn: --since " + change.repo() + " " + change.range()
                         + ": " + change.resolution().toLowerCase().replace('_', ' '));
+            } else if (emptyRange(change)) {
+                // A range that resolves to one commit is the commonest --since mistake and the
+                // quietest: a BARE ref means "<ref>..HEAD", so passing the ref you are checked out
+                // at yields a window containing nothing. It used to be reported as a successful
+                // "0 files", which reads like an answer.
+                errWriter.println("warn: --since " + change.repo() + " " + change.range()
+                        + ": resolves to a single commit (" + change.fromSha() + "), so the window "
+                        + "is EMPTY — a bare ref means <ref>..HEAD, and you are at that ref. Give "
+                        + "both ends, e.g. --since " + change.repo() + "=<last-good>..<broken>");
             }
         }
-        return changes.stream().filter(c -> "RESOLVED".equals(c.resolution())).toList();
+        // Empty windows are dropped, not carried: they contribute no seeds to a plan, and in
+        // `sdd explore` they would become git_history's default revision — a..a, which answers
+        // nothing. The warning above says so; silently passing one on would not.
+        return changes.stream()
+                .filter(c -> "RESOLVED".equals(c.resolution()))
+                .filter(c -> !emptyRange(c))
+                .toList();
+    }
+
+    /** A resolved range whose two ends are the same commit: nothing can have changed in it. */
+    private static boolean emptyRange(sdd.plan.impact.ChangeSet.RepoChange change) {
+        return change.fromSha() != null && change.fromSha().equals(change.toSha());
     }
 
     /** Test seam — mirrors {@code IndexCommand.progressForTest}/{@code ReviewCommand.progressForTest}:

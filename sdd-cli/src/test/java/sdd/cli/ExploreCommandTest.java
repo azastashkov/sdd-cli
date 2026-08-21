@@ -187,6 +187,60 @@ class ExploreCommandTest {
                 .doesNotContain("git_history");
     }
 
+    /**
+     * The commonest --since mistake, and the quietest: a BARE ref means {@code <ref>..HEAD}, so
+     * passing the ref you are checked out at yields a window containing nothing. It used to be
+     * reported as a successful "0 files", which reads like an answer — a live run spent a corp
+     * round trip investigating an empty range before anyone noticed.
+     */
+    @Test
+    void aRangeThatResolvesToOneCommitIsWarnedAboutAndDropped() throws Exception {
+        Path spec = setUpGitEstate();
+        ExploreCommand cmd = new ExploreCommand();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"nothing\"}")));
+        cmd.explorerForTest = model;
+
+        Run run = explore(cmd, "--workspace", ws.toString(), "--since", "HEAD", spec.toString());
+
+        assertThat(run.out()).contains("window is EMPTY").contains("<last-good>..<broken>");
+        // Dropped, not carried: an a..a window would become git_history's default revision.
+        assertThat(run.out()).doesNotContain("history over");
+        assertThat(model.requests().get(0).tools()).extracting(sdd.core.llm.ToolSpec::name)
+                .doesNotContain("git_history");
+    }
+
+    /**
+     * One empty window must not take a real one down with it — the mixed case is the realistic one
+     * on an estate whose repos release on different cadences.
+     */
+    @Test
+    void aRealRangeSurvivesAlongsideAnEmptyOne() throws Exception {
+        Path spec = setUpGitEstate();
+        // A second repo, registered alongside the first, whose window will be empty.
+        sdd.core.testing.FixtureRepo other = sdd.core.testing.FixtureRepo.in(ws, "billing-svc")
+                .file("src/main/java/com/acme/Biller.java", "package com.acme;\nclass Biller {}\n")
+                .commit("only ever this", java.time.Instant.parse("2026-01-01T00:00:00Z"));
+        try (sdd.core.db.Database db = sdd.core.db.Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute("INSERT INTO repo(name, path, kind) VALUES (?,?,?)",
+                    "billing-svc", other.path().toString(), "SERVICE"));
+        }
+        ExploreCommand cmd = new ExploreCommand();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                call("1", "done", "{\"result\":\"success\",\"summary\":\"nothing\"}")));
+        cmd.explorerForTest = model;
+
+        Run run = explore(cmd, "--workspace", ws.toString(),
+                "--since", "payments-api=" + good + "..HEAD",
+                "--since", "billing-svc=HEAD", spec.toString());
+
+        assertThat(run.out()).contains("billing-svc").contains("window is EMPTY");
+        // The real window survives, and with it the tool.
+        assertThat(run.out()).contains("history over 1 repo");
+        assertThat(model.requests().get(0).tools()).extracting(sdd.core.llm.ToolSpec::name)
+                .contains("git_history");
+    }
+
     /** An operator typo must not become a blocking claim about the estate. */
     @Test
     void anUnresolvableRefWarnsAndTheSurveyStillRuns() throws Exception {

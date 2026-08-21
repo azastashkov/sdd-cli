@@ -994,6 +994,36 @@ result names the repos it searched.
 | `--interactive` | let the explorer ask you a question when the answer changes what it would do |
 | `--since <ref>` | investigate a regression from the revision it last worked at: `<ref>`, `<a>..<b>`, or `<repo>=<ref>` (repeatable) |
 
+A **bare** ref means `<ref>..HEAD`, so passing the ref you are checked out at
+resolves to a single commit and an EMPTY window. That is warned about by name,
+and the range is dropped rather than reported as a successful `0 files`:
+
+```
+warn: --since payments-api HEAD: resolves to a single commit (a520c863), so the window is
+EMPTY — a bare ref means <ref>..HEAD, and you are at that ref. Give both ends, e.g.
+--since payments-api=<last-good>..<broken>
+```
+
+Dropped rather than carried, because an `a..a` window would become
+`git_history`'s default revision and answer nothing. One empty window does not
+take a real one down with it — every other repo keeps its own. The same warning
+applies to `sdd plan --since`, which shares the parser.
+
+A **bare** ref means `<ref>..HEAD`, so passing the ref you are checked out at
+resolves to a single commit and an EMPTY window. That is warned about by name
+and the range is dropped rather than reported as a successful `0 files`:
+
+```
+warn: --since payments-api HEAD: resolves to a single commit (a520c863), so the window is
+EMPTY — a bare ref means <ref>..HEAD, and you are at that ref. Give both ends, e.g.
+--since payments-api=<last-good>..<broken>
+```
+
+Dropped rather than carried, because an `a..a` window would become
+`git_history`'s default revision and answer nothing. One empty window does not
+take a real one down with it — the other repos keep theirs. The same warning
+applies to `sdd plan --since`, which shares the parser.
+
 **`--interactive` and `ask_user_question`.** Without the flag the tool is **not
 advertised to the model at all**, so an unattended run keeps exactly the
 declaration count — and the measured tool-call reliability — it has today. With
