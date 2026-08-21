@@ -323,8 +323,8 @@ class HttpChatModelTest {
     // own identifying fields.
     private static final String TOOL_CALL_AS_TEXT = """
             {"choices":[{"message":{"role":"assistant",
-              "content":"{\\"name\\": \\"report_status\\", \\"arguments\\": {\\"status\\": \\"ok\\"}}",
-              "reasoning_content":"We need to call the report_status tool with status set to ok."},
+              "content":"{\\"name\\": \\"sdd_probe_ack\\", \\"arguments\\": {\\"status\\": \\"ok\\"}}",
+              "reasoning_content":"We need to call the sdd_probe_ack tool with status set to ok."},
               "index":0,"finish_reason":"stop"}],
              "usage":{"prompt_tokens":32,"completion_tokens":84}}
             """;
@@ -345,10 +345,10 @@ class HttpChatModelTest {
         wm.stubFor(post("/v1/chat/completions").willReturn(okJson(TOOL_CALL_AS_TEXT)));
 
         ChatResponse resp = modelWithStyle(ToolCallStyle.TEXT)
-                .complete(requestDeclaring("report_status"));
+                .complete(requestDeclaring("sdd_probe_ack"));
 
         assertThat(resp.message().toolCalls()).singleElement().satisfies(c -> {
-            assertThat(c.name()).isEqualTo("report_status");
+            assertThat(c.name()).isEqualTo("sdd_probe_ack");
             assertThat(c.argumentsJson()).isEqualTo("{\"status\":\"ok\"}");
         });
         // Cleared: otherwise the next turn shows the model its own call twice, once as text and
@@ -366,10 +366,10 @@ class HttpChatModelTest {
         wm.stubFor(post("/v1/chat/completions").willReturn(okJson(TOOL_CALL_AS_TEXT)));
 
         ChatResponse resp = modelWithStyle(ToolCallStyle.NATIVE)
-                .complete(requestDeclaring("report_status"));
+                .complete(requestDeclaring("sdd_probe_ack"));
 
         assertThat(resp.message().toolCalls()).isEmpty();
-        assertThat(resp.message().content()).contains("report_status");
+        assertThat(resp.message().content()).contains("sdd_probe_ack");
         assertThat(resp.finishReason()).isEqualTo("stop");
     }
 

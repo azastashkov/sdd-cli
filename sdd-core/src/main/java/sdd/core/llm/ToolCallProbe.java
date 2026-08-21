@@ -58,7 +58,20 @@ public final class ToolCallProbe {
     public enum Fault { NONE, PROSE, ARGUMENTS_ONLY, UNDECLARED_NAME, TRUNCATED, TRANSPORT }
 
     private static final int EXCERPT = 200;
-    private static final String TOOL = "report_status";
+    /**
+     * Deliberately UNGUESSABLE from the instruction.
+     *
+     * <p>Third spelling of this probe, and the reason is worth keeping. It was
+     * {@code report_status} while the instruction named it, and models replied with the arguments
+     * alone — compliant, unattributable. The instruction stopped naming it, and models replied
+     * {@code {"function": "report_system_status", …}} — a name paraphrased from the SENTENCE, not
+     * chosen from the declaration list, which left "the model ignores declarations" and "the model
+     * guessed a near-miss from my wording" indistinguishable.
+     *
+     * <p>A name no instruction could produce settles that: emitting {@code sdd_probe_ack} is proof
+     * the declaration list was read, and emitting anything else is proof it was not.
+     */
+    private static final String TOOL = "sdd_probe_ack";
 
     /**
      * Names for the decoy declarations that pad a count probe.
@@ -86,22 +99,28 @@ public final class ToolCallProbe {
     private static final String SYSTEM =
             "You drive tools. Never answer in prose; always call a tool.";
     /**
-     * Deliberately does NOT name the tool.
+     * Names no tool, and describes no outcome a tool name could be built from.
      *
-     * <p>It used to read "Call the report_status tool with status set to the single word: ok",
-     * and that measured the wrong thing. Live against a real gateway the reply was repeatedly
-     * {@code {"status": "ok"}} — the arguments alone, with no function name — which
-     * {@link TextToolCalls} correctly refuses, since attributing an unnamed object among N
-     * declared tools means guessing which one to RUN. But the model had complied: the instruction
-     * already named the tool, so repeating it was redundant. The probe was handing out the
-     * shortcut and then failing the model for taking it, and the resulting "prose rate" was
-     * mostly its own.
+     * <p>Two earlier spellings each measured something other than the endpoint, and both failures
+     * are worth keeping written down.
      *
-     * <p>A real turn names nothing — the model must select a tool and say which. So this asks for
-     * the OUTCOME and leaves the selection where a real run leaves it.
+     * <ol>
+     *   <li>"Call the report_status tool with status set to the single word: ok" — the reply came
+     *       back as {@code {"status": "ok"}}, the arguments alone. Compliant, since the question
+     *       already carried the name, and unattributable, since {@link TextToolCalls} will not
+     *       guess which of N declared tools an unnamed object meant. The probe was handing out the
+     *       shortcut and then failing the model for taking it.</li>
+     *   <li>"Report that the system status is ok" — the reply named
+     *       {@code report_system_status}, a paraphrase of that SENTENCE rather than anything in
+     *       the declaration list. That left two very different faults indistinguishable: a model
+     *       ignoring declarations, and a model guessing a near-miss from the wording.</li>
+     * </ol>
+     *
+     * <p>So this points at the declaration list and nothing else, which is what a real turn does,
+     * and pairs with a {@link #TOOL} name no paraphrase of it could produce.
      */
     private static final String USER =
-            "Report that the system status is ok.";
+            "Use the tool you have been given. Set its status argument to: ok";
 
     /**
      * What {@code AgentLoop} pushes into the window after a turn that answered in prose.

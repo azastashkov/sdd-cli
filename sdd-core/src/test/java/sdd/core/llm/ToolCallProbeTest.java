@@ -19,15 +19,15 @@ class ToolCallProbeTest {
     void anEndpointThatReturnsAToolCallPasses() {
         ChatModel model = req -> new ChatResponse(
                 new ChatMessage("assistant", null,
-                        List.of(new ToolCall("1", "report_status", "{\"status\":\"ok\"}")), null),
+                        List.of(new ToolCall("1", "sdd_probe_ack", "{\"status\":\"ok\"}")), null),
                 "tool_calls", new Usage(30, 12));
 
         ToolCallProbe.Result r = ToolCallProbe.probe(endpoint(4096), model);
 
         assertThat(r.ok()).isTrue();
         assertThat(r.calledTool()).isTrue();
-        assertThat(r.toolName()).isEqualTo("report_status");
-        assertThat(r.detail()).contains("report_status");
+        assertThat(r.toolName()).isEqualTo("sdd_probe_ack");
+        assertThat(r.detail()).contains("sdd_probe_ack");
     }
 
     @Test
@@ -71,7 +71,7 @@ class ToolCallProbeTest {
 
         assertThat(seen).singleElement().satisfies(req ->
                 assertThat(req.tools()).singleElement().satisfies(t ->
-                        assertThat(t.name()).isEqualTo("report_status")));
+                        assertThat(t.name()).isEqualTo("sdd_probe_ack")));
     }
 
     // ---------------------------------------------------------------- declaration count
@@ -82,7 +82,7 @@ class ToolCallProbeTest {
         ChatModel model = req -> {
             sent[0] = req.tools().size();
             return new ChatResponse(new ChatMessage("assistant", null,
-                    List.of(new ToolCall("1", "report_status", "{\"status\":\"ok\"}")), null),
+                    List.of(new ToolCall("1", "sdd_probe_ack", "{\"status\":\"ok\"}")), null),
                     "tool_calls", new Usage(30, 12));
         };
 
@@ -98,7 +98,7 @@ class ToolCallProbeTest {
         ChatModel model = req -> {
             seen.add(req.tools());
             return new ChatResponse(new ChatMessage("assistant", null,
-                    List.of(new ToolCall("1", "report_status", "{\"status\":\"ok\"}")), null),
+                    List.of(new ToolCall("1", "sdd_probe_ack", "{\"status\":\"ok\"}")), null),
                     "tool_calls", new Usage(30, 12));
         };
 
@@ -107,7 +107,7 @@ class ToolCallProbeTest {
         assertThat(seen).singleElement().satisfies(tools -> {
             assertThat(tools).hasSize(12);
             // The real tool leads, so a failure is about carrying the set, not choosing within it.
-            assertThat(tools.get(0).name()).isEqualTo("report_status");
+            assertThat(tools.get(0).name()).isEqualTo("sdd_probe_ack");
             // Duplicate names would be a malformed request -- it would fail for a reason that is
             // not the count, which is the one thing this probe must not confuse itself about.
             assertThat(tools).extracting(ToolSpec::name).doesNotHaveDuplicates();
@@ -123,7 +123,7 @@ class ToolCallProbeTest {
         ChatModel model = req -> {
             seen.add(req.tools());
             return new ChatResponse(new ChatMessage("assistant", null,
-                    List.of(new ToolCall("1", "report_status", "{}")), null),
+                    List.of(new ToolCall("1", "sdd_probe_ack", "{}")), null),
                     "tool_calls", new Usage(30, 12));
         };
 
@@ -139,13 +139,13 @@ class ToolCallProbeTest {
         ChatModel model = req -> {
             seen.add(req.tools());
             return new ChatResponse(new ChatMessage("assistant", null,
-                    List.of(new ToolCall("1", "report_status", "{}")), null),
+                    List.of(new ToolCall("1", "sdd_probe_ack", "{}")), null),
                     "tool_calls", new Usage(30, 12));
         };
 
         ToolCallProbe.probe(endpoint(4096), model, 0);
 
-        assertThat(seen.get(0)).extracting(ToolSpec::name).containsExactly("report_status");
+        assertThat(seen.get(0)).extracting(ToolSpec::name).containsExactly("sdd_probe_ack");
     }
 
     /** Choosing a decoy is a quality problem; the transport question still answered yes. */
@@ -184,7 +184,7 @@ class ToolCallProbeTest {
 
     private static ChatResponse called() {
         return new ChatResponse(new ChatMessage("assistant", null,
-                List.of(new ToolCall("1", "report_status", "{\"status\":\"ok\"}")), null),
+                List.of(new ToolCall("1", "sdd_probe_ack", "{\"status\":\"ok\"}")), null),
                 "tool_calls", new Usage(30, 12));
     }
 
@@ -301,30 +301,38 @@ class ToolCallProbeTest {
     @Test
     void aNamedJsonCallIsNotMistakenForArgumentsOnly() {
         ChatModel model = req -> new ChatResponse(
-                ChatMessage.assistant("{\"name\": \"report_status\", \"arguments\": {}}"),
+                ChatMessage.assistant("{\"name\": \"sdd_probe_ack\", \"arguments\": {}}"),
                 "stop", new Usage(30, 6));
 
         assertThat(ToolCallProbe.probe(endpoint(4096), model, 11).detail())
                 .doesNotContain("ARGUMENTS ONLY");
     }
 
-    /** The prompt must not hand the model the name, or it measures its own leading question. */
+    /**
+     * The instruction must neither name the tool nor describe an outcome a name can be built from.
+     *
+     * <p>Both were tried live and both measured the probe rather than the endpoint: naming it
+     * produced arguments-only replies, and describing the outcome produced a name paraphrased from
+     * the sentence. The tool name is now unguessable so that emitting it PROVES the declaration
+     * list was read.
+     */
     @Test
     void theInstructionDoesNotNameTheToolItIsTesting() {
         List<List<ChatMessage>> sent = new java.util.ArrayList<>();
         ChatModel model = req -> {
             sent.add(req.messages());
             return new ChatResponse(new ChatMessage("assistant", null,
-                    List.of(new ToolCall("1", "report_status", "{}")), null),
+                    List.of(new ToolCall("1", "sdd_probe_ack", "{}")), null),
                     "tool_calls", new Usage(30, 12));
         };
 
         ToolCallProbe.probe(endpoint(4096), model, 3);
 
         String user = sent.get(0).get(1).content();
-        assertThat(user).doesNotContain("report_status");
-        // ...while the tool it must select is still the one advertised first.
-        assertThat(sent.get(0)).isNotNull();
+        assertThat(user).doesNotContain("sdd_probe_ack");
+        // ...and carries no word the name could be paraphrased out of.
+        assertThat(user.toLowerCase(java.util.Locale.ROOT))
+                .doesNotContain("probe").doesNotContain("ack").doesNotContain("report");
     }
 
     /** The live shape: a well-formed call to a tool that was never offered. */
@@ -345,7 +353,7 @@ class ToolCallProbeTest {
     @Test
     void aCallNamingADeclaredToolIsNotFlaggedAsInvented() {
         ChatModel model = req -> new ChatResponse(ChatMessage.assistant(
-                "{\"function\": \"report_status\", \"parameters\": {\"status\": \"ok\"}}"),
+                "{\"function\": \"sdd_probe_ack\", \"parameters\": {\"status\": \"ok\"}}"),
                 "stop", new Usage(30, 9));
 
         // Structured parsing is HttpChatModel's job; the probe sees no tool_calls here, but it must

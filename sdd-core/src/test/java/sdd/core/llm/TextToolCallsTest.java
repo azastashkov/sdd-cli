@@ -13,17 +13,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class TextToolCallsTest {
 
-    private static final Set<String> DECLARED = Set.of("report_status", "read_file");
+    private static final Set<String> DECLARED = Set.of("sdd_probe_ack", "read_file");
 
     // The exact reply measured on the corp gateway: the model complied, and only the structuring
     // step was missing.
     @Test
     void aBareJsonCallIsRead() {
         List<ToolCall> calls = TextToolCalls.read(
-                "{\"name\": \"report_status\", \"arguments\": {\"status\": \"ok\"}}", DECLARED);
+                "{\"name\": \"sdd_probe_ack\", \"arguments\": {\"status\": \"ok\"}}", DECLARED);
 
         assertThat(calls).singleElement().satisfies(c -> {
-            assertThat(c.name()).isEqualTo("report_status");
+            assertThat(c.name()).isEqualTo("sdd_probe_ack");
             assertThat(c.argumentsJson()).isEqualTo("{\"status\":\"ok\"}");
             assertThat(c.id()).startsWith(HttpChatModel.SYNTHETIC_CALL_ID_PREFIX);
         });
@@ -40,7 +40,7 @@ class TextToolCallsTest {
     @Test
     void aReplyToARequestThatDeclaredNoToolsIsNeverACall() {
         assertThat(TextToolCalls.read(
-                "{\"name\": \"report_status\", \"arguments\": {}}", Set.of())).isEmpty();
+                "{\"name\": \"sdd_probe_ack\", \"arguments\": {}}", Set.of())).isEmpty();
     }
 
     // Prose around a blob is a model talking ABOUT a call, not making one. Scanning for the blob
@@ -48,7 +48,7 @@ class TextToolCallsTest {
     @Test
     void proseWrappedAroundACallIsNotACall() {
         assertThat(TextToolCalls.read(
-                "I will now call {\"name\": \"report_status\", \"arguments\": {}} for you.", DECLARED))
+                "I will now call {\"name\": \"sdd_probe_ack\", \"arguments\": {}} for you.", DECLARED))
                 .isEmpty();
     }
 
@@ -99,7 +99,7 @@ class TextToolCallsTest {
     void aJsonArrayIsSeveralCalls() {
         assertThat(TextToolCalls.read("""
                 [{"name": "read_file", "arguments": {"path": "A.java"}},
-                 {"name": "report_status", "arguments": {"status": "ok"}}]""", DECLARED))
+                 {"name": "sdd_probe_ack", "arguments": {"status": "ok"}}]""", DECLARED))
                 .hasSize(2);
     }
 
@@ -126,7 +126,7 @@ class TextToolCallsTest {
                 "{\"name\": \"read_file\", \"arguments\": \"{\\\"path\\\":\\\"A.java\\\"}\"}", DECLARED))
                 .singleElement()
                 .satisfies(c -> assertThat(c.argumentsJson()).isEqualTo("{\"path\":\"A.java\"}"));
-        assertThat(TextToolCalls.read("{\"name\": \"report_status\"}", DECLARED))
+        assertThat(TextToolCalls.read("{\"name\": \"sdd_probe_ack\"}", DECLARED))
                 .singleElement()
                 .satisfies(c -> assertThat(c.argumentsJson()).isEqualTo("{}"));
     }
@@ -166,16 +166,16 @@ class TextToolCallsTest {
 
     /**
      * The rule the aliases must NOT weaken. A live gateway named report_system_status against a
-     * declared report_status; accepting it would run a tool nobody offered.
+     * declared sdd_probe_ack; accepting it would run a tool nobody offered.
      */
     @Test
     void anUndeclaredNameIsStillRefusedUnderEverySpelling() {
         assertThat(TextToolCalls.read(
                 "{\"function\": \"report_system_status\", \"parameters\": {\"status\": \"ok\"}}",
-                Set.of("report_status"))).isEmpty();
+                Set.of("sdd_probe_ack"))).isEmpty();
         assertThat(TextToolCalls.read(
                 "{\"name\": \"report_system_status\", \"parameters\": {}}",
-                Set.of("report_status"))).isEmpty();
+                Set.of("sdd_probe_ack"))).isEmpty();
     }
 
     @Test
