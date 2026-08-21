@@ -361,4 +361,28 @@ class ToolCallProbeTest {
         assertThat(ToolCallProbe.probe(endpoint(4096), model, 11).fault())
                 .isNotEqualTo(ToolCallProbe.Fault.UNDECLARED_NAME);
     }
+
+    /** glm-5.1's live shape: an invented name, in tool/input keys, inside a ```json fence. */
+    @Test
+    void aFencedCallWithAnInventedNameIsNotReportedAsProse() {
+        ChatModel model = req -> new ChatResponse(ChatMessage.assistant(
+                "```json\n{ \"tool\": \"set_status\", \"input\": { \"status\": \"ok\" } }\n```"),
+                "stop", new Usage(30, 12));
+
+        ToolCallProbe.Result r = ToolCallProbe.probe(endpoint(4096), model, 10);
+
+        assertThat(r.fault()).isEqualTo(ToolCallProbe.Fault.UNDECLARED_NAME);
+        assertThat(r.detail()).contains("set_status").contains("INVENTING tool names");
+    }
+
+    /** And the same shape naming a DECLARED tool is a call, not a fault. */
+    @Test
+    void aFencedCallNamingADeclaredToolIsNotAFault() {
+        ChatModel model = req -> new ChatResponse(ChatMessage.assistant(
+                "```json\n{ \"tool\": \"sdd_probe_ack\", \"input\": { \"status\": \"ok\" } }\n```"),
+                "stop", new Usage(30, 12));
+
+        assertThat(ToolCallProbe.probe(endpoint(4096), model, 10).fault())
+                .isNotEqualTo(ToolCallProbe.Fault.UNDECLARED_NAME);
+    }
 }

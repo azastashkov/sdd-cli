@@ -280,29 +280,11 @@ public final class ToolCallProbe {
      * Reporting it as prose hid the one thing worth knowing.
      */
     private static String undeclaredName(String content, List<ToolSpec> specs) {
-        if (content == null || content.isBlank()) {
+        String named = TextToolCalls.calledName(content);
+        if (named == null) {
             return null;
         }
-        try {
-            com.fasterxml.jackson.databind.JsonNode node =
-                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(content.strip());
-            if (!node.isObject()) {
-                return null;
-            }
-            com.fasterxml.jackson.databind.JsonNode call =
-                    node.path("function").isObject() ? node.get("function") : node;
-            for (String key : new String[] {"name", "function"}) {
-                com.fasterxml.jackson.databind.JsonNode value = call.path(key);
-                if (value.isTextual() && !value.asText().isBlank()) {
-                    String named = value.asText();
-                    boolean declared = specs.stream().anyMatch(t -> t.name().equals(named));
-                    return declared ? null : named;
-                }
-            }
-            return null;
-        } catch (Exception e) {
-            return null;
-        }
+        return specs.stream().anyMatch(t -> t.name().equals(named)) ? null : named;
     }
 
     /**
@@ -316,8 +298,11 @@ public final class ToolCallProbe {
             return false;
         }
         try {
+            // The parser's own view: a fenced or tagged block is unwrapped first, so a call
+            // wearing a ```json fence is not mistaken for bare arguments.
             com.fasterxml.jackson.databind.JsonNode node =
-                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(content.strip());
+                    new com.fasterxml.jackson.databind.ObjectMapper()
+                            .readTree(TextToolCalls.candidateJson(content));
             return node.isObject() && !node.has("name") && !node.has("function")
                     && !node.has("tool") && node.size() > 0;
         } catch (Exception e) {

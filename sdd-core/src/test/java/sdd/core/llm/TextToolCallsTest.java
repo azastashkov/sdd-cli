@@ -186,4 +186,39 @@ class TextToolCallsTest {
                 Set.of("read_file")))
                 .singleElement().satisfies(c -> assertThat(c.argumentsJson()).contains("real"));
     }
+
+    /** The third spelling, from a second model on the same gateway: fenced tool/input. */
+    @Test
+    void toolAndInputAreReadInsideAFence() {
+        String content = "```json\n{ \"tool\": \"read_file\", \"input\": { \"path\": \"A.java\" } }\n```";
+
+        assertThat(TextToolCalls.read(content, Set.of("read_file"))).singleElement()
+                .satisfies(c -> {
+                    assertThat(c.name()).isEqualTo("read_file");
+                    assertThat(c.argumentsJson()).contains("A.java");
+                });
+    }
+
+    @Test
+    void calledNameSeesThroughAFenceSoADiagnosticCanExplainTheRefusal() {
+        String content = "```json\n{ \"tool\": \"set_status\", \"input\": { \"status\": \"ok\" } }\n```";
+
+        // Not a call, because set_status was never declared...
+        assertThat(TextToolCalls.read(content, Set.of("sdd_probe_ack"))).isEmpty();
+        // ...but the reason is knowable, and it is not "answered in prose".
+        assertThat(TextToolCalls.calledName(content)).isEqualTo("set_status");
+    }
+
+    @Test
+    void calledNameIsNullForActualProse() {
+        assertThat(TextToolCalls.calledName("The status is ok.")).isNull();
+        assertThat(TextToolCalls.calledName("{\"status\": \"ok\"}")).isNull();
+        assertThat(TextToolCalls.calledName(null)).isNull();
+    }
+
+    @Test
+    void candidateJsonStripsTheFence() {
+        assertThat(TextToolCalls.candidateJson("```json\n{\"a\":1}\n```")).isEqualTo("{\"a\":1}");
+        assertThat(TextToolCalls.candidateJson("{\"a\":1}")).isEqualTo("{\"a\":1}");
+    }
 }

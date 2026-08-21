@@ -37,11 +37,13 @@ import java.util.Set;
  * DeepSeek tag form, which is not JSON at all and is handled by {@link DsmlToolCalls}. Nothing
  * else — no bracket-matching, no first-brace-to-last-brace.
  *
- * <p>Within the JSON dialects the KEYS vary too, and three spellings are read: {@code name} or a
- * textual {@code function} for the tool, {@code arguments} or {@code parameters} for its input,
- * and a nested {@code {"function": {"name": …}}} is unwrapped first. All three were observed from
- * one gateway in a single sweep. This is not a heuristic and does not weaken rule 1 — whatever key
- * the name arrives under, it must still be one the request declared.
+ * <p>Within the JSON dialects the KEYS vary too. The tool is read from {@code name}, a textual
+ * {@code function}, or {@code tool}; its input from {@code arguments}, {@code parameters}, or
+ * {@code input}; and a nested {@code {"function": {"name": …}}} is unwrapped first. Every one of
+ * those was observed from a single gateway — the first two spellings from one model and the third
+ * ({@code {"tool": …, "input": …}}, fenced) from another on the same host. This is not a heuristic
+ * and does not weaken rule 1: whatever key the name arrives under, it must still be one the
+ * request declared.
  */
 final class TextToolCalls {
 
@@ -115,7 +117,7 @@ final class TextToolCalls {
      * that stops JSON in a reply from being read as a call.
      */
     private static String nameOf(JsonNode node) {
-        for (String key : new String[] {"name", "function"}) {
+        for (String key : new String[] {"name", "function", "tool"}) {
             JsonNode value = node.path(key);
             if (value.isTextual() && !value.asText().isBlank()) {
                 return value.asText();
@@ -133,7 +135,7 @@ final class TextToolCalls {
      * travels together.
      */
     private static String argumentsOf(JsonNode node) {
-        for (String key : new String[] {"arguments", "parameters"}) {
+        for (String key : new String[] {"arguments", "parameters", "input"}) {
             JsonNode args = node.path(key);
             if (args.isMissingNode() || args.isNull()) {
                 continue;
@@ -141,6 +143,52 @@ final class TextToolCalls {
             return args.isTextual() ? args.asText() : args.toString();
         }
         return "{}";
+    }
+
+    /**
+     * The tool name this content calls, DECLARED OR NOT, or null when it is not a call at all.
+     *
+     * <p>Exists so a diagnostic can explain a refusal in the parser's own terms instead of
+     * re-deriving them. {@code ToolCallProbe} used its own JSON check and reported a fenced
+     * {@code ```json {"tool": "set_status", …}``` } as "answered in prose", because it never
+     * unfenced — a wrong diagnosis of a real fault. Reusing this means the explanation and the
+     * decision can never disagree.
+     */
+    static String calledName(String content) {
+        if (content == null || content.isBlank()) {
+            return null;
+        }
+        List<String> blocks = taggedBlocks(content);
+        if (blocks.isEmpty()) {
+            blocks = List.of(unfenced(content.strip()));
+        }
+        for (String block : blocks) {
+            JsonNode node = tree(block);
+            if (node == null) {
+                return null;
+            }
+            for (JsonNode candidate : node.isArray() ? node : List.of(node)) {
+                if (!candidate.isObject()) {
+                    continue;
+                }
+                JsonNode call = candidate.path("function").isObject()
+                        ? candidate.get("function") : candidate;
+                String name = nameOf(call);
+                if (name != null) {
+                    return name;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** The content a JSON dialect actually offers, with any fence or tag stripped. */
+    static String candidateJson(String content) {
+        if (content == null || content.isBlank()) {
+            return "";
+        }
+        List<String> blocks = taggedBlocks(content);
+        return blocks.isEmpty() ? unfenced(content.strip()) : blocks.get(0);
     }
 
     private static JsonNode tree(String text) {
