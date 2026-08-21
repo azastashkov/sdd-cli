@@ -104,6 +104,18 @@ public enum WireFormat {
      * module. It is a property of the WIRE, not of the agent: on {@code openai} several calls per
      * turn are legitimate and useful, and telling a model otherwise would cost real parallelism.
      */
+    /**
+     * What to append to a system prompt when {@link #oneCallPerTurn()} holds.
+     *
+     * <p>Lives here rather than in either agent because it is a fact about the PROTOCOL, and both
+     * {@code sdd explore} and {@code sdd implement} need the same sentence for the same reason.
+     * Two copies would drift, and the one that drifted would fail as an HTTP 500 with nothing in
+     * it naming a prompt.
+     */
+    public static final String ONE_CALL_PER_TURN_GUIDANCE =
+            "\n\nCall exactly ONE tool per turn. Never emit more than one tool call in a single "
+                    + "reply; make the next call after you see this one's result.";
+
     public boolean oneCallPerTurn() {
         return this == GIGACHAT;
     }

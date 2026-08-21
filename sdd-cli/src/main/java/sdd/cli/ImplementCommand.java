@@ -346,6 +346,14 @@ public final class ImplementCommand implements Callable<Integer> {
                     ladder.add(new Orchestrator.ModelTier(new ThrottledChatModel(raw, modelPermits),
                             endpoint.model()));
                 }
+                // One tool call per turn is a property of the WIRE, and the ladder can mix wires while
+                // settingsFor is keyed by REPO — so it is applied when ANY tier needs it. On a ladder that
+                // is entirely one wire (the corp case) that is exact; on a mixed one it costs the openai
+                // tiers some parallelism and costs correctness nothing, which is the right way round.
+                boolean oneCallPerTurn = config.run().escalationLadder().stream()
+                        .map(config.models()::get).filter(java.util.Objects::nonNull)
+                        .anyMatch(e -> e.wire().oneCallPerTurn());
+
                 Function<String, RunnerSettings> settingsFor = repo -> {
                     Path root = activeSteps.get(repo).repoRoot();
                     sdd.core.toolchain.Toolchain toolchain = sdd.core.toolchain.Toolchain.detect(root);
@@ -361,8 +369,10 @@ public final class ImplementCommand implements Callable<Integer> {
                         // the end of the whole script string, where they would land on the wrong
                         // command. Provider substitution for npm is done by overlaying
                         // node_modules, not by flags.
-                        return RunnerSettings.npm(config.nodeHome(), tasks, gradlePermits, budget,
-                                config.run().singleTool());
+                        RunnerSettings npm = RunnerSettings.npm(config.nodeHome(), tasks,
+                                gradlePermits, budget, config.run().singleTool());
+                        return oneCallPerTurn ? npm.withSystemPrompt(npm.systemPrompt()
+                                + sdd.core.llm.WireFormat.ONE_CALL_PER_TURN_GUIDANCE) : npm;
                     }
                     Path javaHome = config.jdkHomes()
                             .get(GradleExtractor.jdkMajorFor(GradleExtractor.wrapperVersion(root)));
@@ -370,8 +380,10 @@ public final class ImplementCommand implements Callable<Integer> {
                             repo, activePlan.edges(), paths));
                     extraArgs.addAll(Propagation.mavenLocalArgs(
                             activePlan.edges(), MavenLocalInit.scriptPath(activeRunDir)));
-                    return RunnerSettings.custom(javaHome, extraArgs, tasks, gradlePermits, budget,
-                            config.run().singleTool());
+                    RunnerSettings gradle = RunnerSettings.custom(javaHome, extraArgs, tasks,
+                            gradlePermits, budget, config.run().singleTool());
+                    return oneCallPerTurn ? gradle.withSystemPrompt(gradle.systemPrompt()
+                            + sdd.core.llm.WireFormat.ONE_CALL_PER_TURN_GUIDANCE) : gradle;
                 };
 
                 Orchestrator orchestrator = new Orchestrator(new RepoStepRunner(jdbi), ladder,

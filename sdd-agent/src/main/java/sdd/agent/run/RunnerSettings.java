@@ -57,6 +57,16 @@ public record RunnerSettings(AgentBudget budget, int contextSoftCap, InstantSour
             only what the sub-spec requires. When it type-checks and implements the sub-spec, call
             done(success). If blocked by a missing decision, call done(blocked) and explain.""";
 
+    /**
+     * The same settings with a different system prompt — for guidance that depends on the WIRE
+     * rather than on the repo, which is what these factories key on.
+     */
+    public RunnerSettings withSystemPrompt(String replacement) {
+        return new RunnerSettings(budget, contextSoftCap, clock, javaHome, gradleTimeout,
+                verificationTasks, maxTokensPerCall, replacement, gradleExtraArgs, gradlePermits,
+                toolchain, nodeHome, gradleHome, singleTool);
+    }
+
     public RunnerSettings {
         verificationTasks = List.copyOf(verificationTasks);
         gradleExtraArgs = List.copyOf(gradleExtraArgs);

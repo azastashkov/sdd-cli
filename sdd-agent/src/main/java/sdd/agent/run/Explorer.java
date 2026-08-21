@@ -93,8 +93,7 @@ public final class Explorer {
      * and correct. See {@code WireFormat.oneCallPerTurn} for the measurement that forced this.
      */
     public static final String ONE_CALL_PER_TURN =
-            "\n\nCall exactly ONE tool per turn. Never emit more than one tool call in a single "
-                    + "reply; make the next call after you see this one's result.";
+            sdd.core.llm.WireFormat.ONE_CALL_PER_TURN_GUIDANCE;
 
     private final Jdbi jdbi;
 
