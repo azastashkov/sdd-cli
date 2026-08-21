@@ -415,9 +415,13 @@ class HttpChatModelTest {
                     java.net.http.HttpResponse.BodyHandler<T> h2) throws java.io.IOException {
                 throw new java.net.ConnectException();   // getMessage() == null
             }
+            // sendAsync, not send, is the path HttpChatModel takes: the configured timeout has to
+            // bound the response BODY, which only the async form allows. A stub that refuses it
+            // stops exercising the transport-failure path at all.
             @Override public <T> java.util.concurrent.CompletableFuture<java.net.http.HttpResponse<T>> sendAsync(
                     java.net.http.HttpRequest req, java.net.http.HttpResponse.BodyHandler<T> h2) {
-                throw new UnsupportedOperationException();
+                return java.util.concurrent.CompletableFuture.failedFuture(
+                        new java.net.ConnectException());   // getMessage() == null
             }
             @Override public <T> java.util.concurrent.CompletableFuture<java.net.http.HttpResponse<T>> sendAsync(
                     java.net.http.HttpRequest req, java.net.http.HttpResponse.BodyHandler<T> h2,
@@ -432,5 +436,51 @@ class HttpChatModelTest {
                 .isInstanceOf(ModelException.class)
                 .hasMessageContaining("ConnectException")
                 .satisfies(e -> assertThat(e.getMessage()).doesNotContain("null"));
+    }
+
+    /**
+     * {@code timeout_seconds} must bound the BODY, not just the wait for headers.
+     *
+     * <p>{@code HttpRequest.Builder.timeout} stops applying once the status line arrives, so a
+     * gateway that answers 200 immediately and then generates for ten minutes was not bounded at
+     * all. Measured before the fix: {@code timeout_seconds: 3} against a server that sent headers
+     * at once and the body 25 seconds later SUCCEEDED, after 25 seconds — and an agent turn
+     * stalling that way is indistinguishable from a hang.
+     */
+    @Test
+    void aStalledResponseBodyIsBoundedByTheConfiguredTimeout() {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)
+                // headers immediately, then the body dribbled out over 5s
+                .withChunkedDribbleDelay(8, 5_000)));
+        ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "test-model", "sk-key", 256, 0.0,
+                Duration.ofMillis(400), Map.of(), null, null, WireFormat.OPENAI, null);
+        HttpChatModel model = new HttpChatModel(ep, 1, HttpClient.newHttpClient(), millis -> { });
+
+        long started = System.nanoTime();
+        ModelException thrown = catchThrowableOfType(() -> model.complete(request()),
+                ModelException.class);
+        long elapsedMs = (System.nanoTime() - started) / 1_000_000;
+
+        assertThat(thrown).isNotNull();
+        // Either bound may catch it first and both are correct: the request-level timeout when the
+        // stall is before or during the headers, the whole-exchange bound when the headers are
+        // already out. What must hold is that it gave up ON THE TIMEOUT rather than after the body
+        // eventually arrived — which is what this used to fail to do.
+        assertThat(thrown.getMessage()).contains("transport error")
+                .containsAnyOf("timed out", "no complete reply within");
+        assertThat(elapsedMs).isLessThan(4_000);
+    }
+
+    /** And a prompt endpoint is untouched — the bound must not cost a normal call anything. */
+    @Test
+    void aFastReplyIsUnaffectedByTheBound() {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+        ModelEndpoint ep = new ModelEndpoint(wm.baseUrl() + "/v1", "test-model", "sk-key", 256, 0.0,
+                Duration.ofMillis(400), Map.of(), null, null, WireFormat.OPENAI, null);
+
+        ChatResponse resp = new HttpChatModel(ep, 1, HttpClient.newHttpClient(), millis -> { })
+                .complete(request());
+
+        assertThat(resp.message().content()).isNotNull();
     }
 }

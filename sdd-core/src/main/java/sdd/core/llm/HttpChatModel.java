@@ -14,6 +14,11 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -130,6 +135,25 @@ public final class HttpChatModel implements ChatModel {
         return endpoint.baseUrl() + "/chat/completions";
     }
 
+    /**
+     * One request, bounded end to end by {@code timeout_seconds}.
+     *
+     * <p><b>{@link HttpRequest.Builder#timeout} is not enough, and believing it was cost a hung
+     * run.</b> That timeout bounds the wait for the RESPONSE; once the status line and headers
+     * arrive it stops applying, so a gateway that answers {@code 200} immediately and then spends
+     * ten minutes generating is not bounded by it at all. Measured: with
+     * {@code timeout_seconds: 3} against a server that sent headers at once and the body 25
+     * seconds later, the call SUCCEEDED after 25 seconds. An agent turn that stalls this way
+     * cannot be told from a hang, and the one setting an operator reaches for does nothing.
+     *
+     * <p>{@code sendAsync} plus {@link CompletableFuture#orTimeout} bounds the whole exchange,
+     * body included. The request-level timeout is kept as well: it fails faster and with a
+     * clearer exception when the stall really is before the headers.
+     *
+     * <p>A timeout is surfaced as {@link HttpTimeoutException} — an {@code IOException} — so the
+     * retry loop treats it exactly as it already treats a transport error, with backoff, rather
+     * than needing a second failure path.
+     */
     private HttpResponse<String> send(String body) throws IOException, InterruptedException {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(completionsUrl()))
@@ -139,7 +163,31 @@ public final class HttpChatModel implements ChatModel {
         if (endpoint.apiKey() != null) {
             builder.header("Authorization", "Bearer " + endpoint.apiKey());
         }
-        return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+        CompletableFuture<HttpResponse<String>> pending =
+                client.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString());
+        try {
+            return pending.orTimeout(endpoint.timeout().toMillis(), TimeUnit.MILLISECONDS).join();
+        } catch (CompletionException e) {
+            // Cancel so a stalled exchange does not keep a connection and a body reader alive for
+            // the rest of the run; every attempt after this one would inherit the leak.
+            pending.cancel(true);
+            Throwable cause = e.getCause() == null ? e : e.getCause();
+            if (cause instanceof TimeoutException) {
+                throw new HttpTimeoutException("no complete reply within "
+                        + endpoint.timeout().toSeconds() + "s (models.<name>.timeout_seconds) — the "
+                        + "endpoint may have sent headers and then stalled mid-body");
+            }
+            if (cause instanceof IOException io) {
+                throw io;
+            }
+            if (cause instanceof InterruptedException interrupted) {
+                throw interrupted;
+            }
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            throw new IOException(cause);
+        }
     }
 
     private void backoff(int attempt, Long retryAfterMillis) {
