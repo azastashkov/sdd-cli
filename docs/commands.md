@@ -273,6 +273,28 @@ pairs with `--tools-repeat` because that ceiling is probabilistic and was
 observed to MOVE within a single day — one green attempt at one count is the
 weakest possible evidence about it. `--tools-count` implies `--tools`.
 
+**It names the failure MODE, and "not a ceiling" is a real verdict.** A ceiling
+is a claim about monotonicity: it works below a threshold and not above. A rate
+that wobbles at every count is a different fault and gets said so, because
+`single_tool` cannot fix it —
+
+```
+      1 declarations : 4/5   NO TOOL CALL: the endpoint answered in prose with finish_reason=stop
+        answered instead: I would call report_status with status ok, but here is a summary instead.
+     11 declarations : 5/5
+     12 declarations : 2/5   NO TOOL CALL: ...
+[FAIL] model:planner:tools — NOT a declaration ceiling — 1=4/5 ... 11=5/5 12=2/5 (success does not
+fall away with the count, so single_tool would not fix this). Every failure was the endpoint
+ANSWERING IN PROSE rather than rejecting the request — check models.<name>.tool_calls ...
+```
+
+That shape is what a real gateway produced on the first live run: ~85% success
+flat from 1 to 11 declarations with a genuine cliff at 12, and every failure a
+prose reply rather than an HTTP rejection. The `answered instead:` line is
+printed per count for exactly that case — it is what separates "wrote no call"
+from "wrote a call sdd could not parse", and the latter points at
+`models.<name>.tool_calls: text` rather than at the declaration count.
+
 Two deliberate choices worth knowing. The sweep probes with **no retries**
 (`maxAttempts = 1`), unlike every other probe here: elsewhere retrying makes a
 probe predict a real run, but here the thing being counted *is* the failure

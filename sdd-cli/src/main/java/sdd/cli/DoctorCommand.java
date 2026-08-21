@@ -322,6 +322,15 @@ public final class DoctorCommand implements Callable<Integer> {
      * retries because it exists to predict a real run, and a real run retries. Here that would
      * destroy the measurement: the thing being counted IS the failure rate, and retrying until
      * something works reports a gateway that fails half the time as one that works.
+     *
+     * <p><b>The verdict names the failure MODE, not just the counts.</b> The first live run of this
+     * against a real gateway reported "declaration ceiling reached" for a sweep that reached no
+     * ceiling at all: success sat near 85% flat from 1 to 11 declarations, and every failure was
+     * {@code NO TOOL CALL ... finish_reason=stop} — the endpoint answering in prose, which is a
+     * different fault with a different fix (see {@code models.<name>.tool_calls}). A sweep that
+     * calls every imperfect result a ceiling is a diagnostic that confirms whatever you already
+     * suspected, so the two are separated here and a non-monotonic result is called out as not
+     * being a ceiling.
      */
     private void sweepToolCalling(String name, ModelEndpoint ep) {
         var out = spec.commandLine().getOut();
@@ -333,22 +342,40 @@ public final class DoctorCommand implements Callable<Integer> {
             return;
         }
         boolean allOk = true;
+        int prose = 0;
+        int transport = 0;
+        java.util.List<Integer> rates = new java.util.ArrayList<>();
         StringBuilder note = new StringBuilder();
         for (int count : counts) {
             int ok = 0;
             String lastFailure = null;
+            String lastSaid = null;
             for (int i = 0; i < repeats; i++) {
                 var r = sdd.core.llm.ToolCallProbe.probe(ep,
                         new sdd.core.llm.HttpChatModel(ep, 1), count);
                 if (r.ok()) {
                     ok++;
+                    continue;
+                }
+                lastFailure = r.detail();
+                // finishReason non-null means the gateway answered and sdd could not find a call
+                // in it; null means the request never produced a reply at all.
+                if (r.finishReason() != null) {
+                    prose++;
+                    lastSaid = r.contentExcerpt();
                 } else {
-                    lastFailure = r.detail();
+                    transport++;
                 }
             }
             allOk &= ok == repeats;
+            rates.add(ok);
             out.println(String.format("    %3d declarations : %d/%d%s",
                     count, ok, repeats, lastFailure == null ? "" : "   " + lastFailure));
+            // The one line that separates "wrote no call" from "wrote a call sdd could not parse".
+            // Dropping it was why the first live sweep could not be read without a second run.
+            if (lastSaid != null && !lastSaid.isBlank()) {
+                out.println("        answered instead: " + lastSaid);
+            }
             note.append(count).append('=').append(ok).append('/').append(repeats).append(' ');
             if (lastFailure != null) {
                 printDumpHint(lastFailure);
@@ -357,10 +384,49 @@ public final class DoctorCommand implements Callable<Integer> {
         String check = "model:" + name + ":tools";
         report(allOk, check, allOk
                 ? "every count carried: " + note.toString().strip()
-                : "declaration ceiling reached — " + note.toString().strip()
-                        + " (explore advertises 10 by default, 12 with --interactive and --since; "
-                        + "explore.single_tool collapses them to 1)");
-        diagnostics.note(check + ": sweep " + note.toString().strip() + " repeats=" + repeats);
+                : verdict(note.toString().strip(), counts, rates, repeats, prose, transport));
+        diagnostics.note(check + ": sweep " + note.toString().strip() + " repeats=" + repeats
+                + " prose_failures=" + prose + " transport_failures=" + transport);
+    }
+
+    /**
+     * Says which fault this was, because the fixes are unrelated.
+     *
+     * <p>A ceiling is a claim about MONOTONICITY — it works below a threshold and not above. A rate
+     * that wobbles at every count is a different animal and must not be described as a ceiling, or
+     * the operator goes and sets {@code single_tool} to fix something it cannot fix.
+     */
+    private static String verdict(String note, java.util.List<Integer> counts,
+                                  java.util.List<Integer> rates, int repeats,
+                                  int prose, int transport) {
+        boolean monotonic = true;
+        for (int i = 1; i < rates.size(); i++) {
+            if (rates.get(i) > rates.get(i - 1)) {
+                monotonic = false;
+                break;
+            }
+        }
+        boolean cleanSomewhere = rates.stream().anyMatch(r -> r == repeats);
+        StringBuilder v = new StringBuilder();
+        if (monotonic && rates.get(rates.size() - 1) == 0 && cleanSomewhere) {
+            v.append("declaration ceiling reached — ").append(note)
+                    .append(" (explore advertises 10 by default, 12 with --interactive and --since; "
+                            + "explore.single_tool collapses them to 1)");
+        } else {
+            v.append("NOT a declaration ceiling — ").append(note)
+                    .append(" (success does not fall away with the count, so single_tool would not "
+                            + "fix this)");
+        }
+        if (prose > 0 && transport == 0) {
+            v.append(". Every failure was the endpoint ANSWERING IN PROSE rather than rejecting "
+                    + "the request — check models.<name>.tool_calls (a gateway that lets the model "
+                    + "write the call as content needs `text`), and read the 'answered instead' "
+                    + "lines above to see whether it wrote a call sdd could not parse");
+        } else if (prose > 0) {
+            v.append(". Mixed failures: ").append(prose).append(" prose, ").append(transport)
+                    .append(" transport — these have different fixes, do not treat them as one");
+        }
+        return v.toString();
     }
 
     /**
