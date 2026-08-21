@@ -373,4 +373,53 @@ class GigaChatWireTest {
         assertThat(sentBody().has("functions")).isFalse();
         assertThat(sentBody().has("tools")).isFalse();
     }
+
+    /**
+     * An assistant turn that calls something must not also carry prose on this wire.
+     *
+     * <p>Measured as a hard 500, not a refusal naming a rule: the same conversation sent twice
+     * differing only in this field returned 3/3 with {@code content: ""} and 0/3
+     * {@code [500,500,500]} with the model's own 109-character preamble beside the call. The model
+     * produces both routinely, so every real second turn hit it while the first — which carries no
+     * assistant history yet — was fine.
+     */
+    @Test
+    void anAssistantTurnThatCallsSomethingSendsEmptyContentEvenWhenTheModelWroteProse() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+
+        model(WireFormat.GIGACHAT).complete(conversation(
+                toolCallTurn("Let me start by understanding the landscape — listing repos.", null)));
+
+        JsonNode assistant = sentBody().path("messages").get(2);
+        assertThat(assistant.path("content").isTextual()).isTrue();
+        assertThat(assistant.path("content").asText()).isEmpty();
+        // The call itself is untouched.
+        assertThat(assistant.path("function_call").path("name").asText())
+                .isEqualTo("list_directory");
+    }
+
+    /** An assistant turn with NO call keeps whatever it said — only a calling turn is blanked. */
+    @Test
+    void anAssistantTurnWithoutACallKeepsItsProse() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+        ChatRequest req = new ChatRequest("Qwen3.6-35B", List.of(
+                ChatMessage.user("go"),
+                ChatMessage.assistant("a plain answer")), List.of(), 256, 0.0);
+
+        model(WireFormat.GIGACHAT).complete(req);
+
+        assertThat(sentBody().path("messages").get(1).path("content").asText())
+                .isEqualTo("a plain answer");
+    }
+
+    /** And the OpenAI wire is untouched: it has no such rule and every workspace is on it. */
+    @Test
+    void theOpenAiWireStillSendsTheProseAlongsideTheCall() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+
+        model(WireFormat.OPENAI).complete(conversation(toolCallTurn("thinking out loud", null)));
+
+        assertThat(sentBody().path("messages").get(2).path("content").asText())
+                .isEqualTo("thinking out loud");
+    }
 }

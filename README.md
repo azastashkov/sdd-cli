@@ -542,7 +542,16 @@ refusal named its rule:
 | a result's role | `tool`, paired by `tool_call_id` | `function`, paired by `name`, no id | *function content must contain FunctionResult* |
 | a result's content | the text the tool produced | a **string** that itself parses as JSON | plain text → *invalid function result … JSON parse error*; an object → `HTTP 400` |
 | assistant turn that is only calls | `content` omitted | `content` present, empty if none | |
+| an assistant turn that CALLS | `content` may carry prose too | `content` must be **empty** beside a call | *nothing.* a hard `HTTP 500` |
 | a reply's thinking | `<think>…</think>` inline, stripped on arrival | a `reasoning_content` field, sent back with its turn | |
+
+**The calling-turn row cost the most to find.** A model routinely answers with prose AND a call
+in the same turn — *"Let me start by understanding the landscape"* alongside
+`function_call: list_repos` — and sending both back is a hard `500` with no rule named. Measured by
+sending one conversation twice differing only in that field: `content: ""` gave 3/3,
+the model's own 109-character preamble gave 0/3 `[500,500,500]`. It only ever bites the SECOND
+turn, because the first carries no assistant history yet, which makes it read like a
+conversation-growth problem and it is not. sdd blanks that field on this wire.
 
 **The declaration row is the one that fails silently, and it is why this setting is not optional
 on such a gateway.** Sending the same conversation twice against a live one, differing only in

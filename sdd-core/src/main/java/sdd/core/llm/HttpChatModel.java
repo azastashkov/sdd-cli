@@ -306,6 +306,23 @@ public final class HttpChatModel implements ChatModel {
             msg.put("content", functionResult(m.content()));
             return;
         }
+        // An assistant turn that CALLS something must not also carry prose on this wire.
+        //
+        // Measured, and it is a hard 500 rather than a refusal that names a rule: the same
+        // conversation sent twice, differing only in this field, returned 3/3 with content ""
+        // and 0/3 [500,500,500] with the model's own 109-character preamble beside the call.
+        // The model routinely produces both -- "Let me start by understanding the landscape"
+        // AND function_call: list_repos -- so a real second turn hit it every time while the
+        // first turn, which carries no assistant history yet, was fine.
+        //
+        // Empty rather than omitted: this wire requires the key to be PRESENT, and "" is the
+        // value the passing variant used. The prose is dropped, which costs a little of the
+        // model's own commentary on the next turn and buys a conversation the gateway accepts.
+        if (wire.assistantContentAlwaysPresent() && "assistant".equals(m.role())
+                && !m.toolCalls().isEmpty()) {
+            msg.put("content", "");
+            return;
+        }
         if (m.content() != null) {
             msg.put("content", m.content());
         } else if (wire.assistantContentAlwaysPresent() && "assistant".equals(m.role())) {
