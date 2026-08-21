@@ -64,6 +64,15 @@ public final class ToolCallProbe {
 
     private static final int EXCERPT = 200;
     /**
+     * Reasoning gets four times the room the reply does.
+     *
+     * <p>It is the field that has actually explained every failure on this gateway, and at 200
+     * characters the explanation was landing mid-sentence — "I have one tool available:
+     * `zulu_tool` which has a parameter called \"zulu\" t…" cuts off exactly where it starts
+     * saying what it thinks it was given.
+     */
+    private static final int REASONING_EXCERPT = 800;
+    /**
      * Deliberately UNGUESSABLE from the instruction.
      *
      * <p>Third spelling of this probe, and the reason is worth keeping. It was
@@ -233,7 +242,7 @@ public final class ToolCallProbe {
                         true, first.name(), first.argumentsJson(), response.finishReason(),
                         response.usage().completionTokens(), maxTokens, excerpt(content),
                         specs.size(), Fault.NONE,
-                        excerpt(response.message().reasoningContent())), response.message());
+                        excerpt(response.message().reasoningContent(), REASONING_EXCERPT)), response.message());
             }
             boolean truncated = "length".equals(response.finishReason());
             String invented = undeclaredName(content, specs);
@@ -270,7 +279,7 @@ public final class ToolCallProbe {
             return new Attempt(new Result(false, detail, false, null, null,
                     response.finishReason(), response.usage().completionTokens(), maxTokens,
                     excerpt(content), specs.size(), fault,
-                    excerpt(response.message().reasoningContent())), response.message());
+                    excerpt(response.message().reasoningContent(), REASONING_EXCERPT)), response.message());
         } catch (ModelException e) {
             return new Attempt(new Result(false, e.getMessage(), false, null, null, null, 0,
                     maxTokens, "", specs.size(), Fault.TRANSPORT, ""), null);
@@ -332,10 +341,14 @@ public final class ToolCallProbe {
     }
 
     private static String excerpt(String text) {
+        return excerpt(text, EXCERPT);
+    }
+
+    private static String excerpt(String text, int limit) {
         if (text == null || text.isBlank()) {
             return "(empty)";
         }
         String oneLine = text.strip().replace('\n', ' ').replace('\r', ' ');
-        return oneLine.length() <= EXCERPT ? oneLine : oneLine.substring(0, EXCERPT) + "…";
+        return oneLine.length() <= limit ? oneLine : oneLine.substring(0, limit) + "…";
     }
 }

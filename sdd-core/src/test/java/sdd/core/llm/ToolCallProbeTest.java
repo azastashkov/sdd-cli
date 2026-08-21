@@ -446,4 +446,17 @@ class ToolCallProbeTest {
         assertThat(sent.get(0).get(1).content().toLowerCase(java.util.Locale.ROOT))
                 .doesNotContain("status");
     }
+
+    /** Reasoning is the field that explains a failure, so it is not cut at the reply's width. */
+    @Test
+    void reasoningGetsMoreRoomThanTheReply() {
+        String longReasoning = "I have one tool available: zulu_tool. ".repeat(20);
+        ChatModel model = req -> new ChatResponse(new ChatMessage("assistant",
+                "x".repeat(500), List.of(), null, longReasoning), "stop", new Usage(30, 12));
+
+        ToolCallProbe.Result r = ToolCallProbe.probe(endpoint(4096), model, 1);
+
+        assertThat(r.contentExcerpt()).hasSizeLessThan(220);
+        assertThat(r.reasoningExcerpt()).hasSizeGreaterThan(500);
+    }
 }
