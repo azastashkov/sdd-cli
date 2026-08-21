@@ -136,6 +136,13 @@ public final class DoctorCommand implements Callable<Integer> {
             }
 
             if (config != null) {
+                if (modelNameOverride != null && !modelNameOverride.isBlank()
+                        && endpointFilter == null) {
+                    report(false, "model-name", "--model-name needs --endpoint: without it every "
+                            + "tier would be probed as the same model, which reports one answer "
+                            + "three times");
+                    return 1;
+                }
                 boolean matchedFilter = probeModels(config, clock);
                 if (endpointFilter != null && !matchedFilter) {
                     report(false, "endpoint", "no model named '" + endpointFilter + "' is configured");
@@ -253,6 +260,22 @@ public final class DoctorCommand implements Callable<Integer> {
      * measures P(prose | nudged), which is the number the survival estimate actually needs, and
      * costs a second call only for attempts that failed.
      */
+    /**
+     * Probe a DIFFERENT model id over the same endpoint, without editing {@code sdd.yml}.
+     *
+     * <p>The question this exists for is "which model on this gateway can drive an agent" — and
+     * answering it meant adding a throwaway tier per candidate, editing config on a machine where
+     * editing config is the expensive part. Everything but the model id is carried over from the
+     * named endpoint, so the transport stays fixed and the model is the only variable.
+     *
+     * <p>Requires {@code --endpoint}: applying it to every tier at once would probe the same model
+     * three times and report it as three results.
+     */
+    @Option(names = "--model-name",
+            description = "Probe this model id over --endpoint's transport, without editing "
+                    + "sdd.yml. Everything else (URL, TLS, wire, tool_calls) is unchanged.")
+    String modelNameOverride;
+
     @Option(names = "--tools-nudge",
             description = "With --tools-count: after a prose reply, retry it exactly as the agent "
                     + "loop does and report how often that recovers. Answers whether a prose rate "
@@ -279,7 +302,14 @@ public final class DoctorCommand implements Callable<Integer> {
     /** One model tier: the Phase 3 TLS pre-flight (a no-op for every api-key-only endpoint), then
      *  the existing endpoint probe (byte-for-byte the same check/text as before this phase), then
      *  the Phase 3 diagnostics line (a no-op unless a client certificate is configured). */
-    private void probeModelEndpoint(String name, ModelEndpoint ep, InstantSource clock) {
+    private void probeModelEndpoint(String name, ModelEndpoint configured, InstantSource clock) {
+        ModelEndpoint ep = modelNameOverride == null || modelNameOverride.isBlank()
+                ? configured : configured.withModel(modelNameOverride.strip());
+        if (ep != configured) {
+            spec.commandLine().getOut().println("    probing model '" + ep.model()
+                    + "' over " + name + "'s transport (sdd.yml says '" + configured.model()
+                    + "', and is unchanged)");
+        }
         modelTlsPreflight(name, ep.tls(), clock);
         EndpointProbe.ProbeResult result = EndpointProbe.probe(ep);
         report(result.ok(), "model:" + name, ep.baseUrl() + " → " + result.detail());

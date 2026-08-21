@@ -59,6 +59,19 @@ public record ModelEndpoint(
         toolCallStyle = toolCallStyle == null ? ToolCallStyle.NATIVE : toolCallStyle;
     }
 
+    /**
+     * The same endpoint pointed at a different model id, for a diagnostic that wants to try
+     * several without rewriting {@code sdd.yml}.
+     *
+     * <p>Everything else is carried over deliberately — base URL, TLS, wire, tool-call style,
+     * budgets — because the question being asked is which MODEL behaves differently on a transport
+     * already known to work. Changing anything else would confound that.
+     */
+    public ModelEndpoint withModel(String replacement) {
+        return new ModelEndpoint(baseUrl, replacement, apiKey, maxTokens, temperature, timeout,
+                extraBody, apiKeyError, tls, wire, toolCallStyle);
+    }
+
     /** Pre-{@code toolCallStyle} 10-argument shape, kept so every existing construction site (main
      *  and test) keeps compiling untouched: it defaults to {@link ToolCallStyle#NATIVE}, i.e. the
      *  only behaviour that existed before this setting. */

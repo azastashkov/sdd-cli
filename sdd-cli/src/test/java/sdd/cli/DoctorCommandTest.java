@@ -601,4 +601,56 @@ class DoctorCommandTest {
         assertThat(content).contains("model-tls name=corp").contains("cert=" + cert.cert())
                 .contains("sdd-doctor-test-client").contains("truststore=(JDK default truststore)");
     }
+
+    // ------------------------------------------------------------------ --model-name
+
+    /**
+     * Answering "which model on this gateway can drive an agent" used to mean a throwaway tier per
+     * candidate — editing config on the machine where editing config is the expensive part.
+     */
+    @Test
+    void modelNameProbesADifferentModelWithoutTouchingTheConfig() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        wm.stubFor(get("/v1/models").willReturn(okJson("{\"data\":[{\"id\":\"GigaChat-2-Max\"}]}")));
+
+        Run run = doctor(ws, "--endpoint", "planner", "--model-name", "GigaChat-2-Max");
+
+        assertThat(run.out()).contains("probing model 'GigaChat-2-Max' over planner's transport")
+                .contains("sdd.yml says 'deepseek-v4-flash', and is unchanged");
+        // The file really is untouched.
+        assertThat(Files.readString(ws.resolve("sdd.yml"))).contains("deepseek-v4-flash");
+    }
+
+    /** The override is validated against the listing like any other configured name. */
+    @Test
+    void anOverriddenNameIsStillCheckedAgainstWhatTheGatewayServes() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        wm.stubFor(get("/v1/models").willReturn(okJson("{\"data\":[{\"id\":\"GigaChat-2-Max\"}]}")));
+
+        Run run = doctor(ws, "--endpoint", "planner", "--model-name", "no-such-model");
+
+        assertThat(run.out()).contains("'no-such-model' is NOT served here");
+    }
+
+    /** Without --endpoint it would probe every tier as the same model and report one answer thrice. */
+    @Test
+    void modelNameWithoutAnEndpointIsRefusedByName() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+
+        Run run = doctor(ws, "--model-name", "GigaChat-2-Max");
+
+        assertThat(run.exitCode()).isEqualTo(1);
+        assertThat(run.out()).contains("--model-name needs --endpoint");
+    }
+
+    /** Absent, nothing changes: the configured model is probed and no extra line is printed. */
+    @Test
+    void withoutTheOverrideTheConfiguredModelIsProbedSilently() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), yaml());
+        wm.stubFor(get("/v1/models").willReturn(okJson("{\"data\":[]}")));
+
+        Run run = doctor(ws, "--endpoint", "planner");
+
+        assertThat(run.out()).doesNotContain("probing model");
+    }
 }

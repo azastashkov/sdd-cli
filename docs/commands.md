@@ -249,6 +249,22 @@ run whenever a response came back at all, whatever its status
 matters. A 401 is likewise `connected`, and the tool probe run against it
 reports the auth failure with more detail, not less.
 
+**Trying another model without editing config: `--model-name`.** Probes the
+given model id over `--endpoint`'s transport — same URL, TLS, wire and
+`tool_calls` — leaving `sdd.yml` untouched. It exists because the question
+"which model on this gateway can actually drive an agent" is answered one model
+at a time, and adding a throwaway tier per candidate means editing config on the
+machine where editing config is the expensive part.
+
+```
+sdd doctor --endpoint pro --model-name Qwen3.5-397b --tools-count 1 --tools-repeat 3
+    probing model 'Qwen3.5-397b' over pro's transport (sdd.yml says 'glm-5.1', and is unchanged)
+```
+
+Requires `--endpoint`: without it every tier would be probed as the same model
+and report one answer three times. The overridden name is checked against the
+`/models` listing like any configured one.
+
 **Finding a gateway's declaration ceiling: `--tools-count`.** Plain `--tools`
 sends exactly ONE declaration (`ToolCallProbe`), which answers "can this
 endpoint emit a tool call at all" and nothing else. A different failure needs a
