@@ -463,12 +463,57 @@ public final class DoctorCommand implements Callable<Integer> {
             return;
         }
         var out = spec.commandLine().getOut();
+        List<String> near = nearest(ep.model(), result.models());
         out.println("    configured model '" + ep.model() + "' is NOT served here — this gateway "
                 + "offers: " + String.join(", ", result.models()));
+        if (!near.isEmpty()) {
+            out.println("    closest by name: " + String.join(", ", near));
+        }
         out.println("    every completion will fail with \"No such model\"; set models." + name
                 + ".model to one of the above");
         diagnostics.note("model:" + name + ": configured=" + ep.model()
                 + " served=" + String.join(",", result.models()));
+    }
+
+    /**
+     * The served names that look most like the configured one.
+     *
+     * <p>A live gateway answered with THIRTY-SIX models, which is a wall of text to hand someone
+     * whose real question is "which of these did I mean". Comparison is on a normalised form —
+     * lowercased, punctuation dropped — because the miss that produced this was
+     * {@code deepseek-v4-flash} against a served {@code DeepSeek-V4-Pro}: the same family, spelled
+     * with different case and different separators.
+     *
+     * <p>A suggestion, never a substitution. It requires a shared prefix of at least four
+     * characters so unrelated names are not proposed, returns at most three, and the full listing
+     * is printed regardless — guessing on the operator's behalf is exactly the fuzzy-machinery
+     * mistake this codebase keeps re-learning.
+     */
+    static List<String> nearest(String configured, List<String> served) {
+        String want = normalizeModel(configured);
+        if (want.isEmpty()) {
+            return List.of();
+        }
+        record Scored(String name, int shared) {
+        }
+        List<Scored> scored = new java.util.ArrayList<>();
+        for (String candidate : served) {
+            String have = normalizeModel(candidate);
+            int i = 0;
+            while (i < want.length() && i < have.length() && want.charAt(i) == have.charAt(i)) {
+                i++;
+            }
+            if (i >= 4) {
+                scored.add(new Scored(candidate, i));
+            }
+        }
+        scored.sort((a, b) -> b.shared() - a.shared());
+        return scored.stream().limit(3).map(Scored::name).toList();
+    }
+
+    private static String normalizeModel(String name) {
+        return name == null ? "" : name.toLowerCase(java.util.Locale.ROOT)
+                .replaceAll("[^a-z0-9]", "");
     }
 
     /**
