@@ -101,13 +101,27 @@ models:
   #                                      # `sdd doctor --endpoint <name>` names the models it
   #                                      # serves and flags a name that differs only in case
   #   max_tokens: 8192
-  #   # tool_calls: text                 # ONLY for a gateway that accepts declarations
-  #                                      # but returns the call as plain content
-  #                                      # instead of in tool_calls. Check with
-  #                                      # `sdd doctor --endpoint <name> --tools`,
-  #                                      # and try extra_body tool_choice: auto /
-  #                                      # function_call: auto FIRST — an endpoint
-  #                                      # doing its own parsing beats this
+  #   # tool_calls: text                 # PER-TIER, and probably NOT needed here. It is
+  #                                      # only for a gateway that accepts declarations
+  #                                      # but returns the call as plain content, in
+  #                                      # neither `tool_calls` nor `function_call`.
+  #                                      # Under `wire: gigachat` this gateway answers
+  #                                      # with a STRUCTURED `function_call`, which sdd
+  #                                      # reads whatever this is set to — so the text
+  #                                      # path never fires. It was needed while sdd was
+  #                                      # sending `tools[]`: the model was given no
+  #                                      # tools and wrote a pseudo-call as prose, and
+  #                                      # `text` was what parsed that. Fixing the
+  #                                      # declarations removed the reason for it.
+  #                                      # Harmless to keep as a fallback, since the text
+  #                                      # path only runs when nothing structured
+  #                                      # arrived. To find out for your gateway, drop it
+  #                                      # and run
+  #                                      #   sdd doctor --endpoint <name> \
+  #                                      #     --tools-count 11 --tools-repeat 3
+  #                                      # Before reaching for it at all, try extra_body
+  #                                      # tool_choice: auto / function_call: auto — an
+  #                                      # endpoint doing its own parsing beats this
   #   wire: gigachat                     # REQUIRED on a GigaChat gateway, not a tuning
   #                                      # option: it is what makes sdd declare tools as
   #                                      # `functions: [...]` instead of OpenAI's
