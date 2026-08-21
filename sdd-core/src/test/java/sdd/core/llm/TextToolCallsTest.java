@@ -130,4 +130,60 @@ class TextToolCallsTest {
                 .singleElement()
                 .satisfies(c -> assertThat(c.argumentsJson()).isEqualTo("{}"));
     }
+
+    // ------------------------------------------------- key spellings seen from one live gateway
+
+    /** {"function": "<name>", "parameters": {...}} — refused as prose until it was measured. */
+    @Test
+    void functionAndParametersAreReadLikeNameAndArguments() {
+        List<ToolCall> calls = TextToolCalls.read(
+                "{\"function\": \"read_file\", \"parameters\": {\"path\": \"A.java\"}}",
+                Set.of("read_file"));
+
+        assertThat(calls).singleElement().satisfies(c -> {
+            assertThat(c.name()).isEqualTo("read_file");
+            assertThat(c.argumentsJson()).contains("A.java");
+        });
+    }
+
+    /** The same reply mixed spellings across one sweep, so name+parameters must work too. */
+    @Test
+    void nameWithParametersIsRead() {
+        assertThat(TextToolCalls.read(
+                "{\"name\": \"read_file\", \"parameters\": {\"path\": \"B.java\"}}",
+                Set.of("read_file")))
+                .singleElement().satisfies(c -> assertThat(c.argumentsJson()).contains("B.java"));
+    }
+
+    /** OpenAI's own nested shape, arriving as content rather than as tool_calls. */
+    @Test
+    void aNestedFunctionObjectIsUnwrapped() {
+        assertThat(TextToolCalls.read(
+                "{\"function\": {\"name\": \"read_file\", \"arguments\": \"{}\"}}",
+                Set.of("read_file")))
+                .singleElement().satisfies(c -> assertThat(c.name()).isEqualTo("read_file"));
+    }
+
+    /**
+     * The rule the aliases must NOT weaken. A live gateway named report_system_status against a
+     * declared report_status; accepting it would run a tool nobody offered.
+     */
+    @Test
+    void anUndeclaredNameIsStillRefusedUnderEverySpelling() {
+        assertThat(TextToolCalls.read(
+                "{\"function\": \"report_system_status\", \"parameters\": {\"status\": \"ok\"}}",
+                Set.of("report_status"))).isEmpty();
+        assertThat(TextToolCalls.read(
+                "{\"name\": \"report_system_status\", \"parameters\": {}}",
+                Set.of("report_status"))).isEmpty();
+    }
+
+    @Test
+    void argumentsStillWinsWhenBothKeysArePresent() {
+        assertThat(TextToolCalls.read(
+                "{\"name\": \"read_file\", \"arguments\": {\"path\": \"real\"}, "
+                        + "\"parameters\": {\"path\": \"decoy\"}}",
+                Set.of("read_file")))
+                .singleElement().satisfies(c -> assertThat(c.argumentsJson()).contains("real"));
+    }
 }

@@ -362,6 +362,7 @@ public final class DoctorCommand implements Callable<Integer> {
         boolean allOk = true;
         int prose = 0;
         int argsOnly = 0;
+        int invented = 0;
         int transport = 0;
         int totalNudged = 0;
         int totalRecovered = 0;
@@ -396,6 +397,10 @@ public final class DoctorCommand implements Callable<Integer> {
                 switch (r.fault()) {
                     case ARGUMENTS_ONLY -> {
                         argsOnly++;
+                        lastSaid = r.contentExcerpt();
+                    }
+                    case UNDECLARED_NAME -> {
+                        invented++;
                         lastSaid = r.contentExcerpt();
                     }
                     case TRANSPORT -> transport++;
@@ -438,10 +443,11 @@ public final class DoctorCommand implements Callable<Integer> {
         report(allOk, check, allOk
                 ? "every count carried: " + note.toString().strip()
                 : verdict(note.toString().strip(), counts, rates, repeats, prose, argsOnly,
-                        transport)
+                        invented, transport)
                         + recoveryNote(totalNudged, totalRecovered));
         diagnostics.note(check + ": sweep " + note.toString().strip() + " repeats=" + repeats
                 + " prose_failures=" + prose + " arguments_only=" + argsOnly
+                + " undeclared_name=" + invented
                 + " transport_failures=" + transport
                 + " nudged=" + totalNudged + " recovered=" + totalRecovered);
     }
@@ -582,7 +588,7 @@ public final class DoctorCommand implements Callable<Integer> {
      */
     private static String verdict(String note, java.util.List<Integer> counts,
                                   java.util.List<Integer> rates, int repeats,
-                                  int prose, int argsOnly, int transport) {
+                                  int prose, int argsOnly, int invented, int transport) {
         boolean monotonic = true;
         for (int i = 1; i < rates.size(); i++) {
             if (rates.get(i) > rates.get(i - 1)) {
@@ -601,22 +607,30 @@ public final class DoctorCommand implements Callable<Integer> {
                     .append(" (success does not fall away with the count, so single_tool would not "
                             + "fix this)");
         }
-        if (argsOnly > 0 && prose == 0 && transport == 0) {
+        if (invented > 0 && prose == 0 && argsOnly == 0 && transport == 0) {
+            v.append(". Every failure NAMED A TOOL THAT WAS NEVER DECLARED — the model is "
+                    + "inventing names instead of choosing from the declaration list. Neither "
+                    + "tool_calls, nor single_tool, nor a smaller count addresses that, and a real "
+                    + "run would fail the same way. Read the 'answered instead' lines: if the name "
+                    + "paraphrases the request rather than the tool list, this tier is not reading "
+                    + "the declarations");
+        } else if (argsOnly > 0 && prose == 0 && transport == 0 && invented == 0) {
             v.append(". Every failure was ARGUMENTS ONLY — the model CALLED a tool and the reply "
                     + "does not say which, so sdd refuses it rather than guess which of the "
                     + "declared tools to run. This is not a prose problem and not a count problem: "
                     + "the tier can drive an agent, the calls are merely unaddressed");
-        } else if (prose > 0 && argsOnly == 0 && transport == 0) {
+        } else if (prose > 0 && argsOnly == 0 && transport == 0 && invented == 0) {
             v.append(". Every failure was the endpoint ANSWERING IN PROSE rather than rejecting "
                     + "the request — check models.<name>.tool_calls (a gateway that lets the model "
                     + "write the call as content needs `text`), and read the 'answered instead' "
                     + "lines above to see whether it wrote a call sdd could not parse");
-        } else if (transport > 0 && prose == 0 && argsOnly == 0) {
+        } else if (transport > 0 && prose == 0 && argsOnly == 0 && invented == 0) {
             v.append(". Every failure was a TRANSPORT error — the request never produced a reply, "
                     + "so nothing here is about tool calling at all");
         } else if (prose + argsOnly + transport > 0) {
             v.append(". Mixed failures: ").append(prose).append(" prose, ").append(argsOnly)
-                    .append(" arguments-only, ").append(transport)
+                    .append(" arguments-only, ").append(invented).append(" undeclared-name, ")
+                    .append(transport)
                     .append(" transport — these have different fixes, do not treat them as one");
         }
         return v.toString();

@@ -326,4 +326,31 @@ class ToolCallProbeTest {
         // ...while the tool it must select is still the one advertised first.
         assertThat(sent.get(0)).isNotNull();
     }
+
+    /** The live shape: a well-formed call to a tool that was never offered. */
+    @Test
+    void aCallNamingAnUndeclaredToolIsItsOwnDiagnosis() {
+        ChatModel model = req -> new ChatResponse(ChatMessage.assistant(
+                "{\"function\": \"report_system_status\", \"parameters\": {\"status\": \"ok\"}}"),
+                "stop", new Usage(30, 9));
+
+        ToolCallProbe.Result r = ToolCallProbe.probe(endpoint(4096), model, 11);
+
+        assertThat(r.ok()).isFalse();
+        assertThat(r.fault()).isEqualTo(ToolCallProbe.Fault.UNDECLARED_NAME);
+        assertThat(r.detail()).contains("report_system_status").contains("INVENTING tool names");
+        assertThat(r.detail()).doesNotContain("ARGUMENTS ONLY").doesNotContain("answered in prose");
+    }
+
+    @Test
+    void aCallNamingADeclaredToolIsNotFlaggedAsInvented() {
+        ChatModel model = req -> new ChatResponse(ChatMessage.assistant(
+                "{\"function\": \"report_status\", \"parameters\": {\"status\": \"ok\"}}"),
+                "stop", new Usage(30, 9));
+
+        // Structured parsing is HttpChatModel's job; the probe sees no tool_calls here, but it must
+        // not accuse the model of inventing a name it was actually offered.
+        assertThat(ToolCallProbe.probe(endpoint(4096), model, 11).fault())
+                .isNotEqualTo(ToolCallProbe.Fault.UNDECLARED_NAME);
+    }
 }

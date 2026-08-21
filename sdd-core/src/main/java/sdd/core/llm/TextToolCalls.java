@@ -36,6 +36,12 @@ import java.util.Set;
  * ```-fenced block, {@code <tool_call>…</tool_call>} blocks (what Qwen models emit), and the
  * DeepSeek tag form, which is not JSON at all and is handled by {@link DsmlToolCalls}. Nothing
  * else — no bracket-matching, no first-brace-to-last-brace.
+ *
+ * <p>Within the JSON dialects the KEYS vary too, and three spellings are read: {@code name} or a
+ * textual {@code function} for the tool, {@code arguments} or {@code parameters} for its input,
+ * and a nested {@code {"function": {"name": …}}} is unwrapped first. All three were observed from
+ * one gateway in a single sweep. This is not a heuristic and does not weaken rule 1 — whatever key
+ * the name arrives under, it must still be one the request declared.
  */
 final class TextToolCalls {
 
@@ -87,24 +93,54 @@ final class TextToolCalls {
         if (!node.isObject()) {
             return null;
         }
-        JsonNode name = node.path("name");
-        if (!name.isTextual() || !declared.contains(name.asText())) {
+        // A nested {"function": {...}} carries the call one level down; unwrap before reading.
+        JsonNode call = node.path("function").isObject() ? node.get("function") : node;
+        String name = nameOf(call);
+        if (name == null || !declared.contains(name)) {
             return null;
         }
         // Indexed as well as named: a model may call the same tool twice in one reply, and two
         // results sharing a tool_call_id would pair against the wrong call.
-        return new ToolCall(HttpChatModel.SYNTHETIC_CALL_ID_PREFIX + index + "-" + name.asText(),
-                name.asText(), argumentsOf(node));
+        return new ToolCall(HttpChatModel.SYNTHETIC_CALL_ID_PREFIX + index + "-" + name,
+                name, argumentsOf(call));
     }
 
-    /** {@code arguments} as the JSON string {@link ToolCall} holds — an object, a string
-     *  containing JSON, or absent for a tool that takes none. */
-    private static String argumentsOf(JsonNode node) {
-        JsonNode args = node.path("arguments");
-        if (args.isMissingNode() || args.isNull()) {
-            return "{}";
+    /**
+     * The called tool's name, under whichever key this model spells it.
+     *
+     * <p>{@code name} is the OpenAI spelling. {@code function} as a STRING is the one a live
+     * gateway produced — {@code {"function": "report_status", "parameters": {…}}} — repeatedly and
+     * across declaration counts, and it was being refused as prose. Accepting the alias loosens
+     * nothing that matters: the name must still be one the request declared, which is the rule
+     * that stops JSON in a reply from being read as a call.
+     */
+    private static String nameOf(JsonNode node) {
+        for (String key : new String[] {"name", "function"}) {
+            JsonNode value = node.path(key);
+            if (value.isTextual() && !value.asText().isBlank()) {
+                return value.asText();
+            }
         }
-        return args.isTextual() ? args.asText() : args.toString();
+        return null;
+    }
+
+    /**
+     * The call's arguments as the JSON string {@link ToolCall} holds — an object, a string
+     * containing JSON, or absent for a tool that takes none.
+     *
+     * <p>{@code parameters} is accepted beside {@code arguments} for the same reason
+     * {@link #nameOf} accepts {@code function}: it is what a live gateway emitted, and the pair
+     * travels together.
+     */
+    private static String argumentsOf(JsonNode node) {
+        for (String key : new String[] {"arguments", "parameters"}) {
+            JsonNode args = node.path(key);
+            if (args.isMissingNode() || args.isNull()) {
+                continue;
+            }
+            return args.isTextual() ? args.asText() : args.toString();
+        }
+        return "{}";
     }
 
     private static JsonNode tree(String text) {

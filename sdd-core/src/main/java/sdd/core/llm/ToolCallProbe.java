@@ -55,7 +55,7 @@ public final class ToolCallProbe {
      * unaddressed, {@link #TRUNCATED} means raise max_tokens, {@link #TRANSPORT} means the request
      * never produced a reply.
      */
-    public enum Fault { NONE, PROSE, ARGUMENTS_ONLY, TRUNCATED, TRANSPORT }
+    public enum Fault { NONE, PROSE, ARGUMENTS_ONLY, UNDECLARED_NAME, TRUNCATED, TRANSPORT }
 
     private static final int EXCERPT = 200;
     private static final String TOOL = "report_status";
@@ -197,13 +197,24 @@ public final class ToolCallProbe {
                         specs.size(), Fault.NONE), response.message());
             }
             boolean truncated = "length".equals(response.finishReason());
+            String invented = undeclaredName(content, specs);
             Fault fault = truncated ? Fault.TRUNCATED
+                    : invented != null ? Fault.UNDECLARED_NAME
                     : argumentsOnly(content) ? Fault.ARGUMENTS_ONLY : Fault.PROSE;
             String detail;
             if (truncated) {
                 detail = "NO TOOL CALL, and the reply was truncated: spent "
                         + response.usage().completionTokens() + " of " + maxTokens
                         + " tokens — the budget ran out before a call was reached, so raise max_tokens";
+            } else if (invented != null) {
+                // The sharpest of the failure modes: the model DID call a tool, in a shape that
+                // parses, naming something that was never offered. Nothing about the transport,
+                // the declaration count or tool_calls: text will fix it, and accepting it would
+                // mean running a tool nobody declared.
+                detail = "NO TOOL CALL: the reply names '" + invented + "', which was NOT among "
+                        + "the " + specs.size() + " declared tools — the model is INVENTING tool "
+                        + "names rather than choosing from the declaration list. sdd refuses a "
+                        + "name it never offered; a real run would fail the same way";
             } else if (argumentsOnly(content)) {
                 // Worth its own sentence: it is NOT prose, and the fixes are opposite. The model
                 // called a tool; the reply just does not say WHICH, and sdd will not guess among
@@ -238,6 +249,41 @@ public final class ToolCallProbe {
                     "Inspect part of the estate and return what it holds.", DECOY_SCHEMA));
         }
         return List.copyOf(specs);
+    }
+
+    /**
+     * The tool name a reply calls, when that name was never declared — otherwise null.
+     *
+     * <p>Reads the same key spellings {@code TextToolCalls} does, because the point is to explain
+     * why THAT refused the reply. A live gateway produced
+     * {@code {"function": "report_system_status", "parameters": {"status": "ok"}}} against a
+     * declared {@code report_status}: a perfectly well-formed call to a tool that does not exist.
+     * Reporting it as prose hid the one thing worth knowing.
+     */
+    private static String undeclaredName(String content, List<ToolSpec> specs) {
+        if (content == null || content.isBlank()) {
+            return null;
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode node =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(content.strip());
+            if (!node.isObject()) {
+                return null;
+            }
+            com.fasterxml.jackson.databind.JsonNode call =
+                    node.path("function").isObject() ? node.get("function") : node;
+            for (String key : new String[] {"name", "function"}) {
+                com.fasterxml.jackson.databind.JsonNode value = call.path(key);
+                if (value.isTextual() && !value.asText().isBlank()) {
+                    String named = value.asText();
+                    boolean declared = specs.stream().anyMatch(t -> t.name().equals(named));
+                    return declared ? null : named;
+                }
+            }
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
