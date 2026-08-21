@@ -3,6 +3,7 @@ package sdd.plan.impact;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.diff.DiffFormatter;
+import org.eclipse.jgit.errors.RevisionSyntaxException;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevWalk;
@@ -73,8 +74,8 @@ public final class ChangeSet {
         String right = range.contains("..") ? range.substring(range.indexOf("..") + 2) : "HEAD";
         try (Git git = Git.open(repoPath.toFile())) {
             Repository repository = git.getRepository();
-            ObjectId from = repository.resolve(left);
-            ObjectId to = repository.resolve(right);
+            ObjectId from = resolveOrNull(repository, left);
+            ObjectId to = resolveOrNull(repository, right);
             if (from == null || to == null) {
                 return new RepoChange(repo, range, null, null, List.of(), "REF_NOT_FOUND");
             }
@@ -110,7 +111,45 @@ public final class ChangeSet {
             return new RepoChange(repo, range, from.abbreviate(8).name(), to.abbreviate(8).name(),
                     files, "RESOLVED");
         } catch (IOException ex) {
+            // Reaching here now means Git.open or the diff itself failed — i.e. the directory
+            // really is not a usable checkout. Revision lookup is handled by resolveOrNull below,
+            // precisely so that its failures cannot be reported as this one.
             return new RepoChange(repo, range, null, null, List.of(), "NOT_A_GIT_REPO");
+        }
+    }
+
+    /**
+     * Null for every way a revision can fail to name a commit <b>in this repo</b>.
+     *
+     * <p>{@code Repository.resolve} is inconsistent about how it says "no": an unknown ref NAME
+     * comes back null, but an unknown full SHA throws {@code MissingObjectException} and an
+     * ambiguous abbreviation throws {@code AmbiguousObjectException} — both {@code IOException}s,
+     * which used to fall through to the catch that reports NOT_A_GIT_REPO. That mattered because
+     * a bare {@code --since <sha>} across an estate hits it for EVERY OTHER REPO by construction:
+     * a SHA only exists in the repo it was made in. The operator was told their checkouts were
+     * broken when the only thing wrong was that a commit is local to one repo.
+     *
+     * <p>{@code RevisionSyntaxException} is caught with them because it is an
+     * {@code IllegalArgumentException}, not an {@code IOException} — so a malformed {@code --since}
+     * would have escaped as a crash rather than a warning about the argument that caused it.
+     */
+    private static ObjectId resolveOrNull(Repository repository, String rev) {
+        try {
+            ObjectId id = repository.resolve(rev);
+            if (id == null) {
+                return null;
+            }
+            // resolve() does NOT prove the object is here: handed a full 40-character SHA it just
+            // parses the hex and hands it back, so the "this repo has never seen that commit" case
+            // — the whole point of this method — surfaces only when something tries to READ it.
+            // Parse it here, where a failure is still a missing revision, rather than leaving it
+            // to the diff below, where it would be indistinguishable from a broken checkout.
+            try (RevWalk walk = new RevWalk(repository)) {
+                walk.parseCommit(id);
+            }
+            return id;
+        } catch (IOException | RevisionSyntaxException e) {
+            return null;
         }
     }
 
