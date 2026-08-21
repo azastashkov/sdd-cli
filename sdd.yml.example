@@ -65,22 +65,26 @@ models:
   # rejected with the exact `openssl pkcs8 -topk8 -nocrypt` command to convert
   # it.
   #
-  # If the gateway is the GigaChat one, add `wire: gigachat` to each — and note this is
-  # NOT optional there. That setting is what makes sdd declare its tools as GigaChat's
-  # `functions: [...]` instead of OpenAI's `tools: [...]`, and a gateway that reads only
-  # the former accepts the latter, answers HTTP 200, and hands the model NO TOOLS. The
-  # model then invents a plausible tool name out of the request's own wording, which reads
-  # like a model fault and is not. Measured both ways against a live gateway with
-  # gigachat-tools-vs-functions.sh.
-  # tier and point base_url straight at it — no gpt2giga proxy in between. The
-  # proxy translates OpenAI `tools` into GigaChat's native `functions`, and that
-  # translation is where function calling failed by DECLARATION COUNT: measured
-  # against one gateway, one declaration succeeded 20/20, six 13/20 and nine
-  # 0/20, all with fast uniform HTTP 500s. Captured traffic from a client that
-  # reaches the same gateway directly shows it accepting OpenAI `tools` as-is
-  # and answering with several parallel tool_calls per turn. `wire: gigachat`
-  # sends that captured shape; see README, "Talking to a GigaChat gateway
-  # directly".
+  # If the gateway is the GigaChat one, add `wire: gigachat` to each tier and point
+  # base_url straight at it — no gpt2giga proxy in between.
+  #
+  # `wire: gigachat` is NOT optional there. It is what makes sdd declare its tools as
+  # GigaChat's `functions: [...]` instead of OpenAI's `tools: [...]`, and a gateway that
+  # reads only the former ACCEPTS the latter, answers HTTP 200, and hands the model NO
+  # TOOLS. The model then invents a plausible tool name out of the request's own wording,
+  # which reads like a model fault and is not. Sending one conversation twice, changing
+  # only that key (gigachat-tools-vs-functions.sh): under `tools[]` the reply was "there is
+  # no tool specified in the conversation"; under `functions[]`, a structured function_call.
+  #
+  # Translating `tools` into `functions` is also what gpt2giga was really doing for sdd, so
+  # the DECLARATION-COUNT ceiling once blamed on that proxy — one declaration 20/20, six
+  # 13/20, nine 0/20, fast uniform HTTP 500s — was measured through the one component making
+  # tool calling work. Direct, with `wire: gigachat`, the same gateway carries 1/6/10/11/12
+  # declarations at 50/50. Both `single_tool` settings can stay off.
+  #
+  # (An earlier note here said captured traffic showed this gateway accepting OpenAI `tools`
+  # as-is. That capture was a DIFFERENT service surface in the same estate; it is wrong
+  # about this one. See README, "Talking to a GigaChat gateway directly".)
   #
   # Run `sdd doctor` first — or `sdd doctor --endpoint coder` to iterate on
   # one tier. It validates cert/key existence, whether the key parses, and the
@@ -93,19 +97,28 @@ models:
   #                                      # suffix — sdd appends that itself, so a
   #                                      # full completions URL here becomes
   #                                      # /chat/completions/chat/completions
-  #   model: qwen/qwen3.5-397b-a17b
+  #   model: Qwen3.5-397b              # EXACT case from the gateway's /models listing —
+  #                                      # `sdd doctor --endpoint <name>` names the models it
+  #                                      # serves and flags a name that differs only in case
   #   max_tokens: 8192
-  #   # tool_calls: text                 # ONLY for a gateway that accepts `tools`
+  #   # tool_calls: text                 # ONLY for a gateway that accepts declarations
   #                                      # but returns the call as plain content
   #                                      # instead of in tool_calls. Check with
   #                                      # `sdd doctor --endpoint <name> --tools`,
   #                                      # and try extra_body tool_choice: auto /
   #                                      # function_call: auto FIRST — an endpoint
   #                                      # doing its own parsing beats this
-  #   # wire: gigachat                   # ONLY for a GigaChat gateway
-  #                                      # reached directly; omit (or `openai`)
-  #                                      # for every other endpoint, including
-  #                                      # one behind gpt2giga
+  #   wire: gigachat                     # REQUIRED on a GigaChat gateway, not a tuning
+  #                                      # option: it is what makes sdd declare tools as
+  #                                      # `functions: [...]` instead of OpenAI's
+  #                                      # `tools: [...]`. A gateway that reads only the
+  #                                      # former ACCEPTS the latter, answers HTTP 200, and
+  #                                      # hands the model NO TOOLS — after which the model
+  #                                      # invents a plausible tool name out of the request's
+  #                                      # own wording, which reads like a model fault and is
+  #                                      # not. Measured both ways with
+  #                                      # gigachat-tools-vs-functions.sh. Omit (or `openai`)
+  #                                      # for every other endpoint
   #   tls: &corp_tls
   #     cert: ${MODEL_CERT_PATH}
   #     key: ${MODEL_KEY_PATH}
@@ -146,20 +159,35 @@ models:
   #     repetition_penalty: 1
   # planner:
   #   base_url: ${MODEL_URL}
-  #   model: deepseek-v4-flash
-  #   max_tokens: 32768
-  #   # wire: gigachat
+  #   model: DeepSeek-V4-Pro
+  #   max_tokens: 32768                  # see the WARNING below about thinking models
+  #   wire: gigachat
   #   tls: *corp_tls                     # same cert, key and CA for every tier
   #   extra_body:
   #     repetition_penalty: 1
   # pro:
   #   base_url: ${MODEL_URL}
-  #   model: deepseek-v4-pro
+  #   model: glm-5.1
   #   max_tokens: 32768
-  #   # wire: gigachat
+  #   wire: gigachat
   #   tls: *corp_tls
   #   extra_body:
   #     repetition_penalty: 1
+  #
+  # The three tiers above were each verified on a REAL agent turn — declarations the model
+  # can call, a tool result in history, max_tokens 32768 — returning 3/3 with non-empty
+  # content (gigachat-toolresult-probe.py, variant 14).
+  #
+  # That check is worth repeating for any model you swap in, because A THINKING MODEL CAN BE
+  # UNUSABLE AT EVERY max_tokens and it does not look like that from outside. Measured on
+  # this gateway, `DeepSeek-v4-Flash` spent its whole completion budget reasoning and
+  # returned EMPTY content at 512, 1024 and 4096, then failed to finish inside 120s at 8192.
+  # No working value existed. The symptom was a run that appeared to HANG on its second turn
+  # while the first was fine — and the fix is a different model, not a different number.
+  #
+  # `sdd doctor --tools-count` will NOT catch it: that is a first-turn probe, two messages
+  # with no history, and the unusable model scored 50/50 on it. A green sweep says the
+  # endpoint accepts declarations; it says nothing about surviving turn two.
 
 run:
   # Attempt order for sdd implement. After an attempt that needs escalation
