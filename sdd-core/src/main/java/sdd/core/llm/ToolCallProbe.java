@@ -40,8 +40,22 @@ public final class ToolCallProbe {
      */
     public record Result(boolean ok, String detail, boolean calledTool, String toolName,
                          String arguments, String finishReason, int completionTokens,
-                         int maxTokensSent, String contentExcerpt, int declarationsSent) {
+                         int maxTokensSent, String contentExcerpt, int declarationsSent,
+                         Fault fault) {
     }
+
+    /**
+     * How an attempt failed, as a value rather than as prose in {@code detail}.
+     *
+     * <p>Callers summarising a sweep have to group failures, and grouping them by sniffing the
+     * message text is how a diagnostic starts lying: the per-count line said ARGUMENTS ONLY while
+     * the verdict underneath still said "answering in prose", because the two read different
+     * things. The distinctions are real and the remedies do not overlap — {@link #PROSE} means the
+     * tier cannot drive an agent, {@link #ARGUMENTS_ONLY} means it can and the reply is merely
+     * unaddressed, {@link #TRUNCATED} means raise max_tokens, {@link #TRANSPORT} means the request
+     * never produced a reply.
+     */
+    public enum Fault { NONE, PROSE, ARGUMENTS_ONLY, TRUNCATED, TRANSPORT }
 
     private static final int EXCERPT = 200;
     private static final String TOOL = "report_status";
@@ -71,8 +85,23 @@ public final class ToolCallProbe {
             "description":"the single word ok"}},"required":["status"]}""";
     private static final String SYSTEM =
             "You drive tools. Never answer in prose; always call a tool.";
+    /**
+     * Deliberately does NOT name the tool.
+     *
+     * <p>It used to read "Call the report_status tool with status set to the single word: ok",
+     * and that measured the wrong thing. Live against a real gateway the reply was repeatedly
+     * {@code {"status": "ok"}} — the arguments alone, with no function name — which
+     * {@link TextToolCalls} correctly refuses, since attributing an unnamed object among N
+     * declared tools means guessing which one to RUN. But the model had complied: the instruction
+     * already named the tool, so repeating it was redundant. The probe was handing out the
+     * shortcut and then failing the model for taking it, and the resulting "prose rate" was
+     * mostly its own.
+     *
+     * <p>A real turn names nothing — the model must select a tool and say which. So this asks for
+     * the OUTCOME and leaves the selection where a real run leaves it.
+     */
     private static final String USER =
-            "Call the report_status tool with status set to the single word: ok";
+            "Report that the system status is ok.";
 
     /**
      * What {@code AgentLoop} pushes into the window after a turn that answered in prose.
@@ -165,22 +194,35 @@ public final class ToolCallProbe {
                                 + excerpt(first.argumentsJson()) + ")" + wrong,
                         true, first.name(), first.argumentsJson(), response.finishReason(),
                         response.usage().completionTokens(), maxTokens, excerpt(content),
-                        specs.size()), response.message());
+                        specs.size(), Fault.NONE), response.message());
             }
             boolean truncated = "length".equals(response.finishReason());
-            String detail = truncated
-                    ? "NO TOOL CALL, and the reply was truncated: spent "
-                            + response.usage().completionTokens() + " of " + maxTokens
-                            + " tokens — the budget ran out before a call was reached, so raise max_tokens"
-                    : "NO TOOL CALL: the endpoint answered in prose with finish_reason="
-                            + response.finishReason()
-                            + " — this tier cannot drive sdd implement";
+            Fault fault = truncated ? Fault.TRUNCATED
+                    : argumentsOnly(content) ? Fault.ARGUMENTS_ONLY : Fault.PROSE;
+            String detail;
+            if (truncated) {
+                detail = "NO TOOL CALL, and the reply was truncated: spent "
+                        + response.usage().completionTokens() + " of " + maxTokens
+                        + " tokens — the budget ran out before a call was reached, so raise max_tokens";
+            } else if (argumentsOnly(content)) {
+                // Worth its own sentence: it is NOT prose, and the fixes are opposite. The model
+                // called a tool; the reply just does not say WHICH, and sdd will not guess among
+                // declared tools because the guess would run one.
+                detail = "NO TOOL CALL, but the reply is ARGUMENTS ONLY — a JSON object with no "
+                        + "function name, which cannot be attributed among " + specs.size()
+                        + " declared tools without guessing which one to run. The model complied; "
+                        + "the call is unaddressed. Not the same fault as answering in prose";
+            } else {
+                detail = "NO TOOL CALL: the endpoint answered in prose with finish_reason="
+                        + response.finishReason()
+                        + " — this tier cannot drive sdd implement";
+            }
             return new Attempt(new Result(false, detail, false, null, null,
                     response.finishReason(), response.usage().completionTokens(), maxTokens,
-                    excerpt(content), specs.size()), response.message());
+                    excerpt(content), specs.size(), fault), response.message());
         } catch (ModelException e) {
             return new Attempt(new Result(false, e.getMessage(), false, null, null, null, 0,
-                    maxTokens, "", specs.size()), null);
+                    maxTokens, "", specs.size(), Fault.TRANSPORT), null);
         }
     }
 
@@ -196,6 +238,26 @@ public final class ToolCallProbe {
                     "Inspect part of the estate and return what it holds.", DECOY_SCHEMA));
         }
         return List.copyOf(specs);
+    }
+
+    /**
+     * Whether the whole reply is a JSON object that names no function — the "arguments only" shape.
+     *
+     * <p>Distinguished from prose because the remedies do not overlap: prose means the tier cannot
+     * drive an agent at all, while this means it can and the reply is merely unaddressed.
+     */
+    private static boolean argumentsOnly(String content) {
+        if (content == null || content.isBlank()) {
+            return false;
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode node =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(content.strip());
+            return node.isObject() && !node.has("name") && !node.has("function")
+                    && !node.has("tool") && node.size() > 0;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private static String excerpt(String text) {

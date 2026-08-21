@@ -311,6 +311,23 @@ the loop's next turn — system, the original instruction, the assistant's own
 prose, then the nudge as a user message — and `AgentLoopTest` pins the probe's
 copy of that string against the loop's, since the two live in different modules.
 
+**"Arguments only" is a distinct verdict, and it is the one a real gateway
+produced.** Asked to report a status, it replied `{"status": "ok"}` — the
+arguments, with no function name. `TextToolCalls` refuses that by rule 1 (the
+name must be one the request declared), and correctly: attributing an unnamed
+object among eleven declared tools means guessing which one to **run**. The
+probe now says so in those terms rather than calling it prose, because the
+remedies are opposite — prose means the tier cannot drive an agent at all, while
+this means it can and the call is merely unaddressed.
+
+That finding also corrected the probe itself. Its instruction used to read *"Call
+the report_status tool with status set to the single word: ok"* — which names the
+tool and hands over the value, so answering with the arguments alone is full
+compliance. The probe was handing out the shortcut and then failing the model for
+taking it, and the "prose rate" it measured was largely its own. It now asks for
+the outcome (*"Report that the system status is ok."*) and leaves tool selection
+where a real turn leaves it. **Sweeps taken before that change read low.**
+
 That shape is what a real gateway produced on the first live run: ~85% success
 flat from 1 to 11 declarations with a genuine cliff at 12, and every failure a
 prose reply rather than an HTTP rejection. The `answered instead:` line is

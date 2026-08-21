@@ -267,4 +267,63 @@ class ToolCallProbeTest {
 
         assertThat(counts).containsExactly(11, 11);
     }
+
+    // ---------------------------------------------------------------- arguments-only
+
+    /**
+     * The fault a live gateway actually produced, and the reason the probe's own prompt changed:
+     * the model complied but the reply does not say WHICH tool, so it cannot be run.
+     */
+    @Test
+    void argumentsWithNoFunctionNameAreCalledThatAndNotProse() {
+        ChatModel model = req -> new ChatResponse(
+                ChatMessage.assistant("{\"status\": \"ok\"}"), "stop", new Usage(30, 6));
+
+        ToolCallProbe.Result r = ToolCallProbe.probe(endpoint(4096), model, 11);
+
+        assertThat(r.ok()).isFalse();
+        assertThat(r.detail()).contains("ARGUMENTS ONLY")
+                .contains("11 declared tools")
+                .contains("Not the same fault as answering in prose");
+        assertThat(r.detail()).doesNotContain("answered in prose with");
+    }
+
+    @Test
+    void realProseIsStillCalledProse() {
+        ChatModel model = req -> new ChatResponse(
+                ChatMessage.assistant("The system status is ok."), "stop", new Usage(30, 6));
+
+        assertThat(ToolCallProbe.probe(endpoint(4096), model, 11).detail())
+                .contains("answered in prose").doesNotContain("ARGUMENTS ONLY");
+    }
+
+    /** A properly named call in content is TextToolCalls' job, not an arguments-only reply. */
+    @Test
+    void aNamedJsonCallIsNotMistakenForArgumentsOnly() {
+        ChatModel model = req -> new ChatResponse(
+                ChatMessage.assistant("{\"name\": \"report_status\", \"arguments\": {}}"),
+                "stop", new Usage(30, 6));
+
+        assertThat(ToolCallProbe.probe(endpoint(4096), model, 11).detail())
+                .doesNotContain("ARGUMENTS ONLY");
+    }
+
+    /** The prompt must not hand the model the name, or it measures its own leading question. */
+    @Test
+    void theInstructionDoesNotNameTheToolItIsTesting() {
+        List<List<ChatMessage>> sent = new java.util.ArrayList<>();
+        ChatModel model = req -> {
+            sent.add(req.messages());
+            return new ChatResponse(new ChatMessage("assistant", null,
+                    List.of(new ToolCall("1", "report_status", "{}")), null),
+                    "tool_calls", new Usage(30, 12));
+        };
+
+        ToolCallProbe.probe(endpoint(4096), model, 3);
+
+        String user = sent.get(0).get(1).content();
+        assertThat(user).doesNotContain("report_status");
+        // ...while the tool it must select is still the one advertised first.
+        assertThat(sent.get(0)).isNotNull();
+    }
 }
