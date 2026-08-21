@@ -529,19 +529,36 @@ always sent — an endpoint without the key is unaffected. A value other than `o
 fails config load naming the key, rather than reaching the network and coming back as a 500 that
 mentions nothing about `sdd.yml`.
 
-`wire: gigachat` speaks GigaChat's own function-calling protocol behind that OpenAI face. The
-`tools` declaration goes over unchanged, but a call and its result must be spelled GigaChat's way.
+`wire: gigachat` speaks GigaChat's own function-calling protocol behind that OpenAI face —
+**including how the tools are declared**, which is the setting's single most important effect.
 This was settled by sending one three-message conversation ten ways against a live gateway
 (`gigachat-toolresult-probe.py` in the diagnostics repo); exactly one shape was accepted, and each
 refusal named its rule:
 
 | | `openai` | `gigachat` | what refusing it says |
 |---|---|---|---|
+| **the declarations** | `tools: [{type, function:{name,…}}]` | **`functions: [{name,…}]`** — the inner object directly | *nothing.* HTTP 200, and the model is given **no tools at all** |
 | an assistant call | `tool_calls: [ … ]`, `arguments` a JSON string | one `function_call: {name, arguments}`, `arguments` an **object** | *every function result must have an assistant function call in history* |
 | a result's role | `tool`, paired by `tool_call_id` | `function`, paired by `name`, no id | *function content must contain FunctionResult* |
 | a result's content | the text the tool produced | a **string** that itself parses as JSON | plain text → *invalid function result … JSON parse error*; an object → `HTTP 400` |
 | assistant turn that is only calls | `content` omitted | `content` present, empty if none | |
 | a reply's thinking | `<think>…</think>` inline, stripped on arrival | a `reasoning_content` field, sent back with its turn | |
+
+**The declaration row is the one that fails silently, and it is why this setting is not optional
+on such a gateway.** Sending the same conversation twice against a live one, differing only in
+that key (`gigachat-tools-vs-functions.sh` in the diagnostics repo): under `tools[]` the model
+replied *"there is no tool specified in the conversation — I don't have tools unless
+specified"*, while under `functions[]` the same model returned a structured
+`function_call: {"name": "sdd_probe_ack", …}`. The request was accepted and answered `200` both
+times.
+
+Everything downstream of that mistake looks like something else. Six models across five families
+were observed "inventing tool names" — they were hallucinating a plausible tool out of the
+request's own wording, having been handed none — and two said outright they had no tools. None of
+it is visible without reading `reasoning_content`, and none of it is fixed by changing model,
+lowering the declaration count, or setting `single_tool`. It is also what `gpt2giga` was really
+doing for sdd: that proxy translated `tools` into `functions`, which is why the chain worked
+through it.
 
 **One call per turn is all this protocol can express** — `function_call` is a single object, not an
 array — so a reply carrying several is truncated to the first on this wire. That loses work the

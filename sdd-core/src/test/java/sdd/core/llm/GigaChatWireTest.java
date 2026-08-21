@@ -315,4 +315,62 @@ class GigaChatWireTest {
 
         assertThat(resp.message().reasoningContent()).isEqualTo("I have a tool called \"zulu\".");
     }
+
+    // ---------------------------------------------------- declarations: tools[] vs functions[]
+
+    /**
+     * The measurement this wire exists to honour, and the one that took longest to find.
+     *
+     * <p>Same conversation, sent to one gateway twice, differing only in this key. Under
+     * {@code tools[]} the model answered "there is no tool specified in the conversation… I don't
+     * have tools unless specified" — HTTP 200, and NOTHING reached the model. Under
+     * {@code functions[]} the same model returned a structured
+     * {@code function_call {"name":"sdd_probe_ack"}}.
+     */
+    @Test
+    void theGigachatWireDeclaresFunctionsNotTools() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+
+        model(WireFormat.GIGACHAT).complete(conversation(toolCallTurn("\n\n\n", null)));
+
+        JsonNode body = sentBody();
+        assertThat(body.has("tools")).isFalse();
+        JsonNode functions = body.path("functions");
+        assertThat(functions.isArray()).isTrue();
+        assertThat(functions).hasSize(1);
+        // The inner object DIRECTLY, not wrapped in {"type":"function","function":{…}}.
+        JsonNode fn = functions.get(0);
+        assertThat(fn.has("type")).isFalse();
+        assertThat(fn.has("function")).isFalse();
+        assertThat(fn.path("name").asText()).isEqualTo("list_directory");
+        assertThat(fn.path("description").asText()).isEqualTo("List a directory.");
+        assertThat(fn.path("parameters").path("type").asText()).isEqualTo("object");
+    }
+
+    /** And the default wire is untouched: every existing workspace is on it. */
+    @Test
+    void theOpenAiWireStillDeclaresToolsInTheNestedShape() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+
+        model(WireFormat.OPENAI).complete(conversation(toolCallTurn(null, null)));
+
+        JsonNode body = sentBody();
+        assertThat(body.has("functions")).isFalse();
+        JsonNode tool = body.path("tools").get(0);
+        assertThat(tool.path("type").asText()).isEqualTo("function");
+        assertThat(tool.path("function").path("name").asText()).isEqualTo("list_directory");
+    }
+
+    /** A request that declares nothing must not grow an empty key on either wire. */
+    @Test
+    void noDeclarationsMeansNoKeyAtAll() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+        ChatRequest bare = new ChatRequest("Qwen3.6-35B", List.of(ChatMessage.user("go")),
+                List.of(), 256, 0.0);
+
+        model(WireFormat.GIGACHAT).complete(bare);
+
+        assertThat(sentBody().has("functions")).isFalse();
+        assertThat(sentBody().has("tools")).isFalse();
+    }
 }

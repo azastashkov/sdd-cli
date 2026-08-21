@@ -65,7 +65,13 @@ models:
   # rejected with the exact `openssl pkcs8 -topk8 -nocrypt` command to convert
   # it.
   #
-  # If the gateway is the GigaChat one, add `wire: gigachat` to each
+  # If the gateway is the GigaChat one, add `wire: gigachat` to each — and note this is
+  # NOT optional there. That setting is what makes sdd declare its tools as GigaChat's
+  # `functions: [...]` instead of OpenAI's `tools: [...]`, and a gateway that reads only
+  # the former accepts the latter, answers HTTP 200, and hands the model NO TOOLS. The
+  # model then invents a plausible tool name out of the request's own wording, which reads
+  # like a model fault and is not. Measured both ways against a live gateway with
+  # gigachat-tools-vs-functions.sh.
   # tier and point base_url straight at it — no gpt2giga proxy in between. The
   # proxy translates OpenAI `tools` into GigaChat's native `functions`, and that
   # translation is where function calling failed by DECLARATION COUNT: measured

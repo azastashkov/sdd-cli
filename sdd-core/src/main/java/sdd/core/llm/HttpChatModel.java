@@ -32,8 +32,11 @@ public final class HttpChatModel implements ChatModel {
      *  {@link #readLegacyFunctionCall}. Distinct so a transcript reader can see it. */
     public static final String SYNTHETIC_CALL_ID_PREFIX = "sdd-synthesized-";
 
+    /** {@code functions} is here for the same reason {@code tools} is: on the GigaChat wire it is
+     *  the key the declarations go out under, and an extra_body entry overwriting it would strip
+     *  every tool from the request while looking like a configuration nicety. */
     private static final Set<String> PROTECTED_BODY_KEYS =
-            Set.of("model", "messages", "tools", "max_tokens", "temperature", "stream");
+            Set.of("model", "messages", "tools", "functions", "max_tokens", "temperature", "stream");
 
     private final ModelEndpoint endpoint;
     private final int maxAttempts;
@@ -200,11 +203,22 @@ public final class HttpChatModel implements ChatModel {
             }
         }
         if (!req.tools().isEmpty()) {
-            ArrayNode tools = root.putArray("tools");
+            // Two spellings of the same declaration. OpenAI nests it under {"type":"function",
+            // "function":{...}} in a `tools` array; GigaChat takes the inner object directly in a
+            // `functions` array. A gateway that reads only the latter accepts the former, answers
+            // 200, and hands the model NOTHING — see WireFormat.declaresFunctions for the
+            // measurement, and note that nothing about the failure says which happened.
+            boolean asFunctions = wire.declaresFunctions();
+            ArrayNode declarations = root.putArray(asFunctions ? "functions" : "tools");
             for (ToolSpec t : req.tools()) {
-                ObjectNode tool = tools.addObject();
-                tool.put("type", "function");
-                ObjectNode fn = tool.putObject("function");
+                ObjectNode fn;
+                if (asFunctions) {
+                    fn = declarations.addObject();
+                } else {
+                    ObjectNode tool = declarations.addObject();
+                    tool.put("type", "function");
+                    fn = tool.putObject("function");
+                }
                 fn.put("name", t.name());
                 fn.put("description", t.description());
                 try {

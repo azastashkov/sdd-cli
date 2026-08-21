@@ -12,7 +12,7 @@ import java.util.Locale;
  * entirely, and a model's thinking is not part of the conversation.
  *
  * <p>{@link #GIGACHAT} is GigaChat's own function-calling protocol, behind a gateway that presents
- * an OpenAI face. It takes the OpenAI {@code tools} DECLARATION unchanged, but a call and its
+ * an OpenAI face. A call and its
  * result must be spelled GigaChat's way. Measured by sending one three-message conversation ten
  * ways against a live gateway; exactly one shape was accepted, and the refusals named the rules:
  *
@@ -87,6 +87,27 @@ public enum WireFormat {
 
     /** Whether {@code reasoning_content} is read off replies and sent back with the turn it came from. */
     boolean carriesReasoning() {
+        return this == GIGACHAT;
+    }
+
+    /**
+     * Whether declarations go out as GigaChat's {@code functions[]} rather than OpenAI's
+     * {@code tools[]}.
+     *
+     * <p><b>Measured, and it is the difference between working and silently not.</b> The same
+     * conversation was sent to one gateway twice, differing only in this key
+     * ({@code gigachat-tools-vs-functions.sh}). Under {@code tools[]} the model answered "there is
+     * no tool specified in the conversation… I don't have tools unless specified" — the gateway
+     * accepted the request, returned HTTP 200, and passed the model NOTHING. Under
+     * {@code functions[]} the same model returned a structured
+     * {@code function_call: {"name": "sdd_probe_ack", …}}.
+     *
+     * <p>That one fact explains a long trail of wrong diagnoses: models appearing to "invent tool
+     * names" were hallucinating a tool from the request's own wording, because they had been given
+     * none. It is also why {@code gpt2giga} worked — translating {@code tools} into
+     * {@code functions} was the thing that proxy did.
+     */
+    boolean declaresFunctions() {
         return this == GIGACHAT;
     }
 }
