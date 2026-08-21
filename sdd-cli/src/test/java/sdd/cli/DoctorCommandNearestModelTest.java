@@ -58,6 +58,16 @@ class DoctorCommandNearestModelTest {
         assertThat(DoctorCommand.nearest(null, SERVED)).isEmpty();
     }
 
+    /**
+     * A case-only difference is a DIFFERENT diagnosis, handled before this runs — but nearest must
+     * still find it, since that is what makes the exact spelling printable.
+     */
+    @Test
+    void aCaseOnlyDifferenceIsTheNearestOfAll() {
+        assertThat(DoctorCommand.nearest("deepseek-v4-pro", SERVED))
+                .first().isEqualTo("DeepSeek-V4-Pro");
+    }
+
     /** Three shared characters is a coincidence, not a suggestion. */
     @Test
     void aThreeCharacterOverlapIsNotEnough() {

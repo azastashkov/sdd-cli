@@ -463,6 +463,22 @@ public final class DoctorCommand implements Callable<Integer> {
             return;
         }
         var out = spec.commandLine().getOut();
+        // A name that differs ONLY in case is its own diagnosis. Whether the gateway is
+        // case-sensitive is unknown and not sdd's to assume: the check stays exact, because
+        // silence on a tier whose every completion 404s is the worse failure, but saying "not
+        // served" about a name that is served in different capitals would be misleading.
+        for (String candidate : result.models()) {
+            if (candidate.equalsIgnoreCase(ep.model())) {
+                out.println("    configured model '" + ep.model() + "' is served here as '"
+                        + candidate + "' — the CAPITALISATION differs. Use the exact string above: "
+                        + "if this gateway matches names case-sensitively every completion will "
+                        + "fail with \"No such model\", and if it does not, nothing is lost by "
+                        + "spelling it the way the listing does");
+                diagnostics.note("model:" + name + ": case mismatch configured=" + ep.model()
+                        + " served=" + candidate);
+                return;
+            }
+        }
         List<String> near = nearest(ep.model(), result.models());
         out.println("    configured model '" + ep.model() + "' is NOT served here — this gateway "
                 + "offers: " + String.join(", ", result.models()));
