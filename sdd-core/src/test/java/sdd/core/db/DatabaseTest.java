@@ -27,7 +27,7 @@ class DatabaseTest {
      * once so adding a migration is a one-line change here rather than a hunt through a dozen
      * literals — which is exactly how the number silently drifts out of agreement with production.
      */
-    private static final int CURRENT = 7;
+    private static final int CURRENT = 8;
 
     @TempDir Path ws;
 
@@ -43,6 +43,7 @@ class DatabaseTest {
                     "java_type", "api_member", "api_usage", "file_ref",
                     "rest_endpoint", "rest_client", "rest_call_edge",
                     "kafka_topic", "kafka_role", "config_property", "repo_card",
+                    "attachment_description",
                     "meta", "fts_symbol", "v_repo_dep_edge");
         }
     }

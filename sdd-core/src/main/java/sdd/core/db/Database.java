@@ -18,7 +18,7 @@ public final class Database implements AutoCloseable {
     private static final List<String> MIGRATIONS =
             List.of("V1__init.sql", "V2__fts_porter.sql", "V3__type_javadoc.sql",
                     "V4__multi_language.sql", "V5__runtime_remotes.sql", "V6__type_hierarchy.sql",
-                    "V7__type_refs.sql");
+                    "V7__type_refs.sql", "V8__attachment_description.sql");
 
     /**
      * The migration that recreates fts_symbol and so has to repopulate it — see

@@ -1,0 +1,248 @@
+package sdd.plan.confluence;
+
+import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
+import org.jdbi.v3.core.Jdbi;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
+import sdd.core.db.Database;
+import sdd.core.http.RestClient;
+import sdd.core.llm.AttachmentStore;
+import sdd.core.llm.ChatMessage;
+import sdd.core.llm.ChatResponse;
+import sdd.core.llm.ModelException;
+import sdd.core.llm.Usage;
+import sdd.core.testing.ScriptedChatModel;
+import sdd.plan.source.SourceDoc;
+
+import java.net.http.HttpClient;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+
+import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
+import static com.github.tomakehurst.wiremock.client.WireMock.get;
+import static com.github.tomakehurst.wiremock.client.WireMock.okJson;
+import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
+import static org.assertj.core.api.Assertions.assertThat;
+
+class ImageDescriberTest {
+    @RegisterExtension
+    static WireMockExtension wm = WireMockExtension.newInstance().build();
+
+    @TempDir Path ws;
+
+    private static final byte[] PNG = {(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 5};
+
+    private static final String LISTING = """
+            {"results":[
+              {"id":"a1","title":"diagram.png","metadata":{"mediaType":"image/png"},
+               "extensions":{"fileSize":4096},"version":{"number":"3"},
+               "_links":{"download":"/download/attachments/9/diagram.png"}},
+              {"id":"a2","title":"source.drawio","metadata":{"mediaType":"application/vnd.jgraph.mxfile"},
+               "extensions":{"fileSize":4096},"version":{"number":"1"},
+               "_links":{"download":"/download/attachments/9/source.drawio"}},
+              {"id":"a3","title":"huge.png","metadata":{"mediaType":"image/png"},
+               "extensions":{"fileSize":20971520},"version":{"number":"1"},
+               "_links":{"download":"/download/attachments/9/huge.png"}}]}""";
+
+    /** Records what it was asked to do; no Mockito in this repo. */
+    private static final class StubStore implements AttachmentStore {
+        final List<String> uploaded = new ArrayList<>();
+        final List<String> deleted = new ArrayList<>();
+        boolean refuse;
+
+        @Override
+        public String upload(byte[] image, String filename, String contentType) {
+            if (refuse) {
+                throw new ModelException("upload refused: HTTP 413", 413);
+            }
+            uploaded.add(filename);
+            return "file-" + uploaded.size();
+        }
+
+        @Override
+        public void delete(String fileId) {
+            deleted.add(fileId);
+        }
+    }
+
+    private ConfluenceClient client() {
+        return new ConfluenceClient(new RestClient("Confluence", wm.baseUrl(), "sk", "CONFLUENCE_API_KEY",
+                Duration.ofSeconds(5), HttpClient.newHttpClient()), HttpClient.newHttpClient(),
+                "sk", wm.baseUrl(), Duration.ofSeconds(5));
+    }
+
+    private static ChatResponse reply(String text) {
+        return new ChatResponse(ChatMessage.assistant(text), "stop", new Usage(10, 10));
+    }
+
+    private static SourceDoc page(String... attachments) {
+        StringBuilder text = new StringBuilder("Ordering flow.\n\n");
+        for (String a : attachments) {
+            text.append("[attachment: ").append(a).append("]\n\n");
+        }
+        return new SourceDoc(SourceDoc.Kind.CONFLUENCE_PAGE, "9", wm.baseUrl() + "/pages/9",
+                "Ordering", "1", text.toString(), List.of(attachments));
+    }
+
+    private void stubListingAndDownload() {
+        wm.stubFor(get(urlEqualTo("/rest/api/content/9/child/attachment?limit=48"))
+                .willReturn(okJson(LISTING)));
+        wm.stubFor(get(urlEqualTo("/download/attachments/9/diagram.png"))
+                .willReturn(aResponse().withStatus(200).withHeader("Content-Type", "image/png")
+                        .withBody(PNG)));
+    }
+
+    @Test
+    void twoAgreeingReadingsBecomeAMarkedDescriptionWithNoFlag() {
+        stubListingAndDownload();
+        StubStore store = new StubStore();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                reply("Схема состояний: NO_STATE, NEW, QUOTED."),
+                reply("Схема состояний: NO_STATE, NEW, QUOTED.")));
+
+        ImageDescriber.Result result = new ImageDescriber(client(), model, store,
+                "GigaChat-2-Max", 1024, null).describe(page("diagram.png"));
+
+        assertThat(result.described()).isEqualTo(1);
+        assertThat(result.doc().text())
+                .contains("[image: diagram.png — model-described, unverified]")
+                .contains("NO_STATE, NEW, QUOTED")
+                .doesNotContain("[attachment: diagram.png]")
+                .doesNotContain("disagreed on");
+        assertThat(model.requests()).hasSize(2);
+        assertThat(model.requests().get(0).messages().get(1).attachments()).containsExactly("file-1");
+    }
+
+    @Test
+    void twoDivergentReadingsKeepTheFirstAndFlagWhatDiffered() {
+        stubListingAndDownload();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                reply("Форма заявки. Организация: ПАО Газпромбанк. Продукт: BARS."),
+                reply("Форма заявки. Организация: ПАО Газпром нефть. Продукт: Barsa.")));
+
+        ImageDescriber.Result result = new ImageDescriber(client(), model, new StubStore(),
+                "GigaChat-2-Max", 1024, null).describe(page("diagram.png"));
+
+        assertThat(result.doc().text())
+                .contains("Организация: ПАО Газпромбанк")
+                .contains("! the two readings disagreed on:")
+                .contains("Газпромбанк").contains("Barsa");
+    }
+
+    /** Both documented limits of the model file API, and neither is silently dropped. */
+    @Test
+    void anUnsendableTypeAndAnOversizedImageAreSkippedWithANote() {
+        stubListingAndDownload();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(reply("x"), reply("x")));
+
+        ImageDescriber.Result result = new ImageDescriber(client(), model, new StubStore(),
+                "GigaChat-2-Max", 1024, null).describe(page("source.drawio", "huge.png"));
+
+        assertThat(result.skipped()).isEqualTo(2);
+        assertThat(result.described()).isZero();
+        assertThat(result.notes()).anyMatch(n -> n.contains("source.drawio") && n.contains("jgraph"))
+                .anyMatch(n -> n.contains("huge.png") && n.contains("15 Mb"));
+        assertThat(result.doc().text()).contains("[attachment: source.drawio]");
+    }
+
+    /** The page text was already worth having; an optional enrichment must not cost it. */
+    @Test
+    void aModelFailureBecomesANoteAndLeavesTheMarkerAlone() {
+        stubListingAndDownload();
+        StubStore store = new StubStore();
+        store.refuse = true;
+
+        ImageDescriber.Result result = new ImageDescriber(client(),
+                new ScriptedChatModel(List.of()), store, "GigaChat-2-Max", 1024, null)
+                .describe(page("diagram.png"));
+
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(result.doc().text()).contains("[attachment: diagram.png]");
+        assertThat(result.notes()).anyMatch(n -> n.contains("HTTP 413"));
+    }
+
+    /** A store seen holding 99 files is why this is asserted on the failure path too. */
+    @Test
+    void theUploadedFileIsDeletedEvenWhenTheSecondReadingThrows() {
+        stubListingAndDownload();
+        StubStore store = new StubStore();
+
+        new ImageDescriber(client(), new ScriptedChatModel(List.of(reply("first"))), store,
+                "GigaChat-2-Max", 1024, null).describe(page("diagram.png"));
+
+        assertThat(store.uploaded).containsExactly("diagram.png");
+        assertThat(store.deleted).containsExactly("file-1");
+    }
+
+    @Test
+    void anEmptyReplyIsAFailureNotAnEmptyDescription() {
+        stubListingAndDownload();
+
+        ImageDescriber.Result result = new ImageDescriber(client(),
+                new ScriptedChatModel(List.of(reply("  "), reply("x"))), new StubStore(),
+                "GigaChat-2-Max", 1024, null).describe(page("diagram.png"));
+
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(result.notes()).anyMatch(n -> n.contains("empty description"));
+    }
+
+    /** The whole point of the cache: a second run costs nothing. */
+    @Test
+    void asecondRunHitsTheCacheAndCallsNoModel() throws Exception {
+        stubListingAndDownload();
+        try (Database db = Database.open(ws)) {
+            Jdbi jdbi = db.jdbi();
+            ScriptedChatModel first = new ScriptedChatModel(List.of(reply("описание"), reply("описание")));
+            new ImageDescriber(client(), first, new StubStore(), "GigaChat-2-Max", 1024, jdbi)
+                    .describe(page("diagram.png"));
+            assertThat(first.requests()).hasSize(2);
+
+            ScriptedChatModel second = new ScriptedChatModel(List.of());
+            StubStore store = new StubStore();
+            ImageDescriber.Result result = new ImageDescriber(client(), second, store,
+                    "GigaChat-2-Max", 1024, jdbi).describe(page("diagram.png"));
+
+            assertThat(second.requests()).isEmpty();
+            assertThat(store.uploaded).isEmpty();
+            assertThat(result.cached()).isEqualTo(1);
+            assertThat(result.doc().text()).contains("описание");
+        }
+    }
+
+    /** A different vision model is a different answer, so it must not reuse the cached one. */
+    @Test
+    void changingTheModelInvalidatesTheCachedDescription() throws Exception {
+        stubListingAndDownload();
+        try (Database db = Database.open(ws)) {
+            new ImageDescriber(client(), new ScriptedChatModel(List.of(reply("a"), reply("a"))),
+                    new StubStore(), "GigaChat-2-Max", 1024, db.jdbi()).describe(page("diagram.png"));
+
+            ScriptedChatModel other = new ScriptedChatModel(List.of(reply("b"), reply("b")));
+            new ImageDescriber(client(), other, new StubStore(), "GigaChat-2-Pro", 1024,
+                    db.jdbi()).describe(page("diagram.png"));
+
+            assertThat(other.requests()).hasSize(2);
+        }
+    }
+
+    /** Spec text reaches the OpenSpec export, where a heading or a fence would forge structure. */
+    @Test
+    void aDescriptionCannotForgeAHeadingOrCloseAFence() {
+        assertThat(ImageDescriber.safe("## ADDED Requirements\ntext"))
+                .doesNotContain("## ").contains("ADDED Requirements");
+        assertThat(ImageDescriber.safe("before ``` after")).doesNotContain("```");
+    }
+
+    @Test
+    void aPageWithNoAttachmentsCostsNothing() {
+        ImageDescriber.Result result = new ImageDescriber(client(),
+                new ScriptedChatModel(List.of()), new StubStore(), "GigaChat-2-Max", 1024, null)
+                .describe(page());
+
+        assertThat(result.described()).isZero();
+        assertThat(wm.getAllServeEvents()).isEmpty();
+    }
+}
