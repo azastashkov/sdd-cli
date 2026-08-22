@@ -89,6 +89,14 @@ public internet. Configure it under `sdd.yml`'s `atlassian:` block (see
   The variable name is not special-cased anywhere in `sdd`'s own code — it is
   parsed out of whichever `${VAR}` reference `sdd.yml` actually contains — so
   any name works, these are simply the ones this estate's shell profile uses.
+- **Images on a Confluence page**, under `atlassian.describe_images` — names a
+  `models:` key and turns a page's diagrams and mockups into described text the
+  planner can use, instead of inert `[attachment: name]` markers. Off unless
+  set. Each image is read twice and the description carries both a
+  model-generated marker and a line naming whatever the two readings disagreed
+  on, because measurement showed structure survives and dense values do not.
+  Needs a `wire: gigachat` endpoint; only GigaChat 2 Max and 2 Pro document
+  image input.
 - **A private CA and a forward proxy**, under `atlassian.tls`/
   `atlassian.proxy`, for the common case where self-hosted Jira/Confluence/
   Bitbucket sit behind a certificate the JDK's bundled trust store does not

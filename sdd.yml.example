@@ -179,6 +179,12 @@ models:
   #   tls: *corp_tls                     # same cert, key and CA for every tier
   #   extra_body:
   #     repetition_penalty: 1
+  # vision:                        # only needed when atlassian.describe_images is set
+  #   base_url: ${MODEL_URL}
+  #   model: GigaChat-2-Max        # 2 Max and 2 Pro document image input; 3 Ultra does not
+  #   max_tokens: 4096             # a description, not an agent turn
+  #   wire: gigachat               # mandatory — no other wire has a file store
+  #   tls: *corp_tls
   # pro:
   #   base_url: ${MODEL_URL}
   #   model: GigaChat-3-Ultra
@@ -323,6 +329,23 @@ excludes: []              # workspace directories to skip
 #   confluence:
 #     base_url: ${CONFLUENCE_URL} # e.g. https://confluence.corp.local
 #     token: ${CONFLUENCE_API_KEY}
+#   # describe_images names a models: key used to describe a Confluence page's IMAGES, so a
+#   # sequence diagram or a UI mockup becomes text the planner can turn into requirements
+#   # instead of an inert [attachment: name] marker. ABSENT MEANS OFF, and off is the default:
+#   # one image costs a download, an upload, TWO model calls and a delete, and a real page in
+#   # this estate carried 26 attachments. Results are cached on page+file+VERSION+model+prompt,
+#   # so a re-run describes nothing and does not rewrite a spec somebody has reviewed.
+#   #
+#   # It must name a `wire: gigachat` endpoint — no other wire has a file store to upload to,
+#   # and config loading fails if it does not. Only GigaChat models take images at all, and
+#   # only 2 Max and 2 Pro document doing so.
+#   #
+#   # Each image is read TWICE and the two readings compared. Measured 2026-08-22: two reads of
+#   # one mapping form disagreed on the counterparty bank AND the product name, while two reads
+#   # of a state diagram agreed exactly. Structure survives; dense values do not. So the
+#   # description enters the spec MARKED as model-generated and unverified, followed by a line
+#   # naming whatever the two reads did not agree on. Read that line before trusting a value.
+#   # describe_images: vision
 #   bitbucket:
 #     base_url: ${BITBUCKET_URL}  # e.g. https://bitbucket.corp.local
 #     token: ${BITBUCKET_API_KEY}

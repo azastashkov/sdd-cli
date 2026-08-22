@@ -20,6 +20,13 @@ package sdd.core.config;
  * at one level and bounded independently by {@code maxLinkedIssues}. {@code writeBack} and {@code
  * pullRequests} gate write access — off by default, since a tool that can silently start
  * commenting on tickets or opening PRs needs an explicit opt-in.
+ *
+ * <p>{@code describeImages} names a {@code models:} key used to describe a Confluence page's
+ * images, or null — which is off, and is the default. It sits here rather than under
+ * {@code confluence:} for the same reason {@code followDepth} does: that record is shared with
+ * Jira, where the key would mean nothing. Off by default because describing one image costs a
+ * download, an upload, two model calls and a delete, and a real page in this estate carried 26
+ * attachments.
  */
 public record AtlassianConfig(
         AtlassianTls tls,
@@ -31,4 +38,17 @@ public record AtlassianConfig(
         int maxPages,
         int maxLinkedIssues,
         WriteBack writeBack,
-        boolean pullRequests) {}
+        boolean pullRequests,
+        String describeImages) {
+
+    /**
+     * Pre-{@code describeImages} shape, so every existing construction site keeps compiling — the
+     * same delegating idiom {@code ModelEndpoint} and {@code ChatMessage} use.
+     */
+    public AtlassianConfig(AtlassianTls tls, AtlassianProxy proxy, AtlassianSite jira,
+            AtlassianSite confluence, BitbucketSite bitbucket, int followDepth, int maxPages,
+            int maxLinkedIssues, WriteBack writeBack, boolean pullRequests) {
+        this(tls, proxy, jira, confluence, bitbucket, followDepth, maxPages, maxLinkedIssues,
+                writeBack, pullRequests, null);
+    }
+}

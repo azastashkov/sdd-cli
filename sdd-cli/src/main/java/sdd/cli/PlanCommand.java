@@ -21,6 +21,7 @@ import sdd.core.llm.ChatModel;
 import sdd.core.llm.HttpChatModel;
 import sdd.core.progress.Progress;
 import sdd.core.retrieve.FtsRetriever;
+import sdd.plan.confluence.ImageDescriber;
 import sdd.plan.confluence.ConfluenceClient;
 import sdd.plan.confluence.ConfluenceExportSource;
 import sdd.plan.confluence.ConfluenceNormalizer;
@@ -398,6 +399,7 @@ public final class PlanCommand implements Callable<Integer> {
                 throw new IllegalArgumentException("cannot resolve Confluence URL: " + ref);
             }
             SourceDoc doc = confluenceClient.fetchPage(pageId);
+            doc = describeImages(config, confluenceClient, doc, notes, outWriter);
             docs.add(doc);
             if (pageAnchorId == null) {
                 pageAnchorId = doc.id();
@@ -435,6 +437,42 @@ public final class PlanCommand implements Callable<Integer> {
         }
         NormalizedSpec normalized = jiraSpecSource.assemble(docs, notes, fallbackId);
         return writeNormalized(normalized, target, outWriter);
+    }
+
+    /**
+     * Expands this page's image markers into model-written descriptions, when configured.
+     *
+     * <p>A no-op unless {@code atlassian.describe_images} names a model — absent is off, and every
+     * byte of output is then what it was before this feature existed. Live only for a fetched PAGE:
+     * an exported HTML file keeps only an image's filename, with no page and no attachment id to
+     * fetch bytes against.
+     *
+     * <p>The database is opened here rather than at the top of the command, because a Confluence
+     * normalization has never needed an index and must not start needing one. A run that describes
+     * nothing never touches it; a run that does is already doing far more expensive things.
+     *
+     * <p>Every failure is a note. The page text is already fetched and worth having, and an
+     * optional enrichment must not be able to cost it.
+     */
+    private SourceDoc describeImages(SddConfig config, ConfluenceClient client, SourceDoc doc,
+            List<String> notes, PrintWriter outWriter) {
+        String modelKey = config.atlassian() == null ? null : config.atlassian().describeImages();
+        if (modelKey == null || doc.attachments().isEmpty()) {
+            return doc;
+        }
+        ModelEndpoint vision = config.models().get(modelKey);
+        HttpChatModel model = new HttpChatModel(vision);
+        try (Database db = Database.open(config.workspace())) {
+            ImageDescriber.Result result = new ImageDescriber(client, model, model, vision.model(),
+                    vision.maxTokens(), db.jdbi()).describe(doc);
+            notes.addAll(result.notes());
+            outWriter.println("images: " + result.described() + " described, " + result.cached()
+                    + " cached, " + result.skipped() + " skipped, " + result.failed() + " failed");
+            return result.doc();
+        } catch (RuntimeException e) {
+            notes.add("[image] describing images on page " + doc.id() + " failed: " + e.getMessage());
+            return doc;
+        }
     }
 
     /**

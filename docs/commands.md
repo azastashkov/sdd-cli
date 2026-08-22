@@ -826,6 +826,49 @@ Confluence pages when `atlassian.confluence` is configured, bounded by
 material is ingested with no link-following rather than erroring
 (`PlanCommand.java:251-255`).
 
+**Images on a Confluence page, when `atlassian.describe_images` is set.** Off
+unless that key names a `models:` entry; absent, every byte of output is what it
+was before the feature existed. A page's `[attachment: name]` markers are
+expanded in place into model-written descriptions, so a sequence diagram or a UI
+mockup becomes text the normalizer can turn into requirements rather than an
+inert filename. Live only for a fetched **page**: an exported HTML file keeps
+only an image's filename, with no page and no attachment id to fetch bytes
+against (`ConfluenceExtract.java:167-178`).
+
+The endpoint must be on the gigachat wire — no other wire has a file store to
+upload to, and config loading fails naming the wire if it is not
+(`ConfluenceClient.listAttachments`, `HttpChatModel.upload`). Only jpeg, png,
+tiff and bmp under 15 Mb are sent; anything else is listed with a note rather
+than dropped in silence, because "no images" and "six images, none in a usable
+format" need different fixes. Twelve images per page, then a note. Uploaded
+files are deleted after use.
+
+**Each image is read twice, and the description says so.** Measured 2026-08-22
+against `GigaChat-2-Max`: two readings of a state diagram agreed exactly, while
+two readings of a dense mapping form disagreed on the counterparty bank and the
+product name and invented an exchange. Structure survives; dense values do not.
+So the first reading is kept, marked, and followed by a line naming whatever the
+two did not agree on:
+
+```
+[image: MM mapping.png — model-described, unverified]
+A request form with roughly 24 labelled fields …
+! the two readings disagreed on: Газпромбанк, BARS, Barsa, ММВБ
+```
+
+Nothing decides which reading was right. A third model refereeing the first two
+would be unverifiable in exactly the way they already are, and nobody is going
+to open the diagram to check. **Treat a value in one of these descriptions as a
+hint, never a fact** — that is what the marker is for, and a spec that loses it
+makes a wrong counterparty indistinguishable from a reviewed requirement.
+
+Descriptions are cached on page + filename + attachment **version** + model +
+system prompt (`attachment_description`, migration `V8`), so a re-run describes
+nothing and does not rewrite a spec somebody has already reviewed. The version is
+in the key because a diagram re-uploaded under the same filename is a different
+image. The database is opened only when the feature is on — a Confluence
+normalization has never needed an index and does not start needing one.
+
 **`--out` and default output paths** (`PlanCommand.java:139-187, 235-327`):
 
 | Refs given | Default target (no `--out`) |

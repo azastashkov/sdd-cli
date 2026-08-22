@@ -235,6 +235,23 @@ public final class ConfigLoader {
 
         Object atlassianNode = root.get("atlassian");
         AtlassianConfig atlassian = atlassianNode == null ? null : parseAtlassian(atlassianNode, env);
+        // Structural, like run.escalation_ladder's own check above and like wire/tool_calls: a key
+        // naming a model that cannot take an image would otherwise surface as a 400 from the
+        // gateway, several layers away, in the middle of ingesting a page. Only the gigachat wire
+        // has a file store to upload to — see WireFormat.uploadsAttachments.
+        if (atlassian != null && atlassian.describeImages() != null) {
+            ModelEndpoint vision = models.get(atlassian.describeImages());
+            if (vision == null) {
+                throw new ConfigException("atlassian.describe_images: unknown model '"
+                        + atlassian.describeImages() + "' — not declared under models:");
+            }
+            if (!vision.wire().uploadsAttachments()) {
+                throw new ConfigException("atlassian.describe_images: models."
+                        + atlassian.describeImages() + " uses wire '" + vision.wire()
+                        + "', which has no file store to upload an image to — an image can only be "
+                        + "sent on the gigachat wire");
+            }
+        }
 
         return new SddConfig(workspace, Map.copyOf(models), Map.copyOf(jdkHomes), nodeHome, gradleHome,
                 excludes, Map.copyOf(artifactOverrides), List.copyOf(manualEdges),
@@ -270,9 +287,11 @@ public final class ConfigLoader {
         WriteBack writeBack = parseWriteBack(m.get("write_back"));
         boolean pullRequests = m.get("pull_requests") != null
                 && parseBool("atlassian.pull_requests", String.valueOf(m.get("pull_requests")));
+        String describeImages = m.get("describe_images") == null
+                ? null : str(m.get("describe_images"), env, "atlassian.describe_images");
 
         return new AtlassianConfig(tls, proxy, jira, confluence, bitbucket, followDepth, maxPages,
-                maxLinkedIssues, writeBack, pullRequests);
+                maxLinkedIssues, writeBack, pullRequests, describeImages);
     }
 
     private static AtlassianTls parseAtlassianTls(Object node, Function<String, String> env) {

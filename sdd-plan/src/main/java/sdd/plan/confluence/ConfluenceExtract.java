@@ -15,8 +15,11 @@ import java.util.regex.Pattern;
 /**
  * Deterministic text extraction from a Confluence export — storage-format XHTML or exported
  * HTML. No model involvement: headings/paragraphs/lists/tables/code become markdown-ish text;
- * images are NOT interpreted (design amendment) — they become [attachment: name] markers and
- * entries in Extracted.attachments so the Gate-1 reviewer knows visual context exists.
+ * images are NOT interpreted HERE — they become [attachment: name] markers and entries in
+ * Extracted.attachments so the Gate-1 reviewer knows visual context exists. Since 2026-08-22
+ * {@code ImageDescriber} can expand those markers into model-written descriptions, but it runs as a
+ * post-pass over the fetched document and never from inside this class: everything here is
+ * deterministic and shared with Jira, and that is worth keeping.
  * Walks child NODES (not just elements): bare text directly inside div/body wrappers must
  * survive — silent prose loss would starve the normalizer without anyone noticing.
  */

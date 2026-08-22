@@ -1235,4 +1235,73 @@ class ConfigLoaderTest {
                 .hasMessageContaining("extra_body")
                 .hasMessageContaining("null");
     }
+
+    @Test
+    void describeImagesNamesAModel() throws Exception {
+        SddConfig c = ConfigLoader.load(write("""
+                workspace: .
+                models:
+                  planner: {base_url: http://p, model: m}
+                  coder: {base_url: http://c, model: m}
+                  vision: {base_url: http://v, model: GigaChat-2-Max, wire: gigachat}
+                atlassian:
+                  confluence: {base_url: http://conf, token: t}
+                  describe_images: vision
+                """), ENV);
+
+        assertThat(c.atlassian().describeImages()).isEqualTo("vision");
+    }
+
+    /** Absent means off, and off must stay the default — describing images costs real money. */
+    @Test
+    void describeImagesIsNullWhenTheKeyIsAbsent() throws Exception {
+        SddConfig c = ConfigLoader.load(write("""
+                workspace: .
+                models:
+                  planner: {base_url: http://p, model: m}
+                  coder: {base_url: http://c, model: m}
+                atlassian:
+                  confluence: {base_url: http://conf, token: t}
+                """), ENV);
+
+        assertThat(c.atlassian().describeImages()).isNull();
+    }
+
+    @Test
+    void describeImagesNamingAnUndeclaredModelFailsLoading() throws Exception {
+        Path dir = write("""
+                workspace: .
+                models:
+                  planner: {base_url: http://p, model: m}
+                  coder: {base_url: http://c, model: m}
+                atlassian:
+                  describe_images: nope
+                """);
+
+        assertThatThrownBy(() -> ConfigLoader.load(dir, ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("unknown model 'nope'");
+    }
+
+    /**
+     * The failure this check exists for. Only the gigachat wire has a file store; naming an openai
+     * endpoint here would otherwise surface as a gateway 400 mid-ingestion, layers from the cause.
+     */
+    @Test
+    void describeImagesNamingAWireWithNoFileStoreFailsLoading() throws Exception {
+        Path dir = write("""
+                workspace: .
+                models:
+                  planner: {base_url: http://p, model: m}
+                  coder: {base_url: http://c, model: m}
+                atlassian:
+                  describe_images: planner
+                """);
+
+        assertThatThrownBy(() -> ConfigLoader.load(dir, ENV))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("no file store")
+                .hasMessageContaining("gigachat wire");
+    }
+
 }
