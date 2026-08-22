@@ -102,6 +102,7 @@ public final class ImageDescriber {
 
         List<String> notes = new ArrayList<>();
         Map<String, String> replacements = new LinkedHashMap<>();
+        Map<String, String> bullets = new LinkedHashMap<>();
         int described = 0;
         int cached = 0;
         int skipped = 0;
@@ -135,6 +136,7 @@ public final class ImageDescriber {
             if (hit.isPresent()) {
                 cached++;
                 replacements.put(filename, render(filename, hit.get()));
+                bullets.put(filename, attachmentEntry(filename, hit.get()));
                 continue;
             }
             if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
@@ -148,6 +150,7 @@ public final class ImageDescriber {
                             attachment.version(), modelName, fresh);
                 }
                 replacements.put(filename, render(filename, fresh));
+                bullets.put(filename, attachmentEntry(filename, fresh));
                 described++;
                 consecutiveFailures = 0;
             } catch (RuntimeException e) {
@@ -161,7 +164,7 @@ public final class ImageDescriber {
             }
         }
 
-        return new Result(withDescriptions(doc, replacements), described, cached, skipped, failed,
+        return new Result(withDescriptions(doc, replacements, bullets), described, cached, skipped, failed,
                 List.copyOf(notes));
     }
 
@@ -229,15 +232,52 @@ public final class ImageDescriber {
                 .strip();
     }
 
-    private static SourceDoc withDescriptions(SourceDoc doc, Map<String, String> replacements) {
-        if (replacements.isEmpty()) {
+    /** How much of a description a single Attachments bullet carries before it is a wall of text. */
+    private static final int SUMMARY_CHARS = 300;
+
+    /**
+     * One {@code ## Attachments} bullet: the filename, the provenance, a summary, and the flag.
+     *
+     * <p>This exists because the full description lives in the page TEXT, which is only ever an
+     * INPUT to the normalizer's model call — what reaches the spec from there is whatever the
+     * planner chose to write, and nothing obliges it to carry the marker along. Without this
+     * bullet, a description naming the wrong counterparty could be absorbed into a requirement
+     * with no sign it came from a model at all, which is the exact failure the marker exists to
+     * prevent. Here it is deterministic: {@code attachmentUnion} copies these strings through
+     * untouched.
+     *
+     * <p>Necessarily one line and never starting with {@code #}: {@code SpecParser}'s bullet
+     * grammar is {@code - (.+)}, it rejects a stray {@code #} line outright, and
+     * {@code PlanCommand.writeNormalized} re-parses its own output — so either mistake aborts the
+     * run rather than degrading.
+     */
+    static String attachmentEntry(String filename, AttachmentDescriptions.Cached value) {
+        String summary = oneLine(safe(value.description()));
+        if (summary.length() > SUMMARY_CHARS) {
+            summary = summary.substring(0, SUMMARY_CHARS).strip() + "…";
+        }
+        String entry = filename + " — model-described, unverified: " + summary;
+        return value.disagreement().isBlank() ? entry : entry + " " + oneLine(value.disagreement());
+    }
+
+    private static String oneLine(String value) {
+        return value.replaceAll("(?U)\\s+", " ").strip();
+    }
+
+    private static SourceDoc withDescriptions(SourceDoc doc, Map<String, String> inText,
+            Map<String, String> inAttachments) {
+        if (inText.isEmpty()) {
             return doc;
         }
         String text = doc.text();
-        for (Map.Entry<String, String> entry : replacements.entrySet()) {
+        for (Map.Entry<String, String> entry : inText.entrySet()) {
             text = text.replace("[attachment: " + entry.getKey() + "]", entry.getValue());
         }
+        List<String> attachments = new ArrayList<>();
+        for (String filename : doc.attachments()) {
+            attachments.add(inAttachments.getOrDefault(filename, filename));
+        }
         return new SourceDoc(doc.kind(), doc.id(), doc.url(), doc.title(), doc.version(), text,
-                doc.attachments());
+                List.copyOf(attachments));
     }
 }

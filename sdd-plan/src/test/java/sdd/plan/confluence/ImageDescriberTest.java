@@ -13,6 +13,7 @@ import sdd.core.llm.ChatResponse;
 import sdd.core.llm.ModelException;
 import sdd.core.llm.Usage;
 import sdd.core.testing.ScriptedChatModel;
+import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.source.SourceDoc;
 
 import java.net.http.HttpClient;
@@ -244,5 +245,98 @@ class ImageDescriberTest {
 
         assertThat(result.described()).isZero();
         assertThat(wm.getAllServeEvents()).isEmpty();
+    }
+
+    /**
+     * The guarantee the page text cannot give. A description in doc.text() is only an INPUT to the
+     * normalizer's model call; what reaches the spec from there is whatever the planner wrote, and
+     * nothing obliges it to carry the marker. The Attachments bullet is copied through verbatim by
+     * attachmentUnion, so the provenance survives whatever the planner does with the prose.
+     */
+    @Test
+    void aDescribedImageCarriesItsProvenanceIntoTheAttachmentsBullet() {
+        stubListingAndDownload();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                reply("Схема состояний заказа: NEW, QUOTED, EXECUTED."),
+                reply("Схема состояний заказа: NEW, QUOTED, EXECUTED.")));
+
+        ImageDescriber.Result result = new ImageDescriber(client(), model, new StubStore(),
+                "GigaChat-2-Max", 1024, null).describe(page("diagram.png"));
+
+        assertThat(result.doc().attachments()).singleElement().asString()
+                .startsWith("diagram.png — model-described, unverified: ")
+                .contains("NEW, QUOTED, EXECUTED");
+    }
+
+    @Test
+    void theBulletCarriesTheDisagreementTooSoAReviewerSeesItInTheSpec() {
+        stubListingAndDownload();
+        ScriptedChatModel model = new ScriptedChatModel(List.of(
+                reply("Организация: ПАО Газпромбанк."),
+                reply("Организация: ПАО Газпром нефть.")));
+
+        ImageDescriber.Result result = new ImageDescriber(client(), model, new StubStore(),
+                "GigaChat-2-Max", 1024, null).describe(page("diagram.png"));
+
+        assertThat(result.doc().attachments()).singleElement().asString()
+                .contains("the two readings disagreed on").contains("Газпромбанк");
+    }
+
+    /** An image nothing described keeps the bare filename the section has always held. */
+    @Test
+    void anUndescribedAttachmentKeepsItsPlainFilename() {
+        stubListingAndDownload();
+
+        ImageDescriber.Result result = new ImageDescriber(client(),
+                new ScriptedChatModel(List.of()), new StubStore(), "GigaChat-2-Max", 1024, null)
+                .describe(page("source.drawio"));
+
+        assertThat(result.doc().attachments()).containsExactly("source.drawio");
+    }
+
+    /**
+     * A bullet is line-oriented: SpecParser's grammar is "- (.+)", it rejects a stray # line, and
+     * PlanCommand re-parses its own output — so a newline or a heading here aborts the whole run
+     * rather than degrading.
+     */
+    @Test
+    void theBulletIsOneLineWithNoHeadingHoweverTheModelFormattedItself() {
+        String entry = ImageDescriber.attachmentEntry("d.png",
+                new AttachmentDescriptions.Cached("## Heading\n\nline one\nline two\n```code```", ""));
+
+        assertThat(entry).doesNotContain("\n").doesNotContain("```");
+        assertThat(entry).startsWith("d.png — ");
+    }
+
+    /** Twelve images of unbounded prose would turn Attachments into the whole document. */
+    @Test
+    void aVeryLongDescriptionIsCappedInTheBullet() {
+        String entry = ImageDescriber.attachmentEntry("d.png",
+                new AttachmentDescriptions.Cached("x".repeat(2000), ""));
+
+        assertThat(entry).hasSizeLessThan(400).endsWith("…");
+    }
+
+    /**
+     * The bullet has to survive render → parse, because PlanCommand.writeNormalized re-parses its
+     * own output before writing and aborts the whole run if it cannot. Asserted with the awkward
+     * characters this format actually contains — an em dash, a colon, a bang, an ellipsis and
+     * Cyrillic — rather than with a tame string.
+     */
+    @Test
+    void anAttachmentBulletSurvivesTheSpecRoundTrip() {
+        String entry = ImageDescriber.attachmentEntry("MM маппинг.png",
+                new AttachmentDescriptions.Cached(
+                        "Форма заявки: Тип, Продукт, Офис. Кнопки: Reject | Leave | Quote.",
+                        "! the two readings disagreed on: Газпромбанк, BARS"));
+        NormalizedSpec spec = new NormalizedSpec("SPEC-1", "Title", "owner", "draft", "goal",
+                "background", List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(entry));
+
+        String rendered = sdd.plan.spec.SpecRenderer.render(spec);
+        NormalizedSpec reparsed = sdd.plan.spec.SpecParser.parse(rendered);
+
+        assertThat(reparsed.attachments()).containsExactly(entry);
+        assertThat(sdd.plan.spec.SpecRenderer.render(reparsed)).isEqualTo(rendered);
     }
 }

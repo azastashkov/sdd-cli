@@ -862,6 +862,25 @@ to open the diagram to check. **Treat a value in one of these descriptions as a
 hint, never a fact** — that is what the marker is for, and a spec that loses it
 makes a wrong counterparty indistinguishable from a reviewed requirement.
 
+**Where it lands, and why in two places.** The full description replaces the
+marker in the page TEXT, which is what the normalizer's model call reads — so it
+becomes requirements the planner writes itself. But that text is only an *input*:
+what reaches `spec.md` from there is whatever the planner chose to write, and
+nothing obliges it to carry the provenance along. So the spec's `## Attachments`
+bullet carries it too, deterministically:
+
+```
+## Attachments
+- MM mapping.png — model-described, unverified: A request form with roughly 24
+  labelled fields … ! the two readings disagreed on: Газпромбанк, BARS
+```
+
+`attachmentUnion` copies that string through untouched, so the marker survives
+whatever the planner does with the prose — and reaches `PlanDrafter`,
+`ModelSeeder` and `sdd explore` as well, since all three are handed the rendered
+spec. The bullet is one line and capped; the full description stays in the page
+text where the length is useful.
+
 Descriptions are cached on page + filename + attachment **version** + model +
 system prompt (`attachment_description`, migration `V8`), so a re-run describes
 nothing and does not rewrite a spec somebody has already reviewed. The version is
