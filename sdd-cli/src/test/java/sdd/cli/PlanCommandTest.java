@@ -886,4 +886,47 @@ class PlanCommandTest {
         assertThat(run.exitCode()).isEqualTo(1);
         assertThat(planner.requests()).isEmpty();
     }
+
+    /**
+     * --fetch-only must stay free of model calls even with describe_images configured.
+     *
+     * <p>The flag exists so a first live run on a closed network can separate the network from the
+     * model: "exercises Jira and Confluence with no model call and nothing written". Image
+     * description was wired into the page-fetch loop, which runs BEFORE the --fetch-only return, so
+     * it silently spent an upload and two model calls per image on the one path that promises
+     * neither. The endpoint here points nowhere: if anything reaches it, this fails.
+     */
+    @Test
+    void fetchOnlyDescribesNoImagesEvenWhenDescribeImagesIsConfigured() throws Exception {
+        wm.stubFor(get(urlEqualTo("/rest/api/content/77?expand=body.storage,version,space"))
+                .willReturn(okJson("""
+                        {"id":"77","title":"Ordering","version":{"number":2},
+                         "body":{"storage":{"value":
+                            "<p>Flow.</p><ac:image><ri:attachment ri:filename='d.png'/></ac:image>"}}}
+                        """)));
+        Files.writeString(ws.resolve("sdd.yml"), yaml() + """
+                atlassian:
+                  confluence:
+                    base_url: %s
+                    token: sk-conf
+                  describe_images: vision
+                """.formatted(wm.baseUrl()));
+        // vision points at a port nothing listens on, so any attempt to use it is a hard failure.
+        Files.writeString(ws.resolve("sdd.yml"), Files.readString(ws.resolve("sdd.yml"))
+                .replace("models:", """
+                        models:
+                          vision: {base_url: 'http://127.0.0.1:1/v1', model: GigaChat-2-Max, wire: gigachat}"""));
+
+        Run run = plan(new PlanCommand(), "--workspace", ws.toString(), "--fetch-only",
+                wm.baseUrl() + "/pages/viewpage.action?pageId=77");
+
+        assertThat(run.exitCode()).as("out was: %s", run.out()).isZero();
+        // --fetch-only prints a provenance summary, not the page text: the attachment is LISTED,
+        // no describe pass ran (no "images:" line), and nothing was described.
+        assertThat(run.out())
+                .contains("attachments: d.png")
+                .contains("no model was called")
+                .doesNotContain("images:")
+                .doesNotContain("model-described");
+    }
 }

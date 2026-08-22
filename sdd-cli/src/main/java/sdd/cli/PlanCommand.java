@@ -399,7 +399,14 @@ public final class PlanCommand implements Callable<Integer> {
                 throw new IllegalArgumentException("cannot resolve Confluence URL: " + ref);
             }
             SourceDoc doc = confluenceClient.fetchPage(pageId);
-            doc = describeImages(config, confluenceClient, doc, notes, outWriter);
+            // Not under --fetch-only. That flag's whole contract is "exercises Jira and Confluence
+            // with no model call and nothing written" (docs/commands.md), and it exists to make a
+            // first live run on a closed network readable by separating the network from the
+            // model. Describing images here would spend an upload and two model calls per image on
+            // the one path that promises neither.
+            if (!fetchOnly) {
+                doc = describeImages(config, confluenceClient, doc, notes, outWriter);
+            }
             docs.add(doc);
             if (pageAnchorId == null) {
                 pageAnchorId = doc.id();
