@@ -56,7 +56,7 @@ final class BitbucketDecisions {
             BitbucketSite bitbucket = BitbucketClients.requireBitbucket(atlassian);
             BitbucketClient client = BitbucketClients.rest(atlassian, run.diagnostics());
             String cloneUrl = RemoteGit.cloneUrl(bitbucket.site().baseUrl(), bitbucket.project(), repo);
-            BitbucketClients.push(run.diagnostics(), root, repoRun.branch(), cloneUrl, BitbucketClients.GIT_USERNAME,
+            BitbucketClients.push(run.diagnostics(), root, repoRun.branch(), cloneUrl, BitbucketClients.gitUsername(bitbucket),
                     bitbucket.site().token(), atlassian.tls(), atlassian.proxy());
             gate2(run, repo, "merge attempted");
             merge(client, repo, repoRun.prId(), out, err);

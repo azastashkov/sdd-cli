@@ -356,6 +356,14 @@ excludes: []              # workspace directories to skip
 #     token: ${BITBUCKET_API_KEY}
 #     project: TRADING           # the Bitbucket project key repos live under
 #     default_reviewers: [alice, bob]
+#     # git_username is sent with the PUSH only, never with REST. sdd sends the placeholder
+#     # `x-token-auth` by default, on the documented belief that Data Center's HTTP
+#     # personal-access-token auth carries the identity in the token itself. Measured
+#     # 2026-08-23: at least one instance does NOT — it answered `not authorized` on the read
+#     # that precedes the push. Set this to your own username there; the token stays the
+#     # password. A wrong value fails config loading rather than surfacing as an authorization
+#     # error from git several steps later.
+#     git_username: a.name
 #
 #   follow_depth: 1             # how many hops of CONFLUENCE LINK-following (bare URLs found in a
 #                                 # fetched page's own text) requirement ingestion follows — linked

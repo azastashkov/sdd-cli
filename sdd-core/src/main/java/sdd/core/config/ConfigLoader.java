@@ -380,7 +380,11 @@ public final class ConfigLoader {
         AtlassianSite site = parseAtlassianSite("atlassian.bitbucket", node, env);
         String project = requiredAt(m, "project", "atlassian.bitbucket", env);
         List<String> defaultReviewers = stringList(m.get("default_reviewers"), "atlassian.bitbucket.default_reviewers");
-        return new BitbucketSite(site, project, defaultReviewers);
+        // Structural, not deferred: it is a username, not a credential, and a typo in it should
+        // fail loading rather than surface as "not authorized" from a git push much later.
+        String gitUsername = m.get("git_username") == null
+                ? null : str(m.get("git_username"), env, "atlassian.bitbucket.git_username");
+        return new BitbucketSite(site, project, defaultReviewers, gitUsername);
     }
 
     private static WriteBack parseWriteBack(Object node) {

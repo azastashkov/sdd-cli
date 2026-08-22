@@ -39,6 +39,22 @@ final class BitbucketClients {
      */
     static final String GIT_USERNAME = "x-token-auth";
 
+    /**
+     * The username to send with the git push: {@code atlassian.bitbucket.git_username}, or the
+     * placeholder.
+     *
+     * <p>The placeholder was a documented guess — "the token IS the identity", the convention
+     * several git hosts use — and the comment above named this as the one place to change if a
+     * live instance turned out to check it. One did, on 2026-08-23: a push to Bitbucket Data
+     * Center answered {@code not authorized} before it had written anything. So the guess stays as
+     * the default, since it works wherever the username genuinely is ignored, and an instance that
+     * checks can now say who it is.
+     */
+    static String gitUsername(BitbucketSite bitbucket) {
+        String configured = bitbucket.gitUsername();
+        return configured == null || configured.isBlank() ? GIT_USERNAME : configured;
+    }
+
     /** Throws {@link ConfigException} when {@code atlassian.pull_requests} is on but
      *  {@code atlassian.bitbucket} is not configured, or its token is unresolvable — every caller
      *  wraps this in its own best-effort try/catch (see {@link BitbucketReview}/

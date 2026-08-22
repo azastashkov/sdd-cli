@@ -1364,4 +1364,36 @@ class ConfigLoaderTest {
         // And vision is deliberately NOT on the ladder: nothing escalates to it.
         assertThat(c.run().escalationLadder()).doesNotContain("vision");
     }
+
+    /**
+     * The username sent with the git push. sdd sent the placeholder "x-token-auth" on the belief
+     * that Data Center's PAT auth carries the identity in the token; a live instance answered
+     * "not authorized" before the push, so it can now be told who is pushing.
+     */
+    @Test
+    void bitbucketGitUsernameIsReadWhenGivenAndNullWhenNot() throws Exception {
+        SddConfig with = ConfigLoader.load(write("""
+                workspace: .
+                models:
+                  planner: {base_url: http://p, model: m}
+                  coder: {base_url: http://c, model: m}
+                atlassian:
+                  bitbucket:
+                    base_url: http://bb
+                    token: t
+                    project: EFXWUI
+                    git_username: a.zastashkov
+                """), ENV);
+        SddConfig without = ConfigLoader.load(write("""
+                workspace: .
+                models:
+                  planner: {base_url: http://p, model: m}
+                  coder: {base_url: http://c, model: m}
+                atlassian:
+                  bitbucket: {base_url: 'http://bb', token: t, project: EFXWUI}
+                """), ENV);
+
+        assertThat(with.atlassian().bitbucket().gitUsername()).isEqualTo("a.zastashkov");
+        assertThat(without.atlassian().bitbucket().gitUsername()).isNull();
+    }
 }

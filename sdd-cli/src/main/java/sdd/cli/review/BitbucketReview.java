@@ -94,7 +94,7 @@ public final class BitbucketReview {
             return;
         }
         String cloneUrl = RemoteGit.cloneUrl(bitbucket.site().baseUrl(), bitbucket.project(), repo);
-        BitbucketClients.push(run.diagnostics(), root, repoRun.branch(), cloneUrl, BitbucketClients.GIT_USERNAME,
+        BitbucketClients.push(run.diagnostics(), root, repoRun.branch(), cloneUrl, BitbucketClients.gitUsername(bitbucket),
                 bitbucket.site().token(), atlassian.tls(), atlassian.proxy());
         openOrUpdate(client, run, in, repo, repoRun, root, bitbucket.defaultReviewers(), title, jiraUrl,
                 out, err);
