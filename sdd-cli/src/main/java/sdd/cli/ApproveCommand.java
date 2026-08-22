@@ -9,6 +9,7 @@ import picocli.CommandLine.Spec;
 import sdd.core.db.Database;
 import sdd.plan.approve.EstateYaml;
 import sdd.plan.openspec.ChangeId;
+import sdd.plan.openspec.EstateRead;
 import sdd.plan.approve.GradleSmokeRunner;
 import sdd.plan.approve.Hashes;
 import sdd.plan.approve.LiveGit;
@@ -58,7 +59,7 @@ public final class ApproveCommand implements Callable<Integer> {
                 return 1;
             }
             String planText = Files.readString(planPath);
-            PlanDocument plan = PlanMdParser.parse(planText);
+            PlanDocument plan = withTreeResolutions(PlanMdParser.parse(planText), outWriter);
             Path specPath = planPath.resolveSibling(
                     name.substring(0, name.length() - ".plan.md".length()) + ".md");
             String specText = Files.readString(specPath);
@@ -171,4 +172,53 @@ public final class ApproveCommand implements Callable<Integer> {
                 + "` repos affected, execution order: `" + String.join(", ", order) + "`";
         JiraWriteBack.post(workspace, jiraKeys, noComment, body, outWriter, errWriter);
     }
+
+    /**
+     * Question resolutions written in the workspace's OpenSpec change, folded into the plan.
+     *
+     * <p>Step three of moving the workspace to that layout, and the smallest piece of it that is
+     * genuinely safe. A rendered change is not parseable back into a plan — {@code ## Why} merges
+     * the spec's goal and background irreversibly, and attachments and sources have no home in the
+     * format at all — so nothing here tries. A resolution is one line under a numbered question, an
+     * exact grammar, and the only edit Gate 1 actually requires.
+     *
+     * <p>The tree WINS where both carry an answer. A human who opened design.md to answer a
+     * blocking question expects that answer to count, and silently preferring the older file would
+     * make the tree look editable while ignoring the edit.
+     */
+    private PlanDocument withTreeResolutions(PlanDocument plan, PrintWriter outWriter) {
+        Path design = workspace.resolve("openspec/changes/"
+                + ChangeId.of(plan.specId(), plan.planVersion()) + "/design.md");
+        if (!Files.isRegularFile(design)) {
+            return plan;
+        }
+        Map<Integer, String> answers;
+        try {
+            answers = EstateRead.resolutions(Files.readString(design));
+        } catch (java.io.IOException e) {
+            outWriter.println("warn: could not read " + design + ": " + e.getMessage());
+            return plan;
+        }
+        if (answers.isEmpty()) {
+            return plan;
+        }
+        List<PlanDocument.PlanQuestion> merged = new ArrayList<>();
+        int taken = 0;
+        for (PlanDocument.PlanQuestion question : plan.questions()) {
+            String fromTree = answers.get(question.number());
+            if (fromTree == null || fromTree.isBlank()) {
+                merged.add(question);
+                continue;
+            }
+            taken++;
+            merged.add(new PlanDocument.PlanQuestion(question.number(), question.blocking(),
+                    question.text(), fromTree));
+        }
+        outWriter.println("openspec: " + taken + " question resolution(s) read from "
+                + design.getFileName());
+        return new PlanDocument(plan.specId(), plan.planVersion(), plan.summary(), merged,
+                plan.affected(), plan.excluded(), plan.order(), plan.contracts(), plan.steps(),
+                plan.notes());
+    }
+
 }

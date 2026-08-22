@@ -348,4 +348,50 @@ class ApproveCommandTest {
 
         assertThat(fromEstate).isEqualTo(fromJson);
     }
+
+    /**
+     * A blocking question answered in the OpenSpec tree unblocks the plan.
+     *
+     * <p>This is what makes the workspace's change directory somewhere you WORK rather than
+     * somewhere you look. plan.md leaves the question unresolved, which on its own is an approval
+     * failure; the answer exists only in design.md.
+     */
+    @Test
+    void aBlockingQuestionAnsweredInTheOpenSpecTreeIsHonoured() throws Exception {
+        seedEstateAndKb();
+        writeSpecAndPlan("");                       // no resolution in plan.md
+        Path design = ws.resolve("openspec/changes/spec-7-v1/design.md");
+        Files.createDirectories(design.getParent());
+        Files.writeString(design, """
+                ## Open Questions
+                - Q1 [blocking]: Which method?
+                  - resolution: use tierFor, answered in the tree.
+                """);
+        ApproveCommand cmd = new ApproveCommand();
+        cmd.smokeForTest = (consumer, provider) -> new SmokeRunner.Result(true, "");
+
+        Run run = approve(cmd, "--workspace", ws.toString(), ws.resolve("loyalty.plan.md").toString());
+
+        assertThat(run.out()).contains("openspec: 1 question resolution(s) read from design.md");
+        assertThat(run.exitCode()).as("out=%s", run.out()).isZero();
+        // Into the change directory, not beside plan.json: the tree exists, so that is where
+        // proposal.md tells a reader to look. The two halves of this work composing.
+        assertThat(Files.readString(ws.resolve("openspec/changes/spec-7-v1/estate.yaml")))
+                .contains("use tierFor, answered in the tree.");
+        assertThat(Files.exists(ws.resolve("loyalty.estate.yaml"))).isFalse();
+    }
+
+    /** Absent tree, unchanged behaviour: every plan approved before this existed still approves. */
+    @Test
+    void withNoOpenSpecTreeApproveIsExactlyWhatItWas() throws Exception {
+        seedEstateAndKb();
+        writeSpecAndPlan("  - resolution: use tierFor.");
+        ApproveCommand cmd = new ApproveCommand();
+        cmd.smokeForTest = (consumer, provider) -> new SmokeRunner.Result(true, "");
+
+        Run run = approve(cmd, "--workspace", ws.toString(), ws.resolve("loyalty.plan.md").toString());
+
+        assertThat(run.exitCode()).isZero();
+        assertThat(run.out()).doesNotContain("openspec: ");
+    }
 }
