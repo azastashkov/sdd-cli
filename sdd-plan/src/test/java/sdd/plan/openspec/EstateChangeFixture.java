@@ -19,12 +19,12 @@ import java.util.Map;
  * Two fixtures would let the validated bytes and the asserted bytes drift apart, which is the
  * failure mode that makes a conformance test decorative.
  */
-final class EstateChangeFixture {
+public final class EstateChangeFixture {
 
     private EstateChangeFixture() {
     }
 
-    static NormalizedSpec spec() {
+    public static NormalizedSpec spec() {
         return new NormalizedSpec("SPEC-TIERS", "Invalidate cached client tiers", "ana", "draft",
                 "Tier updates do not take effect until the service restarts.",
                 "Pricing caches the resolved tier for the process lifetime.",
@@ -39,7 +39,7 @@ final class EstateChangeFixture {
                 List.of(new SpecItem("Q1", "Who owns the tier config?")), List.of(), List.of());
     }
 
-    static ImpactResult result() {
+    public static ImpactResult result() {
         return new ImpactResult(List.of(),
                 List.of(new AffectedRepo("pricing-core", "seed", "SEED", List.of("R1"),
                                 List.of("touchpoint")),
@@ -48,7 +48,7 @@ final class EstateChangeFixture {
                 List.of(), List.of(), List.of(), List.of(), List.of());
     }
 
-    static PlanDrafter.Draft draft() {
+    public static PlanDrafter.Draft draft() {
         return new PlanDrafter.Draft("Add invalidate() and call it on the event.",
                 List.of(new PlanDrafter.DraftStep("pricing-core", List.of("R1"), "Add invalidate.",
                                 List.of("src/main/java/TierResolver.java"), List.of("tier-api"),
@@ -65,12 +65,12 @@ final class EstateChangeFixture {
                 List.of(new Question("Which tenant?", true)), List.of("a drafter note"), false);
     }
 
-    static List<ExecutionOrder.Unit> order() {
+    public static List<ExecutionOrder.Unit> order() {
         return List.of(new ExecutionOrder.Unit(List.of("pricing-core")),
                 new ExecutionOrder.Unit(List.of("svc-orders")));
     }
 
-    static Map<String, String> rendered() {
+    public static Map<String, String> rendered() {
         List<OpenSpecInput> inputs = EstateInputs.forDraft(spec(), result(), order(), draft(), 1,
                 Map.of("pricing-core", "a1b2c3d4e5f6", "svc-orders", "0badc0ffee11"));
         return EstateChange.render(spec(), result(), order(), List.of(), draft(), 1, inputs);

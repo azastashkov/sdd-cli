@@ -43,6 +43,7 @@ import sdd.plan.source.SourceBullet;
 import sdd.plan.source.SourceBundle;
 import sdd.plan.source.SourceDoc;
 import sdd.plan.spec.MarkdownSpecSource;
+import sdd.plan.approve.EstateYaml;
 import sdd.plan.openspec.ChangeId;
 import sdd.plan.openspec.EstateChange;
 import sdd.plan.openspec.EstateInputs;
@@ -708,12 +709,10 @@ public final class PlanCommand implements Callable<Integer> {
                     EstateInputs.forDraft(spec, result, order, draft, 1, baseShas);
             Map<String, String> files =
                     EstateChange.render(spec, result, order, questions, draft, 1, inputs);
-            Path root = null;
             for (Map.Entry<String, String> file : files.entrySet()) {
                 Path target = workspace.resolve(file.getKey());
                 Files.createDirectories(target.getParent());
                 Files.writeString(target, file.getValue());
-                root = root != null ? root : target.getParent();
             }
             Path config = workspace.resolve("openspec/config.yaml");
             if (!Files.exists(config)) {
@@ -722,8 +721,13 @@ public final class PlanCommand implements Callable<Integer> {
                 Files.createDirectories(config.getParent());
                 Files.writeString(config, "schema: spec-driven\n");
             }
-            outWriter.println("openspec: " + workspace.resolve(
-                    "openspec/changes/" + ChangeId.of(spec.id(), 1)));
+            // The estate beside the markdown, so everything approve needs is inside one directory
+            // and nothing has to be found by suffix arithmetic on a filename somewhere else. It
+            // carries approved: false and no SHA pins — this is the plan, not the approval.
+            Path changeDir = workspace.resolve("openspec/changes/" + ChangeId.of(spec.id(), 1));
+            Files.writeString(changeDir.resolve("estate.yaml"),
+                    EstateYaml.fromDraft(spec, result, order, questions, draft, 1, baseShas));
+            outWriter.println("openspec: " + changeDir);
         } catch (RuntimeException | java.io.IOException e) {
             outWriter.println("warn: the OpenSpec view of this change could not be written: "
                     + e.getMessage());

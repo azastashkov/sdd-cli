@@ -183,4 +183,44 @@ class EstateYamlTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("an empty document");
     }
+
+    /**
+     * The plan-time estate: what makes the change directory self-contained.
+     *
+     * <p>Everything approve needs lives inside {@code openspec/changes/<id>/} once this is there,
+     * which is the step the workspace has to take before the OpenSpec tree can be the primary
+     * artifact rather than a second view of one.
+     */
+    @Test
+    void thePlanTimeEstateCarriesTheSpecTheMarkdownCannotExpress() {
+        Map<String, Object> estate = new Yaml().load(
+                sdd.plan.openspec.EstateChangeFixtureAccess.planTimeEstate());
+
+        assertThat(estate.get("approved")).isEqualTo(false);
+        assertThat(estate).doesNotContainKeys("edges", "spec_sha256", "plan_sha256");
+
+        Map<String, Object> spec = (Map<String, Object>) estate.get("spec");
+        // The three the OpenSpec markdown cannot hold: Why merges goal and background, and
+        // attachments and sources have nowhere to go in the format at all.
+        assertThat(spec.get("goal")).isEqualTo("Tier updates do not take effect until the service restarts.");
+        assertThat(spec.get("background")).isEqualTo("Pricing caches the resolved tier for the process lifetime.");
+        assertThat(spec).containsKeys("attachments", "sources", "touchpoints", "evidence");
+        assertThat((List<Map<String, Object>>) spec.get("requirements"))
+                .extracting(r -> r.get("id")).containsExactly("R1", "R2");
+    }
+
+    /** Questions are numbered here exactly as design.md numbers them, so a resolution can be
+     *  matched back to the question a human answered. */
+    @Test
+    void questionsAreNumberedToMatchTheRenderedDesignDocument() {
+        Map<String, Object> estate = new Yaml().load(
+                sdd.plan.openspec.EstateChangeFixtureAccess.planTimeEstate());
+
+        assertThat((List<Map<String, Object>>) estate.get("questions")).singleElement()
+                .satisfies(q -> {
+                    assertThat(q.get("number")).isEqualTo(1);
+                    assertThat(q.get("blocking")).isEqualTo(true);
+                    assertThat(q.get("resolution")).isEqualTo("");
+                });
+    }
 }
