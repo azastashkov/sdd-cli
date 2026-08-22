@@ -9,6 +9,7 @@ import sdd.plan.impact.AffectedRepo;
 import sdd.plan.impact.ImpactResult;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecItem;
+import sdd.plan.spec.Touchpoint;
 import org.yaml.snakeyaml.DumperOptions;
 import org.yaml.snakeyaml.Yaml;
 
@@ -82,6 +83,158 @@ public final class EstateYaml {
         out.put("steps", steps(draft));
         out.put("notes", new ArrayList<>(draft.notes()));
         return dump(out);
+    }
+
+    /**
+     * The plan an {@code estate.yaml} describes, in the shape {@code PlanValidator} already checks.
+     *
+     * <p>Reading this rather than {@code plan.md} is what lets the gate be pointed at a change
+     * DIRECTORY. Nothing is recovered from prose here: every field below was written by sdd and is
+     * read back by key. The only human edit that reaches the gate arrives separately, through
+     * {@code EstateRead}, because a resolution is the one part of the rendered markdown whose
+     * grammar is exact.
+     */
+    @SuppressWarnings("unchecked")
+    public static PlanDocument toPlanDocument(String estateYaml) {
+        Map<String, Object> root = map(estateYaml);
+        List<PlanDocument.PlanQuestion> questions = new ArrayList<>();
+        for (Map<String, Object> q : rows(root, "questions")) {
+            String resolution = String.valueOf(q.getOrDefault("resolution", ""));
+            questions.add(new PlanDocument.PlanQuestion(number(q.get("number")),
+                    Boolean.TRUE.equals(q.get("blocking")), String.valueOf(q.get("text")),
+                    resolution.isBlank() ? null : resolution));
+        }
+        List<PlanDocument.PlanRepo> affected = new ArrayList<>();
+        for (Map<String, Object> r : rows(root, "repos")) {
+            affected.add(new PlanDocument.PlanRepo(String.valueOf(r.get("name")),
+                    String.valueOf(r.get("role")), String.valueOf(r.get("annotation")),
+                    coversOf(root, String.valueOf(r.get("name"))), ""));
+        }
+        List<PlanDocument.PlanExcluded> excluded = new ArrayList<>();
+        for (Map<String, Object> x : rows(root, "excluded")) {
+            excluded.add(new PlanDocument.PlanExcluded(String.valueOf(x.get("repo")),
+                    String.valueOf(x.get("detail"))));
+        }
+        List<List<String>> order = new ArrayList<>();
+        for (Object unit : list(root, "order")) {
+            order.add(((List<Object>) unit).stream().map(String::valueOf).toList());
+        }
+        List<PlanDocument.PlanContract> contracts = new ArrayList<>();
+        for (Map<String, Object> c : rows(root, "contracts")) {
+            String compat = String.valueOf(c.getOrDefault("compat", ""));
+            contracts.add(new PlanDocument.PlanContract(String.valueOf(c.get("id")),
+                    String.valueOf(c.get("kind")), String.valueOf(c.get("provider")),
+                    strings(c.get("consumers")), String.valueOf(c.get("body")),
+                    compat.isBlank() ? null : compat, strings(c.get("declared"))));
+        }
+        List<PlanDocument.PlanStep> steps = new ArrayList<>();
+        for (Map<String, Object> st : rows(root, "steps")) {
+            steps.add(new PlanDocument.PlanStep(String.valueOf(st.get("repo")),
+                    strings(st.get("covers")), String.valueOf(st.get("version_action")),
+                    strings(st.get("provides")), strings(st.get("consumes")),
+                    strings(st.get("files")), strings(st.get("verification")),
+                    String.valueOf(st.getOrDefault("sub_spec", "")), strings(st.get("openspec"))));
+        }
+        return new PlanDocument(String.valueOf(root.get("spec_id")),
+                number(root.get("plan_version")), String.valueOf(root.getOrDefault("summary", "")),
+                questions, affected, excluded, order, contracts, steps,
+                strings(root.get("notes")));
+    }
+
+    /** The specification snapshot, for the checks that need requirement and acceptance ids. */
+    @SuppressWarnings("unchecked")
+    public static NormalizedSpec toSpec(String estateYaml) {
+        Map<String, Object> spec = (Map<String, Object>) map(estateYaml).get("spec");
+        if (spec == null) {
+            throw new IllegalArgumentException(
+                    "estate.yaml carries no spec: — it predates the OpenSpec workspace layout, so "
+                            + "approve it by its plan.md path instead");
+        }
+        List<Touchpoint> touchpoints = new ArrayList<>();
+        for (Object raw : list(spec, "touchpoints")) {
+            Map<String, Object> t = (Map<String, Object>) raw;
+            Touchpoint.Kind kind = Touchpoint.Kind.fromKey(String.valueOf(t.get("kind")));
+            if (kind != null) {
+                touchpoints.add(new Touchpoint(kind, String.valueOf(t.get("value"))));
+            }
+        }
+        return new NormalizedSpec(String.valueOf(spec.get("id")), String.valueOf(spec.get("title")),
+                String.valueOf(spec.get("owner")), String.valueOf(spec.get("status")),
+                String.valueOf(spec.get("goal")), String.valueOf(spec.get("background")),
+                items(spec, "requirements"), items(spec, "acceptance"), items(spec, "constraints"),
+                touchpoints, strings(spec.get("evidence")), strings(spec.get("out_of_scope")),
+                items(spec, "open_questions"), strings(spec.get("attachments")),
+                strings(spec.get("sources")));
+    }
+
+    /**
+     * The same document, approved: the pins struck, the probed edges added, the flag flipped.
+     *
+     * <p>Merged into the existing map rather than re-rendered from scratch, so everything the plan
+     * wrote — the spec snapshot above all — survives verbatim. Re-rendering would need every input
+     * again at approve time, and anything not passed would vanish silently.
+     */
+    @SuppressWarnings("unchecked")
+    public static String approved(String estateYaml, String planJson, String artifactsSha) {
+        Map<String, Object> root = new LinkedHashMap<>(map(estateYaml));
+        JsonNode compiled;
+        try {
+            compiled = JSON.readTree(planJson);
+        } catch (Exception e) {
+            throw new IllegalStateException("plan.json is not readable back: " + e.getMessage(), e);
+        }
+        root.put("approved", true);
+        root.put("artifacts_sha256", artifactsSha);
+        root.put("spec_sha256", compiled.path("spec_sha256").asText(""));
+        root.put("plan_sha256", compiled.path("plan_sha256").asText(""));
+        root.put("edges", listOfMaps(compiled.path("edges")));
+        root.put("repos", listOfMaps(compiled.path("repos")));
+        return dump(root);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> map(String yaml) {
+        Object loaded = new Yaml().load(yaml);
+        if (!(loaded instanceof Map)) {
+            throw new IllegalArgumentException("estate.yaml must be a mapping");
+        }
+        return (Map<String, Object>) loaded;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> rows(Map<String, Object> root, String key) {
+        Object value = root.get(key);
+        return value instanceof List<?> list ? (List<Map<String, Object>>) list : List.of();
+    }
+
+    private static List<Object> list(Map<String, Object> root, String key) {
+        Object value = root.get(key);
+        return value instanceof List<?> list ? new ArrayList<>(list) : List.of();
+    }
+
+    private static List<String> strings(Object value) {
+        return value instanceof List<?> list
+                ? list.stream().map(String::valueOf).toList() : List.of();
+    }
+
+    private static List<SpecItem> items(Map<String, Object> spec, String key) {
+        return rows(spec, key).stream()
+                .map(i -> new SpecItem(String.valueOf(i.get("id")), String.valueOf(i.get("text"))))
+                .toList();
+    }
+
+    private static int number(Object value) {
+        return value instanceof Number n ? n.intValue() : Integer.parseInt(String.valueOf(value));
+    }
+
+    /** Which requirements a repo's step covers — Affected Repos carries them and steps own them. */
+    private static List<String> coversOf(Map<String, Object> root, String repo) {
+        for (Map<String, Object> step : rows(root, "steps")) {
+            if (repo.equals(String.valueOf(step.get("repo")))) {
+                return strings(step.get("covers"));
+            }
+        }
+        return List.of();
     }
 
     private static List<Map<String, Object>> draftQuestions(List<Question> detectorQuestions,

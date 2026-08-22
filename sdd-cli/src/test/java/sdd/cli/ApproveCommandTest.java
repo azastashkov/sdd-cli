@@ -14,6 +14,8 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.created;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
@@ -393,5 +395,81 @@ class ApproveCommandTest {
 
         assertThat(run.exitCode()).isZero();
         assertThat(run.out()).doesNotContain("openspec: ");
+    }
+
+    /**
+     * The change directory sdd plan would have written for the same change loyalty.plan.md
+     * describes — rendered by the real renderers, not hand-written YAML. A hand-built fixture is a
+     * second implementation of the format, and it drifts.
+     */
+    private Path writeChangeTree(String resolution) throws Exception {
+        sdd.plan.spec.NormalizedSpec spec = sdd.plan.spec.SpecParser.parse(
+                Files.readString(ws.resolve("loyalty.md")));
+        sdd.plan.impact.ImpactResult result = new sdd.plan.impact.ImpactResult(List.of(),
+                List.of(new sdd.plan.impact.AffectedRepo("lib-core", "seed", "SEED",
+                        List.of("R1"), List.of("w"))),
+                List.of(), List.of(), List.of(), List.of(), List.of());
+        List<sdd.plan.gen.ExecutionOrder.Unit> order =
+                List.of(new sdd.plan.gen.ExecutionOrder.Unit(List.of("lib-core")));
+        sdd.plan.gen.PlanDrafter.Draft draft = new sdd.plan.gen.PlanDrafter.Draft("S.",
+                List.of(new sdd.plan.gen.PlanDrafter.DraftStep("lib-core", List.of("R1"), "Do it.",
+                        List.of(), List.of(), List.of(), "minor", List.of(), List.of())),
+                List.of(), List.of(new sdd.plan.gen.Question("which?", true)), List.of(), false);
+
+        Path dir = ws.resolve("openspec/changes/spec-7-v1");
+        Files.createDirectories(dir);
+        Files.writeString(dir.resolve("estate.yaml"), sdd.plan.approve.EstateYaml.fromDraft(
+                spec, result, order, List.of(), draft, 1, Map.of("lib-core", "")));
+        Files.writeString(dir.resolve("design.md"),
+                "## Open Questions\n- Q1 [blocking]: which?\n" + resolution);
+        return dir;
+    }
+
+    /**
+     * The gate pointed at the directory rather than at a plan.md path — what the OpenSpec layout is
+     * for. Everything it needs is inside that directory, including the answer to a blocking
+     * question that exists nowhere else.
+     */
+    @Test
+    void approveAcceptsAChangeDirectory() throws Exception {
+        seedEstateAndKb();
+        writeSpecAndPlan("");
+        Path dir = writeChangeTree("  - resolution: answered in the tree.\n");
+        ApproveCommand cmd = new ApproveCommand();
+        cmd.smokeForTest = (consumer, provider) -> new SmokeRunner.Result(true, "");
+
+        Run run = approve(cmd, "--workspace", ws.toString(), dir.toString());
+
+        assertThat(run.exitCode()).as("out=%s", run.out()).isZero();
+        assertThat(run.out()).contains("question resolution(s) read from design.md");
+        assertThat(Files.readString(dir.resolve("estate.yaml")))
+                .contains("approved: true").contains("artifacts_sha256:");
+    }
+
+    /** And by bare change id, which is what a reader has in front of them. */
+    @Test
+    void approveAcceptsABareChangeId() throws Exception {
+        seedEstateAndKb();
+        writeSpecAndPlan("");
+        writeChangeTree("  - resolution: answered in the tree.\n");
+        ApproveCommand cmd = new ApproveCommand();
+        cmd.smokeForTest = (consumer, provider) -> new SmokeRunner.Result(true, "");
+
+        Run run = approve(cmd, "--workspace", ws.toString(), "spec-7-v1");
+
+        assertThat(run.exitCode()).as("out=%s", run.out()).isZero();
+    }
+
+    /** A directory with no estate.yaml is named, not failed with a YAML error three layers down. */
+    @Test
+    void aDirectoryWithNoEstateYamlIsRefusedByName() throws Exception {
+        seedEstateAndKb();
+        writeSpecAndPlan("");
+        Files.createDirectories(ws.resolve("openspec/changes/empty-v1"));
+
+        Run run = approve(new ApproveCommand(), "--workspace", ws.toString(),
+                ws.resolve("openspec/changes/empty-v1").toString());
+
+        assertThat(run.exitCode()).isEqualTo(1);
     }
 }

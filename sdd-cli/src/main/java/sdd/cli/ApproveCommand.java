@@ -13,6 +13,7 @@ import sdd.plan.openspec.EstateRead;
 import sdd.plan.approve.GradleSmokeRunner;
 import sdd.plan.approve.Hashes;
 import sdd.plan.approve.LiveGit;
+import sdd.plan.approve.ManifestHash;
 import sdd.plan.approve.PlanDocument;
 import sdd.plan.approve.PlanJson;
 import sdd.plan.approve.PlanMdParser;
@@ -37,7 +38,8 @@ public final class ApproveCommand implements Callable<Integer> {
     @Option(names = "--workspace", description = "Workspace directory (default: current dir)")
     Path workspace = Path.of(".");
 
-    @Parameters(index = "0", description = "The reviewed <spec>.plan.md")
+    @Parameters(index = "0", description = "The reviewed <spec>.plan.md, or the change directory "
+            + "openspec/changes/<change-id> (or just <change-id>)")
     Path planPath;
 
     @Option(names = "--no-comment", description = "Suppress the Jira write-back comment even when "
@@ -53,17 +55,36 @@ public final class ApproveCommand implements Callable<Integer> {
         PrintWriter outWriter = spec.commandLine().getOut();
         PrintWriter errWriter = spec.commandLine().getErr();
         try {
+            // Three ways to name the same change: the plan.md that has always worked, the change
+            // directory the workspace now carries, and a bare change id. The directory is the
+            // point of the OpenSpec layout — everything the gate needs is inside it, so a reader
+            // should be able to hand the gate the thing they were just reading.
+            Path changeDir = resolveChangeDir(planPath);
             String name = planPath.getFileName().toString();
-            if (!name.endsWith(".plan.md")) {
-                errWriter.println("error: approve expects a .plan.md file");
+            if (changeDir == null && !name.endsWith(".plan.md")) {
+                errWriter.println("error: approve expects a .plan.md file, a change directory, or "
+                        + "a change id — no estate.yaml under " + planPath);
                 return 1;
             }
-            String planText = Files.readString(planPath);
-            PlanDocument plan = withTreeResolutions(PlanMdParser.parse(planText), outWriter);
-            Path specPath = planPath.resolveSibling(
-                    name.substring(0, name.length() - ".plan.md".length()) + ".md");
+            String planText;
+            PlanDocument plan;
+            if (changeDir != null) {
+                String estateText = Files.readString(changeDir.resolve("estate.yaml"));
+                planText = estateText;
+                plan = fromTree(changeDir, estateText, outWriter);
+            } else {
+                planText = Files.readString(planPath);
+                plan = withTreeResolutions(PlanMdParser.parse(planText), outWriter);
+            }
+            // From the tree's own snapshot when we came from a directory: there is no sibling
+            // .md there, and estate.yaml carries the spec precisely because the rendered markdown
+            // cannot express all of it.
+            Path specPath = changeDir != null ? changeDir.resolve("estate.yaml")
+                    : planPath.resolveSibling(
+                            name.substring(0, name.length() - ".plan.md".length()) + ".md");
             String specText = Files.readString(specPath);
-            NormalizedSpec parsedSpec = SpecParser.parse(specText);
+            NormalizedSpec parsedSpec = changeDir != null
+                    ? EstateYaml.toSpec(specText) : SpecParser.parse(specText);
             List<String> specProblems = SpecValidator.problems(parsedSpec);
             if (!specProblems.isEmpty()) {
                 for (String problem : specProblems) {
@@ -114,8 +135,13 @@ public final class ApproveCommand implements Callable<Integer> {
                 String specSha = Hashes.sha256(specText);
                 String planSha = Hashes.sha256(planText);
                 String json = PlanJson.compile(jdbi, plan, specSha, planSha, smoke, compileWarnings);
-                Path jsonPath = planPath.resolveSibling(
-                        name.substring(0, name.length() - ".md".length()) + ".json");
+                // Still a flat <spec>.plan.json at the workspace root even when approving from a
+                // tree: sdd implement, review, status and clean all take that path, and moving it
+                // would be a second, unrelated migration bundled into this one.
+                Path jsonPath = changeDir != null
+                        ? workspace.resolve(sanitizeId(plan.specId()) + ".plan.json")
+                        : planPath.resolveSibling(
+                                name.substring(0, name.length() - ".md".length()) + ".json");
                 Files.writeString(jsonPath, json);
                 // Written from plan.json's own bytes, so the two cannot disagree about which repos
                 // are in the change. Step one of moving the workspace to an OpenSpec layout: the
@@ -126,13 +152,26 @@ public final class ApproveCommand implements Callable<Integer> {
                 // in one place, and it is where proposal.md tells a reader to look. Beside
                 // plan.json otherwise: every plan approved before the OpenSpec view existed, and
                 // every workspace that has not re-planned since.
-                Path changeDir = workspace.resolve("openspec/changes/"
-                        + ChangeId.of(plan.specId(), plan.planVersion()));
-                Path estatePath = Files.isDirectory(changeDir)
-                        ? changeDir.resolve("estate.yaml")
-                        : jsonPath.resolveSibling(
-                                name.substring(0, name.length() - ".plan.md".length()) + ".estate.yaml");
-                Files.writeString(estatePath, EstateYaml.render(json, plan));
+                Path estateDir = changeDir != null ? changeDir
+                        : workspace.resolve("openspec/changes/"
+                                + ChangeId.of(plan.specId(), plan.planVersion()));
+                Path estatePath;
+                if (Files.isDirectory(estateDir)) {
+                    estatePath = estateDir.resolve("estate.yaml");
+                    // Merged into what the plan wrote rather than re-rendered, so the spec snapshot
+                    // and everything else already in it survive verbatim. The manifest hash pins
+                    // the whole directory, because the gate artifact is no longer one file — and
+                    // estate.yaml itself is excluded, since the hash is written into it.
+                    String artifacts = Files.exists(estatePath)
+                            ? ManifestHash.of(estateDir, "estate.yaml") : "";
+                    Files.writeString(estatePath, Files.exists(estatePath)
+                            ? EstateYaml.approved(Files.readString(estatePath), json, artifacts)
+                            : EstateYaml.render(json, plan));
+                } else {
+                    estatePath = jsonPath.resolveSibling(
+                            name.substring(0, name.length() - ".plan.md".length()) + ".estate.yaml");
+                    Files.writeString(estatePath, EstateYaml.render(json, plan));
+                }
                 for (String warning : compileWarnings) {
                     outWriter.println("warn: " + warning);
                 }
@@ -219,6 +258,67 @@ public final class ApproveCommand implements Callable<Integer> {
         return new PlanDocument(plan.specId(), plan.planVersion(), plan.summary(), merged,
                 plan.affected(), plan.excluded(), plan.order(), plan.contracts(), plan.steps(),
                 plan.notes());
+    }
+
+
+    /**
+     * The change directory named by the argument, or null when it names a plan.md.
+     *
+     * <p>Accepts the directory itself and a bare change id, and insists on an {@code estate.yaml}
+     * inside it rather than merely on the directory existing: a change rendered before that file
+     * was written cannot be approved from the tree, and saying so by name beats failing later with
+     * a missing-key error from a YAML reader.
+     */
+    private Path resolveChangeDir(Path argument) {
+        Path direct = Files.isRegularFile(argument.resolve("estate.yaml")) ? argument : null;
+        if (direct != null) {
+            return direct;
+        }
+        if (argument.getNameCount() != 1 || argument.toString().contains(".")) {
+            return null;
+        }
+        Path byId = workspace.resolve("openspec/changes").resolve(argument.toString());
+        return Files.isRegularFile(byId.resolve("estate.yaml")) ? byId : null;
+    }
+
+    /**
+     * The plan a change directory describes, with the human's answers folded in.
+     *
+     * <p>Nothing is recovered from prose. The structure comes from estate.yaml, which sdd wrote;
+     * the resolutions come from design.md, which is the one part of the rendered markdown whose
+     * grammar is exact. That split is the whole reason this can be done safely at all — the
+     * rendering merges the spec's goal and background irreversibly and has nowhere to put
+     * attachments or sources, so a general parser would silently lose them.
+     */
+    private PlanDocument fromTree(Path changeDir, String estateText, PrintWriter outWriter)
+            throws java.io.IOException {
+        PlanDocument plan = EstateYaml.toPlanDocument(estateText);
+        Path design = changeDir.resolve("design.md");
+        if (!Files.isRegularFile(design)) {
+            return plan;
+        }
+        Map<Integer, String> answers = EstateRead.resolutions(Files.readString(design));
+        if (answers.isEmpty()) {
+            return plan;
+        }
+        List<PlanDocument.PlanQuestion> merged = new ArrayList<>();
+        for (PlanDocument.PlanQuestion question : plan.questions()) {
+            String fromTree = answers.get(question.number());
+            merged.add(fromTree == null || fromTree.isBlank() ? question
+                    : new PlanDocument.PlanQuestion(question.number(), question.blocking(),
+                            question.text(), fromTree));
+        }
+        outWriter.println("openspec: " + answers.size() + " question resolution(s) read from "
+                + design.getFileName());
+        return new PlanDocument(plan.specId(), plan.planVersion(), plan.summary(), merged,
+                plan.affected(), plan.excluded(), plan.order(), plan.contracts(), plan.steps(),
+                plan.notes());
+    }
+
+
+    /** The spec id as a filename, matching the run id sdd implement derives from the same value. */
+    private static String sanitizeId(String specId) {
+        return specId.replaceAll("[^A-Za-z0-9._-]", "-");
     }
 
 }
