@@ -17,9 +17,26 @@ import java.util.List;
  * tags out of {@code content}. That is what thinking looks like when it arrives inline; this is
  * what it looks like when the endpoint separates it. Both are live, because which one an endpoint
  * uses is the endpoint's choice.
+ *
+ * <p>{@code attachments}: ids of files already uploaded to the endpoint's own store, referenced by
+ * a USER turn. Empty everywhere else. Only {@link WireFormat#GIGACHAT} reads it, and there it is
+ * the only way to send an image: measured 2026-08-22 against the corp gateway, the OpenAI
+ * {@code image_url} content part is refused outright with {@code 400 "Your request contains invalid
+ * JSON syntax"}, while upload-then-reference read a four-digit number out of a generated PNG 3/3
+ * exactly. {@code content} stays a plain string alongside it — this wire has no parts array.
  */
 public record ChatMessage(String role, String content, List<ToolCall> toolCalls, String toolCallId,
-                          String reasoningContent, String name) {
+                          String reasoningContent, String name, List<String> attachments) {
+
+    public ChatMessage {
+        attachments = attachments == null ? List.of() : List.copyOf(attachments);
+    }
+
+    /** Pre-{@code attachments} 6-argument shape, kept for the same reason the two below are. */
+    public ChatMessage(String role, String content, List<ToolCall> toolCalls, String toolCallId,
+            String reasoningContent, String name) {
+        this(role, content, toolCalls, toolCallId, reasoningContent, name, List.of());
+    }
 
     /** Pre-{@code name} 5-argument shape. */
     public ChatMessage(String role, String content, List<ToolCall> toolCalls, String toolCallId,
@@ -36,6 +53,12 @@ public record ChatMessage(String role, String content, List<ToolCall> toolCalls,
 
     public static ChatMessage system(String content) { return new ChatMessage("system", content, List.of(), null); }
     public static ChatMessage user(String content) { return new ChatMessage("user", content, List.of(), null); }
+
+    /** A user turn referencing files already uploaded to the endpoint's store — see the class
+     *  javadoc for why an image cannot simply be inlined into {@code content}. */
+    public static ChatMessage user(String content, List<String> attachments) {
+        return new ChatMessage("user", content, List.of(), null, null, null, attachments);
+    }
     public static ChatMessage assistant(String content) { return new ChatMessage("assistant", content, List.of(), null); }
     public static ChatMessage tool(String toolCallId, String content) { return tool(toolCallId, null, content); }
 

@@ -116,6 +116,24 @@ public enum WireFormat {
             "\n\nCall exactly ONE tool per turn. Never emit more than one tool call in a single "
                     + "reply; make the next call after you see this one's result.";
 
+    /**
+     * Whether an image is sent by uploading it to {@code {base_url}/files} and naming the returned
+     * id in a user turn's {@code attachments}, rather than inlined as a content part.
+     *
+     * <p>Measured 2026-08-22 against the corp gateway with {@code GigaChat-2-Max}: a generated PNG
+     * carrying a random four-digit number was read back exactly, 3/3, via {@code attachments}; the
+     * same image sent as an OpenAI {@code image_url} content part was refused
+     * {@code 400 "Your request contains invalid JSON syntax"}, which is consistent with the v1
+     * schema typing {@code content} as a string. A control turn with no image attached refused
+     * honestly, so the reads were not confabulated.
+     *
+     * <p>Public, like {@link #oneCallPerTurn()}: a caller outside this package has to ask whether an
+     * endpoint can take an image AT ALL before downloading one and paying for an upload.
+     */
+    public boolean uploadsAttachments() {
+        return this == GIGACHAT;
+    }
+
     public boolean oneCallPerTurn() {
         return this == GIGACHAT;
     }

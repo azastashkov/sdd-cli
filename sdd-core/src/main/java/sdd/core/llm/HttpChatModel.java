@@ -229,6 +229,13 @@ public final class HttpChatModel implements ChatModel {
             if (wire.carriesReasoning() && m.reasoningContent() != null) {
                 msg.put("reasoning_content", m.reasoningContent());
             }
+            // Ids of files already in the endpoint's own store. Gated on the wire rather than on
+            // emptiness alone: sending the key to a wire that does not know it is how a request
+            // becomes a 400 that names JSON syntax and nothing else useful.
+            if (wire.uploadsAttachments() && !m.attachments().isEmpty()) {
+                ArrayNode attachments = msg.putArray("attachments");
+                m.attachments().forEach(attachments::add);
+            }
             if (!m.toolCalls().isEmpty()) {
                 if (functionShape) {
                     // A single object, not an array: the protocol cannot express a second call, and
@@ -493,8 +500,10 @@ public final class HttpChatModel implements ChatModel {
      * <p>A gateway that ACCEPTS parts may also return them, and a reply whose content arrived as
      * {@code [{"type":"text","text":"…"}]} must not reach a caller as the literal text of a JSON
      * array — every consumer of a response parses it as JSON, so that failure would surface as
-     * "unparseable" far from its cause. Non-text parts are skipped rather than rendered: sdd has
-     * no use for an image part and inventing a placeholder for one would be a fabricated fact.
+     * "unparseable" far from its cause. Non-text parts are skipped rather than rendered: sdd SENDS
+     * images by upload-and-reference rather than as a part (see {@link
+     * WireFormat#uploadsAttachments()}), so a part arriving in a REPLY is something it did not ask
+     * for, and inventing a placeholder for one would be a fabricated fact.
      *
      * <p>Extraction only — {@code <think>}-tag stripping stays at the one call site that wants it,
      * since reasoning is the POINT of the field this also reads.

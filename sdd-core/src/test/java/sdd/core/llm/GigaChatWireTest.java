@@ -422,4 +422,55 @@ class GigaChatWireTest {
         assertThat(sentBody().path("messages").get(2).path("content").asText())
                 .isEqualTo("thinking out loud");
     }
+
+    /**
+     * An image reaches this gateway by upload-and-reference: the id of an already-uploaded file
+     * named in the user turn's {@code attachments}, with {@code content} still a plain string.
+     * Measured 2026-08-22 — this shape read a four-digit number out of a generated PNG 3/3.
+     */
+    @Test
+    void aUserTurnCarriesUploadedFileIdsOnTheGigachatWire() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+
+        model(WireFormat.GIGACHAT).complete(new ChatRequest("Qwen3.6-35B",
+                List.of(ChatMessage.user("Что изображено на картинке?",
+                        List.of("636ff4c5-7401-4359-9364-ecccc3171847"))),
+                List.of(), 256, 0.0));
+
+        JsonNode sent = JSON.readTree(wm.getAllServeEvents().get(0).getRequest().getBodyAsString());
+        JsonNode message = sent.get("messages").get(0);
+        assertThat(message.get("content").asText()).isEqualTo("Что изображено на картинке?");
+        assertThat(message.get("attachments").isArray()).isTrue();
+        assertThat(message.get("attachments").get(0).asText())
+                .isEqualTo("636ff4c5-7401-4359-9364-ecccc3171847");
+    }
+
+    /**
+     * And never on the OpenAI wire. That gateway has no file store to have uploaded to, so the key
+     * would be meaningless there — and this project has already shipped one wire-specific shape to
+     * the wrong wire and spent a day on the resulting 400.
+     */
+    @Test
+    void attachmentsAreAbsentOnTheOpenaiWire() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+
+        model(WireFormat.OPENAI).complete(new ChatRequest("Qwen3.6-35B",
+                List.of(ChatMessage.user("Что изображено на картинке?", List.of("some-uuid"))),
+                List.of(), 256, 0.0));
+
+        JsonNode sent = JSON.readTree(wm.getAllServeEvents().get(0).getRequest().getBodyAsString());
+        assertThat(sent.get("messages").get(0).has("attachments")).isFalse();
+    }
+
+    /** No attachments, no key — an empty array would be a difference from today's bytes. */
+    @Test
+    void anOrdinaryUserTurnStillSendsNoAttachmentsKey() throws Exception {
+        wm.stubFor(post("/v1/chat/completions").willReturn(okJson(OK_BODY)));
+
+        model(WireFormat.GIGACHAT).complete(new ChatRequest("Qwen3.6-35B",
+                List.of(ChatMessage.user("plain")), List.of(), 256, 0.0));
+
+        JsonNode sent = JSON.readTree(wm.getAllServeEvents().get(0).getRequest().getBodyAsString());
+        assertThat(sent.get("messages").get(0).has("attachments")).isFalse();
+    }
 }
