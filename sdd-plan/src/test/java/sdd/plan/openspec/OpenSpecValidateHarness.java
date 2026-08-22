@@ -115,4 +115,32 @@ class OpenSpecValidateHarness {
                 .as("must fail on the CHANGE, not on how the CLI was invoked")
                 .contains("0 passed, 1 failed");
     }
+
+    /**
+     * The ROOT change — the estate-wide one written into the workspace, not into a repository.
+     *
+     * <p>Rendered here rather than staged from a golden, because the root renderer is new and the
+     * question is whether what it produces TODAY validates. A golden would only prove the bytes
+     * still match bytes a previous run of the same code produced.
+     *
+     * <p>Also writes openspec/config.yaml, because a workspace is a real OpenSpec project and the
+     * CLI expects one — unlike a foreign repository, where sdd deliberately never creates it.
+     */
+    @Test
+    void theEstateChangeAtTheWorkspaceRootIsAcceptedByTheRealValidator() throws Exception {
+        Path root = work.resolve("workspace");
+        Files.createDirectories(root.resolve("openspec"));
+        Files.writeString(root.resolve("openspec/config.yaml"), "schema: spec-driven\n");
+        for (var file : EstateChangeFixture.rendered().entrySet()) {
+            Path target = root.resolve(file.getKey());
+            Files.createDirectories(target.getParent());
+            Files.writeString(target, file.getValue());
+        }
+
+        Run run = npx(root, "validate", "--changes", "--strict");
+
+        assertThat(run.exitCode())
+                .as("openspec validate --changes --strict on the workspace root:%n%s", run.output())
+                .isZero();
+    }
 }

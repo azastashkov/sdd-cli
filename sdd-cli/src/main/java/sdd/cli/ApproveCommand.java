@@ -8,6 +8,7 @@ import picocli.CommandLine.Parameters;
 import picocli.CommandLine.Spec;
 import sdd.core.db.Database;
 import sdd.plan.approve.EstateYaml;
+import sdd.plan.openspec.ChangeId;
 import sdd.plan.approve.GradleSmokeRunner;
 import sdd.plan.approve.Hashes;
 import sdd.plan.approve.LiveGit;
@@ -120,8 +121,16 @@ public final class ApproveCommand implements Callable<Integer> {
                 // estate graph has to live in a file OpenSpec ignores, because the format has
                 // nowhere to put it — and that has to be proven to carry everything the gates need
                 // before any human-facing artifact moves.
-                Path estatePath = jsonPath.resolveSibling(
-                        name.substring(0, name.length() - ".plan.md".length()) + ".estate.yaml");
+                // Into the change directory when sdd plan wrote one — everything about a change
+                // in one place, and it is where proposal.md tells a reader to look. Beside
+                // plan.json otherwise: every plan approved before the OpenSpec view existed, and
+                // every workspace that has not re-planned since.
+                Path changeDir = workspace.resolve("openspec/changes/"
+                        + ChangeId.of(plan.specId(), plan.planVersion()));
+                Path estatePath = Files.isDirectory(changeDir)
+                        ? changeDir.resolve("estate.yaml")
+                        : jsonPath.resolveSibling(
+                                name.substring(0, name.length() - ".plan.md".length()) + ".estate.yaml");
                 Files.writeString(estatePath, EstateYaml.render(json, plan));
                 for (String warning : compileWarnings) {
                     outWriter.println("warn: " + warning);

@@ -43,6 +43,10 @@ import sdd.plan.source.SourceBullet;
 import sdd.plan.source.SourceBundle;
 import sdd.plan.source.SourceDoc;
 import sdd.plan.spec.MarkdownSpecSource;
+import sdd.plan.openspec.ChangeId;
+import sdd.plan.openspec.EstateChange;
+import sdd.plan.openspec.EstateInputs;
+import sdd.plan.openspec.OpenSpecInput;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecItem;
 import sdd.plan.spec.SpecParseException;
@@ -672,9 +676,58 @@ public final class PlanCommand implements Callable<Integer> {
             if (backup != null) {
                 outWriter.println("previous version backed up: " + backup);
             }
+            writeEstateChange(db.jdbi(), workspace, parsed, result, order, questions, draft,
+                    outWriter);
             outWriter.println("review and edit the plan, then run: sdd plan approve");
         }
         return 0;
+    }
+
+    /**
+     * The estate-wide OpenSpec change, at the workspace root.
+     *
+     * <p>Written ALONGSIDE spec.md and plan.md, not instead of them. Those two are still what the
+     * gates parse and what a human edits; this is the same change in the format every touched
+     * repository will receive at implement time, so a reader meets one dialect wherever they are
+     * standing rather than two. Judging whether it is good enough to become the primary artifact is
+     * the point of writing it first.
+     *
+     * <p>Never fails the command. A plan that was drafted and written is worth having even if an
+     * extra rendering of it could not be produced — the same trade {@code Orchestrator} already
+     * makes for the per-repo export, and for the same reason.
+     */
+    private void writeEstateChange(org.jdbi.v3.core.Jdbi jdbi, Path workspace, NormalizedSpec spec,
+            ImpactResult result, List<ExecutionOrder.Unit> order, List<Question> questions,
+            PlanDrafter.Draft draft, PrintWriter outWriter) {
+        try {
+            Map<String, String> baseShas = new java.util.HashMap<>();
+            jdbi.useHandle(h -> h.createQuery("SELECT name, head_commit FROM repo").mapToMap()
+                    .forEach(row -> baseShas.put(String.valueOf(row.get("name")),
+                            row.get("head_commit") == null ? "" : String.valueOf(row.get("head_commit")))));
+            List<OpenSpecInput> inputs =
+                    EstateInputs.forDraft(spec, result, order, draft, 1, baseShas);
+            Map<String, String> files =
+                    EstateChange.render(spec, result, order, questions, draft, 1, inputs);
+            Path root = null;
+            for (Map.Entry<String, String> file : files.entrySet()) {
+                Path target = workspace.resolve(file.getKey());
+                Files.createDirectories(target.getParent());
+                Files.writeString(target, file.getValue());
+                root = root != null ? root : target.getParent();
+            }
+            Path config = workspace.resolve("openspec/config.yaml");
+            if (!Files.exists(config)) {
+                // Written once and then left alone: it is the project's, and a later hand-edit
+                // (context, rules, references) must survive every subsequent plan.
+                Files.createDirectories(config.getParent());
+                Files.writeString(config, "schema: spec-driven\n");
+            }
+            outWriter.println("openspec: " + workspace.resolve(
+                    "openspec/changes/" + ChangeId.of(spec.id(), 1)));
+        } catch (RuntimeException | java.io.IOException e) {
+            outWriter.println("warn: the OpenSpec view of this change could not be written: "
+                    + e.getMessage());
+        }
     }
 
     private void printImpact(PrintWriter outWriter, ImpactResult result) {
