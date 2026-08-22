@@ -43,9 +43,12 @@ import sdd.core.llm.ThrottledChatModel;
 import sdd.core.progress.Progress;
 import sdd.index.gradle.GradleExtractor;
 import sdd.plan.approve.EstateYaml;
+import sdd.plan.openspec.ChangeId;
+import sdd.plan.approve.ManifestHash;
 import sdd.plan.approve.Hashes;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecParser;
+import sdd.plan.spec.SpecRenderer;
 
 import java.io.PrintWriter;
 import java.nio.file.Files;
@@ -189,13 +192,49 @@ public final class ImplementCommand implements Callable<Integer> {
             }
             PlanModel plan = PlanJsonReader.read(planText);
             PlanJsonReader.validate(plan);
+            // The sibling <base>.md, or the change directory's own snapshot.
+            //
+            // That naming law — <base>.md, <base>.plan.md, <base>.plan.json — holds for every plan
+            // approved by a path. It does NOT hold for one approved by change directory: approve
+            // names plan.json from the SPEC ID, which need not match whatever the spec file on disk
+            // is called, and may correspond to no file at all. Falling back to the tree is not a
+            // convenience here; without it a tree-approved plan cannot be implemented.
             Path specPath = planJsonPath.resolveSibling(
                     name.substring(0, name.length() - ".plan.json".length()) + ".md");
-            String specText = Files.readString(specPath);
-            NormalizedSpec parsedSpec = SpecParser.parse(specText);
-            if (!plan.specSha256().isEmpty() && !Hashes.sha256(specText).equals(plan.specSha256())) {
-                out.println("warn: spec " + specPath.getFileName() + " has changed since approval — "
-                        + "requirement text may not match the plan");
+            Path changeDir = workspace.resolve("openspec/changes/"
+                    + ChangeId.of(plan.specId(), plan.planVersion()));
+            Path treeEstate = changeDir.resolve("estate.yaml");
+            NormalizedSpec parsedSpec;
+            String specText;
+            if (Files.isRegularFile(specPath)) {
+                specText = Files.readString(specPath);
+                parsedSpec = SpecParser.parse(specText);
+                if (!plan.specSha256().isEmpty()
+                        && !Hashes.sha256(specText).equals(plan.specSha256())) {
+                    out.println("warn: spec " + specPath.getFileName() + " has changed since "
+                            + "approval — requirement text may not match the plan");
+                }
+            } else if (Files.isRegularFile(treeEstate)) {
+                String estateText = Files.readString(treeEstate);
+                parsedSpec = EstateYaml.toSpec(estateText);
+                // Rendered back to canonical markdown so the run directory's spec.md snapshot is a
+                // real spec whatever the plan was approved from — which is what lets --resume and
+                // sdd review stay entirely unaware that this plan never had a spec file.
+                specText = SpecRenderer.render(parsedSpec);
+                // A different question, asked the same way. There is no single spec file to hash,
+                // so what is checked is whether the CHANGE DIRECTORY has been edited since it was
+                // approved — the manifest pin approve struck, which excludes estate.yaml precisely
+                // so that writing the pin into it does not invalidate it.
+                String recorded = EstateYaml.artifactsSha(estateText);
+                if (!recorded.isEmpty()
+                        && !ManifestHash.of(changeDir, "estate.yaml").equals(recorded)) {
+                    out.println("warn: " + changeDir.getFileName() + " has changed since approval "
+                            + "— requirement text may not match the plan");
+                }
+            } else {
+                err.println("error: no spec for this plan — neither " + specPath.getFileName()
+                        + " beside it nor " + treeEstate);
+                return 4;
             }
             if (!Files.exists(workspace.resolve(".sdd/index.db"))) {
                 err.println("error: knowledge base is empty — run sdd index first");

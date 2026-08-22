@@ -192,6 +192,12 @@ public final class EstateYaml {
         return dump(root);
     }
 
+    /** The manifest pin approve struck over the change directory, or "" on a plan-time file. */
+    public static String artifactsSha(String estateYaml) {
+        Object value = map(estateYaml).get("artifacts_sha256");
+        return value == null ? "" : String.valueOf(value);
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<String, Object> map(String yaml) {
         Object loaded = new Yaml().load(yaml);

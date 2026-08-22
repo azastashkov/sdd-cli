@@ -610,4 +610,109 @@ class ImplementCommandTest {
         cli.setOut(new PrintWriter(out));
         return cli;
     }
+
+    /**
+     * A plan approved from a change directory has no sibling spec file, and must still implement.
+     *
+     * <p>approve names plan.json from the SPEC ID, which need not match whatever the spec file on
+     * disk is called and may correspond to no file at all — a real run failed with
+     * {@code error: EFXWUI-14082.md} for exactly that reason. The change directory is
+     * self-contained, so the spec comes from its estate.yaml, and the run directory still gets a
+     * canonical spec.md so --resume and review never learn the difference.
+     */
+    @Test
+    void aPlanWithNoSiblingSpecFileTakesItsSpecFromTheChangeDirectory() throws Exception {
+        FixtureRepo lib = repo("lib");
+        try (Database db = Database.open(ws)) {
+            db.jdbi().useHandle(h -> h.execute(
+                    "INSERT INTO repo(name, path, kind) VALUES ('lib', ?, 'LIBRARY')",
+                    lib.path().toString()));
+        }
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+        // No SPEC-101.md anywhere: the whole point.
+        Path changeDir = ws.resolve("openspec/changes/spec-101-v1");
+        Files.createDirectories(changeDir);
+        Files.writeString(changeDir.resolve("estate.yaml"), """
+                spec_id: SPEC-101
+                plan_version: 1
+                approved: true
+                spec:
+                  id: SPEC-101
+                  title: Tiers
+                  owner: me
+                  status: approved
+                  goal: g
+                  background: ''
+                  requirements:
+                  - id: R1
+                    text: Expose tierFor.
+                  acceptance:
+                  - id: A1
+                    text: tierFor returns a tier.
+                  constraints: []
+                  touchpoints: []
+                  evidence: []
+                  out_of_scope: []
+                  open_questions: []
+                  attachments: []
+                  sources: []
+                """);
+        Files.writeString(ws.resolve("SPEC-101.plan.json"), """
+                { "spec_id":"SPEC-101","plan_version":1,"spec_sha256":"","plan_sha256":"",
+                  "repos":[{"name":"lib","role":"seed","annotation":"SEED","version_action":"minor","base_sha":"%s"}],
+                  "order":[["lib"]],"edges":[],"contracts":[],
+                  "steps":[{"repo":"lib","covers":["R1"],"version_action":"minor","provides":[],"consumes":[],
+                    "files":["A.java"],"verification":[],"sub_spec":"Add x to A."}] }
+                """.formatted(lib.headSha()));
+
+        ImplementCommand cmd = new ImplementCommand();
+        cmd.coderForTest = new ScriptedChatModel(List.of(
+                new ChatResponse(new ChatMessage("assistant", null,
+                        List.of(new ToolCall("1", "apply_edit",
+                                "{\"path\":\"A.java\",\"search\":\"class A {}\",\"replace\":\"class A { int x; }\"}")),
+                        null), "tool_calls", new Usage(10, 5)),
+                new ChatResponse(new ChatMessage("assistant", null,
+                        List.of(new ToolCall("2", "done", "{\"result\":\"success\",\"summary\":\"done\"}")),
+                        null), "tool_calls", new Usage(10, 5))));
+
+        StringWriter out = new StringWriter();
+        CommandLine cli = new CommandLine(cmd);
+        cli.setOut(new PrintWriter(out));
+        int exit = cli.execute("--workspace", ws.toString(),
+                ws.resolve("SPEC-101.plan.json").toString());
+
+        assertThat(exit).as("out=%s", out).isEqualTo(0);
+        assertThat(Files.readString(lib.path().resolve("A.java"))).contains("int x;");
+        // The snapshot is a real canonical spec, rendered from the tree — so resume and review
+        // never learn that this plan had no spec file.
+        assertThat(Files.readString(ws.resolve(".sdd/runs/SPEC-101-v1/spec.md")))
+                .contains("id: SPEC-101").contains("- R1: Expose tierFor.");
+    }
+
+    /** Neither a sibling spec nor a change directory is a clear refusal, not a stack trace. */
+    @Test
+    void aPlanWithNoSpecAnywhereIsRefusedByName() throws Exception {
+        Files.writeString(ws.resolve("sdd.yml"), """
+                models:
+                  planner: { base_url: http://x/v1, model: p, api_key: k }
+                  coder: { base_url: http://y/v1, model: qwen }
+                """);
+        Files.writeString(ws.resolve("orphan.plan.json"), """
+                { "spec_id":"SPEC-404","plan_version":1,"spec_sha256":"","plan_sha256":"",
+                  "repos":[],"order":[],"edges":[],"contracts":[],"steps":[] }
+                """);
+
+        StringWriter err = new StringWriter();
+        CommandLine cli = new CommandLine(new ImplementCommand());
+        cli.setErr(new PrintWriter(err));
+        int exit = cli.execute("--workspace", ws.toString(),
+                ws.resolve("orphan.plan.json").toString());
+
+        assertThat(exit).isEqualTo(4);
+        assertThat(err.toString()).contains("no spec for this plan").contains("orphan.md");
+    }
 }
