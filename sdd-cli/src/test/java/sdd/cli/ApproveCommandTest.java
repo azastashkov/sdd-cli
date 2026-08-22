@@ -302,4 +302,50 @@ class ApproveCommandTest {
         assertThat(run.out()).contains("  warn: jira comment failed: ");
         assertThat(Files.exists(ws.resolve("loyalty.plan.json"))).isTrue();
     }
+
+    /**
+     * Approve writes the estate sidecar beside plan.json, and it carries what plan.json drops.
+     *
+     * <p>The blocking question and its resolution are the case that matters: today nothing after
+     * approve can see that a blocking question was ever asked, let alone answered, because
+     * PlanJson never carried questions and plan.md is not read again after Gate 1.
+     */
+    @Test
+    void approveAlsoWritesTheEstateSidecarCarryingWhatPlanJsonDrops() throws Exception {
+        seedEstateAndKb();
+        writeSpecAndPlan("  - resolution: use tierFor.");
+        ApproveCommand cmd = new ApproveCommand();
+        cmd.smokeForTest = (consumer, provider) -> new SmokeRunner.Result(true, "");
+
+        Run run = approve(cmd, "--workspace", ws.toString(), ws.resolve("loyalty.plan.md").toString());
+
+        assertThat(run.exitCode()).isZero();
+        Path estate = ws.resolve("loyalty.estate.yaml");
+        assertThat(run.out()).contains("estate: " + estate);
+        String yaml = Files.readString(estate);
+        assertThat(yaml).contains("spec_id: SPEC-7")
+                .contains("resolution: use tierFor.")
+                .contains("blocking: true");
+    }
+
+    /**
+     * And it loads back to the same model plan.json does. This is the whole basis for preferring it
+     * at implement time: a second serialization of the same facts is only safe while it is provably
+     * the same facts.
+     */
+    @Test
+    void theSidecarAndPlanJsonLoadToTheIdenticalModel() throws Exception {
+        seedEstateAndKb();
+        writeSpecAndPlan("  - resolution: use tierFor.");
+        ApproveCommand cmd = new ApproveCommand();
+        cmd.smokeForTest = (consumer, provider) -> new SmokeRunner.Result(true, "");
+        approve(cmd, "--workspace", ws.toString(), ws.resolve("loyalty.plan.md").toString());
+
+        sdd.cli.implement.PlanModel fromJson = sdd.cli.implement.PlanJsonReader.read(
+                Files.readString(ws.resolve("loyalty.plan.json")));
+        sdd.cli.implement.PlanModel fromEstate = sdd.cli.implement.PlanJsonReader.read(
+                sdd.plan.approve.EstateYaml.toJson(Files.readString(ws.resolve("loyalty.estate.yaml"))));
+
+        assertThat(fromEstate).isEqualTo(fromJson);
+    }
 }

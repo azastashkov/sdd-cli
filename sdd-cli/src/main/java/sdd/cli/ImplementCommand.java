@@ -42,6 +42,7 @@ import sdd.core.llm.HttpChatModel;
 import sdd.core.llm.ThrottledChatModel;
 import sdd.core.progress.Progress;
 import sdd.index.gradle.GradleExtractor;
+import sdd.plan.approve.EstateYaml;
 import sdd.plan.approve.Hashes;
 import sdd.plan.spec.NormalizedSpec;
 import sdd.plan.spec.SpecParser;
@@ -173,7 +174,19 @@ public final class ImplementCommand implements Callable<Integer> {
                 err.println("error: implement expects a .plan.json file");
                 return 4;
             }
-            String planText = Files.readString(planJsonPath);
+            // estate.yaml wins when it is there. It is the same data — written from plan.json's
+            // own bytes at approve — plus the summary, questions, excluded candidates and notes
+            // that plan.json has always dropped. Preferring it here is what makes the sidecar a
+            // real input rather than a file nothing reads; falling back keeps every plan approved
+            // before it existed, and every frozen run, loading exactly as it did.
+            Path estatePath = planJsonPath.resolveSibling(
+                    name.substring(0, name.length() - ".plan.json".length()) + ".estate.yaml");
+            String planText;
+            if (Files.exists(estatePath)) {
+                planText = EstateYaml.toJson(Files.readString(estatePath));
+            } else {
+                planText = Files.readString(planJsonPath);
+            }
             PlanModel plan = PlanJsonReader.read(planText);
             PlanJsonReader.validate(plan);
             Path specPath = planJsonPath.resolveSibling(

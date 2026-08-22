@@ -7,6 +7,7 @@ import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 import picocli.CommandLine.Spec;
 import sdd.core.db.Database;
+import sdd.plan.approve.EstateYaml;
 import sdd.plan.approve.GradleSmokeRunner;
 import sdd.plan.approve.Hashes;
 import sdd.plan.approve.LiveGit;
@@ -114,10 +115,19 @@ public final class ApproveCommand implements Callable<Integer> {
                 Path jsonPath = planPath.resolveSibling(
                         name.substring(0, name.length() - ".md".length()) + ".json");
                 Files.writeString(jsonPath, json);
+                // Written from plan.json's own bytes, so the two cannot disagree about which repos
+                // are in the change. Step one of moving the workspace to an OpenSpec layout: the
+                // estate graph has to live in a file OpenSpec ignores, because the format has
+                // nowhere to put it — and that has to be proven to carry everything the gates need
+                // before any human-facing artifact moves.
+                Path estatePath = jsonPath.resolveSibling(
+                        name.substring(0, name.length() - ".plan.md".length()) + ".estate.yaml");
+                Files.writeString(estatePath, EstateYaml.render(json, plan));
                 for (String warning : compileWarnings) {
                     outWriter.println("warn: " + warning);
                 }
                 outWriter.println("plan approved: " + jsonPath);
+                outWriter.println("estate: " + estatePath);
                 outWriter.println("spec sha256: " + specSha);
                 outWriter.println("plan sha256: " + planSha);
                 // Task 4 (Gate 1 write-back): strictly AFTER plan.json is durably written above,
