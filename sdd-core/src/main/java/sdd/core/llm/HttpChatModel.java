@@ -8,6 +8,7 @@ import sdd.core.config.ConfigException;
 import sdd.core.config.ModelEndpoint;
 import sdd.core.http.Backoff;
 import sdd.core.http.HttpClients;
+import sdd.core.http.Multipart;
 
 import java.io.IOException;
 import java.net.URI;
@@ -24,7 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-public final class HttpChatModel implements ChatModel {
+public final class HttpChatModel implements ChatModel, AttachmentStore {
     public interface Sleeper { void sleep(long millis) throws InterruptedException; }
 
     // Retry/backoff math lives in sdd.core.http.Backoff (Task 2), shared with RestClient. Kept as
@@ -33,6 +34,10 @@ public final class HttpChatModel implements ChatModel {
     // fact about HttpChatModel, not as "whatever Backoff happens to default to today".
     private static final int MAX_ATTEMPTS = Backoff.DEFAULT_MAX_ATTEMPTS;
     private static final ObjectMapper JSON = new ObjectMapper();
+
+    /** The only value the documented enum takes. Not "vision" — that spelling is invented, and
+     *  believing it cost a round trip on a closed network. */
+    private static final String UPLOAD_PURPOSE = "general";
     /** Marks an id this class invented for a reply that carried none — see
      *  {@link #readLegacyFunctionCall}. Distinct so a transcript reader can see it. */
     public static final String SYNTHETIC_CALL_ID_PREFIX = "sdd-synthesized-";
@@ -131,6 +136,90 @@ public final class HttpChatModel implements ChatModel {
         throw last;
     }
 
+    /**
+     * Put an image in the endpoint's own file store and return its id, for a later user turn's
+     * {@code attachments}. Uses this model's client, certificate, bearer token and timeout, because
+     * the file store is the same host as {@code /chat/completions} and configuring it twice is how
+     * the two drift apart.
+     *
+     * <p>Refuses outright on a wire with no file store rather than sending and reading the 404 —
+     * the caller is about to pay for a download and an upload, and should be told before it does.
+     */
+    @Override
+    public String upload(byte[] image, String filename, String contentType) throws ModelException {
+        if (!endpoint.wire().uploadsAttachments()) {
+            throw new ModelException("models.<name>.wire " + endpoint.wire()
+                    + " has no file store — an image can only be uploaded on the gigachat wire", 0);
+        }
+        Multipart form = new Multipart()
+                .field("purpose", UPLOAD_PURPOSE)
+                .file("file", filename, contentType, image);
+        HttpResponse<String> response = attempt("upload " + filename,
+                URI.create(endpoint.baseUrl() + "/files"), form.contentType(), form.publisher());
+        JsonNode id;
+        try {
+            id = JSON.readTree(response.body()).path("id");
+        } catch (Exception e) {
+            throw new ModelException("upload of " + filename + " returned an unparseable body: "
+                    + response.body().substring(0, Math.min(300, response.body().length())),
+                    response.statusCode());
+        }
+        if (id.isMissingNode() || id.asText("").isBlank()) {
+            throw new ModelException("upload of " + filename + " returned no file id: "
+                    + response.body().substring(0, Math.min(300, response.body().length())),
+                    response.statusCode());
+        }
+        return id.asText();
+    }
+
+    /**
+     * Best effort by contract, and deliberately so: the caller has already got its description, and
+     * the store is a courtesy to clean up rather than part of the result. A live store was observed
+     * holding 99 files, so not calling this is not an option either — it is logged, not thrown.
+     */
+    @Override
+    public void delete(String fileId) {
+        try {
+            attempt("delete " + fileId, URI.create(endpoint.baseUrl() + "/files/" + fileId + "/delete"),
+                    "application/json", HttpRequest.BodyPublishers.noBody());
+        } catch (RuntimeException e) {
+            // Total, not just ModelException: the caller already holds the description this file
+            // was uploaded for, and no cleanup failure may turn that into a failed run.
+            if (dump != null) {
+                dump.recordFailure(endpoint.baseUrl() + "/files/" + fileId + "/delete", "",
+                        e.getMessage());
+            }
+        }
+    }
+
+    /** {@link #complete}'s retry loop, for the requests that are not completions. */
+    private HttpResponse<String> attempt(String what, URI uri, String contentType,
+            HttpRequest.BodyPublisher publisher) throws ModelException {
+        IOException last = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                HttpResponse<String> response = send(uri, contentType, publisher);
+                if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                    return response;
+                }
+                if (response.statusCode() != 429 && response.statusCode() < 500) {
+                    throw new ModelException(what + " failed: HTTP " + response.statusCode() + " "
+                            + response.body().substring(0, Math.min(300, response.body().length())),
+                            response.statusCode());
+                }
+                backoff(attempt, retryAfterMillis(response));
+            } catch (IOException e) {
+                last = e;
+                backoff(attempt, null);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ModelException(what + " interrupted", 0);
+            }
+        }
+        throw new ModelException(what + " failed after " + maxAttempts + " attempts"
+                + (last == null ? "" : ": " + last), 0);
+    }
+
     private String completionsUrl() {
         return endpoint.baseUrl() + "/chat/completions";
     }
@@ -155,11 +244,23 @@ public final class HttpChatModel implements ChatModel {
      * than needing a second failure path.
      */
     private HttpResponse<String> send(String body) throws IOException, InterruptedException {
+        return send(URI.create(completionsUrl()), "application/json",
+                HttpRequest.BodyPublishers.ofString(body));
+    }
+
+    /**
+     * The same bounded exchange for any endpoint on this host — {@code /chat/completions} and
+     * {@code /files} both. Generalised rather than copied so the file store inherits the whole-body
+     * timeout above, the client certificate, and the bearer header; a second hand-rolled sender
+     * would have re-earned the hung run that javadoc describes.
+     */
+    private HttpResponse<String> send(URI uri, String contentType, HttpRequest.BodyPublisher publisher)
+            throws IOException, InterruptedException {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
-                .uri(URI.create(completionsUrl()))
+                .uri(uri)
                 .timeout(endpoint.timeout())
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(body));
+                .header("Content-Type", contentType)
+                .POST(publisher);
         if (endpoint.apiKey() != null) {
             builder.header("Authorization", "Bearer " + endpoint.apiKey());
         }

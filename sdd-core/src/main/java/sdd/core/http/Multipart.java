@@ -3,9 +3,7 @@ package sdd.core.http;
 import java.io.ByteArrayOutputStream;
 import java.net.http.HttpRequest;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -77,10 +75,15 @@ public final class Multipart {
         return out.toByteArray();
     }
 
+    /**
+     * {@code ofByteArray}, deliberately, not {@code ofByteArrays}: the plural form reports an
+     * unknown content length, so the JDK streams it and a receiver that wants a length instead
+     * resets the stream — observed as {@code IOException: Received RST_STREAM: Stream cancelled}
+     * on every one of six retry attempts, which reads like a network fault and is not one. The
+     * body is a few hundred kilobytes at most; it is already fully in memory either way.
+     */
     public HttpRequest.BodyPublisher publisher() {
-        List<byte[]> chunks = new ArrayList<>();
-        chunks.add(body());
-        return HttpRequest.BodyPublishers.ofByteArrays(chunks);
+        return HttpRequest.BodyPublishers.ofByteArray(body());
     }
 
     private static void write(ByteArrayOutputStream out, String line) {
