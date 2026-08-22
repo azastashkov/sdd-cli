@@ -188,14 +188,15 @@ models:
   #   extra_body:
   #     repetition_penalty: 1
   #
-  # coder and planner above were verified on a REAL agent turn — declarations the model can
+  # All three tiers above were verified on a REAL agent turn — declarations the model can
   # call, a tool result in history, max_tokens 32768 — returning 3/3 with non-empty content
-  # (gigachat-toolresult-probe.py, variant 14). So was `glm-5.1`, which `pro` used to name.
+  # (gigachat-toolresult-probe.py, variant 14). Measured 2026-08-22; `GigaChat-2-Max` and
+  # `glm-5.1` pass the same check, so five models on this gateway are known usable and the
+  # choice between them is not a survivability one.
   #
-  # `GigaChat-3-Ultra` HAS NOT BEEN through that check. It is named here because it is the
-  # strongest tier on offer, not because it has been measured, and `pro` is the tier a run
-  # escalates to when the other two have already failed — the worst place to discover a model
-  # cannot finish a second turn. Run variant 14 against it before relying on it.
+  # That says nothing about IMAGES. Only GigaChat models take them, and only 2 Max and 2 Pro
+  # document it — `GigaChat-3-Ultra`'s model page publishes no Input/Output block at all. A
+  # tier that passes variant 14 is not thereby a vision endpoint.
   #
   # That check is worth repeating for any model you swap in, because A THINKING MODEL CAN BE
   # UNUSABLE AT EVERY max_tokens and it does not look like that from outside. Measured on
