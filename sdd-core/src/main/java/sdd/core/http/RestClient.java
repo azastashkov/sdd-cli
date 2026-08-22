@@ -205,6 +205,58 @@ public final class RestClient {
         send("POST", path, body);
     }
 
+    /**
+     * Fetch a non-JSON resource — the one in sdd being a Confluence image attachment.
+     *
+     * <p>Two things separate this from {@link #get}, and both are why it exists rather than the
+     * caller doing it. It sends a wildcard {@code Accept} header: this class otherwise hard-codes
+     * {@code application/json}, and an attachment endpoint is entitled to refuse that. And it
+     * follows ONE redirect, because Data Center answers the documented download URL with a 302 to
+     * a {@code /download/attachments/...} path, while every other method here treats a 3xx as a
+     * hard error — correctly, since for an API call it means the URL is wrong.
+     *
+     * <p>The hop is bounded at one and must stay on this site. A {@code Location} pointing
+     * anywhere else is refused rather than followed: this client attaches a bearer token to every
+     * request it makes, and following an off-site redirect would hand that token to whoever the
+     * redirect names.
+     */
+    public byte[] getBytes(String path) {
+        HttpResponse<byte[]> response = sendBytes(path);
+        if (response.statusCode() >= 300 && response.statusCode() < 400) {
+            String location = response.headers().firstValue("Location").orElseThrow();
+            response = sendBytes(redirectPath(path, location));
+            if (response.statusCode() >= 300) {
+                throw new AtlassianException(siteOrGeneric() + " redirected " + path
+                        + " more than once; sdd follows a single hop");
+            }
+        }
+        return response.body();
+    }
+
+    private HttpResponse<byte[]> sendBytes(String path) {
+        return send("GET", path, null, "*/*", HttpResponse.BodyHandlers.ofByteArray(),
+                bytes -> new String(bytes, java.nio.charset.StandardCharsets.UTF_8), true);
+    }
+
+    /**
+     * A {@code Location} reduced to a path under this client's base URL, or a refusal.
+     *
+     * <p>Relative and absolute forms both occur. An absolute one is accepted only when it starts
+     * with {@link #baseUrl} — string-prefixed on purpose, because that is exactly the set of URLs
+     * this client would have been willing to build itself, and anything broader would be a way to
+     * aim a request carrying the site token somewhere the operator never configured.
+     */
+    private String redirectPath(String from, String location) {
+        if (location.startsWith("/")) {
+            return location;
+        }
+        if (location.startsWith(baseUrl + "/")) {
+            return location.substring(baseUrl.length());
+        }
+        throw new AtlassianException(siteOrGeneric() + " redirected " + from + " to " + location
+                + ", which is not under " + baseUrl + " — refusing to send the site token there");
+    }
+
     /** Same as {@link #get}, but keeps the response headers alongside the parsed body — see
      *  {@link JsonResponse}. */
     public JsonResponse getWithHeaders(String path) {
@@ -213,26 +265,52 @@ public final class RestClient {
     }
 
     private HttpResponse<String> send(String method, String path, JsonNode body) {
+        return send(method, path, body, "application/json", HttpResponse.BodyHandlers.ofString(),
+                text -> text, false);
+    }
+
+    /**
+     * The same retry, status handling, diagnostics and redaction for a response of any body type.
+     *
+     * <p>Generified rather than copied for {@link #getBytes}: this loop carries the 401/403
+     * reissue-the-token message, the 407 it-is-the-proxy-not-the-site message, the 429/5xx backoff
+     * and the {@link #safeBody} scrubbing, and a second hand-written copy of it would drift from
+     * all five. {@code asText} exists only so an error body can still be read and scrubbed — on a
+     * binary path it is used for the failure message and nothing else.
+     *
+     * <p>{@code allowRedirect} is off for every pre-existing caller, so a 3xx stays the hard error
+     * it has always been here. It is on only for attachment downloads, where Data Center answers
+     * the documented URL with a 302 to a different path on the same host.
+     */
+    private <T> HttpResponse<T> send(String method, String path, JsonNode body, String accept,
+            HttpResponse.BodyHandler<T> handler, java.util.function.Function<T, String> asText,
+            boolean allowRedirect) {
         AtlassianException last = null;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             long start = System.nanoTime();
             try {
-                HttpResponse<String> resp = execute(method, path, body);
+                HttpResponse<T> resp = execute(method, path, body, accept, handler, asText);
                 int status = resp.statusCode();
-                logRequest(method, path, status, durationMs(start), attempt, resp);
+                logRequest(method, path, status, durationMs(start), attempt, resp, asText);
                 if (status >= 200 && status < 300) {
+                    return resp;
+                }
+                if (allowRedirect && status >= 300 && status < 400
+                        && resp.headers().firstValue("Location").isPresent()) {
                     return resp;
                 }
                 if (status == 401 || status == 403) {
                     throw logFailure(method, path, new AtlassianException(rejectedTokenMessage(status)));
                 }
                 if (status == 429) {
-                    last = new AtlassianException(siteOrGeneric() + " HTTP 429: " + safeBody(resp.body()));
+                    last = new AtlassianException(siteOrGeneric() + " HTTP 429: "
+                            + safeBody(asText.apply(resp.body())));
                     backoff(attempt, Backoff.retryAfterMillis(resp.headers().firstValue("Retry-After")));
                     continue;
                 }
                 if (status >= 500) {
-                    last = new AtlassianException(siteOrGeneric() + " HTTP " + status + ": " + safeBody(resp.body()));
+                    last = new AtlassianException(siteOrGeneric() + " HTTP " + status + ": "
+                            + safeBody(asText.apply(resp.body())));
                     backoff(attempt, null);
                     continue;
                 }
@@ -249,7 +327,7 @@ public final class RestClient {
                             + "atlassian.proxy.no_proxy"));
                 }
                 throw logFailure(method, path, new AtlassianException(siteOrGeneric() + " HTTP " + status
-                        + ": " + safeBody(resp.body())));
+                        + ": " + safeBody(asText.apply(resp.body()))));
             } catch (IOException e) {
                 String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
                 last = new AtlassianException("transport error talking to " + siteOrGeneric() + ": " + detail, e);
@@ -283,13 +361,13 @@ public final class RestClient {
      *  {@link DiagnosticWriter} (every call site that predates Task 8, and every {@link
      *  RestClientTest} case). {@code errorBodySnippet} is only populated on a non-2xx: Atlassian
      *  error bodies "carry the actual reason and are the single most useful thing here" (brief). */
-    private void logRequest(String method, String path, int status, long durationMs, int attempt,
-            HttpResponse<String> resp) {
+    private <T> void logRequest(String method, String path, int status, long durationMs, int attempt,
+            HttpResponse<T> resp, java.util.function.Function<T, String> asText) {
         if (diagnostics == null) {
             return;
         }
         String contentType = resp.headers().firstValue("Content-Type").orElse(null);
-        String errorBody = (status < 200 || status >= 300) ? resp.body() : null;
+        String errorBody = (status < 200 || status >= 300) ? asText.apply(resp.body()) : null;
         diagnostics.httpRequest(siteOrGeneric(), method, path, status, durationMs, attempt, attempt > 1,
                 contentType, errorBody);
     }
@@ -362,11 +440,12 @@ public final class RestClient {
         return HttpClients.describeEffectiveProxy(transport.proxy(), host);
     }
 
-    private HttpResponse<String> execute(String method, String path, JsonNode body)
+    private <T> HttpResponse<T> execute(String method, String path, JsonNode body, String accept,
+            HttpResponse.BodyHandler<T> handler, java.util.function.Function<T, String> asText)
             throws IOException, InterruptedException {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + path))
                 .timeout(timeout)
-                .header("Accept", "application/json");
+                .header("Accept", accept);
         if (token != null) {
             builder.header("Authorization", "Bearer " + token);
         }
@@ -382,11 +461,11 @@ public final class RestClient {
         HttpRequest request = builder.build();
         String requestBody = body == null ? null : body.toString();
         if (wireDump == null) {
-            return client.send(request, HttpResponse.BodyHandlers.ofString());
+            return client.send(request, handler);
         }
-        HttpResponse<String> response;
+        HttpResponse<T> response;
         try {
-            response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            response = client.send(request, handler);
         } catch (IOException | InterruptedException e) {
             // A transport failure is exactly the case the dump exists for -- a TLS handshake
             // rejected by a corporate CA, or a proxy refusing to tunnel -- so it must be recorded
@@ -394,9 +473,31 @@ public final class RestClient {
             wireDump.recordFailure(method, baseUrl + path, requestBody, String.valueOf(e));
             throw e;
         }
+        // Never the raw body when it is not text: an attachment download is hundreds of kilobytes
+        // of PNG, and writing that into a JSONL diagnostics file as mojibake helps nobody while
+        // making the file unreadable and enormous. Its size and type are the useful part.
         wireDump.record(method, baseUrl + path, requestBody, response.statusCode(),
-                response.headers().map(), response.body());
+                response.headers().map(), dumpableBody(response, asText));
         return response;
+    }
+
+    /**
+     * What the wire dump should record as this response's body.
+     *
+     * <p>Text goes in as-is. Anything else is described, not transcribed: an attachment download is
+     * hundreds of kilobytes of image, and a JSONL diagnostics file is read by a human on a closed
+     * network who is trying to see a request. Bytes would make that file both unreadable and
+     * enormous, and the dump exists to be readable.
+     */
+    private static <T> String dumpableBody(HttpResponse<T> response,
+            java.util.function.Function<T, String> asText) {
+        T body = response.body();
+        if (body instanceof String text) {
+            return text;
+        }
+        int length = body instanceof byte[] bytes ? bytes.length : -1;
+        String contentType = response.headers().firstValue("Content-Type").orElse("unknown type");
+        return "<" + (length < 0 ? "non-text" : length + " bytes") + " of " + contentType + ">";
     }
 
     private void backoff(int attempt, Long retryAfterMillis) {

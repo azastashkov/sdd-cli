@@ -266,4 +266,78 @@ class RestClientTest {
                 .hasMessageContaining("refused");
         assertThat(sleeps).hasSize(1);
     }
+
+    private static final byte[] PNG = {(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 7};
+
+    @Test
+    void getBytesReturnsTheBodyUntouchedAndAsksForAnything() {
+        wm.stubFor(get("/download/attachments/1/d.png").willReturn(
+                aResponse().withStatus(200).withHeader("Content-Type", "image/png").withBody(PNG)));
+
+        assertThat(client().getBytes("/download/attachments/1/d.png")).isEqualTo(PNG);
+        wm.verify(getRequestedFor(urlEqualTo("/download/attachments/1/d.png"))
+                .withHeader("Authorization", equalTo("Bearer sk-token"))
+                .withHeader("Accept", equalTo("*/*")));
+    }
+
+    /**
+     * Data Center answers the documented attachment URL with a 302 to a different path on the same
+     * host. Every other method here treats a 3xx as a hard error — correct for an API call, where
+     * it means the URL is wrong — so the download path is the one place that follows one.
+     */
+    @Test
+    void getBytesFollowsASingleSameHostRedirect() {
+        wm.stubFor(get("/rest/api/content/1/child/attachment/9/download").willReturn(
+                aResponse().withStatus(302).withHeader("Location", "/download/attachments/1/d.png")));
+        wm.stubFor(get("/download/attachments/1/d.png").willReturn(
+                aResponse().withStatus(200).withHeader("Content-Type", "image/png").withBody(PNG)));
+
+        assertThat(client().getBytes("/rest/api/content/1/child/attachment/9/download")).isEqualTo(PNG);
+    }
+
+    @Test
+    void anAbsoluteRedirectUnderTheBaseUrlIsFollowedToo() {
+        wm.stubFor(get("/a").willReturn(aResponse().withStatus(302)
+                .withHeader("Location", wm.baseUrl() + "/download/attachments/1/d.png")));
+        wm.stubFor(get("/download/attachments/1/d.png").willReturn(
+                aResponse().withStatus(200).withBody(PNG)));
+
+        assertThat(client().getBytes("/a")).isEqualTo(PNG);
+    }
+
+    /**
+     * The token goes on every request this client makes, so following a redirect off-site would
+     * hand it to whoever the redirect names. Refused, not followed.
+     */
+    @Test
+    void aRedirectOffSiteIsRefusedRatherThanFollowed() {
+        wm.stubFor(get("/a").willReturn(aResponse().withStatus(302)
+                .withHeader("Location", "https://evil.example/collect")));
+
+        assertThatThrownBy(() -> client().getBytes("/a"))
+                .isInstanceOf(AtlassianException.class)
+                .hasMessageContaining("refusing to send the site token there")
+                .hasMessageContaining("evil.example");
+    }
+
+    /** One hop, not a chain: a loop would otherwise be followed until something else stopped it. */
+    @Test
+    void asecondRedirectIsRefused() {
+        wm.stubFor(get("/a").willReturn(aResponse().withStatus(302).withHeader("Location", "/b")));
+        wm.stubFor(get("/b").willReturn(aResponse().withStatus(302).withHeader("Location", "/c")));
+
+        assertThatThrownBy(() -> client().getBytes("/a"))
+                .isInstanceOf(AtlassianException.class)
+                .hasMessageContaining("more than once");
+    }
+
+    /** A 401 on a download is still the token message, not a redirect or a parse failure. */
+    @Test
+    void getBytesKeepsTheReissueTheTokenMessage() {
+        wm.stubFor(get("/a").willReturn(aResponse().withStatus(401)));
+
+        assertThatThrownBy(() -> client().getBytes("/a"))
+                .isInstanceOf(AtlassianException.class)
+                .hasMessageContaining("$JIRA_PAT");
+    }
 }

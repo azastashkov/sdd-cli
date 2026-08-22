@@ -19,6 +19,9 @@ import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.time.Duration;
 import java.util.Locale;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -156,6 +159,60 @@ public final class ConfluenceClient implements ConfluencePages {
         String version = root.path("version").path("number").asText(null);
         return new SourceDoc(SourceDoc.Kind.CONFLUENCE_PAGE, pageId, canonicalUrl(pageId), title, version,
                 extracted.text(), extracted.attachments());
+    }
+
+    /**
+     * One page's attachments: what is there, what type it is, how big, and where to fetch it.
+     *
+     * <p>{@code version} is carried because it is what makes a description cache correct. A diagram
+     * re-uploaded under the same filename is a different image, and a cache keyed on the name alone
+     * would serve a description of the previous one indefinitely — silently, and in a document
+     * somebody is about to treat as a requirement.
+     *
+     * <p>{@code downloadPath} comes from the listing's own {@code _links.download} rather than being
+     * constructed. Data Center's download URLs carry query parameters (a version stamp, a
+     * modification date) that a hand-built path would omit.
+     */
+    public record Attachment(String id, String filename, String mediaType, long bytes,
+                             String version, String downloadPath) {
+
+        private static final Set<String> SENDABLE =
+                Set.of("image/jpeg", "image/png", "image/tiff", "image/bmp");
+
+        /** 15 Mb per image, and these four types — both documented limits of the model file API. */
+        public boolean isSendableImage() {
+            return SENDABLE.contains(mediaType) && bytes <= 15L * 1024 * 1024;
+        }
+    }
+
+    /**
+     * Every attachment on a page, in the order Confluence lists them.
+     *
+     * <p>Bounded by {@code limit}: a real page in this estate carried 26, and the endpoint pages its
+     * results, so an unbounded walk is an unbounded number of requests against a corporate instance.
+     * Truncation is silent here by design — the caller knows how many it asked for and decides what
+     * to say about it, and this class has no writer to say it to.
+     */
+    public List<Attachment> listAttachments(String pageId, int limit) {
+        JsonNode root = restClient.get(
+                "/rest/api/content/" + pageId + "/child/attachment?limit=" + limit);
+        List<Attachment> attachments = new ArrayList<>();
+        for (JsonNode item : root.path("results")) {
+            String download = item.path("_links").path("download").asText("");
+            attachments.add(new Attachment(
+                    item.path("id").asText(""),
+                    item.path("title").asText(""),
+                    item.path("metadata").path("mediaType").asText(""),
+                    item.path("extensions").path("fileSize").asLong(0),
+                    item.path("version").path("number").asText(""),
+                    download));
+        }
+        return List.copyOf(attachments);
+    }
+
+    /** The bytes of one attachment, straight from the listing's own download link. */
+    public byte[] download(Attachment attachment) {
+        return restClient.getBytes(attachment.downloadPath());
     }
 
     /** The URL form every fetched page's Sources bullet and {@code label()} use — the one shape

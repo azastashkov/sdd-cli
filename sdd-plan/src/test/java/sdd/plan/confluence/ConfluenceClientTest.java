@@ -19,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.InstantSource;
+import java.util.List;
 import java.util.Set;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
@@ -347,5 +348,67 @@ class ConfluenceClientTest {
         assertThat(id).isEqualTo("65601");
         String logged = Files.readString(diagFile);
         assertThat(logged).contains("http site=Confluence method=GET path=/x/AbCd status=302");
+    }
+
+    private static final byte[] PNG = {(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 42};
+
+    /**
+     * Fixture shaped from a real page in this estate: a draw.io render beside its unsendable source,
+     * an oversized PNG, and an SVG. Those four are the whole decision this listing has to support.
+     */
+    @Test
+    void listAttachmentsReadsTypeSizeVersionAndTheListingsOwnDownloadLink() {
+        wm.stubFor(get(urlEqualTo("/rest/api/content/22449162322/child/attachment?limit=50"))
+                .willReturn(okJson(fixture("attachments.json"))));
+
+        List<ConfluenceClient.Attachment> found = client().listAttachments("22449162322", 50);
+
+        assertThat(found).extracting(ConfluenceClient.Attachment::filename)
+                .containsExactly("MM маппинг.png", "MM маппинг", "huge scan.png", "architecture.svg");
+        ConfluenceClient.Attachment png = found.get(0);
+        assertThat(png.id()).isEqualTo("att22449162400");
+        assertThat(png.mediaType()).isEqualTo("image/png");
+        assertThat(png.bytes()).isEqualTo(433356);
+        assertThat(png.version()).isEqualTo("3");
+        assertThat(png.downloadPath()).startsWith("/download/attachments/22449162322/MM%20")
+                .contains("version=3");
+    }
+
+    /**
+     * The one column that decides anything. A draw.io source and an SVG are not types the model API
+     * takes, and 20 Mb is over its documented 15 Mb limit — none of which is a reason to hide them
+     * from a caller that wants to say so.
+     */
+    @Test
+    void onlyTheRightTypeAndSizeCountsAsSendable() {
+        wm.stubFor(get(urlEqualTo("/rest/api/content/22449162322/child/attachment?limit=50"))
+                .willReturn(okJson(fixture("attachments.json"))));
+
+        List<ConfluenceClient.Attachment> found = client().listAttachments("22449162322", 50);
+
+        assertThat(found).filteredOn(ConfluenceClient.Attachment::isSendableImage)
+                .extracting(ConfluenceClient.Attachment::filename)
+                .containsExactly("MM маппинг.png");
+    }
+
+    /** Through the 302 Data Center answers a download URL with, and back as untouched bytes. */
+    @Test
+    void downloadFollowsTheRedirectAndReturnsTheBytes() {
+        ConfluenceClient.Attachment a = new ConfluenceClient.Attachment("att1", "d.png", "image/png",
+                10, "1", "/rest/api/content/1/child/attachment/att1/download");
+        wm.stubFor(get(urlEqualTo(a.downloadPath())).willReturn(aResponse().withStatus(302)
+                .withHeader("Location", "/download/attachments/1/d.png?version=1")));
+        wm.stubFor(get(urlEqualTo("/download/attachments/1/d.png?version=1")).willReturn(
+                aResponse().withStatus(200).withHeader("Content-Type", "image/png").withBody(PNG)));
+
+        assertThat(client().download(a)).isEqualTo(PNG);
+    }
+
+    @Test
+    void aPageWithNoAttachmentsListsNone() {
+        wm.stubFor(get(urlEqualTo("/rest/api/content/7/child/attachment?limit=50"))
+                .willReturn(okJson("{\"results\":[],\"size\":0}")));
+
+        assertThat(client().listAttachments("7", 50)).isEmpty();
     }
 }
