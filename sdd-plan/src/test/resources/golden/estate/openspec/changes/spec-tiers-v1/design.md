@@ -31,5 +31,5 @@ Declared members:
 - C1: No schema change to the pricing database.
 
 ## Open Questions
-- Q1: Who owns the tier config?
+- spec Q1: Who owns the tier config?
 - Q1 [blocking]: Which tenant?

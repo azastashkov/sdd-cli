@@ -73,4 +73,23 @@ class EstateReadTest {
         assertThat(EstateRead.resolutions(null)).isEmpty();
         assertThat(EstateRead.resolutions("")).isEmpty();
     }
+
+    /**
+     * design.md carries two kinds of question under one heading: the specification's own Q items
+     * and the plan's numbered ones. Both used to render as "- Q1:", so an answer written under the
+     * spec's Q1 attached to the PLAN's question 1 and resolved the wrong thing — silently, and in
+     * the direction that lets an unanswered blocking question through.
+     */
+    @Test
+    void aSpecQuestionIsNotMistakenForAPlanQuestionOfTheSameNumber() {
+        String design = """
+                ## Open Questions
+                - spec Q1: Who owns the tier configuration?
+                  - resolution: this answers the SPEC question, not the plan's
+                - Q1 [blocking]: Which method?
+                  - resolution: Use tierFor(String).
+                """;
+
+        assertThat(EstateRead.resolutions(design)).containsExactly(entry(1, "Use tierFor(String)."));
+    }
 }

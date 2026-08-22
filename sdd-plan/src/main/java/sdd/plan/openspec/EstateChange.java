@@ -236,8 +236,13 @@ public final class EstateChange {
         if (questions.isEmpty() && spec.openQuestions().isEmpty()) {
             md.append("- None recorded.\n");
         }
+        // "spec Q1", not "Q1". The plan's questions below are numbered from 1 too, and both would
+        // otherwise match the resolution reader's `- Q<n>:` grammar — so an answer written under
+        // the specification's Q1 would be attached to the PLAN's question 1 and silently resolve
+        // the wrong thing. These are carried for context and are not what Gate 1 asks about; only
+        // the numbered ones below can be answered here.
         for (SpecItem question : spec.openQuestions()) {
-            md.append("- ").append(question.id()).append(": ").append(inline(question.text()))
+            md.append("- spec ").append(question.id()).append(": ").append(inline(question.text()))
                     .append('\n');
         }
         for (int i = 0; i < questions.size(); i++) {
