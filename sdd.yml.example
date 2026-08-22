@@ -179,12 +179,6 @@ models:
   #   tls: *corp_tls                     # same cert, key and CA for every tier
   #   extra_body:
   #     repetition_penalty: 1
-  # vision:                        # only needed when atlassian.describe_images is set
-  #   base_url: ${MODEL_URL}
-  #   model: GigaChat-2-Max        # 2 Max and 2 Pro document image input; 3 Ultra does not
-  #   max_tokens: 4096             # a description, not an agent turn
-  #   wire: gigachat               # mandatory — no other wire has a file store
-  #   tls: *corp_tls
   # pro:
   #   base_url: ${MODEL_URL}
   #   model: GigaChat-3-Ultra
@@ -193,6 +187,17 @@ models:
   #   tls: *corp_tls
   #   extra_body:
   #     repetition_penalty: 1
+  #
+  # vision is NOT a tier — it is not on run.escalation_ladder and nothing escalates to it. It
+  # exists only for atlassian.describe_images, which needs an endpoint that can accept an image,
+  # and none of the three tiers above can: only GigaChat models take images, and only 2 Max and
+  # 2 Pro document doing so.
+  # vision:
+  #   base_url: ${MODEL_URL}
+  #   model: GigaChat-2-Max        # NOT 3-Ultra: its model page publishes no Input/Output block
+  #   max_tokens: 4096             # a description, not an agent turn
+  #   wire: gigachat               # mandatory — no other wire has a file store to upload to
+  #   tls: *corp_tls
   #
   # All three tiers above were verified on a REAL agent turn — declarations the model can
   # call, a tool result in history, max_tokens 32768 — returning 3/3 with non-empty content

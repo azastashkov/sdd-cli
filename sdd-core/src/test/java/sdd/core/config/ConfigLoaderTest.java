@@ -1304,4 +1304,64 @@ class ConfigLoaderTest {
                 .hasMessageContaining("gigachat wire");
     }
 
+
+    /**
+     * The exact shape sdd.yml.example documents for the corp estate: a vision endpoint sharing the
+     * tiers' TLS anchor, and describe_images naming it. Written as a test because the example file
+     * is commented out and therefore parses as nothing — the only way its content can be wrong
+     * without anyone noticing until an operator uncomments it on a closed network.
+     */
+    @Test
+    void theDocumentedVisionEndpointAndDescribeImagesLoadTogether() throws Exception {
+        SddConfig c = ConfigLoader.load(write("""
+                workspace: .
+                models:
+                  coder:
+                    base_url: ${MODEL_URL}
+                    model: Qwen3.5-397b
+                    max_tokens: 32768
+                    wire: gigachat
+                    tls: &corp_tls
+                      cert: /etc/ssl/client.crt
+                      key: /etc/ssl/client.key
+                  planner:
+                    base_url: ${MODEL_URL}
+                    model: DeepSeek-V4-Pro
+                    max_tokens: 32768
+                    wire: gigachat
+                    tls: *corp_tls
+                  pro:
+                    base_url: ${MODEL_URL}
+                    model: GigaChat-3-Ultra
+                    max_tokens: 32768
+                    wire: gigachat
+                    tls: *corp_tls
+                  vision:
+                    base_url: ${MODEL_URL}
+                    model: GigaChat-2-Max
+                    max_tokens: 4096
+                    wire: gigachat
+                    tls: *corp_tls
+                atlassian:
+                  confluence:
+                    base_url: ${CONFLUENCE_URL}
+                    token: ${CONFLUENCE_API_KEY}
+                  describe_images: vision
+                """), key -> switch (key) {
+                    case "MODEL_URL" -> "https://gateway.example/v1";
+                    case "CONFLUENCE_URL" -> "https://confluence.example";
+                    case "CONFLUENCE_API_KEY" -> "sk-conf";
+                    default -> null;
+                });
+
+        assertThat(c.atlassian().describeImages()).isEqualTo("vision");
+        ModelEndpoint vision = c.models().get("vision");
+        assertThat(vision.model()).isEqualTo("GigaChat-2-Max");
+        assertThat(vision.maxTokens()).isEqualTo(4096);
+        assertThat(vision.wire().uploadsAttachments()).isTrue();
+        // The anchor really is shared, not a copy that could drift.
+        assertThat(vision.tls().clientCert()).isEqualTo(c.models().get("coder").tls().clientCert());
+        // And vision is deliberately NOT on the ladder: nothing escalates to it.
+        assertThat(c.run().escalationLadder()).doesNotContain("vision");
+    }
 }
