@@ -23,10 +23,13 @@ import java.util.Optional;
  * promises no model involvement, and the promise is worth more than the convenience of being closer
  * to the marker.
  *
- * <p>The description goes into the page TEXT rather than into the spec's Attachments section,
- * because that is the only place it reaches OpenSpec. {@code OpenSpecInput} has no attachments
- * component, so anything written there would reach a human and stop; text is read by the
- * normalizer's own model call, which turns it into requirements.
+ * <p>The description goes into TWO places, for two different reasons. Into the page TEXT, because
+ * that is the only route to OpenSpec: {@code OpenSpecInput} has no attachments component, so text
+ * is what the normalizer's model call reads and turns into requirements. And into the spec's
+ * {@code ## Attachments} bullet, because the text is only an INPUT — what reaches {@code spec.md}
+ * from there is whatever the planner chose to write, and nothing obliges it to carry the marker
+ * along. {@code attachmentUnion} copies the bullet through untouched, so provenance is guaranteed
+ * rather than hoped for, and it is also the only place a human ever reads the description.
  *
  * <p><b>Every description is marked, and unverified.</b> Measured 2026-08-22: two readings of one
  * mapping form disagreed on the counterparty. So each image is read TWICE, the first reading is
@@ -232,8 +235,20 @@ public final class ImageDescriber {
                 .strip();
     }
 
-    /** How much of a description a single Attachments bullet carries before it is a wall of text. */
-    private static final int SUMMARY_CHARS = 300;
+    /**
+     * How much of a description one Attachments bullet carries.
+     *
+     * <p>Generous on purpose. This started at 300 and that was the wrong trade: the bullet is the
+     * only place a human ever SEES the description — the full text goes to the planner and into the
+     * cache table, neither of which anybody reads — and a description exists to be reviewed at
+     * Gate 1 because it is unverified. A real form diagram runs to two thousand characters, so 300
+     * showed a reviewer the first field and a half of twenty-four and called it provenance.
+     *
+     * <p>A cap remains, because it bounds the source budget rather than the reading: twelve images
+     * of a model's full completion budget would be ~190k characters, against a 300k total across
+     * all documents, and the overflow silently DROPS another document rather than failing.
+     */
+    private static final int SUMMARY_CHARS = 2_000;
 
     /**
      * One {@code ## Attachments} bullet: the filename, the provenance, a summary, and the flag.
@@ -254,7 +269,10 @@ public final class ImageDescriber {
     static String attachmentEntry(String filename, AttachmentDescriptions.Cached value) {
         String summary = oneLine(safe(value.description()));
         if (summary.length() > SUMMARY_CHARS) {
-            summary = summary.substring(0, SUMMARY_CHARS).strip() + "…";
+            // Says how much was cut, in RestClient.safeBody's wording: a bare ellipsis leaves a
+            // reader unable to tell a sentence trimmed from a page thrown away.
+            summary = summary.substring(0, SUMMARY_CHARS).strip()
+                    + " …[truncated, " + (summary.length() - SUMMARY_CHARS) + " more chars]";
         }
         String entry = filename + " — model-described, unverified: " + summary;
         return value.disagreement().isBlank() ? entry : entry + " " + oneLine(value.disagreement());

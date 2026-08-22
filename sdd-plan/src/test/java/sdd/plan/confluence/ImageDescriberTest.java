@@ -308,13 +308,30 @@ class ImageDescriberTest {
         assertThat(entry).startsWith("d.png — ");
     }
 
-    /** Twelve images of unbounded prose would turn Attachments into the whole document. */
+    /**
+     * A real form diagram's description runs to about two thousand characters, and the bullet is
+     * the only place a human ever sees it — so that length must survive intact. The first version
+     * capped at 300 and showed a reviewer the first field and a half of twenty-four.
+     */
     @Test
-    void aVeryLongDescriptionIsCappedInTheBullet() {
+    void aRealisticallyLongDescriptionIsNotTruncated() {
         String entry = ImageDescriber.attachmentEntry("d.png",
-                new AttachmentDescriptions.Cached("x".repeat(2000), ""));
+                new AttachmentDescriptions.Cached("Поле: значение. ".repeat(120), ""));
 
-        assertThat(entry).hasSizeLessThan(400).endsWith("…");
+        assertThat(entry).doesNotContain("truncated").hasSizeGreaterThan(1_900);
+    }
+
+    /**
+     * A cap still exists, and bounds the SOURCE BUDGET rather than the reading: twelve images of a
+     * full completion budget would be ~190k characters against a 300k total, and the overflow
+     * silently drops another document rather than failing.
+     */
+    @Test
+    void aRunawayDescriptionIsCutAndSaysByHowMuch() {
+        String entry = ImageDescriber.attachmentEntry("d.png",
+                new AttachmentDescriptions.Cached("x".repeat(12_000), ""));
+
+        assertThat(entry).hasSizeLessThan(2_200).contains("…[truncated, 10000 more chars]");
     }
 
     /**
