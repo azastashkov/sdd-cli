@@ -322,8 +322,13 @@ public final class Orchestrator {
                     applyBumps(repo, step, events);
                     priorDigest = contracts + attemptDigest(history);
                 }
+                // Through Progress.detail, which is documented as meaningful only when one item
+                // is in flight and ignorable otherwise — exactly right here, since a layer runs its
+                // repos in parallel and interleaved traces from four of them would be noise. The
+                // durable copy is the events list below, which the run directory keeps per repo.
                 StepOutcome attempt = runner.run(step, tier.model(), tier.modelName(),
-                        settingsFor.apply(repo), priorDigest);
+                        settingsFor.apply(repo), priorDigest,
+                        line -> progress.detail(repo + ": " + line));
                 events.addAll(attempt.events());
                 transcript.addAll(attempt.transcript());
                 edits.addAll(attempt.edits());

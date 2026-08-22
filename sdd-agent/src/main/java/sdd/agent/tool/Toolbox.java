@@ -35,6 +35,7 @@ public final class Toolbox implements Tools {
     private final BuildTool build;
     private final sdd.agent.run.OutputCompactor compactor;   // null = raw (no compaction), 4A path
     private final boolean singleTool;
+    private final java.util.function.Consumer<String> trace;   // null = say nothing, every pre-4E path
 
     public Toolbox(FileTools files, BuildTool build) {
         this(files, build, null);
@@ -46,10 +47,22 @@ public final class Toolbox implements Tools {
 
     public Toolbox(FileTools files, BuildTool build, sdd.agent.run.OutputCompactor compactor,
                    boolean singleTool) {
+        this(files, build, compactor, singleTool, null);
+    }
+
+    /**
+     * @param trace one line per tool call, or null. {@code sdd explore} has shown what the agent is
+     *              doing since it existed and {@code sdd implement} has not: it ran a repo for
+     *              minutes with nothing on screen but a spinner, and a slow verification build was
+     *              indistinguishable from a hang. Same sink, same format, same reason.
+     */
+    public Toolbox(FileTools files, BuildTool build, sdd.agent.run.OutputCompactor compactor,
+                   boolean singleTool, java.util.function.Consumer<String> trace) {
         this.files = files;
         this.build = build;
         this.compactor = compactor;
         this.singleTool = singleTool;
+        this.trace = trace;
     }
 
     /** @see ExploreTools#route — same contract, same reason, and the id is preserved. */
@@ -124,6 +137,43 @@ public final class Toolbox implements Tools {
 
     @Override
     public String dispatch(String name, String argsJson) {
+        // Announced BEFORE it runs, for the reason ExploreTools records: a gradle task makes no
+        // model call while it builds, so a trace written only on return is silent for exactly as
+        // long as the slow thing takes.
+        if (trace != null) {
+            trace.accept(name + subject(name, argsJson) + " ...");
+        }
+        long started = System.nanoTime();
+        String result = run(name, argsJson);
+        if (trace != null) {
+            long ms = (System.nanoTime() - started) / 1_000_000;
+            int lines = (int) result.lines().count();
+            trace.accept("  → " + lines + (lines == 1 ? " line" : " lines") + ", " + ms + "ms");
+        }
+        return result;
+    }
+
+    /** What the call is ABOUT, in a few words — the path, the task, the pattern. */
+    private String subject(String name, String argsJson) {
+        JsonNode args;
+        try {
+            args = parse(name, argsJson);
+        } catch (RuntimeException e) {
+            return "";
+        }
+        if (name.equals(build.toolName())) {
+            return " " + str(args, "task");
+        }
+        return switch (name) {
+            case "read_file", "apply_edit" -> " " + optional(args, "path");
+            case "list_files" -> " " + optional(args, "dir");
+            case "search" -> " " + (args.hasNonNull("regex")
+                    ? "/" + optional(args, "regex") + "/" : optional(args, "glob"));
+            default -> "";
+        };
+    }
+
+    private String run(String name, String argsJson) {
         JsonNode args = parse(name, argsJson);
         // Checked before the switch because the build tool's name varies by toolchain and a switch
         // label cannot: a repo advertises run_gradle or run_npm, never both.

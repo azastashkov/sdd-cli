@@ -40,6 +40,16 @@ public final class RepoStepRunner {
 
     public StepOutcome run(RepoStep step, ChatModel model, String modelName, RunnerSettings settings,
                            String priorDigest) {
+        return run(step, model, modelName, settings, priorDigest, null);
+    }
+
+    /**
+     * @param trace one line per tool call, or null. {@code sdd explore} has always shown what the
+     *              agent is doing; this path never did, so a repo could run for minutes behind a
+     *              spinner and a slow verification build looked exactly like a hang.
+     */
+    public StepOutcome run(RepoStep step, ChatModel model, String modelName, RunnerSettings settings,
+                           String priorDigest, java.util.function.Consumer<String> trace) {
         // The settings say which toolchain this repo uses; the filesystem is consulted only when
         // they do not, so a repo that has never been indexed still gets the right tool.
         sdd.core.toolchain.Toolchain toolchain = settings.toolchain() == sdd.core.toolchain.Toolchain.UNKNOWN
@@ -63,7 +73,7 @@ public final class RepoStepRunner {
                 toolchain == sdd.core.toolchain.Toolchain.NPM
                         ? sdd.core.ts.TsSidecar.create(settings.nodeHome(), java.time.Duration.ofSeconds(30))
                         : java.util.Optional.empty());
-        Toolbox toolbox = new Toolbox(fileTools, build, compactor, settings.singleTool());
+        Toolbox toolbox = new Toolbox(fileTools, build, compactor, settings.singleTool(), trace);
         VerificationRunner verifier = new VerificationRunner(build, compactor, toolchain);
         AgentLoop loop = new AgentLoop(model, toolbox, settings.budget(), settings.contextSoftCap(),
                 settings.clock());
